@@ -174,6 +174,11 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .current_dir(&repo)
         .output()
         .expect("git clickup ticket branch should run");
+    Command::new(resolve_git_cli_path())
+        .args(["branch", "ralphx/demo/agent-jira-PROJ-123-conversa"])
+        .current_dir(&repo)
+        .output()
+        .expect("git jira agent ticket branch should run");
 
     let github = Arc::new(MockGithubService::new());
     github.will_return_pull_request_search(vec![
@@ -434,6 +439,17 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
     assert_eq!(clickup.ticket_links[0].provider, "clickup");
     assert_eq!(clickup.ticket_links[0].title, None);
     assert!(clickup.ticket_links[0].url.is_none());
+
+    let jira_agent_branch = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "ralphx/demo/agent-jira-PROJ-123-conversa")
+        .expect("Jira agent ticket branch row should exist");
+    assert_eq!(jira_agent_branch.ticket_count, 1);
+    assert_eq!(jira_agent_branch.ticket_labels, vec!["Jira PROJ-123"]);
+    assert_eq!(jira_agent_branch.ticket_links[0].provider, "jira");
+    assert_eq!(jira_agent_branch.ticket_links[0].label, "PROJ-123");
+    assert!(jira_agent_branch.ticket_links[0].url.is_none());
 
     assert_eq!(
         github.state().last_search_pull_requests_args,

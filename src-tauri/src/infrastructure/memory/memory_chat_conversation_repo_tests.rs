@@ -286,3 +286,42 @@ async fn test_reset_running_attribution_backfill_to_pending() {
         Some(AttributionBackfillStatus::Pending)
     );
 }
+
+#[tokio::test]
+async fn test_list_by_automation_id_returns_only_matching_conversations() {
+    use crate::domain::entities::{AutomationId, AutomationRunId};
+
+    let repo = MemoryChatConversationRepository::new();
+    let project_id = ProjectId::new();
+    let automation_id = AutomationId::from_string("automation-mem-1");
+
+    let mut setup = ChatConversation::new_project(project_id.clone());
+    setup.automation_id = Some(automation_id.clone());
+    let setup_id = setup.id;
+    repo.create(setup).await.unwrap();
+
+    let mut run_conv = ChatConversation::new_project(project_id.clone());
+    run_conv.automation_id = Some(automation_id.clone());
+    run_conv.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    let run_id = run_conv.id;
+    repo.create(run_conv).await.unwrap();
+
+    // Archived conversation for the same automation is still returned.
+    let mut archived = ChatConversation::new_project(project_id.clone());
+    archived.automation_id = Some(automation_id.clone());
+    let archived_id = archived.id;
+    repo.create(archived).await.unwrap();
+    repo.archive(&archived_id).await.unwrap();
+
+    // Unrelated automation is excluded.
+    let mut other = ChatConversation::new_project(project_id);
+    other.automation_id = Some(AutomationId::from_string("automation-other"));
+    repo.create(other).await.unwrap();
+
+    let listed = repo.list_by_automation_id(&automation_id).await.unwrap();
+    let ids: Vec<_> = listed.iter().map(|c| c.id).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.contains(&setup_id));
+    assert!(ids.contains(&run_id));
+    assert!(ids.contains(&archived_id));
+}

@@ -38,12 +38,31 @@ export function useAutomationsList(
 interface AutomationEventPayload {
   automation_id?: string | null;
   automationId?: string | null;
+  project_id?: string | null;
+  projectId?: string | null;
   run_id?: string | null;
   runId?: string | null;
 }
 
 function payloadAutomationId(payload: AutomationEventPayload): string | null {
   return payload.automationId ?? payload.automation_id ?? null;
+}
+
+/**
+ * Handle an `automation:deleted` event: the automation row is gone, so refresh
+ * the lists and evict its detail query rather than invalidating it (which would
+ * trigger a doomed 404 refetch).
+ */
+export function evictDeletedAutomation(
+  queryClient: QueryClient,
+  automationId?: string | null,
+) {
+  void queryClient.invalidateQueries({ queryKey: automationKeys.lists() });
+  if (automationId) {
+    queryClient.removeQueries({
+      queryKey: automationKeys.detail(automationId),
+    });
+  }
 }
 
 export function invalidateAutomationQueries(
@@ -87,10 +106,21 @@ export function useAutomationEvents(automationId?: string | null) {
         invalidateAutomationQueries(queryClient, eventAutomationId ?? automationId ?? null);
       },
     );
+    const unsubscribeDeleted = bus.subscribe<AutomationEventPayload>(
+      "automation:deleted",
+      (payload) => {
+        const eventAutomationId = payloadAutomationId(payload);
+        if (automationId && eventAutomationId && eventAutomationId !== automationId) {
+          return;
+        }
+        evictDeletedAutomation(queryClient, eventAutomationId ?? automationId ?? null);
+      },
+    );
 
     return () => {
       unsubscribeAutomation();
       unsubscribeRun();
+      unsubscribeDeleted();
     };
   }, [automationId, bus, queryClient]);
 }

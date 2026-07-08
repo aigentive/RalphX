@@ -165,6 +165,30 @@ export function useChatRecovery({
     setStreamingContentBlocks,
   ]);
 
+  // Switching away and back to a live conversation must hydrate from persisted
+  // timeline blocks first; active-state only supplements not-yet-persisted chunks.
+  useEffect(() => {
+    if (!activeConversationId || isHistoryMode || !isVisible || !isConversationInCurrentContext) {
+      return;
+    }
+    if (!isAgentRunning && agentRunStatus !== "running" && !isGenerating) {
+      return;
+    }
+
+    void queryClient.invalidateQueries({
+      queryKey: chatKeys.conversationTimeline(activeConversationId),
+    });
+  }, [
+    activeConversationId,
+    agentRunStatus,
+    isAgentRunning,
+    isConversationInCurrentContext,
+    isGenerating,
+    isHistoryMode,
+    isVisible,
+    queryClient,
+  ]);
+
   // Recovery fallback: if agent is running but events were missed, reflect it in UI
   useEffect(() => {
     if (agentRunStatus === "running" && isConversationInCurrentContext) {

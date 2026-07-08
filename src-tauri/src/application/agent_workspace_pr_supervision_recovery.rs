@@ -63,7 +63,7 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub github: Arc<dyn GithubServiceTrait>,
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
-    pub transition_service: Option<Arc<TaskTransitionService<tauri::Wry>>>,
+    pub transition_service: Option<Arc<TaskTransitionService>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub app_handle: Option<AppHandle>,

@@ -104,6 +104,7 @@ export function AgentsArtifactPaneRegion({
   );
   const contentMounted = useAfterPaintMounted(artifactPaneOpen);
   const shouldRenderArtifactContent = artifactPaneOpen || contentMounted;
+  const workspaceConversationId = workspace?.conversationId ?? conversationId;
 
   return (
     <>
@@ -169,7 +170,7 @@ export function AgentsArtifactPaneRegion({
           ) : null}
           <AgentsTerminalDockHost
             dock="panel"
-            conversationId={conversationId}
+            conversationId={workspaceConversationId}
             workspace={workspace}
             terminalArchivedReason={terminalArchivedReason}
             terminalUnavailableReason={terminalUnavailableReason}

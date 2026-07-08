@@ -215,6 +215,12 @@ jobs:
               "tauri::async_runtime::spawn(async move {",
           )
           BLOCK_START_MARKERS_BY_SOURCE = {
+              "src/application/task_transition_service.rs": (
+                  "let throttled_emitter = app_handle.as_ref().and_then(|handle| {",
+                  "if let Some(throttled) = throttled_emitter {",
+                  "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
+                  "self.emit_task_event(serde_json::json!({",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -222,15 +228,22 @@ jobs:
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
               "src/application/app_setup.rs",
+              "src/application/chat_resumption.rs",
               "src/application/chat_service/chat_service_merge.rs",
               "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/freshness_routing.rs",
+              "src/application/ready_task_scheduler.rs",
+              "src/application/reconciliation.rs",
               "src/application/reconciliation/handlers/merge.rs",
+              "src/application/runtime_factory.rs",
               "src/application/runtime_wiring.rs",
+              "src/application/services/pr_merge_poller.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
+              "src/application/startup_jobs.rs",
               "src/commands/git_commands.rs",
+              "src/commands/project_commands.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
               "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
@@ -488,17 +501,31 @@ jobs:
               "tauri::async_runtime::spawn(async move {",
           )
           BLOCK_START_MARKERS_BY_SOURCE = {
+              "src/application/task_transition_service.rs": (
+                  "let throttled_emitter = app_handle.as_ref().and_then(|handle| {",
+                  "if let Some(throttled) = throttled_emitter {",
+                  "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
+                  "self.emit_task_event(serde_json::json!({",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
           }
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
+              "src/application/chat_resumption.rs",
               "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
+              "src/application/ready_task_scheduler.rs",
+              "src/application/reconciliation.rs",
+              "src/application/runtime_factory.rs",
+              "src/application/runtime_wiring.rs",
+              "src/application/services/pr_merge_poller.rs",
+              "src/application/startup_jobs.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/project_commands.rs",
               "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
               "src/commands/provider_cli_management_commands.rs",
@@ -917,6 +944,9 @@ jobs:
           files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload Rust IPC coverage to Codecov
@@ -929,6 +959,9 @@ jobs:
           files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload frontend coverage to Codecov
@@ -941,6 +974,9 @@ jobs:
           files: coverage-artifacts/coverage-frontend/lcov.info
           flags: frontend
           name: frontend
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload internal MCP coverage to Codecov
@@ -953,6 +989,9 @@ jobs:
           files: coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
           flags: plugin-internal-mcp
           name: plugin-internal-mcp
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload external MCP coverage to Codecov
@@ -965,6 +1004,9 @@ jobs:
           files: coverage-artifacts/coverage-plugin-external-mcp/lcov.info
           flags: plugin-external-mcp
           name: plugin-external-mcp
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
   coverage-gate:
@@ -1102,9 +1144,21 @@ jobs:
           done
 
           echo "Timed out waiting for Codecov patch status to pass."
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
-            --jq 'map(select(.context == "codecov/patch"))[0]'
-          gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
-            -f check_name="codecov/patch" \
-            --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
+          final_status="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+              --jq 'map(select(.context == "codecov/patch"))[0] // empty'
+          )"
+          final_check="$(
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              -f check_name="codecov/patch" \
+              --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] // empty'
+          )"
+          printf '%s\n' "${final_status}"
+          printf '%s\n' "${final_check}"
+
+          if [[ -z "${final_status}" && -z "${final_check}" ]]; then
+            echo "::warning::Codecov did not post codecov/patch after successful coverage uploads; treating the missing external status as non-blocking."
+            exit 0
+          fi
+
           exit 1

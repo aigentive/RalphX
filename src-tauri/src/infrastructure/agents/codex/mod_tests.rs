@@ -38,6 +38,13 @@ impl Drop for EnvGuard {
     }
 }
 
+fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
+    entries
+        .iter()
+        .position(|entry| entry == path.as_ref())
+        .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
+}
+
 fn write_executable(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write executable");
     #[cfg(unix)]
@@ -154,10 +161,18 @@ fn build_codex_exec_command_sets_agent_tool_path() {
 
     assert!(path.contains("/opt/homebrew/bin"));
     assert!(path.contains("/usr/local/bin"));
+    if let Some(home) = dirs::home_dir() {
+        let cargo_bin = home.join(".cargo").join("bin");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert!(
+            path_index(&entries, &cargo_bin) < path_index(&entries, "/opt/homebrew/bin"),
+            "user cargo shim should stay before Homebrew in Codex spawn PATH: {path}"
+        );
+    }
 }
 
 #[test]
-fn probe_codex_cli_prepends_resolved_node_for_env_shim() {
+fn probe_codex_cli_ensures_resolved_node_for_env_shim() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
@@ -796,6 +811,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         filesystem_read_roots: vec![root.join("project-root")],
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
+        agent_run_id: Some("run-123".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -883,20 +899,28 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         args_override.contains("conversation-abc"),
         "expected parent conversation id value in overrides: {args_override}"
     );
+    assert!(
+        args_override.contains("--agent-run-id"),
+        "expected agent-run-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("run-123"),
+        "expected agent run id value in overrides: {args_override}"
+    );
 }
 
 #[test]
-fn configure_spawn_prepends_resolved_node_bin_to_path() {
+fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
-    let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
-        .parent()
-        .map(PathBuf::from)
-        .expect("resolved node bin");
+    let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+    let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
+    let expected_node_bin = PathBuf::from("/tmp/fake-node-bin");
 
     let mut cmd = tokio::process::Command::new("/usr/bin/env");
-    cmd.env("PATH", "/usr/bin:/bin");
     configure_spawn(&mut cmd, None);
 
     let path_value = cmd
@@ -907,7 +931,14 @@ fn configure_spawn_prepends_resolved_node_bin_to_path() {
         })
         .expect("PATH env");
     let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
-    assert_eq!(path_entries.first(), Some(&expected_node_bin));
+    if let Some(home) = dirs::home_dir() {
+        let cargo_bin = home.join(".cargo").join("bin");
+        assert!(
+            path_index(&path_entries, &cargo_bin) < path_index(&path_entries, &expected_node_bin),
+            "user cargo shim should stay before inserted Node bin: {path_value:?}"
+        );
+    }
+    assert!(path_index(&path_entries, &expected_node_bin) < path_index(&path_entries, "/usr/bin"));
 
     let screenshot_dir = cmd
         .as_std()
@@ -1132,6 +1163,7 @@ harnesses:
         filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
+        agent_run_id: Some("run 789".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1162,5 +1194,9 @@ harnesses:
     assert!(
         url_override.contains("parent_conversation_id=conversation%20456"),
         "external MCP URL should include encoded parent conversation id: {url_override}"
+    );
+    assert!(
+        url_override.contains("agent_run_id=run%20789"),
+        "external MCP URL should include encoded agent run id: {url_override}"
     );
 }

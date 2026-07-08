@@ -1,9 +1,8 @@
 use super::*;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
-use tauri::test::MockRuntime;
 
-fn scheduler_for_state(state: &AppState) -> TaskSchedulerService<MockRuntime> {
+fn scheduler_for_state(state: &AppState) -> TaskSchedulerService {
     TaskSchedulerService::new(
         Arc::new(ExecutionState::new()),
         Arc::clone(&state.project_repo),

@@ -52,6 +52,10 @@ import {
   hasGranolaIntegrationReference,
   invalidateAgentConversationGranolaNote,
 } from "./agentGranolaNoteQueries";
+import {
+  buildAgentStartConversationRetryInput,
+  parseLinkedSetupFailure,
+} from "./agentStartErrors";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
@@ -245,10 +249,16 @@ export function useStartAgentConversation({
           delete next[conversationId];
           return next;
         });
-        setOptimisticSelectedConversationId((current) =>
-          current === conversationId ? null : current
-        );
+        setOptimisticSelectedConversationId(null);
+        if (useAgentSessionStore.getState().selectedConversationId === conversationId) {
+          useAgentSessionStore.getState().clearSelection();
+        }
         queryClient.removeQueries({ queryKey: chatKeys.conversation(conversationId) });
+        queryClient.removeQueries({ queryKey: chatKeys.conversationHistory(conversationId) });
+        queryClient.removeQueries({ queryKey: chatKeys.conversationTimeline(conversationId) });
+        queryClient.removeQueries({
+          queryKey: ["agents", "conversation-workspace", conversationId],
+        });
         setActiveConversation(storeKey, null);
         setAgentActivityLabel(storeKey, null);
         setAgentRunning(storeKey, false);
@@ -300,7 +310,9 @@ export function useStartAgentConversation({
       setAgentRunning(optimisticStoreKey, true);
       setSending(optimisticStoreKey, true);
 
+      const requiresSeededConversation = mode === "automation" || files.length > 0;
       let seededStoreKey: string | null = null;
+      let seededConversationId: string | null = null;
       try {
         const automationDraft =
           mode === "automation"
@@ -323,62 +335,80 @@ export function useStartAgentConversation({
         }
 
         const resultConversationSeed =
-          mode === "automation"
-            ? null
-            : await chatApi.createConversation("project", targetProjectId);
-        const seededConversation: ChatConversation = resultConversationSeed
+          requiresSeededConversation && mode !== "automation"
+            ? await chatApi.createConversation("project", targetProjectId)
+            : null;
+        const seededConversation: ChatConversation | null = resultConversationSeed
           ? {
               ...resultConversationSeed,
               agentMode: mode,
             }
-          : {
-              id: setupConversationId!,
+          : automationDraft
+            ? {
+                id: setupConversationId!,
+                contextType: "project",
+                contextId: targetProjectId,
+                claudeSessionId: null,
+                providerSessionId: null,
+                providerHarness: normalizedRuntime.provider,
+                upstreamProvider: null,
+                providerProfile: null,
+                agentMode: "automation",
+                automationId: automationDraft.automation.id,
+                automationRunId: null,
+                parentConversationId: null,
+                coordinationMode: "solo",
+                title: automationDraft.automation.name,
+                messageCount: 1,
+                lastMessageAt: now,
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+              }
+            : null;
+        const activeConversation = seededConversation ?? initialConversation;
+        const storeKey = seededConversation
+          ? getAgentConversationStoreKey({
+              id: seededConversation.id,
               contextType: "project",
               contextId: targetProjectId,
-              claudeSessionId: null,
-              providerSessionId: null,
-              providerHarness: normalizedRuntime.provider,
-              upstreamProvider: null,
-              providerProfile: null,
-              agentMode: "automation",
-              automationId: automationDraft!.automation.id,
-              automationRunId: null,
-              parentConversationId: null,
-              coordinationMode: "solo",
-              title: automationDraft!.automation.name,
-              messageCount: 1,
-              lastMessageAt: now,
-              createdAt: now,
-              updatedAt: now,
-              archivedAt: null,
-            };
-        const storeKey = getAgentConversationStoreKey({
-          id: seededConversation.id,
-          contextType: "project",
-          contextId: targetProjectId,
-        });
-        seededStoreKey = storeKey;
-        const seededOptimisticUserMessage = buildOptimisticUserMessage({
-          conversation: seededConversation,
-          content,
-          runtime: normalizedRuntime,
-          ...(optimisticReferenceMetadata
-            ? { metadata: optimisticReferenceMetadata }
-            : {}),
-          ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
-        });
-        seedConversationState(seededConversation, null, [seededOptimisticUserMessage]);
-        removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
-        setEffectiveModel(storeKey, {
-          id: normalizedRuntime.modelId,
-          label: getModelLabel(normalizedRuntime.modelId),
-        });
-        setAgentActivityLabel(storeKey, files.length > 0 ? "Uploading files" : "Setup workspace");
-        setAgentRunning(storeKey, true);
-        setSending(storeKey, true);
+            })
+          : optimisticStoreKey;
+        const activeOptimisticUserMessage = seededConversation
+          ? buildOptimisticUserMessage({
+              conversation: seededConversation,
+              content,
+              runtime: normalizedRuntime,
+              ...(optimisticReferenceMetadata
+                ? { metadata: optimisticReferenceMetadata }
+                : {}),
+              ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
+            })
+          : optimisticUserMessage;
+        if (seededConversation) {
+          seededStoreKey = storeKey;
+          seededConversationId = seededConversation.id;
+          seedConversationState(seededConversation, null, [activeOptimisticUserMessage]);
+          removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
+          setEffectiveModel(storeKey, {
+            id: normalizedRuntime.modelId,
+            label: getModelLabel(normalizedRuntime.modelId),
+          });
+          setAgentActivityLabel(
+            storeKey,
+            files.length > 0 ? "Uploading files" : "Setup workspace"
+          );
+          setAgentRunning(storeKey, true);
+          setSending(storeKey, true);
+        } else {
+          setAgentActivityLabel(storeKey, "Setup workspace");
+        }
 
         let uploadedAttachmentIds: string[] = [];
         if (files.length > 0) {
+          if (!seededConversation) {
+            throw new Error("Attachment upload requires a draft conversation");
+          }
           const uploadedAttachments = await Promise.all(
             files.map((file) => uploadDraftAttachment(seededConversation.id, file))
           );
@@ -389,7 +419,7 @@ export function useStartAgentConversation({
         const result = await chatApi.startAgentConversation({
           projectId: targetProjectId,
           content,
-          conversationId: seededConversation.id,
+          ...(seededConversation ? { conversationId: seededConversation.id } : {}),
           providerHarness: normalizedRuntime.provider,
           modelId: normalizedRuntime.modelId,
           logicalEffort: normalizedRuntime.effort,
@@ -419,8 +449,8 @@ export function useStartAgentConversation({
         const optimisticWorkspace = result.workspace;
         const resolvedStoreKey = getAgentConversationStoreKey(resolvedConversation);
         const resolvedOptimisticUserMessage =
-          resolvedConversationId === seededConversation.id
-            ? seededOptimisticUserMessage
+          resolvedConversationId === activeConversation.id
+            ? activeOptimisticUserMessage
             : buildOptimisticUserMessage({
                 conversation: resolvedConversation,
                 content,
@@ -435,6 +465,9 @@ export function useStartAgentConversation({
           optimisticWorkspace ?? null,
           [resolvedOptimisticUserMessage]
         );
+        if (!seededConversation && resolvedStoreKey !== storeKey) {
+          removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
+        }
         if (resolvedStoreKey !== storeKey) {
           setAgentActivityLabel(storeKey, null);
           setAgentRunning(storeKey, false);
@@ -498,12 +531,35 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
         });
       } catch (err) {
+        const linkedFailure = parseLinkedSetupFailure(err);
+        if (linkedFailure) {
+          useAgentSessionStore.getState().setStartConversationFailure({
+            kind: "linked_setup",
+            message: linkedFailure.message,
+            retryInput: buildAgentStartConversationRetryInput({
+              projectId: targetProjectId,
+              content,
+              runtime: normalizedRuntime,
+              mode,
+              base,
+              codexFastMode,
+              composerArtifactReferences,
+              composerIntegrationReferences,
+              composerProjectReferences,
+            }),
+          });
+        }
         if (seededStoreKey) {
           setAgentActivityLabel(seededStoreKey, null);
           setAgentRunning(seededStoreKey, false);
           setSending(seededStoreKey, false);
         }
+        if (seededConversationId && seededStoreKey) {
+          removeOptimisticConversation(seededConversationId, seededStoreKey);
+        }
         removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
+        setOptimisticSelectedConversationId(null);
+        useAgentSessionStore.getState().clearSelection();
         throw err;
       }
     },

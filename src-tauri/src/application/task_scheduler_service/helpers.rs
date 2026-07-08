@@ -1,6 +1,6 @@
 use super::*;
 
-impl<R: Runtime> TaskSchedulerService<R> {
+impl TaskSchedulerService {
     pub(super) async fn find_oldest_retryable_pending_review_task(&self) -> Option<Task> {
         let active_project = self.active_project_id.read().await.clone();
         let projects = if let Some(project_id) = active_project {

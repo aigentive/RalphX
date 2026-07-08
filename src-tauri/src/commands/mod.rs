@@ -33,6 +33,7 @@ pub mod conversation_stats_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
+pub(crate) mod execution_task_navigation;
 pub mod external_mcp_commands;
 pub mod git_commands;
 pub mod granola_commands;

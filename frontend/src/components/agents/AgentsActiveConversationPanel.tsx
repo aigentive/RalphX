@@ -2442,6 +2442,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ],
   );
 
+  const workspaceConversationId =
+    activeWorkspace?.conversationId ?? selectedConversationId;
+
   return (
     <div
       className="flex-1 h-full flex flex-col"
@@ -2450,7 +2453,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     >
       <div className="min-h-0 flex-1">
         <AgentWorkspaceFileLinkProvider
-          conversationId={selectedConversationId}
+          conversationId={workspaceConversationId}
           workspace={
             chatFocus.type === "workspace_review"
               ? activeWorkspace
@@ -2960,7 +2963,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       </div>
       <AgentsTerminalDockHost
         dock="chat"
-        conversationId={selectedConversationId}
+        conversationId={workspaceConversationId}
         workspace={activeWorkspace}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}

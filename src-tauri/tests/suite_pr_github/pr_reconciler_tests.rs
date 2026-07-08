@@ -73,7 +73,7 @@ async fn wait_for_pr_detail_updates(mock_github: &MockGithubService, expected: u
 fn build_reconciler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ReconciliationRunner<tauri::Wry> {
+) -> ReconciliationRunner {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -136,7 +136,7 @@ fn make_pr_plan_branch(
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -160,7 +160,7 @@ fn build_pr_transition_service(
     execution_state: &Arc<ExecutionState>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_registry: Arc<PrPollerRegistry>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),

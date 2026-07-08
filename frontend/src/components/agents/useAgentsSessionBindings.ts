@@ -3,6 +3,7 @@ import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
 interface UseAgentsSessionBindingsArgs {
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
@@ -23,18 +24,29 @@ export function useAgentsSessionBindings({
   const clearSelection = useAgentSessionStore((s) => s.clearSelection);
   const setRuntimeForConversation = useAgentSessionStore((s) => s.setRuntimeForConversation);
   const setLastRuntimeForProject = useAgentSessionStore((s) => s.setLastRuntimeForProject);
+  const setTaskHistoryState = useUiStore((s) => s.setTaskHistoryState);
   const selectProject = useProjectStore((s) => s.selectProject);
   const selectConversation = useCallback(
     (projectId: string, conversationId: string) => {
+      if (selectedProjectId !== projectId || storedSelectedConversationId !== conversationId) {
+        setTaskHistoryState(null);
+      }
       selectProject(projectId);
       selectAgentConversation(projectId, conversationId);
     },
-    [selectAgentConversation, selectProject]
+    [
+      selectAgentConversation,
+      selectProject,
+      selectedProjectId,
+      setTaskHistoryState,
+      storedSelectedConversationId,
+    ]
   );
   const clearAgentConversationSelection = useCallback(() => {
+    setTaskHistoryState(null);
     setOptimisticSelectedConversationId(null);
     clearSelection();
-  }, [clearSelection, setOptimisticSelectedConversationId]);
+  }, [clearSelection, setOptimisticSelectedConversationId, setTaskHistoryState]);
 
   return {
     clearAgentConversationSelection,

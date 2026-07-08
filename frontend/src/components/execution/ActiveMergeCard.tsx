@@ -56,7 +56,7 @@ export function ActiveMergeCard({ task, onStop, onViewDetails }: ActiveMergeCard
         style={{ color: "var(--text-primary)" }}
         onClick={() => onViewDetails(task.taskId)}
       >
-        {task.title}
+        {task.displayTitle ?? task.title}
       </button>
       <span className="shrink-0 max-w-[100px] truncate">
         <BranchBadge branch={task.targetBranch} variant="muted" size="sm" />

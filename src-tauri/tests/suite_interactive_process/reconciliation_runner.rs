@@ -17,7 +17,7 @@ use std::sync::Arc;
 fn build_reconciler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ReconciliationRunner<tauri::Wry> {
+) -> ReconciliationRunner {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -296,18 +296,18 @@ fn pending_merge_deferred_waits_when_not_stale() {
 #[test]
 fn merge_incomplete_retry_delay_uses_exponential_backoff_and_cap() {
     // Base = 5s (merge speed overhaul). With jitter, delay is in [base, base + base/4].
-    let d0 = ReconciliationRunner::<tauri::Wry>::merge_incomplete_retry_delay(0).num_seconds();
+    let d0 = ReconciliationRunner::merge_incomplete_retry_delay(0).num_seconds();
     assert!((5..=5 + 5 / 4).contains(&d0), "retry 0: got {d0}");
 
-    let d1 = ReconciliationRunner::<tauri::Wry>::merge_incomplete_retry_delay(1).num_seconds();
+    let d1 = ReconciliationRunner::merge_incomplete_retry_delay(1).num_seconds();
     assert!((10..=10 + 10 / 4).contains(&d1), "retry 1: got {d1}");
 
-    let d2 = ReconciliationRunner::<tauri::Wry>::merge_incomplete_retry_delay(2).num_seconds();
+    let d2 = ReconciliationRunner::merge_incomplete_retry_delay(2).num_seconds();
     assert!((20..=20 + 20 / 4).contains(&d2), "retry 2: got {d2}");
 
     // Exponent caps at 6, so base_delay = 5 * 64 = 320 (below max 1800).
     // With base=5, exponent saturation at 6 gives 320s as the effective ceiling.
-    let d10 = ReconciliationRunner::<tauri::Wry>::merge_incomplete_retry_delay(10).num_seconds();
+    let d10 = ReconciliationRunner::merge_incomplete_retry_delay(10).num_seconds();
     assert!(
         (320..=320 + 320 / 4).contains(&d10),
         "retry 10: got {d10}"
@@ -354,7 +354,7 @@ fn merge_incomplete_retry_count_reads_auto_retry_events() {
     );
 
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::merge_incomplete_auto_retry_count(&task),
+        ReconciliationRunner::merge_incomplete_auto_retry_count(&task),
         2
     );
 }
@@ -667,7 +667,7 @@ fn merging_auto_retry_count_counts_attempt_failed_events() {
         .to_string(),
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::merging_auto_retry_count(&task),
+        ReconciliationRunner::merging_auto_retry_count(&task),
         2
     );
 }
@@ -679,7 +679,7 @@ fn merging_auto_retry_count_returns_zero_for_no_metadata() {
         "No Metadata Task".to_string(),
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::merging_auto_retry_count(&task),
+        ReconciliationRunner::merging_auto_retry_count(&task),
         0
     );
 }
@@ -821,20 +821,20 @@ async fn merging_timeout_escalates_to_merge_incomplete_not_merge_conflict() {
 #[test]
 fn merge_conflict_retry_delay_exponential_backoff() {
     // With jitter, delay is in [base, base + base/4]. Check bounds.
-    let d0 = ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(0).num_seconds();
+    let d0 = ReconciliationRunner::merge_conflict_retry_delay(0).num_seconds();
     assert!((60..=60 + 60 / 4).contains(&d0), "retry 0: got {d0}");
 
-    let d1 = ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(1).num_seconds();
+    let d1 = ReconciliationRunner::merge_conflict_retry_delay(1).num_seconds();
     assert!((120..=120 + 120 / 4).contains(&d1), "retry 1: got {d1}");
 
-    let d2 = ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(2).num_seconds();
+    let d2 = ReconciliationRunner::merge_conflict_retry_delay(2).num_seconds();
     assert!((240..=240 + 240 / 4).contains(&d2), "retry 2: got {d2}");
 
-    let d3 = ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(3).num_seconds();
+    let d3 = ReconciliationRunner::merge_conflict_retry_delay(3).num_seconds();
     assert!((480..=480 + 480 / 4).contains(&d3), "retry 3: got {d3}");
 
     // Verify cap at 600s (base), with jitter up to 600/4=150
-    let d10 = ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(10).num_seconds();
+    let d10 = ReconciliationRunner::merge_conflict_retry_delay(10).num_seconds();
     assert!((600..=600 + 600 / 4).contains(&d10), "retry 10: got {d10}");
 }
 
@@ -2896,7 +2896,7 @@ fn last_stored_source_sha_reads_most_recent_event_sha() {
         .to_string(),
     );
 
-    let sha = ReconciliationRunner::<tauri::Wry>::last_stored_source_sha(&task);
+    let sha = ReconciliationRunner::last_stored_source_sha(&task);
     assert_eq!(
         sha.as_deref(),
         Some("def456"),
@@ -2911,7 +2911,7 @@ fn last_stored_source_sha_returns_none_when_no_events() {
         "No SHA Task".to_string(),
     );
 
-    let sha = ReconciliationRunner::<tauri::Wry>::last_stored_source_sha(&task);
+    let sha = ReconciliationRunner::last_stored_source_sha(&task);
     assert!(sha.is_none(), "Should return None when no events exist");
 }
 
@@ -3069,7 +3069,7 @@ fn is_agent_reported_failure_returns_true_for_agent_reported() {
         .to_string(),
     );
     assert!(
-        ReconciliationRunner::<tauri::Wry>::is_agent_reported_failure(&task),
+        ReconciliationRunner::is_agent_reported_failure(&task),
         "Should return true for agent_reported failure source"
     );
 }
@@ -3087,7 +3087,7 @@ fn is_agent_reported_failure_returns_false_for_transient_git() {
         .to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_agent_reported_failure(&task),
+        !ReconciliationRunner::is_agent_reported_failure(&task),
         "TransientGit should not block auto-retry"
     );
 }
@@ -3099,7 +3099,7 @@ fn is_agent_reported_failure_returns_false_for_no_metadata() {
         "No Metadata".to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_agent_reported_failure(&task),
+        !ReconciliationRunner::is_agent_reported_failure(&task),
         "No metadata should not block auto-retry"
     );
 }
@@ -3112,7 +3112,7 @@ fn validation_revert_count_reads_counter_from_metadata() {
     );
     task.metadata = Some(serde_json::json!({"validation_revert_count": 3}).to_string());
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::validation_revert_count(&task),
+        ReconciliationRunner::validation_revert_count(&task),
         3
     );
 }
@@ -3124,7 +3124,7 @@ fn validation_revert_count_returns_zero_for_no_metadata() {
         "No Metadata".to_string(),
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::validation_revert_count(&task),
+        ReconciliationRunner::validation_revert_count(&task),
         0
     );
 }
@@ -3136,7 +3136,7 @@ fn merge_incomplete_retry_delay_includes_jitter() {
     // Call delay function many times with same retry_count.
     // With jitter, results should not all be identical.
     let delays: HashSet<i64> = (0..20)
-        .map(|_| ReconciliationRunner::<tauri::Wry>::merge_incomplete_retry_delay(3).num_seconds())
+        .map(|_| ReconciliationRunner::merge_incomplete_retry_delay(3).num_seconds())
         .collect();
     assert!(
         delays.len() > 1,
@@ -3155,7 +3155,7 @@ fn merge_incomplete_retry_delay_caps_at_configured_max() {
     let saturated = (base_secs * 64).min(max_secs);
     for _ in 0..20 {
         let delay =
-            ReconciliationRunner::<tauri::Wry>::merge_incomplete_retry_delay(100).num_seconds();
+            ReconciliationRunner::merge_incomplete_retry_delay(100).num_seconds();
         assert!(
             delay <= saturated + saturated / 4,
             "Delay {} exceeded saturated {} + jitter ceiling {}",
@@ -3175,7 +3175,7 @@ fn merge_incomplete_retry_delay_caps_at_configured_max() {
 #[test]
 fn merge_conflict_retry_delay_includes_jitter() {
     let delays: HashSet<i64> = (0..20)
-        .map(|_| ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(3).num_seconds())
+        .map(|_| ReconciliationRunner::merge_conflict_retry_delay(3).num_seconds())
         .collect();
     assert!(
         delays.len() > 1,
@@ -3190,7 +3190,7 @@ fn merge_conflict_retry_delay_caps_at_configured_max() {
     let max_secs = cfg.merge_conflict_retry_max_secs as i64;
     for _ in 0..20 {
         let delay =
-            ReconciliationRunner::<tauri::Wry>::merge_conflict_retry_delay(100).num_seconds();
+            ReconciliationRunner::merge_conflict_retry_delay(100).num_seconds();
         assert!(
             delay <= max_secs + max_secs / 4,
             "Delay {} exceeded max {} + jitter ceiling {}",
@@ -3411,7 +3411,7 @@ async fn rate_limited_skips_dont_count_toward_max_retries() {
         .unwrap()
         .expect("task should exist");
     let retry_count =
-        ReconciliationRunner::<tauri::Wry>::merge_incomplete_auto_retry_count(&updated);
+        ReconciliationRunner::merge_incomplete_auto_retry_count(&updated);
     assert_eq!(
         retry_count, 0,
         "Rate-limited skips should NOT count toward max retries (got {} retries)",
@@ -3430,7 +3430,7 @@ fn get_rate_limit_retry_after_reads_from_metadata() {
 
     // No metadata → None
     assert!(
-        ReconciliationRunner::<tauri::Wry>::get_rate_limit_retry_after(&task).is_none(),
+        ReconciliationRunner::get_rate_limit_retry_after(&task).is_none(),
         "Should return None when no metadata"
     );
 
@@ -3441,7 +3441,7 @@ fn get_rate_limit_retry_after_reads_from_metadata() {
     task.metadata = Some(recovery.update_task_metadata(None).unwrap());
 
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::get_rate_limit_retry_after(&task),
+        ReconciliationRunner::get_rate_limit_retry_after(&task),
         Some("2026-02-20T15:00:00+00:00".to_string()),
         "Should read rate_limit_retry_after from merge recovery metadata"
     );
@@ -3461,7 +3461,7 @@ fn get_rate_limit_retry_after_returns_none_when_not_set() {
     task.metadata = Some(recovery.update_task_metadata(None).unwrap());
 
     assert!(
-        ReconciliationRunner::<tauri::Wry>::get_rate_limit_retry_after(&task).is_none(),
+        ReconciliationRunner::get_rate_limit_retry_after(&task).is_none(),
         "Should return None when rate_limit_retry_after is not set"
     );
 }
@@ -3481,7 +3481,7 @@ fn has_merge_retry_in_progress_returns_true_for_fresh_timestamp() {
         .to_string(),
     );
     assert!(
-        ReconciliationRunner::<tauri::Wry>::has_merge_retry_in_progress(&task),
+        ReconciliationRunner::has_merge_retry_in_progress(&task),
         "Fresh timestamp should indicate retry in progress"
     );
 }
@@ -3501,7 +3501,7 @@ fn has_merge_retry_in_progress_returns_false_for_expired_timestamp() {
         .to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_retry_in_progress(&task),
+        !ReconciliationRunner::has_merge_retry_in_progress(&task),
         "Expired timestamp (>60s) should NOT indicate retry in progress"
     );
 }
@@ -3519,7 +3519,7 @@ fn has_merge_retry_in_progress_returns_false_for_legacy_boolean() {
         .to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_retry_in_progress(&task),
+        !ReconciliationRunner::has_merge_retry_in_progress(&task),
         "Legacy boolean true should be treated as stale (no timestamp = cannot verify freshness)"
     );
 }
@@ -3531,7 +3531,7 @@ fn has_merge_retry_in_progress_returns_false_for_no_metadata() {
         "No Metadata".to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_retry_in_progress(&task),
+        !ReconciliationRunner::has_merge_retry_in_progress(&task),
         "No metadata should return false"
     );
 }
@@ -3544,7 +3544,7 @@ fn has_merge_retry_in_progress_returns_false_for_missing_key() {
     );
     task.metadata = Some(serde_json::json!({"some_other_key": "value"}).to_string());
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_retry_in_progress(&task),
+        !ReconciliationRunner::has_merge_retry_in_progress(&task),
         "Metadata without merge_retry_in_progress key should return false"
     );
 }
@@ -4086,7 +4086,7 @@ fn has_merge_pipeline_active_returns_false_when_no_metadata() {
         "No Metadata Task".to_string(),
     );
     // merge_pipeline_active column is None by default
-    assert!(!ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(!ReconciliationRunner::has_merge_pipeline_active(&task));
 }
 
 #[test]
@@ -4097,7 +4097,7 @@ fn has_merge_pipeline_active_returns_false_when_flag_not_present() {
     );
     // metadata may contain other keys, but merge_pipeline_active column is None
     task.metadata = Some(serde_json::json!({"some_other_key": "value"}).to_string());
-    assert!(!ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(!ReconciliationRunner::has_merge_pipeline_active(&task));
 }
 
 #[test]
@@ -4107,7 +4107,7 @@ fn has_merge_pipeline_active_returns_true_for_fresh_timestamp() {
         "Fresh Pipeline Task".to_string(),
     );
     task.merge_pipeline_active = Some(chrono::Utc::now().to_rfc3339());
-    assert!(ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(ReconciliationRunner::has_merge_pipeline_active(&task));
 }
 
 #[test]
@@ -4119,7 +4119,7 @@ fn has_merge_pipeline_active_returns_false_for_expired_timestamp() {
     // Set timestamp far in the past (beyond any reasonable deadline)
     let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
     task.merge_pipeline_active = Some(old);
-    assert!(!ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(!ReconciliationRunner::has_merge_pipeline_active(&task));
 }
 
 #[tokio::test]
@@ -4241,7 +4241,7 @@ fn is_merge_pipeline_active_expired_returns_false_when_not_set() {
         "No Flag Task".to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_merge_pipeline_active_expired(&task),
+        !ReconciliationRunner::is_merge_pipeline_active_expired(&task),
         "Should return false when merge_pipeline_active is None"
     );
 }
@@ -4254,7 +4254,7 @@ fn is_merge_pipeline_active_expired_returns_false_when_active() {
     );
     task.merge_pipeline_active = Some(chrono::Utc::now().to_rfc3339());
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_merge_pipeline_active_expired(&task),
+        !ReconciliationRunner::is_merge_pipeline_active_expired(&task),
         "Should return false when pipeline flag is still within TTL"
     );
 }
@@ -4268,7 +4268,7 @@ fn is_merge_pipeline_active_expired_returns_true_when_expired() {
     let old = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
     task.merge_pipeline_active = Some(old);
     assert!(
-        ReconciliationRunner::<tauri::Wry>::is_merge_pipeline_active_expired(&task),
+        ReconciliationRunner::is_merge_pipeline_active_expired(&task),
         "Should return true when merge_pipeline_active TTL has elapsed"
     );
 }
@@ -4294,7 +4294,7 @@ async fn set_merge_pipeline_active_persists_to_task_column() {
     // Reload from repo and verify
     let reloaded = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert!(
-        ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&reloaded),
+        ReconciliationRunner::has_merge_pipeline_active(&reloaded),
         "Flag should survive persist + reload"
     );
     assert!(
@@ -4316,7 +4316,7 @@ async fn clear_merge_pipeline_active_removes_column_value() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Verify flag is set
-    assert!(ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(ReconciliationRunner::has_merge_pipeline_active(&task));
 
     // Simulate what clear_merge_pipeline_active does: set column to None
     task.merge_pipeline_active = None;
@@ -4326,7 +4326,7 @@ async fn clear_merge_pipeline_active_removes_column_value() {
     // Reload and verify flag is gone
     let reloaded = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&reloaded),
+        !ReconciliationRunner::has_merge_pipeline_active(&reloaded),
         "Flag should be cleared after removal"
     );
     assert!(
@@ -4373,7 +4373,7 @@ async fn set_merge_pipeline_active_does_not_clobber_metadata() {
     // Step 3: Reload and verify the pipeline flag survived the concurrent metadata write
     let reloaded = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert!(
-        ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&reloaded),
+        ReconciliationRunner::has_merge_pipeline_active(&reloaded),
         "merge_pipeline_active column must survive concurrent metadata writes"
     );
     // Metadata was written by concurrent writer
@@ -4402,7 +4402,7 @@ fn set_merge_pipeline_active_preserves_other_metadata_keys() {
     task.merge_pipeline_active = Some(chrono::Utc::now().to_rfc3339());
 
     // Verify pipeline flag is set
-    assert!(ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(ReconciliationRunner::has_merge_pipeline_active(&task));
 
     // Verify metadata is untouched
     let json: serde_json::Value =
@@ -4432,7 +4432,7 @@ fn clear_merge_pipeline_active_preserves_other_metadata_keys() {
     task.merge_pipeline_active = None;
 
     // Verify pipeline flag is cleared
-    assert!(!ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task));
+    assert!(!ReconciliationRunner::has_merge_pipeline_active(&task));
 
     // Verify metadata is untouched
     let json: serde_json::Value =
@@ -4453,7 +4453,7 @@ fn set_merge_pipeline_active_handles_none_metadata() {
     task.merge_pipeline_active = Some(chrono::Utc::now().to_rfc3339());
 
     assert!(
-        ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task),
+        ReconciliationRunner::has_merge_pipeline_active(&task),
         "Flag should work even when metadata is None"
     );
 }
@@ -4694,7 +4694,7 @@ fn has_merge_pipeline_active_returns_false_when_column_is_none() {
         "None Column Task".to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task),
+        !ReconciliationRunner::has_merge_pipeline_active(&task),
         "None column value should not be treated as active"
     );
 }
@@ -4707,7 +4707,7 @@ fn has_merge_pipeline_active_returns_false_for_malformed_timestamp() {
     );
     task.merge_pipeline_active = Some("not-a-timestamp".to_string());
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_merge_pipeline_active(&task),
+        !ReconciliationRunner::has_merge_pipeline_active(&task),
         "Malformed timestamp should not be treated as active"
     );
 }
@@ -4732,7 +4732,7 @@ fn build_reconciler_with_ipr(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
     ipr: Arc<InteractiveProcessRegistry>,
-) -> ReconciliationRunner<tauri::Wry> {
+) -> ReconciliationRunner {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -5522,7 +5522,7 @@ fn execution_failed_auto_retry_count_returns_zero_with_no_metadata() {
         "test".into(),
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count(&task),
+        ReconciliationRunner::execution_failed_auto_retry_count(&task),
         0
     );
 }
@@ -5564,7 +5564,7 @@ fn execution_failed_auto_retry_count_counts_triggered_events() {
     );
 
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count(&task),
+        ReconciliationRunner::execution_failed_auto_retry_count(&task),
         3
     );
 }
@@ -5575,8 +5575,8 @@ fn execution_failed_retry_delay_increases_with_retry_count() {
     // We check base values without jitter: base * 2^count.
     // With default base=30s: retry0 → 30s, retry1 → 60s, retry2 → 120s, ...
     // Since jitter adds 0–25%, the lower bound at retry N+1 is always > base at retry N.
-    let delay0 = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(0, None).num_seconds();
-    let delay3 = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(3, None).num_seconds();
+    let delay0 = ReconciliationRunner::execution_failed_retry_delay(0, None).num_seconds();
+    let delay3 = ReconciliationRunner::execution_failed_retry_delay(3, None).num_seconds();
     assert!(
         delay3 > delay0,
         "delay at retry 3 ({delay3}s) should exceed delay at retry 0 ({delay0}s)"
@@ -5587,7 +5587,7 @@ fn execution_failed_retry_delay_increases_with_retry_count() {
 fn execution_failed_retry_delay_is_capped_at_max() {
     // Delay at a very high retry count should be <= max_secs + 25% jitter.
     let max_secs = reconciliation_config().execution_failed_retry_max_secs as i64;
-    let delay = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(20, None).num_seconds();
+    let delay = ReconciliationRunner::execution_failed_retry_delay(20, None).num_seconds();
     assert!(
         delay <= max_secs + max_secs / 4 + 1,
         "delay at retry 20 ({delay}s) should not far exceed max ({max_secs}s)"
@@ -5602,7 +5602,7 @@ fn has_execution_stop_retrying_false_without_metadata() {
         "test".into(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_execution_stop_retrying(&task),
+        !ReconciliationRunner::has_execution_stop_retrying(&task),
         "should return false when no metadata"
     );
 }
@@ -5622,7 +5622,7 @@ fn has_execution_stop_retrying_true_when_set() {
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
     assert!(
-        ReconciliationRunner::<tauri::Wry>::has_execution_stop_retrying(&task),
+        ReconciliationRunner::has_execution_stop_retrying(&task),
         "should return true when stop_retrying is set"
     );
 }
@@ -5635,7 +5635,7 @@ fn execution_next_retry_at_returns_none_without_events() {
         "test".into(),
     );
     assert!(
-        ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(&task, None).is_none(),
+        ReconciliationRunner::execution_next_retry_at(&task, None).is_none(),
         "should return None when no AutoRetryTriggered events"
     );
 }
@@ -5662,7 +5662,7 @@ fn execution_next_retry_at_returns_future_timestamp() {
     );
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
-    let next_at = ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(&task, None);
+    let next_at = ReconciliationRunner::execution_next_retry_at(&task, None);
     assert!(next_at.is_some(), "should return Some when AutoRetryTriggered event exists");
     assert!(
         next_at.unwrap() > chrono::Utc::now(),
@@ -6716,7 +6716,7 @@ fn has_recent_startup_recovery_true_for_recent_startup_event() {
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
     assert!(
-        ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task),
+        ReconciliationRunner::has_recent_startup_recovery(&task),
         "should return true for recent Startup-sourced event"
     );
 }
@@ -6747,7 +6747,7 @@ fn has_recent_startup_recovery_false_for_old_startup_event() {
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task),
+        !ReconciliationRunner::has_recent_startup_recovery(&task),
         "should return false for Startup event older than 60s"
     );
 }
@@ -6776,7 +6776,7 @@ fn has_recent_startup_recovery_false_for_auto_source() {
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task),
+        !ReconciliationRunner::has_recent_startup_recovery(&task),
         "should return false for Auto-sourced events — not a startup sentinel"
     );
 }
@@ -6789,7 +6789,7 @@ fn has_recent_startup_recovery_false_without_metadata() {
         "no metadata".into(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task),
+        !ReconciliationRunner::has_recent_startup_recovery(&task),
         "should return false when no metadata"
     );
 }
@@ -6839,7 +6839,7 @@ fn should_circuit_break_threshold_met() {
         .to_string(),
     );
 
-    let result = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5);
+    let result = ReconciliationRunner::should_circuit_break(&task, 3, 5);
     assert!(
         result.is_some(),
         "Circuit breaker should fire when 3/3 events share same failure_source"
@@ -6895,7 +6895,7 @@ fn should_circuit_break_threshold_not_met_mixed_sources() {
         .to_string(),
     );
 
-    let result = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5);
+    let result = ReconciliationRunner::should_circuit_break(&task, 3, 5);
     assert!(
         result.is_none(),
         "Circuit breaker should NOT fire when only 2/3 events share same source (threshold=3)"
@@ -6953,7 +6953,7 @@ fn should_circuit_break_ignores_events_without_failure_source() {
         .to_string(),
     );
 
-    let result = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5);
+    let result = ReconciliationRunner::should_circuit_break(&task, 3, 5);
     assert!(
         result.is_none(),
         "Circuit breaker should NOT fire when events lack failure_source (they are excluded from count)"
@@ -6968,7 +6968,7 @@ fn is_circuit_breaker_active_false_without_metadata() {
         "No Metadata".to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_circuit_breaker_active(&task),
+        !ReconciliationRunner::is_circuit_breaker_active(&task),
         "circuit_breaker_active should be false when no metadata"
     );
 }
@@ -6993,7 +6993,7 @@ fn is_circuit_breaker_active_true_when_set() {
         .to_string(),
     );
     assert!(
-        ReconciliationRunner::<tauri::Wry>::is_circuit_breaker_active(&task),
+        ReconciliationRunner::is_circuit_breaker_active(&task),
         "circuit_breaker_active should be true when set in metadata"
     );
 }
@@ -7064,7 +7064,7 @@ fn should_circuit_break_returns_none_without_metadata() {
         "No Metadata".to_string(),
     );
     assert!(
-        ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5).is_none(),
+        ReconciliationRunner::should_circuit_break(&task, 3, 5).is_none(),
         "should_circuit_break should return None when no metadata"
     );
 }
@@ -7116,7 +7116,7 @@ fn should_circuit_break_ignores_target_branch_busy() {
         .to_string(),
     );
 
-    let result = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5);
+    let result = ReconciliationRunner::should_circuit_break(&task, 3, 5);
     assert!(
         result.is_none(),
         "Circuit breaker must NOT fire for TargetBranchBusy events (AutoRetryNoCB strategy excludes them)"
@@ -7168,7 +7168,7 @@ fn should_circuit_break_mixed_busy_and_transient() {
         .to_string(),
     );
 
-    let result = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5);
+    let result = ReconciliationRunner::should_circuit_break(&task, 3, 5);
     assert!(
         result.is_none(),
         "Circuit breaker must NOT fire when only 1 TransientGit event is present (2 TBB excluded, 1 < threshold=3)"
@@ -7229,7 +7229,7 @@ fn merge_incomplete_auto_retry_count_excludes_target_branch_busy() {
     );
 
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::merge_incomplete_auto_retry_count(&task),
+        ReconciliationRunner::merge_incomplete_auto_retry_count(&task),
         1,
         "merge_incomplete_auto_retry_count must exclude TargetBranchBusy events (3 TBB + 1 TransientGit = count 1)"
     );
@@ -7334,14 +7334,14 @@ async fn deferred_task_reconcile_classifies_as_target_branch_busy() {
 
     // The TargetBranchBusy event must not count toward the retry budget
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::merge_incomplete_auto_retry_count(&updated),
+        ReconciliationRunner::merge_incomplete_auto_retry_count(&updated),
         0,
         "merge_incomplete_auto_retry_count must return 0 for TargetBranchBusy-only events"
     );
 
     // The TargetBranchBusy event must not trigger the circuit breaker
     assert!(
-        ReconciliationRunner::<tauri::Wry>::should_circuit_break(&updated, 3, 5).is_none(),
+        ReconciliationRunner::should_circuit_break(&updated, 3, 5).is_none(),
         "should_circuit_break must return None after a TargetBranchBusy auto-retry (AutoRetryNoCB excluded)"
     );
 }
@@ -7408,7 +7408,7 @@ fn circuit_breaker_fires_on_transient_git_despite_target_branch_busy_events() {
         .to_string(),
     );
 
-    let result_a = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task_a, 3, 5);
+    let result_a = ReconciliationRunner::should_circuit_break(&task_a, 3, 5);
     assert!(
         result_a.is_some(),
         "Circuit breaker MUST fire when 3 TransientGit events reach threshold=3 (2 TBB present but excluded)"
@@ -7469,7 +7469,7 @@ fn circuit_breaker_fires_on_transient_git_despite_target_branch_busy_events() {
         .to_string(),
     );
 
-    let result_b = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task_b, 3, 5);
+    let result_b = ReconciliationRunner::should_circuit_break(&task_b, 3, 5);
     assert!(
         result_b.is_none(),
         "Circuit breaker must NOT fire when only 2 TransientGit events present (below threshold=3, 2 TBB excluded)"
@@ -7486,7 +7486,7 @@ fn is_mode_switch_returns_true_when_set() {
     );
     task.metadata = Some(r#"{"mode_switch":true}"#.to_string());
     assert!(
-        ReconciliationRunner::<tauri::Wry>::is_mode_switch(&task),
+        ReconciliationRunner::is_mode_switch(&task),
         "is_mode_switch should return true when mode_switch=true in metadata"
     );
 }
@@ -7498,7 +7498,7 @@ fn is_mode_switch_returns_false_without_metadata() {
         "No Metadata Task".to_string(),
     );
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_mode_switch(&task),
+        !ReconciliationRunner::is_mode_switch(&task),
         "is_mode_switch should return false when no metadata"
     );
 }
@@ -7511,7 +7511,7 @@ fn is_mode_switch_returns_false_when_explicitly_false() {
     );
     task.metadata = Some(r#"{"mode_switch":false}"#.to_string());
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_mode_switch(&task),
+        !ReconciliationRunner::is_mode_switch(&task),
         "is_mode_switch should return false when mode_switch=false"
     );
 }
@@ -7524,7 +7524,7 @@ fn is_mode_switch_returns_false_with_other_metadata() {
     );
     task.metadata = Some(r#"{"merge_failure_source":"agent_reported"}"#.to_string());
     assert!(
-        !ReconciliationRunner::<tauri::Wry>::is_mode_switch(&task),
+        !ReconciliationRunner::is_mode_switch(&task),
         "is_mode_switch should return false when mode_switch key is absent"
     );
 }
@@ -7574,7 +7574,7 @@ fn execution_failed_auto_retry_count_for_source_counts_git_isolation_only() {
     );
 
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count_for_source(
+        ReconciliationRunner::execution_failed_auto_retry_count_for_source(
             &task,
             ExecutionFailureSource::GitIsolation
         ),
@@ -7582,7 +7582,7 @@ fn execution_failed_auto_retry_count_for_source_counts_git_isolation_only() {
         "should count only GitIsolation retries"
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count_for_source(
+        ReconciliationRunner::execution_failed_auto_retry_count_for_source(
             &task,
             ExecutionFailureSource::TransientTimeout
         ),
@@ -7600,7 +7600,7 @@ fn execution_failed_auto_retry_count_for_source_returns_zero_without_metadata() 
         "test".into(),
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count_for_source(
+        ReconciliationRunner::execution_failed_auto_retry_count_for_source(
             &task,
             ExecutionFailureSource::GitIsolation
         ),
@@ -7631,11 +7631,11 @@ fn execution_next_retry_at_git_isolation_uses_shorter_delay() {
     );
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
-    let git_next = ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(
+    let git_next = ReconciliationRunner::execution_next_retry_at(
         &task,
         Some(ExecutionFailureSource::GitIsolation),
     );
-    let timeout_next = ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(
+    let timeout_next = ReconciliationRunner::execution_next_retry_at(
         &task,
         Some(ExecutionFailureSource::TransientTimeout),
     );
@@ -7654,13 +7654,13 @@ fn execution_next_retry_at_git_isolation_uses_shorter_delay() {
 fn execution_failed_retry_delay_git_isolation_shorter_than_default() {
     use ralphx_lib::domain::entities::ExecutionFailureSource;
 
-    let git_delay = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(
+    let git_delay = ReconciliationRunner::execution_failed_retry_delay(
         0,
         Some(ExecutionFailureSource::GitIsolation),
     )
     .num_seconds();
     let default_delay =
-        ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(0, None).num_seconds();
+        ReconciliationRunner::execution_failed_retry_delay(0, None).num_seconds();
 
     assert!(
         git_delay < default_delay,
@@ -7948,15 +7948,15 @@ async fn reconcile_failed_cross_contamination_independent_retry_budgets() {
     task.internal_status = InternalStatus::Failed;
     task.metadata = Some(recovery.update_task_metadata(None).expect("serialize"));
 
-    let git_count = ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count_for_source(
+    let git_count = ReconciliationRunner::execution_failed_auto_retry_count_for_source(
         &task,
         ExecutionFailureSource::GitIsolation,
     );
-    let timeout_count = ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count_for_source(
+    let timeout_count = ReconciliationRunner::execution_failed_auto_retry_count_for_source(
         &task,
         ExecutionFailureSource::TransientTimeout,
     );
-    let total_count = ReconciliationRunner::<tauri::Wry>::execution_failed_auto_retry_count(&task);
+    let total_count = ReconciliationRunner::execution_failed_auto_retry_count(&task);
 
     assert_eq!(
         git_count, git_max,

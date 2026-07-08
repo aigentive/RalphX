@@ -686,7 +686,7 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
     execution_state: Arc<ExecutionState>,
     deps: &RuntimeFactoryDeps,
-) -> TaskTransitionService<R> {
+) -> TaskTransitionService {
     let total_started_at = Instant::now();
     if let Some(handle) = app_handle {
         let lookup_started_at = Instant::now();
@@ -699,7 +699,7 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
         if let Some(app_state) = app_state {
             let build_started_at = Instant::now();
             let service =
-                app_state.build_transition_service_for_runtime(execution_state, app_handle.clone());
+                app_state.build_transition_service_for_runtime(execution_state, None);
             tracing::info!(
                 elapsed_ms = build_started_at.elapsed().as_millis(),
                 total_elapsed_ms = total_started_at.elapsed().as_millis(),
@@ -711,7 +711,7 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
     }
 
     let build_started_at = Instant::now();
-    let service = build_transition_service_from_deps(app_handle.clone(), execution_state, deps);
+    let service = build_transition_service_from_deps(None, execution_state, deps);
     tracing::info!(
         elapsed_ms = build_started_at.elapsed().as_millis(),
         total_elapsed_ms = total_started_at.elapsed().as_millis(),
@@ -721,11 +721,11 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
     service
 }
 
-pub(crate) fn build_transition_service_from_deps<R: Runtime>(
-    app_handle: Option<AppHandle<R>>,
+pub(crate) fn build_transition_service_from_deps(
+    app_handle: Option<AppHandle>,
     execution_state: Arc<ExecutionState>,
     deps: &RuntimeFactoryDeps,
-) -> TaskTransitionService<R> {
+) -> TaskTransitionService {
     let new_started_at = Instant::now();
     let mut service = TaskTransitionService::new(
         Arc::clone(&deps.task_repo),
@@ -785,21 +785,21 @@ pub(crate) fn build_task_scheduler_with_fallback<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
     execution_state: Arc<ExecutionState>,
     deps: &RuntimeFactoryDeps,
-) -> TaskSchedulerService<R> {
+) -> TaskSchedulerService {
     if let Some(handle) = app_handle {
         if let Some(app_state) = handle.try_state::<AppState>() {
-            return app_state.build_task_scheduler_for_runtime(execution_state, app_handle.clone());
+            return app_state.build_task_scheduler_for_runtime(execution_state, None);
         }
     }
 
-    build_task_scheduler_from_deps(app_handle.clone(), execution_state, deps)
+    build_task_scheduler_from_deps(None, execution_state, deps)
 }
 
-pub(crate) fn build_task_scheduler_from_deps<R: Runtime>(
-    app_handle: Option<AppHandle<R>>,
+pub(crate) fn build_task_scheduler_from_deps(
+    app_handle: Option<AppHandle>,
     execution_state: Arc<ExecutionState>,
     deps: &RuntimeFactoryDeps,
-) -> TaskSchedulerService<R> {
+) -> TaskSchedulerService {
     let mut scheduler = TaskSchedulerService::new(
         execution_state,
         Arc::clone(&deps.project_repo),

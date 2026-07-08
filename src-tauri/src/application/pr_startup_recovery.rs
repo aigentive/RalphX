@@ -1060,7 +1060,7 @@ pub async fn recover_pr_pollers(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     project_repo: Arc<dyn ProjectRepository>,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let task_ids = match plan_branch_repo.find_pr_polling_task_ids().await {
@@ -1938,7 +1938,7 @@ async fn recover_one_pr_poller(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     project_repo: Arc<dyn ProjectRepository>,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let mut task = match task_repo.get_by_id(&task_id).await {
@@ -3615,7 +3615,7 @@ mod tests {
         ));
         let transition_service = Arc::new(
             app_state
-                .build_transition_service_for_runtime::<tauri::Wry>(
+                .build_transition_service_for_runtime(
                     Arc::new(ExecutionState::new()),
                     None,
                 )
@@ -3676,7 +3676,7 @@ mod tests {
         ));
         let transition_service = Arc::new(
             app_state
-                .build_transition_service_for_runtime::<tauri::Wry>(
+                .build_transition_service_for_runtime(
                     Arc::new(ExecutionState::new()),
                     None,
                 )

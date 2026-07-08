@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Runtime};
+use tauri::Emitter;
 use tracing::{error, info, warn};
 
 use crate::application::chat_service::{reconcile_merge_auto_complete, MergeAutoCompleteContext};
@@ -28,7 +28,6 @@ use crate::domain::entities::{
 };
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
-use crate::domain::state_machine::transition_handler::set_trigger_origin;
 
 use super::super::policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, UserRecoveryAction,
@@ -39,7 +38,7 @@ use super::super::ReconciliationRunner;
 /// After this many clean-slate re-executions, the task permanently fails.
 const MAX_AUTO_RECOVERIES: u32 = 2;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     async fn project_has_execution_capacity(&self, project_id: &ProjectId) -> bool {
         let Some(settings_repo) = &self.execution_settings_repo else {
             return true;
@@ -1963,7 +1962,29 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         let registry_running = self.running_agent_registry.is_running(&key).await;
         if registry_running {
-            let _ = self.running_agent_registry.stop(&key).await;
+            match self.running_agent_registry.cleanup_stale_entry(&key).await {
+                Ok(Some(_info)) => {
+                    info!(
+                        task_id = task_id.as_str(),
+                        "Cleared stale registry entry before stop recovery"
+                    );
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        task_id = task_id.as_str(),
+                        "Skipping recovery stop — registry process is still alive"
+                    );
+                    return false;
+                }
+                Err(error) => {
+                    warn!(
+                        task_id = task_id.as_str(),
+                        error = %error,
+                        "Failed to inspect registry entry for stop recovery"
+                    );
+                    return false;
+                }
+            }
         }
 
         let run = self.load_execution_run(&task, task.internal_status).await;
@@ -2289,27 +2310,91 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 }
 
                 if self.running_agent_registry.is_running(&registry_key).await {
-                    tracing::info!(
-                        task_id = task.id.as_str(),
-                        context_type = %chat_context,
-                        "Clearing stale registry entry before recovery re-spawn"
-                    );
-                    let _ = self.running_agent_registry.stop(&registry_key).await;
+                    match self
+                        .running_agent_registry
+                        .cleanup_stale_entry(&registry_key)
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            tracing::info!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                "Cleared stale registry entry before recovery re-spawn"
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                "Skipping recovery re-spawn — registry process is still alive"
+                            );
+                            return false;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                error = %e,
+                                "Skipping recovery re-spawn — failed to verify registry staleness"
+                            );
+                            return false;
+                        }
+                    }
                 }
 
-                // Set trigger_origin="recovery" before resuming agent
-                let mut task_mut = task.clone();
-                set_trigger_origin(&mut task_mut, "recovery");
-                if let Err(e) = self.task_repo.update(&task_mut).await {
+                let mut recovery_task = match self.task_repo.get_by_id(&task.id).await {
+                    Ok(Some(fresh_task)) => fresh_task,
+                    Ok(None) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            "Skipping recovery re-spawn — task disappeared before entry actions"
+                        );
+                        return false;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            error = %error,
+                            "Skipping recovery re-spawn — failed to reload task before entry actions"
+                        );
+                        return false;
+                    }
+                };
+                if recovery_task.internal_status != status {
+                    tracing::info!(
+                        task_id = task.id.as_str(),
+                        expected_status = %status,
+                        actual_status = %recovery_task.internal_status,
+                        "Skipping recovery re-spawn — task status changed before entry actions"
+                    );
+                    return false;
+                }
+
+                // Set trigger_origin="recovery" before resuming agent. Merge against the
+                // freshly reloaded task so this write cannot erase retry metadata recorded
+                // immediately before re-entry.
+                let updated_metadata = MetadataUpdate::new()
+                    .with_string("trigger_origin", "recovery")
+                    .merge_into(recovery_task.metadata.as_deref());
+                if let Err(e) = self
+                    .task_repo
+                    .update_metadata(&task.id, Some(updated_metadata))
+                    .await
+                {
                     tracing::error!(
                         task_id = task.id.as_str(),
                         error = %e,
                         "Failed to set trigger_origin=recovery in metadata"
                     );
                 }
+                recovery_task.metadata = Some(
+                    MetadataUpdate::new()
+                        .with_string("trigger_origin", "recovery")
+                        .merge_into(recovery_task.metadata.as_deref()),
+                );
 
                 self.transition_service
-                    .execute_entry_actions(&task.id, task, status)
+                    .execute_entry_actions(&task.id, &recovery_task, status)
                     .await;
                 true
             }

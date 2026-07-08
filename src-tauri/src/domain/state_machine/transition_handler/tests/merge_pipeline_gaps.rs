@@ -826,6 +826,13 @@ async fn gap6_source_update_with_existing_worktree_no_crash() {
             // Also acceptable — could conflict
             tracing::info!("Gap6: source update returned Conflicts (non-conflicting expected, but acceptable)");
         }
+        SourceUpdateResult::BranchMissing { branch } => {
+            // Also acceptable — missing refs are now reported explicitly.
+            tracing::info!(
+                "Gap6: source update returned BranchMissing (graceful failure): {}",
+                branch
+            );
+        }
     }
 
     // Clean up the leftover worktree

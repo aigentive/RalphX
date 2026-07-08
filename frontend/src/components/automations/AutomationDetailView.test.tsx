@@ -16,6 +16,8 @@ const {
   triggerRunNowMock,
   skipJudgeMock,
   deleteAutomationMock,
+  useArtifactMock,
+  listConversationTasksMock,
   toastSuccessMock,
   toastErrorMock,
   toastInfoMock,
@@ -28,9 +30,21 @@ const {
   triggerRunNowMock: vi.fn(),
   skipJudgeMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
+  useArtifactMock: vi.fn(),
+  listConversationTasksMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
+}));
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listConversationTasks: (...args: unknown[]) => listConversationTasksMock(...args),
+  },
+}));
+
+vi.mock("@/hooks/useArtifacts", () => ({
+  useArtifact: (...args: unknown[]) => useArtifactMock(...args),
 }));
 
 vi.mock("sonner", () => ({
@@ -65,6 +79,7 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     pausedReasonDetail: null,
     goalPrompt: Array.from({ length: 12 }, (_, index) => `Goal line ${index + 1}`).join("\n"),
     setupConversationId: "setup-conversation-1",
+    specArtifactId: null,
     providerHarness: "codex",
     modelId: "gpt-5.4",
     logicalEffort: "high",
@@ -207,6 +222,12 @@ describe("AutomationDetailView", () => {
     triggerRunNowMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     skipJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     deleteAutomationMock.mockReset().mockResolvedValue(undefined);
+    useArtifactMock.mockReset().mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    });
+    listConversationTasksMock.mockReset().mockResolvedValue([]);
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
@@ -266,6 +287,219 @@ describe("AutomationDetailView", () => {
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
     expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();
+  });
+
+  it("expands the latest and open runs by default and collapses older terminal runs", async () => {
+    const olderRun = run({
+      id: "run-1",
+      runIndex: 1,
+      status: "merged",
+      judgeState: "done",
+    });
+    const openRun = run({
+      id: "run-2",
+      runIndex: 2,
+      status: "published",
+      judgeState: "none",
+      conversationId: "conversation-2",
+    });
+    const latestTerminal = run({
+      id: "run-3",
+      runIndex: 3,
+      status: "merged",
+      judgeState: "done",
+    });
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [olderRun, openRun, latestTerminal],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    // Latest run (index 3) is expanded even though it is terminal.
+    expect(screen.getByTestId("automation-run-run-3-body")).toBeInTheDocument();
+    // Open run (published/none) is expanded regardless of being the latest.
+    expect(screen.getByTestId("automation-run-run-2-body")).toBeInTheDocument();
+    // Older terminal run collapses by default.
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+  });
+
+  it("toggles a collapsed run body open and closed", async () => {
+    const olderRun = run({
+      id: "run-1",
+      runIndex: 1,
+      status: "merged",
+      judgeState: "done",
+    });
+    const latestRun = run({ id: "run-2", runIndex: 2, status: "merged", judgeState: "done" });
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [olderRun, latestRun],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Expand run 1" }));
+    expect(screen.getByTestId("automation-run-run-1-body")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Collapse run 1" }));
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+  });
+
+  it("renders the live task ledger inside an expanded open run", async () => {
+    listConversationTasksMock.mockResolvedValue([
+      {
+        taskId: "task-a",
+        taskNumber: 1,
+        title: "Refactor scheduler",
+        state: "active",
+        ownerAgent: "coder-1",
+        blockedBy: [],
+        blocks: [],
+        availability: "available",
+        updatedAt: "2026-07-05T00:00:00Z",
+      },
+    ]);
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [
+        run({
+          id: "run-live",
+          runIndex: 1,
+          status: "running",
+          judgeState: "none",
+          conversationId: "conversation-live",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const ledger = await screen.findByTestId("automation-run-task-ledger");
+    expect(within(ledger).getByText("Refactor scheduler")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listConversationTasksMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-live",
+          projectId: "project-1",
+          includeDone: true,
+        }),
+      ),
+    );
+  });
+
+  it("renders the linked spec and a Phases heading in the goal card", async () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Migration loop spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model.",
+        created_at: "2026-07-05T00:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderDetail({
+      automation: automation({ specArtifactId: "artifact-spec-1" }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const specCard = screen.getByTestId("automation-spec-card");
+    expect(specCard).toHaveTextContent("Migration loop spec");
+    expect(specCard).toHaveTextContent("Build the shared context model.");
+    expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
+
+    const goalCard = screen.getByTestId("automation-goal-card");
+    expect(goalCard).toHaveTextContent("Phases");
+    expect(goalCard).toHaveTextContent("Land P6");
+  });
+
+  it("shows phase progress and a collapsed expandable spec", async () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Migration loop spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model.",
+        created_at: "2026-07-05T00:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderDetail({
+      automation: automation({
+        specArtifactId: "artifact-spec-1",
+        goalItemsJson: JSON.stringify([
+          { id: "a", title: "Phase A", status: "done" },
+          { id: "b", title: "Phase B", status: "in_progress" },
+          { id: "c", title: "Phase C", status: "pending" },
+        ]),
+      }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const goalCard = screen.getByTestId("automation-goal-card");
+    expect(goalCard).toHaveTextContent("1/3 done");
+    expect(within(goalCard).getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "1",
+    );
+    expect(within(goalCard).getByText("In progress")).toBeInTheDocument();
+
+    // Spec stays collapsed by default with an expand affordance; heavy markdown
+    // is not mounted until the user expands it.
+    const specCard = screen.getByTestId("automation-spec-card");
+    expect(within(specCard).getByTestId("automation-spec-toggle")).toHaveTextContent(
+      "Show full spec",
+    );
+    expect(
+      within(specCard).queryByTestId("automation-spec-markdown"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the spec fallback when no spec is linked", async () => {
+    renderDetail({
+      automation: automation({ specArtifactId: null }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.getByTestId("automation-spec-card")).toHaveTextContent(
+      "No spec linked yet.",
+    );
   });
 
   it("calls pause and skip-judge controls through the automation API", async () => {
@@ -580,7 +814,7 @@ describe("AutomationDetailView", () => {
     expect(screen.getByText("Stopped")).toBeInTheDocument();
     expect(screen.getByText("current_branch")).toBeInTheDocument();
     expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("item-fallback")).toBeInTheDocument();
+    expect(screen.getByText("Phase 1")).toBeInTheDocument();
     expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
     expect(screen.getByText("invalid-date")).toBeInTheDocument();
     expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
@@ -598,5 +832,117 @@ describe("AutomationDetailView", () => {
     await waitFor(() => expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted");
     expect(onBack).toHaveBeenCalled();
+  });
+
+  it("allows deleting draft automations and lists the archive inventory in the confirm dialog", async () => {
+    renderDetail({
+      automation: automation({
+        status: "draft",
+        setupConversationId: "setup-conversation-1",
+        specArtifactId: "spec-1",
+      }),
+      runs: [
+        run({
+          id: "run-open",
+          status: "published",
+          judgeState: "none",
+          conversationId: "conversation-open",
+          prNumber: 777,
+          prMergedAt: null,
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    const deleteItem = screen.getByText("Delete");
+    expect(deleteItem.closest("[role='menuitem']")).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await userEvent.click(deleteItem);
+
+    expect(await screen.findByText("Delete automation?")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Archives the setup conversation and 1 run conversation\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Closes 1 open PR\./)).toBeInTheDocument();
+    expect(screen.getByText(/Archives the linked spec\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Permanently removes the automation and its run history\./),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+  });
+
+  it("shows a live run chip and blocks Run now while a run is in progress", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-live", runIndex: 1, status: "running", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const chip = screen.getByTestId("automation-run-status-chip");
+    expect(chip).toHaveTextContent("Run 1 in progress");
+
+    const runNow = screen.getByLabelText("Run now");
+    expect(runNow).toBeDisabled();
+    expect(runNow).toHaveAttribute(
+      "title",
+      expect.stringContaining("Run 1 in progress"),
+    );
+
+    // Stop stays enabled for an active automation with a live run.
+    expect(screen.getByLabelText("Stop automation")).not.toBeDisabled();
+    expect(screen.getByLabelText("Pause automation")).not.toBeDisabled();
+  });
+
+  it("shows a judging chip and blocks Run now while the judge is running", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-judge", runIndex: 2, status: "merged", judgeState: "in_progress" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.getByTestId("automation-run-status-chip")).toHaveTextContent("Judging");
+    expect(screen.getByLabelText("Run now")).toBeDisabled();
+  });
+
+  it("enables Run now and hides the live chip for an active automation with no open run", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-done", runIndex: 1, status: "merged", judgeState: "done" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.queryByTestId("automation-run-status-chip")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Run now")).not.toBeDisabled();
+  });
+
+  it("disables delete for active automations", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    expect(screen.getByText("Delete").closest("[role='menuitem']")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 });

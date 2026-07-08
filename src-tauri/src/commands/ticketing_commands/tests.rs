@@ -3850,7 +3850,7 @@ async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() 
 }
 
 #[tokio::test]
-async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch() {
+async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_uses_ticket_branch() {
     crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
     let (_temp, repo) = init_ticket_start_repo();
     let mut state = AppState::new_test();
@@ -3908,18 +3908,21 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
     let workspace = result.workspace.expect("edit mode creates a workspace");
     assert_eq!(
         workspace.base_ref_kind,
-        IdeationAnalysisBaseRefKind::LocalBranch
+        IdeationAnalysisBaseRefKind::ProjectDefault
     );
-    assert_eq!(workspace.base_ref, "ralphx/ticket/jira-rx-77");
+    assert_eq!(workspace.base_ref, "main");
     assert_eq!(
         workspace.base_display_name.as_deref(),
-        Some("Ticket RX-77 (ralphx/ticket/jira-rx-77)")
+        Some("Project default (main)")
     );
-    assert_eq!(github.state().push_branch_calls, 1);
-    assert_eq!(
-        github.state().last_push_branch_name.as_deref(),
-        Some("ralphx/ticket/jira-rx-77")
+    assert!(
+        workspace
+            .branch_name
+            .starts_with("ralphx/ticket-start-service-project/agent-jira-RX-77-"),
+        "unexpected workspace branch: {}",
+        workspace.branch_name
     );
+    assert_eq!(github.state().push_branch_calls, 0);
     assert!(result.send_result.was_queued);
 }
 
@@ -4295,108 +4298,4 @@ fn pull_request_items_map_pr_and_branch_only_workspaces() {
     assert_eq!(branch_only.base_ref.as_deref(), Some("main"));
     assert_eq!(branch_only.pr_number, None);
     assert_eq!(branch_only.pr_url, None);
-}
-
-fn base_test_start_input() -> StartAgentConversationInput {
-    StartAgentConversationInput {
-        project_id: "project-1".to_string(),
-        content: "Start work".to_string(),
-        conversation_id: None,
-        parent_conversation_id: None,
-        title: None,
-        provider_harness: None,
-        model_override: None,
-        logical_effort: None,
-        codex_fast_mode: None,
-        mode: Some("edit".to_string()),
-        base_ref_kind: Some("project_default".to_string()),
-        base_branch_mode: None,
-        base_ref: Some("client-supplied-branch".to_string()),
-        base_display_name: Some("Client base".to_string()),
-        base_source_pull_request: None,
-        composer_project_references: Vec::new(),
-        composer_integration_references: Vec::new(),
-        composer_artifact_references: Vec::new(),
-        team_intent: None,
-    }
-}
-
-#[test]
-fn ticket_ref_issue_key_prefers_key_then_falls_back_to_id() {
-    let with_key = TicketRefInput {
-        provider: "linear".to_string(),
-        id: "abc-123".to_string(),
-        key: Some("WISE-24".to_string()),
-    };
-    assert_eq!(ticket_ref_issue_key(&with_key), "WISE-24");
-
-    let without_key = TicketRefInput {
-        provider: "linear".to_string(),
-        id: "abc-123".to_string(),
-        key: None,
-    };
-    assert_eq!(ticket_ref_issue_key(&without_key), "abc-123");
-
-    let blank_key = TicketRefInput {
-        provider: "linear".to_string(),
-        id: "abc-123".to_string(),
-        key: Some("   ".to_string()),
-    };
-    assert_eq!(ticket_ref_issue_key(&blank_key), "abc-123");
-}
-
-#[test]
-fn workspace_modes_inherit_canonical_branch_chat_does_not() {
-    assert!(ticket_start_inherits_canonical_branch(Some("edit")));
-    assert!(ticket_start_inherits_canonical_branch(Some("plan")));
-    // Default (unset) is edit, which is workspace-creating.
-    assert!(ticket_start_inherits_canonical_branch(None));
-    // Chat-only ticket starts create no workspace, so they skip base injection.
-    assert!(!ticket_start_inherits_canonical_branch(Some("chat")));
-}
-
-#[test]
-fn ticket_start_applies_canonical_branch_only_for_default_base() {
-    let start = base_test_start_input();
-    assert!(ticket_start_should_apply_canonical_branch(&start));
-
-    let mut local = base_test_start_input();
-    local.base_ref_kind = Some("local_branch".to_string());
-    local.base_ref = Some("feature/existing".to_string());
-    assert!(!ticket_start_should_apply_canonical_branch(&local));
-
-    let mut invalid = base_test_start_input();
-    invalid.base_ref_kind = Some("not-a-base-kind".to_string());
-    assert!(!ticket_start_should_apply_canonical_branch(&invalid));
-
-    let mut pr = base_test_start_input();
-    pr.base_ref_kind = Some("local_branch".to_string());
-    pr.base_ref = Some("feature/pr-head".to_string());
-    pr.base_source_pull_request =
-        Some(crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput {
-        number: 42,
-        url: Some("https://github.com/x/y/pull/42".to_string()),
-        title: Some("PR #42".to_string()),
-        head_ref_name: "feature/pr-head".to_string(),
-        base_ref_name: Some("main".to_string()),
-        head_ref_oid: None,
-    });
-    assert!(!ticket_start_should_apply_canonical_branch(&pr));
-}
-
-#[test]
-fn apply_canonical_base_overwrites_to_local_branch() {
-    let mut start = base_test_start_input();
-
-    apply_ticket_canonical_branch_base(&mut start, "WISE-24", "ralphx/ticket/linear-wise-24");
-
-    assert_eq!(start.base_ref_kind.as_deref(), Some("local_branch"));
-    assert_eq!(
-        start.base_ref.as_deref(),
-        Some("ralphx/ticket/linear-wise-24")
-    );
-    assert_eq!(
-        start.base_display_name.as_deref(),
-        Some("Ticket WISE-24 (ralphx/ticket/linear-wise-24)")
-    );
 }

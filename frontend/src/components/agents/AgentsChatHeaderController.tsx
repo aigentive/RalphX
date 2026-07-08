@@ -55,8 +55,12 @@ export function AgentsChatHeaderController({
     conversation?.id ?? null,
     hasAutoOpenArtifacts,
   );
+  const workspaceConversationId =
+    workspace?.conversationId ?? conversation?.id ?? null;
   const terminalOpen = useAgentTerminalStore((state) =>
-    conversation?.id ? state.openByConversationId[conversation.id] ?? false : false,
+    workspaceConversationId
+      ? state.openByConversationId[workspaceConversationId] ?? false
+      : false,
   );
   const toggleTerminalOpen = useAgentTerminalStore((state) => state.toggleOpen);
   const registerTerminalConversation = useAgentTerminalStore(
@@ -85,10 +89,13 @@ export function AgentsChatHeaderController({
   }, [clearWorkspaceOpenTimer]);
   const openWorkspaceMutation = useMutation({
     mutationFn: (targetId: string) => {
-      if (!conversation) {
+      if (!workspaceConversationId) {
         return Promise.resolve();
       }
-      return chatApi.openAgentConversationWorkspace(conversation.id, targetId);
+      return chatApi.openAgentConversationWorkspace(
+        workspaceConversationId,
+        targetId,
+      );
     },
     onMutate: (targetId) => {
       clearWorkspaceOpenTimer();
@@ -123,12 +130,12 @@ export function AgentsChatHeaderController({
   );
 
   useEffect(() => {
-    if (!conversation || !workspace) {
+    if (!conversation || !workspace || !workspaceConversationId) {
       return;
     }
 
     registerTerminalConversation({
-      conversationId: conversation.id,
+      conversationId: workspaceConversationId,
       projectId: workspace.projectId,
       title: conversation.title ?? null,
       branchName: workspace.branchName,
@@ -139,6 +146,7 @@ export function AgentsChatHeaderController({
     conversation,
     registerTerminalConversation,
     workspace,
+    workspaceConversationId,
   ]);
 
   const handlePreloadTerminal = useCallback(() => {
@@ -155,11 +163,11 @@ export function AgentsChatHeaderController({
   }, [cancelTerminalPreloadJob]);
 
   const handleToggleTerminal = useCallback(() => {
-    if (!conversation || terminalUnavailableReason) {
+    if (!workspaceConversationId || terminalUnavailableReason) {
       return;
     }
     const nextOpen = !terminalOpen;
-    toggleTerminalOpen(conversation.id);
+    toggleTerminalOpen(workspaceConversationId);
     if (nextOpen && !terminalArchivedReason) {
       scheduleTerminalPreload();
     } else {
@@ -167,12 +175,12 @@ export function AgentsChatHeaderController({
     }
   }, [
     cancelTerminalPreloadJob,
-    conversation,
     scheduleTerminalPreload,
     terminalArchivedReason,
     terminalOpen,
     terminalUnavailableReason,
     toggleTerminalOpen,
+    workspaceConversationId,
   ]);
   const handleToggleArtifacts = useCallback(() => {
     if (!conversation) {
@@ -182,12 +190,16 @@ export function AgentsChatHeaderController({
   }, [conversation, onToggleArtifacts]);
   const handleOpenWorkspaceTarget = useCallback(
     (targetId: string) => {
-      if (!conversation || visibleWorkspaceOpeningTargetId) {
+      if (!workspaceConversationId || visibleWorkspaceOpeningTargetId) {
         return;
       }
       openWorkspaceMutation.mutate(targetId);
     },
-    [conversation, openWorkspaceMutation, visibleWorkspaceOpeningTargetId],
+    [
+      openWorkspaceMutation,
+      visibleWorkspaceOpeningTargetId,
+      workspaceConversationId,
+    ],
   );
 
   return (

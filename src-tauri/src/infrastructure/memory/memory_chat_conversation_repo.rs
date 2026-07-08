@@ -7,8 +7,8 @@ use tokio::sync::RwLock;
 
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ConversationAttributionBackfillState,
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, ChatContextType,
+    ChatConversation, ChatConversationId, ConversationAttributionBackfillState,
     ConversationAttributionBackfillSummary,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
@@ -59,6 +59,20 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
             })
             .cloned()
             .collect();
+        Ok(filtered)
+    }
+
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let convos = self.conversations.read().await;
+        let mut filtered: Vec<ChatConversation> = convos
+            .values()
+            .filter(|c| c.automation_id.as_ref() == Some(automation_id))
+            .cloned()
+            .collect();
+        filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(filtered)
     }
 

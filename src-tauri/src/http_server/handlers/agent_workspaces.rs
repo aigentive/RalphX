@@ -23,7 +23,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewGoalContext,
+    review_gate_publish_blocker, start_agent_workspace_review,
+    start_agent_workspace_review_blocking_fixer, AgentWorkspaceReviewGoalContext,
     AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
@@ -55,6 +56,7 @@ use crate::domain::entities::{
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
 };
+use crate::error::AppError;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct CompleteAgentWorkspaceRepairRequest {
@@ -634,6 +636,19 @@ pub struct StartAgentWorkspaceReviewResponse {
     pub started: bool,
     pub skipped_reason: Option<String>,
     pub was_queued: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StartAgentWorkspaceReviewFixerResponse {
+    pub success: bool,
+    pub target: Option<AgentWorkspaceReviewTargetResponse>,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub goal_context: AgentWorkspaceReviewGoalContext,
+    pub is_current: bool,
+    pub is_outdated: bool,
+    pub should_show_tab: bool,
+    pub started: bool,
+    pub skipped_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1245,6 +1260,15 @@ pub async fn get_agent_workspace_review_context(
     }))
 }
 
+fn workspace_review_action_error(error: AppError) -> JsonError {
+    let status = match &error {
+        AppError::Validation(_) | AppError::Conflict(_) => StatusCode::CONFLICT,
+        AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    json_error(status, error.to_string(), None)
+}
+
 /// POST /api/agent-workspaces/{conversation_id}/workspace-review-runs
 pub async fn start_agent_workspace_review_run(
     State(state): State<HttpServerState>,
@@ -1307,6 +1331,65 @@ pub async fn start_agent_workspace_review_run(
         started: start.started,
         skipped_reason: start.skipped_reason,
         was_queued: start.was_queued,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/workspace-review-fixer-runs
+pub async fn start_agent_workspace_review_fixer_run(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<StartAgentWorkspaceReviewFixerResponse>, JsonError> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let start = start_agent_workspace_review_blocking_fixer(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
+    let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
+    let diff_fingerprint = compact_workspace_review_log_fingerprint(
+        start
+            .context
+            .target
+            .as_ref()
+            .map(|target| target.diff_fingerprint.as_str()),
+    );
+    let skipped_reason = start
+        .skipped_reason
+        .as_deref()
+        .unwrap_or("none")
+        .to_string();
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_fixer_start_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        started = start.started,
+        skipped_reason = %skipped_reason,
+        monitor_status = %start.context.monitor.status,
+        review_fixer_status = %start.context.monitor.review_fixer_status.as_deref().unwrap_or("none"),
+        target_scope = %target_scope,
+        diff_fingerprint = %diff_fingerprint,
+        is_current = start.context.is_current,
+        is_outdated = start.context.is_outdated,
+        has_artifact = start.context.monitor.review_artifact_id.is_some(),
+        "Handled workspace Review fixer start request"
+    );
+
+    Ok(Json(StartAgentWorkspaceReviewFixerResponse {
+        success: true,
+        target: start
+            .context
+            .target
+            .map(AgentWorkspaceReviewTargetResponse::from),
+        monitor: AgentWorkspaceReviewMonitorResponse::from(start.context.monitor),
+        goal_context: start.context.goal_context,
+        is_current: start.context.is_current,
+        is_outdated: start.context.is_outdated,
+        should_show_tab: start.context.should_show_tab,
+        started: start.started,
+        skipped_reason: start.skipped_reason,
     }))
 }
 
@@ -1720,6 +1803,39 @@ pub async fn complete_agent_workspace_review_run(
     );
     resume_pr_fix_publish_after_workspace_review(&state, &conversation_id, &workspace, &monitor)
         .await?;
+    // R2: resume an initial (no-PR-yet) armed/automation publish once the gate is Passed.
+    resume_initial_auto_publish_after_workspace_review(
+        &state,
+        &conversation_id,
+        &workspace,
+        &monitor,
+    )
+    .await?;
+    // R3: on a Blocking/Failed gate for an automation-owned conversation, pause the automation and
+    // terminalize the stuck run. Classify by the gate ENUM, never the blocker string. No-op for
+    // non-automation conversations (handled inside the helper via the run bridge).
+    if matches!(
+        monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking | AgentWorkspaceReviewGateStatus::Failed
+    ) {
+        let detail = workspace_review_block_detail(&monitor);
+        if let Err(error) =
+            crate::application::automation::review_gate::pause_automation_for_blocked_workspace_review(
+                state.app_state.as_ref(),
+                &conversation_id,
+                detail.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "ralphx_lib::http_server::agent_workspaces",
+                operation = "pause_automation_on_workspace_review_block_failed",
+                conversation_id = %conversation_id,
+                error = %error,
+                "Failed to pause automation after blocked workspace review"
+            );
+        }
+    }
     Ok(Json(CompleteAgentWorkspaceReviewRunResponse {
         success: true,
         monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
@@ -3549,6 +3665,111 @@ fn pr_fix_publish_can_resume_after_workspace_review(
             Some("blocked") => pr_supervision_block_is_workspace_review_gate(workspace),
             _ => false,
         }
+}
+
+/// R2: resume the INITIAL automation/armed publish once the workspace review passes.
+///
+/// Gated on the armed *initial* auto-publish flag (`auto_publish_initial_pr_enabled`, distinct from
+/// `auto_publish_enabled` which governs the PR-fix/update path), no existing publication PR, no
+/// terminal publication status, and a `Passed` gate. This is the missing counterpart to the PR-fix
+/// resume for workspaces that have no PR yet — without it an initial automation publish stalls
+/// because auto-publish fired (and skipped) on the same completion event while the gate was still
+/// `Required`.
+async fn resume_initial_auto_publish_after_workspace_review(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> Result<(), JsonError> {
+    if !auto_publish_can_resume_after_workspace_review(workspace, monitor) {
+        return Ok(());
+    }
+
+    let publishing_message = "Workspace Review passed; publishing initial pull request.";
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "initial_auto_publish_workspace_review_passed",
+            "publishing",
+            publishing_message,
+            Some("workspace_review_passed".to_string()),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    match publish_agent_conversation_workspace_for_app_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        Some(state.team_service.clone()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        // R5: a concurrent publish already holds the in-flight guard — treat as a soft no-op, not a
+        // failure. The in-flight guard + PR-exists short-circuit make double-publish impossible.
+        Err(error) if error == AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE => {
+            tracing::debug!(
+                target: "ralphx_lib::http_server::agent_workspaces",
+                operation = "initial_auto_publish_in_progress_noop",
+                conversation_id = %conversation_id,
+                "Initial auto-publish resume no-op: publish already in progress"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    "initial_auto_publish_failed",
+                    "failed",
+                    error,
+                    Some("initial_auto_publish_failed".to_string()),
+                ))
+                .await
+                .map_err(|repo_error| {
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        repo_error.to_string(),
+                        None,
+                    )
+                })?;
+            Ok(())
+        }
+    }
+}
+
+fn auto_publish_can_resume_after_workspace_review(
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> bool {
+    monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
+        && workspace.auto_publish_initial_pr_enabled
+        && workspace.publication_pr_number.is_none()
+        && !workspace.has_terminal_publication_pr_status()
+}
+
+/// R3: build the pause detail from the gate ENUM-derived monitor fields (never the raw blocker
+/// string as a classifier). Blocking/Failed carry arbitrary reviewer text used only as detail here.
+fn workspace_review_block_detail(monitor: &AgentWorkspaceReviewMonitor) -> Option<String> {
+    let artifact = monitor.review_artifact_id.as_ref().map(|id| id.as_str());
+    let summary = monitor
+        .review_blocking_summary
+        .as_deref()
+        .or(monitor.last_error.as_deref());
+    Some(match (artifact, summary) {
+        (Some(artifact), Some(summary)) => {
+            format!("Workspace review blocked (artifact {artifact}): {summary}")
+        }
+        (Some(artifact), None) => format!("Workspace review blocked (artifact {artifact})"),
+        (None, Some(summary)) => format!("Workspace review blocked: {summary}"),
+        (None, None) => "Workspace review blocked".to_string(),
+    })
 }
 
 fn pr_supervision_block_is_workspace_review_gate(workspace: &AgentConversationWorkspace) -> bool {
@@ -6289,6 +6510,52 @@ mod tests {
     }
 
     #[test]
+    fn initial_auto_publish_resume_predicate_requires_armed_initial_flag_and_no_pr() {
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.auto_publish_initial_pr_enabled = true;
+        workspace.auto_publish_enabled = false;
+        workspace.publication_pr_number = None;
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id, workspace.project_id.clone());
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+
+        // Armed initial flag + no PR + gate Passed → resume.
+        assert!(auto_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+
+        // Not armed for the initial PR → no resume (even if the PR-fix flag is on).
+        workspace.auto_publish_initial_pr_enabled = false;
+        workspace.auto_publish_enabled = true;
+        assert!(!auto_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+        workspace.auto_publish_initial_pr_enabled = true;
+        workspace.auto_publish_enabled = false;
+
+        // A publication PR already exists → this is the PR-fix path, not initial publish.
+        workspace.publication_pr_number = Some(512);
+        assert!(!auto_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+        workspace.publication_pr_number = None;
+
+        // Gate not Passed → no resume.
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        assert!(!auto_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+
+        // Terminal publication status → no resume.
+        workspace.publication_pr_status = Some("merged".to_string());
+        assert!(!auto_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+    }
+
+    #[test]
     fn review_completion_resume_predicate_only_allows_review_gate_blocks() {
         let conversation_id = ChatConversationId::new();
         let mut workspace = test_workspace(conversation_id.clone());
@@ -7807,6 +8074,389 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.step == "published" && event.status == "succeeded"));
+    }
+
+    struct ReviewCompletionFixture {
+        _repo: tempfile::TempDir,
+        _worktrees: tempfile::TempDir,
+        app_state: Arc<AppState>,
+        conversation_id: ChatConversationId,
+        automation_id: Option<crate::domain::entities::AutomationId>,
+        run_id: Option<crate::domain::entities::AutomationRunId>,
+        github: Arc<MockGithubService>,
+    }
+
+    /// Seed a no-PR workspace whose review monitor is `Reviewing` with a current artifact, so that
+    /// calling `complete_agent_workspace_review_run` recomputes the gate from the passed outcome.
+    /// Optionally arms initial auto-publish and links an automation run to the conversation.
+    async fn setup_workspace_for_review_completion(
+        suffix: &str,
+        armed_initial: bool,
+        seed_automation: bool,
+    ) -> ReviewCompletionFixture {
+        use crate::domain::entities::{
+            Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+            AutomationRunId, AutomationRunStatus, AutomationStatus,
+        };
+
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let github = Arc::new(MockGithubService::new());
+        // When we expect the resume to publish, let the mock create a PR so publish completes
+        // instead of blocking on an agent-authored PR description.
+        github.will_create_pr(918, "https://github.com/owner/repo/pull/918");
+        let conversation_id = ChatConversationId::new();
+        let mut state = AppState::new_test();
+        state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let publish_client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(publish_client);
+        let app_state = Arc::new(state);
+        let mut project = Project::new(
+            format!("Review Completion {suffix}"),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("workspace path");
+        let branch_name = format!("ralphx/test/review-completion-{suffix}");
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                workspace_path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(workspace_path.join("fix.txt"), "work\n").expect("write workspace change");
+        git(&workspace_path, &["add", "fix.txt"]);
+        git(&workspace_path, &["commit", "-m", "workspace change"]);
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha),
+            branch_name,
+            workspace_path.to_string_lossy().to_string(),
+        );
+        // No publication PR yet — this is the INITIAL publish path.
+        workspace.publication_pr_number = None;
+        workspace.auto_publish_initial_pr_enabled = armed_initial;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+
+        let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
+            .await
+            .expect("review context should load");
+        let target = review_context.target.expect("review target should exist");
+        let mut monitor = review_context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha,
+            target.diff_fingerprint,
+            Some("review-run".to_string()),
+            ArtifactId::from_string(format!("review-artifact-{suffix}")),
+            1,
+            chrono::Utc::now(),
+            None,
+        );
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("review monitor should persist");
+
+        let (automation_id, run_id) = if seed_automation {
+            let now = chrono::Utc::now();
+            let automation_id = AutomationId::from_string(format!("automation-{suffix}"));
+            app_state
+                .automation_repo
+                .create(Automation {
+                    id: automation_id.clone(),
+                    project_id: project.id.clone(),
+                    name: "Automation".to_string(),
+                    status: AutomationStatus::Active,
+                    paused_reason_code: None,
+                    paused_reason_detail: None,
+                    goal_prompt: "Goal".to_string(),
+                    setup_conversation_id: None,
+                    provider_harness: "claude".to_string(),
+                    model_id: "sonnet".to_string(),
+                    logical_effort: None,
+                    run_mode: "edit".to_string(),
+                    base_ref_kind: "project_default".to_string(),
+                    base_ref: String::new(),
+                    base_display_name: None,
+                    base_source_pull_request_json: None,
+                    goal_items_json: None,
+                    chain_mode: "merged_base".to_string(),
+                    completion_signal: "pr_merged".to_string(),
+                    max_runs: 25,
+                    max_consecutive_failures: 3,
+                    first_run_prompt: None,
+                    setup_analysis_summary: None,
+                    spec_artifact_id: None,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await
+                .expect("seed automation");
+            let run_id = AutomationRunId::from_string(format!("run-{suffix}"));
+            app_state
+                .automation_run_repo
+                .create_run(AutomationRun {
+                    id: run_id.clone(),
+                    automation_id: automation_id.clone(),
+                    run_index: 1,
+                    status: AutomationRunStatus::Running,
+                    judge_state: AutomationJudgeState::None,
+                    judge_lease_expires_at: None,
+                    conversation_id: Some(conversation_id.clone()),
+                    run_prompt: "Run".to_string(),
+                    prompt_author: AutomationPromptAuthor::SetupAgent,
+                    base_ref_kind: "project_default".to_string(),
+                    base_ref_used: "main".to_string(),
+                    base_from_run_id: None,
+                    branch_name: None,
+                    pr_number: None,
+                    pr_url: None,
+                    pr_title: None,
+                    pr_head_ref_name: None,
+                    pr_base_ref_name: None,
+                    pr_merged_at: None,
+                    merge_commit_sha: None,
+                    diff_stats_json: None,
+                    agent_summary: None,
+                    judge_verdict_json: None,
+                    judge_model_id: None,
+                    error_code: None,
+                    error_detail: None,
+                    signal_check_failures: 0,
+                    started_at: Some(now),
+                    finished_at: None,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await
+                .expect("seed automation run");
+            (Some(automation_id), Some(run_id))
+        } else {
+            (None, None)
+        };
+
+        ReviewCompletionFixture {
+            _repo: repo,
+            _worktrees: worktrees,
+            app_state,
+            conversation_id,
+            automation_id,
+            run_id,
+            github,
+        }
+    }
+
+    #[tokio::test]
+    async fn passed_review_resumes_initial_auto_publish_when_armed() {
+        let fixture = setup_workspace_for_review_completion("armed", true, false).await;
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let _ = complete_agent_workspace_review_run(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspaceReviewRunRequest {
+                outcome: Some("passed".to_string()),
+                summary: "Review passed".to_string(),
+                blocker: None,
+                created_by_run_id: Some("review-run".to_string()),
+            }),
+        )
+        .await
+        .expect("passed workspace review should complete");
+
+        // R2: the initial auto-publish resume fired (publishing event appended before publish).
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event.step == "initial_auto_publish_workspace_review_passed"
+                    && event.status == "publishing"
+                    && event.classification.as_deref() == Some("workspace_review_passed")
+            }),
+            "armed initial auto-publish should resume on a passed gate"
+        );
+        // Publish was invoked exactly once and created the initial PR.
+        assert_eq!(fixture.github.state().create_draft_pr_calls, 1);
+        let persisted = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.publication_pr_number, Some(918));
+    }
+
+    #[tokio::test]
+    async fn passed_review_does_not_resume_initial_auto_publish_when_not_armed() {
+        let fixture = setup_workspace_for_review_completion("unarmed", false, false).await;
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let Json(response) = complete_agent_workspace_review_run(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspaceReviewRunRequest {
+                outcome: Some("passed".to_string()),
+                summary: "Review passed".to_string(),
+                blocker: None,
+                created_by_run_id: Some("review-run".to_string()),
+            }),
+        )
+        .await
+        .expect("passed workspace review should complete");
+
+        assert_eq!(response.monitor.review_gate_status, "passed");
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.step == "initial_auto_publish_workspace_review_passed"),
+            "a non-armed workspace must not resume initial auto-publish"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_review_pauses_owning_automation_and_terminalizes_run() {
+        let fixture = setup_workspace_for_review_completion("block", false, true).await;
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        let _ = complete_agent_workspace_review_run(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspaceReviewRunRequest {
+                outcome: Some("blocking".to_string()),
+                summary: "Review found blocking changes".to_string(),
+                blocker: Some("Fix the failing invariant".to_string()),
+                created_by_run_id: Some("review-run".to_string()),
+            }),
+        )
+        .await
+        .expect("blocking workspace review should complete");
+
+        // R3 site (a): automation paused with the review-blocked reason.
+        let automation = fixture
+            .app_state
+            .automation_repo
+            .get_by_id(fixture.automation_id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            automation.status,
+            crate::domain::entities::AutomationStatus::Paused
+        );
+        assert_eq!(
+            automation.paused_reason_code.as_deref(),
+            Some("workspace_review_blocked")
+        );
+
+        // Run terminalized as AgentFailed so its wall-clock can't false-timeout on resume.
+        let run = fixture
+            .app_state
+            .automation_run_repo
+            .get_by_id(fixture.run_id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            run.status,
+            crate::domain::entities::AutomationRunStatus::AgentFailed
+        );
+        assert_eq!(run.error_code.as_deref(), Some("workspace_review_blocked"));
+
+        // Publish was NOT invoked (no publishing events at all).
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.step == "initial_auto_publish_workspace_review_passed"),
+            "a blocking gate must not resume publish"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_review_is_noop_for_non_automation_conversation() {
+        let fixture =
+            setup_workspace_for_review_completion("block-interactive", false, false).await;
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+
+        // No automation linked → the handler must still succeed and not attempt any pause.
+        let Json(response) = complete_agent_workspace_review_run(
+            State(state),
+            Path(fixture.conversation_id.to_string()),
+            Json(CompleteAgentWorkspaceReviewRunRequest {
+                outcome: Some("blocking".to_string()),
+                summary: "Review found blocking changes".to_string(),
+                blocker: Some("Fix the failing invariant".to_string()),
+                created_by_run_id: Some("review-run".to_string()),
+            }),
+        )
+        .await
+        .expect("blocking workspace review should complete for interactive conversation");
+
+        assert_eq!(response.monitor.review_gate_status, "blocking");
     }
 
     #[tokio::test]

@@ -1032,7 +1032,7 @@ pub fn is_valid_git_sha(sha: &str) -> bool {
 /// self-ref) and wiring it into `TaskTransitionService`. All complete_merge
 /// paths (rebase retry, source-update retry, normal Merged, freshness routing)
 /// use the same service instance, avoiding duplicate construction.
-fn build_transition_service(state: &HttpServerState) -> TaskTransitionService<tauri::Wry> {
+fn build_transition_service(state: &HttpServerState) -> TaskTransitionService {
     let scheduler_concrete = std::sync::Arc::new(state.app_state.build_task_scheduler_for_runtime(
         std::sync::Arc::clone(&state.execution_state),
         state.app_state.app_handle.as_ref().cloned(),

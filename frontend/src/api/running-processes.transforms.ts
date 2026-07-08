@@ -22,6 +22,7 @@ import type {
   TeammateSummary,
 } from "./running-processes.types";
 import { transformTaskStep } from "@/types/task-step";
+import { transformExecutionTaskAgentWorkspace } from "./execution-task-agent-workspace";
 
 /**
  * Transform StepProgressSummarySchema (snake_case) → StepProgressSummary (camelCase)
@@ -77,6 +78,11 @@ export function transformRunningProcess(
     elapsedSeconds: raw.elapsed_seconds,
     triggerOrigin: raw.trigger_origin,
     taskBranch: raw.task_branch,
+    ...(raw.agent_workspace !== undefined && {
+      agentWorkspace: raw.agent_workspace
+        ? transformExecutionTaskAgentWorkspace(raw.agent_workspace)
+        : null,
+    }),
     ...(raw.team_name !== undefined && { teamName: raw.team_name }),
     ...(raw.teammates !== undefined && {
       teammates: raw.teammates.map(transformTeammateSummary),

@@ -85,7 +85,7 @@ use crate::application::ideation_workspace::prepare_ideation_analysis_state_from
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits,
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
-    ensure_plan_publish_branch_fresh, ensure_publish_branch_fresh,
+    ensure_plan_publish_branch_fresh, ensure_publish_base_pushed, ensure_publish_branch_fresh,
     inspect_publish_branch_freshness_for_source,
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
@@ -3249,6 +3249,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     },
                     AgentConversationWorkspaceSetupMode::Blocking,
                     pr_automation_defaults,
+                    false,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -6726,6 +6727,36 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             return Err(error);
         }
     };
+
+    // B1/B2/B5: for automation runs whose base is a local-only automation branch,
+    // publish that base to origin BEFORE the PR references it as `--base`. Both
+    // belts (automation scope + origin-absent safety) live in the helper. A push
+    // failure fails the publish closed — never retarget to main, never proceed to
+    // PR create.
+    if let Err(error) =
+        ensure_publish_base_pushed(github, &worktree_path, &conversation, &workspace).await
+    {
+        let error = error.to_string();
+        tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_publish",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            base_ref = %workspace.base_ref,
+            error = %error,
+            "Failed to push automation base branch before publishing"
+        );
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            route_fixable_failures_to_agent,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
 
     mark_agent_workspace_publish_status(state, &workspace, "pushing")
         .await
@@ -14077,6 +14108,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_ideation_workspace_from_base_updates_linked_plan_worktree() {
+        let (temp, state, conversation_id, plan_branch_id, github) =
+            setup_linked_plan_publish_command_state(
+                "base-update",
+                false,
+                Arc::new(MockGithubService::new()),
+            )
+            .await;
+        let repo_path = temp.path().join("repo");
+        std::fs::write(repo_path.join("base-fix.txt"), "base fix\n")
+            .expect("base fixture should be written");
+        git(&repo_path, &["add", "base-fix.txt"]);
+        git(&repo_path, &["commit", "-m", "base fix"]);
+        let main_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                branch_mode: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("linked plan branch worktree should update from base");
+
+        assert!(response.updated);
+        assert_eq!(response.base_commit, main_sha);
+        assert_eq!(response.target_ref, "origin/main");
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(github.state().push_branch_calls, 1);
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("project lookup should succeed")
+            .pop()
+            .expect("project should exist");
+        let plan_branch = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch_id)
+            .await
+            .expect("plan branch lookup should succeed")
+            .expect("plan branch should exist");
+        assert_eq!(
+            github.state().last_push_branch_name.as_deref(),
+            Some(plan_branch.branch_name.as_str())
+        );
+        assert_eq!(plan_branch.pr_push_status, PrPushStatus::Pushed);
+        let plan_worktree = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect("linked plan worktree should resolve");
+        git(
+            &repo_path,
+            &["merge-base", "--is-ancestor", &main_sha, &plan_branch.branch_name],
+        );
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(git(&repo_path, &["status", "--short"]), "");
+        assert_eq!(git(&plan_worktree, &["status", "--short"]), "");
+    }
+
+    #[tokio::test]
     async fn update_workspace_from_saved_base_blocks_when_base_commit_is_missing() {
         let (_temp, state, conversation_id, github) = setup_publish_command_state(
             "update-missing-base",
@@ -16070,12 +16176,13 @@ mod tests {
 
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.mode, "edit");
-        assert_eq!(workspace.branch_mode, "linked");
-        assert_eq!(workspace.base_ref_kind, "project_default");
-        assert_eq!(workspace.base_ref, "main");
-        assert_eq!(workspace.branch_name, "feature/source-pr");
-        assert_eq!(workspace.publication_pr_number, Some(456));
-        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(workspace.branch_mode, "isolated");
+        assert_eq!(workspace.base_ref_kind, "local_branch");
+        assert_eq!(workspace.base_ref, "feature/source-pr");
+        assert_ne!(workspace.branch_name, "feature/source-pr");
+        assert!(workspace.branch_name.contains("/agent-"));
+        assert_eq!(workspace.publication_pr_number, None);
+        assert_eq!(workspace.publication_pr_status.as_deref(), None);
         let source = workspace
             .source_pull_request
             .expect("source PR metadata should be returned");
@@ -16092,20 +16199,21 @@ mod tests {
             .expect("workspace should persist");
         assert_eq!(
             persisted.branch_mode,
-            AgentConversationWorkspaceBranchMode::Linked
+            AgentConversationWorkspaceBranchMode::Isolated
         );
         assert_eq!(
             persisted.base_ref_kind,
-            IdeationAnalysisBaseRefKind::ProjectDefault
+            IdeationAnalysisBaseRefKind::LocalBranch
         );
-        assert_eq!(persisted.base_ref, "main");
-        assert_eq!(persisted.branch_name, "feature/source-pr");
-        assert_eq!(persisted.publication_pr_number, Some(456));
+        assert_eq!(persisted.base_ref, "feature/source-pr");
+        assert_ne!(persisted.branch_name, "feature/source-pr");
+        assert!(persisted.branch_name.contains("/agent-"));
+        assert_eq!(persisted.publication_pr_number, None);
         assert_eq!(
             persisted.publication_pr_url.as_deref(),
-            Some("https://github.com/owner/repo/pull/456")
+            None
         );
-        assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(persisted.publication_pr_status.as_deref(), None);
         assert_eq!(
             persisted
                 .source_pull_request

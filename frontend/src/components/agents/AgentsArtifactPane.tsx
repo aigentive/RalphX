@@ -12,7 +12,15 @@ import {
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -38,6 +46,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { extractErrorMessage } from "@/lib/errors";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
   PlanDisplayConversationReference,
@@ -63,15 +72,20 @@ import {
 import { ideationKeys } from "@/hooks/useIdeation";
 import { taskKeys, useTasks } from "@/hooks/useTasks";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
-import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
+import {
+  useVerificationStatus,
+  verificationStatusKey,
+} from "@/hooks/useVerificationStatus";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import type { Artifact } from "@/types/artifact";
-import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/ideation";
+import type {
+  IdeationSession,
+  TaskProposal,
+  VerificationStatus,
+} from "@/types/ideation";
 import type { Task } from "@/types/task";
 import { getStatusCounts, type StatusCounts } from "@/types/status";
-import type {
-  DependencyGraphResponse,
-} from "@/api/ideation.types";
+import type { DependencyGraphResponse } from "@/api/ideation.types";
 import {
   getAgentConversationStoreKey,
   type AgentConversation,
@@ -84,7 +98,7 @@ import {
 } from "./agentArtifactTabs";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
-import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import { ArtifactLoadingState, EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
@@ -112,7 +126,9 @@ const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 
 function noop() {}
 
-function getProposalCreatedTaskIds(proposals: readonly TaskProposal[]): Set<string> {
+function getProposalCreatedTaskIds(
+  proposals: readonly TaskProposal[],
+): Set<string> {
   return new Set(
     proposals
       .map((proposal) => proposal.createdTaskId)
@@ -124,23 +140,34 @@ function getVisibleImplementationTasks({
   tasks,
   proposals,
   activeExecutionPlanId,
+  sessionId,
 }: {
   tasks: readonly Task[];
   proposals: readonly TaskProposal[];
   activeExecutionPlanId: string | null;
+  sessionId: string | null;
 }): Task[] {
-  const activeTasks = tasks.filter((task) => task.archivedAt === null);
+  const activeTasks = tasks.filter(
+    (task) =>
+      task.archivedAt === null &&
+      (sessionId === null || task.ideationSessionId === sessionId),
+  );
+  const createdTaskIds = getProposalCreatedTaskIds(proposals);
+  const proposalCreatedTasks =
+    createdTaskIds.size === 0
+      ? []
+      : activeTasks.filter((task) => createdTaskIds.has(task.id));
+
   if (activeExecutionPlanId) {
-    return activeTasks.filter(
+    const activeExecutionPlanTasks = activeTasks.filter(
       (task) => task.executionPlanId === activeExecutionPlanId,
     );
+    return activeExecutionPlanTasks.length > 0
+      ? activeExecutionPlanTasks
+      : proposalCreatedTasks;
   }
 
-  const createdTaskIds = getProposalCreatedTaskIds(proposals);
-  if (createdTaskIds.size === 0) {
-    return [];
-  }
-  return activeTasks.filter((task) => createdTaskIds.has(task.id));
+  return proposalCreatedTasks;
 }
 
 type WorkspaceReviewPassState = Pick<
@@ -148,12 +175,16 @@ type WorkspaceReviewPassState = Pick<
   "monitor" | "isCurrent"
 >;
 
-function hasPassedWorkspaceReview(context: WorkspaceReviewPassState | null): boolean {
+function hasPassedWorkspaceReview(
+  context: WorkspaceReviewPassState | null,
+): boolean {
   const gateStatus = context?.monitor.reviewGateStatus ?? null;
   if (gateStatus) {
     return gateStatus === "passed";
   }
-  return Boolean(context?.isCurrent && context.monitor.reviewOutcome === "passed");
+  return Boolean(
+    context?.isCurrent && context.monitor.reviewOutcome === "passed",
+  );
 }
 
 function hasGeneratingConversationRuntime(
@@ -161,20 +192,26 @@ function hasGeneratingConversationRuntime(
 ): boolean {
   return Boolean(
     status?.agentStatus === "generating" ||
-      status?.items.some((item) => item.agentStatus === "generating"),
+    status?.items.some((item) => item.agentStatus === "generating"),
   );
 }
 
 const LazyTaskGraphView = lazy(() =>
-  import("@/components/TaskGraph").then((module) => ({ default: module.TaskGraphView })),
+  import("@/components/TaskGraph").then((module) => ({
+    default: module.TaskGraphView,
+  })),
 );
 const LazyTaskBoard = lazy(() =>
-  import("@/components/tasks/TaskBoard").then((module) => ({ default: module.TaskBoard })),
+  import("@/components/tasks/TaskBoard").then((module) => ({
+    default: module.TaskBoard,
+  })),
 );
 const LazyAgentsTaskDetailOverlay = lazy(() =>
-  import("@/components/agents/task-details/AgentsTaskDetailOverlay").then((module) => ({
-    default: module.AgentsTaskDetailOverlay,
-  })),
+  import("@/components/agents/task-details/AgentsTaskDetailOverlay").then(
+    (module) => ({
+      default: module.AgentsTaskDetailOverlay,
+    }),
+  ),
 );
 const LazyExportPlanDialog = lazy(() =>
   import("@/components/Ideation/ExportPlanDialog").then((module) => ({
@@ -182,10 +219,14 @@ const LazyExportPlanDialog = lazy(() =>
   })),
 );
 const LazyPlanDisplay = lazy(() =>
-  import("@/components/Ideation/PlanDisplay").then((module) => ({ default: module.PlanDisplay })),
+  import("@/components/Ideation/PlanDisplay").then((module) => ({
+    default: module.PlanDisplay,
+  })),
 );
 const LazyPlanEditor = lazy(() =>
-  import("@/components/Ideation/PlanEditor").then((module) => ({ default: module.PlanEditor })),
+  import("@/components/Ideation/PlanEditor").then((module) => ({
+    default: module.PlanEditor,
+  })),
 );
 const LazyPlanEmptyState = lazy(() =>
   import("@/components/Ideation/PlanEmptyState").then((module) => ({
@@ -297,7 +338,9 @@ const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
 function workspaceHasPullRequest(
   workspace: AgentConversationWorkspace | null | undefined,
 ): boolean {
-  return Boolean(workspace?.publicationPrNumber != null || workspace?.sourcePullRequest);
+  return Boolean(
+    workspace?.publicationPrNumber != null || workspace?.sourcePullRequest,
+  );
 }
 
 function readSelectedTaskForConversation(
@@ -348,7 +391,8 @@ interface AgentsArtifactPaneProps {
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   onOpenAutomation?: (automationId: string) => void;
-  onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
+  onFocusVerificationSession:
+    ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusWorkspaceReview?: (conversationId: string) => void;
   onTaskArtifactSelectionChange?: (taskId: string | null) => void;
   onClose: () => void;
@@ -378,19 +422,25 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const queryClient = useQueryClient();
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
-      focusedIdeationSessionId ||
-      workspace?.mode === "ideation" ||
-      workspace?.mode === "plan" ||
-      workspace?.linkedIdeationSessionId ||
-      workspace?.linkedPlanBranchId,
+    focusedIdeationSessionId ||
+    workspace?.mode === "ideation" ||
+    workspace?.mode === "plan" ||
+    workspace?.linkedIdeationSessionId ||
+    workspace?.linkedPlanBranchId,
   );
   const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
   const showPullRequestTab = workspaceHasPullRequest(workspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
-  const conversationQuery = useConversationHistoryWindow(conversation?.id ?? null, {
-    enabled: shouldLoadIdeationData && !focusedIdeationSessionId && !!conversation?.id,
-    pageSize: 40,
-  });
+  const conversationQuery = useConversationHistoryWindow(
+    conversation?.id ?? null,
+    {
+      enabled:
+        shouldLoadIdeationData &&
+        !focusedIdeationSessionId &&
+        !!conversation?.id,
+      pageSize: 40,
+    },
+  );
   const conversationData = conversationQuery.data;
   const conversationMessages = useMemo(
     () =>
@@ -426,7 +476,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   });
   const showJiraTab = Boolean(
     atlassianSettingsQuery.data?.enabled &&
-      atlassianSettingsQuery.data?.jiraAvailable,
+    atlassianSettingsQuery.data?.jiraAvailable,
   );
   const linearSettingsQuery = useQuery({
     queryKey: ["linear", "settings"],
@@ -435,7 +485,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   });
   const showLinearTab = Boolean(
     linearSettingsQuery.data?.enabled &&
-      linearSettingsQuery.data?.issueSearchAvailable,
+    linearSettingsQuery.data?.issueSearchAvailable,
   );
   const granolaSettingsQuery = useQuery({
     queryKey: ["granola", "settings"],
@@ -444,27 +494,30 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   });
   const showGranolaTab = Boolean(
     granolaSettingsQuery.data?.enabled &&
-      granolaSettingsQuery.data?.validationStatus === "valid",
+    granolaSettingsQuery.data?.validationStatus === "valid",
   );
-  const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
-    status: VerificationStatus;
-    inProgress: boolean;
-  } | null>(null);
+  const [displayedVerificationStatus, setDisplayedVerificationStatus] =
+    useState<{
+      status: VerificationStatus;
+      inProgress: boolean;
+    } | null>(null);
   const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
-  const conversationProjectId = conversation?.projectId ?? workspace?.projectId ?? null;
+  const conversationProjectId =
+    conversation?.projectId ?? workspace?.projectId ?? null;
   const canStartPlan = Boolean(
     conversationId &&
-      conversationProjectId &&
-      (workspace
-        ? workspace.mode === "edit" || workspace.mode === "plan"
-        : conversation?.contextType === "project"),
+    conversationProjectId &&
+    (workspace
+      ? workspace.mode === "edit" || workspace.mode === "plan"
+      : conversation?.contextType === "project"),
   );
   const prReviewConversationId =
     workspace?.mode === "review_pr" ? workspace.conversationId : null;
   const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
-    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
+    queryFn: () =>
+      chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
     enabled: shouldLoadPrReviewContext,
     staleTime: 5_000,
   });
@@ -474,8 +527,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const shouldLoadWorkspaceReviewContext = Boolean(
     conversationId &&
-      workspace &&
-      ["edit", "ideation", "plan", "review_pr"].includes(workspace.mode),
+    workspace &&
+    ["edit", "ideation", "plan", "review_pr"].includes(workspace.mode),
   );
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(conversationId ?? ""),
@@ -491,8 +544,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
-  const prReviewArtifactId =
-    prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const prReviewArtifactId = prReviewContext?.monitor?.reviewArtifactId ?? null;
   const reviewArtifactId = workspaceReviewArtifactId ?? prReviewArtifactId;
   const reviewArtifactQuery = useQuery({
     queryKey: ["agents", "artifact", reviewArtifactId],
@@ -533,13 +585,44 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       }
     },
   });
-  const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] =
-    useState<string | null>(() => readSelectedTaskForConversation(conversationId));
+  const startWorkspaceReviewFixerMutation = useMutation({
+    mutationFn: ({ conversationId }: { conversationId: string }) =>
+      chatApi.startAgentWorkspaceReviewFixer(conversationId),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspaceReview(variables.conversationId),
+        result,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReview(variables.conversationId),
+      });
+      const fixerConversationId =
+        result.monitor.reviewFixerConversationId ?? variables.conversationId;
+      invalidateConversationDataQueries(queryClient, fixerConversationId);
+      if (fixerConversationId !== variables.conversationId) {
+        invalidateConversationDataQueries(
+          queryClient,
+          variables.conversationId,
+        );
+      }
+      const artifactId = result.monitor.reviewArtifactId;
+      if (artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+    },
+  });
+  const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] = useState<
+    string | null
+  >(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
     setDisplayedVerificationStatus(null);
   }, [attachedSessionId]);
   useEffect(() => {
-    setTaskArtifactSelectedIdState(readSelectedTaskForConversation(conversationId));
+    setTaskArtifactSelectedIdState(
+      readSelectedTaskForConversation(conversationId),
+    );
   }, [conversationId]);
   const setTaskArtifactSelectedId = useCallback(
     (id: string | null) => {
@@ -573,27 +656,39 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     attachedSessionId && rawSessionData?.session.id === attachedSessionId
       ? rawSessionData
       : null;
-  const session = sessionData?.session ? (sessionData.session as IdeationSession) : null;
+  const session = sessionData?.session
+    ? (sessionData.session as IdeationSession)
+    : null;
   const proposals = useMemo<TaskProposal[]>(
     () => (sessionData?.proposals ?? []).map(toTaskProposal),
     [sessionData?.proposals],
   );
   const taskProjectId =
-    session?.projectId ?? conversation?.projectId ?? workspace?.projectId ?? null;
+    session?.projectId ??
+    conversation?.projectId ??
+    workspace?.projectId ??
+    null;
   const activePlanSessionId = usePlanStore(selectActivePlanId(taskProjectId ?? ""));
   const projectActiveExecutionPlanId = usePlanStore(
     selectActiveExecutionPlanId(taskProjectId ?? ""),
   );
-  const activeExecutionPlanId =
-    activePlanSessionId === attachedSessionId ? projectActiveExecutionPlanId : null;
+  const hasForeignActivePlan = Boolean(
+    activePlanSessionId && activePlanSessionId !== attachedSessionId,
+  );
+  const activeExecutionPlanId = hasForeignActivePlan
+    ? null
+    : projectActiveExecutionPlanId;
   const hasProposalCreatedTasks = useMemo(
     () => proposals.some((proposal) => proposal.createdTaskId != null),
     [proposals],
   );
   const shouldLoadImplementationTasks = Boolean(
     taskProjectId &&
-      attachedSessionId &&
-      (activeExecutionPlanId || hasProposalCreatedTasks),
+    attachedSessionId &&
+    (activeExecutionPlanId ||
+      hasProposalCreatedTasks ||
+      session?.status === "accepted" ||
+      workspace?.linkedPlanBranchId),
   );
   const implementationTasksQuery = useTasks(taskProjectId ?? "", {
     enabled: shouldLoadImplementationTasks,
@@ -604,28 +699,44 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         tasks: implementationTasksQuery.data ?? [],
         proposals,
         activeExecutionPlanId,
+        sessionId: attachedSessionId,
       }),
-    [activeExecutionPlanId, implementationTasksQuery.data, proposals],
+    [
+      activeExecutionPlanId,
+      attachedSessionId,
+      implementationTasksQuery.data,
+      proposals,
+    ],
   );
   const implementationTaskCounts = useMemo(
     () => getStatusCounts(visibleImplementationTasks),
     [visibleImplementationTasks],
   );
   const visibleImplementationTaskCount = implementationTaskCounts.total;
-  const hasImplementationWork = visibleImplementationTaskCount > 0;
+  const hasAttachedImplementationWork = Boolean(
+    visibleImplementationTaskCount > 0 || hasProposalCreatedTasks,
+  );
+  const hasImplementationAttempt = Boolean(
+    hasAttachedImplementationWork ||
+      (session?.status === "accepted" &&
+        workspace?.linkedPlanBranchId &&
+        !hasForeignActivePlan),
+  );
   const planArtifactId = shouldLoadIdeationData
-    ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
+    ? (sessionData?.session.planArtifactId ??
+      sessionData?.session.inheritedPlanArtifactId ??
+      null)
     : null;
   const sessionVerificationStatus =
     sessionData?.session.verificationStatus ?? "unverified";
   const hasVerificationEvidence = Boolean(
     sessionData &&
-      (sessionData.session.verificationInProgress ||
-        sessionVerificationStatus !== "unverified" ||
-        sessionData.session.gapScore != null ||
-        (displayedVerificationStatus !== null &&
-          (displayedVerificationStatus.inProgress ||
-            displayedVerificationStatus.status !== "unverified"))),
+    (sessionData.session.verificationInProgress ||
+      sessionVerificationStatus !== "unverified" ||
+      sessionData.session.gapScore != null ||
+      (displayedVerificationStatus !== null &&
+        (displayedVerificationStatus.inProgress ||
+          displayedVerificationStatus.status !== "unverified"))),
   );
   const proposalCount = proposals.length;
   const conversationArtifactMode =
@@ -639,7 +750,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
   const automationId = conversation?.automationId ?? null;
-  const conversationIssuesQuery = useAgentConversationIssues(issueConversationId);
+  const conversationIssuesQuery =
+    useAgentConversationIssues(issueConversationId);
   const hasConversationIssues = hasOpenAgentConversationIssues(
     conversationIssuesQuery.data,
   );
@@ -651,13 +763,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         canStartPlan,
         hasProposals: proposalCount > 0,
         hasVerificationEvidence,
-        hasExecutionTasks: hasImplementationWork,
+        hasExecutionTasks: hasImplementationAttempt,
         artifactMode,
       }),
     [
       artifactMode,
       canStartPlan,
-      hasImplementationWork,
+      hasImplementationAttempt,
       hasVerificationEvidence,
       planArtifactId,
       proposalCount,
@@ -670,7 +782,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? (["issues", ...availableIdeationTabIds] as IdeationArtifactTab[])
         : availableIdeationTabIds;
     const shouldShowReviewTab =
-      Boolean(reviewArtifactId) || Boolean(workspaceReviewContext?.shouldShowTab);
+      Boolean(reviewArtifactId) ||
+      Boolean(workspaceReviewContext?.shouldShowTab);
     if (!shouldShowReviewTab || tabs.includes("review")) {
       return tabs;
     }
@@ -684,7 +797,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   ]);
   const visibleTabs = useMemo(
     () => [
-      ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
+      ...ARTIFACT_TABS.filter((tab) =>
+        availableArtifactTabIds.includes(tab.id),
+      ),
       ...(automationId ? [AUTOMATION_TAB] : []),
       ...(showPullRequestTab ? [PR_TAB] : []),
       ...(showJiraTab ? [JIRA_TAB] : []),
@@ -707,38 +822,30 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     automationId && conversation?.agentMode === "automation"
       ? "automation"
       : workspaceReviewContext?.shouldShowTab || reviewArtifactId
-      ? "review"
-      : showPullRequestTab
-        ? "pr"
-        : showJiraTab
-          ? "jira"
-          : showLinearTab
-            ? "linear"
-            : showGranolaTab
-              ? "granola"
-              : visibleTabs.some((tab) => tab.id === "plan")
-                ? "plan"
-                : visibleTabs.some((tab) => tab.id === "issues")
-                  ? "issues"
-                  : visibleTabs.some((tab) => tab.id === "review")
-                    ? "review"
-                    : "plan";
-  const shouldPreferReviewOverEmptyPlan =
-    activeTab === "plan" &&
-    !planArtifactId &&
-    canStartPlan &&
-    (workspaceReviewContext?.shouldShowTab || reviewArtifactId);
+        ? "review"
+        : showPullRequestTab
+          ? "pr"
+          : showJiraTab
+            ? "jira"
+            : showLinearTab
+              ? "linear"
+              : showGranolaTab
+                ? "granola"
+                : visibleTabs.some((tab) => tab.id === "plan")
+                  ? "plan"
+                  : visibleTabs.some((tab) => tab.id === "issues")
+                    ? "issues"
+                    : visibleTabs.some((tab) => tab.id === "review")
+                      ? "review"
+                      : "plan";
   const shouldPreferAutomationOverPlan =
     activeTab === "plan" &&
     automationId &&
     conversation?.agentMode === "automation" &&
     visibleTabs.some((tab) => tab.id === "automation");
-  const effectiveActiveTab =
-    shouldPreferReviewOverEmptyPlan
-      ? "review"
-      : shouldPreferAutomationOverPlan
-      ? "automation"
-      : visibleTabs.some((tab) => tab.id === activeTab)
+  const effectiveActiveTab = shouldPreferAutomationOverPlan
+    ? "automation"
+    : visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
@@ -755,19 +862,35 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const isWorkspaceReviewActionPending =
     startWorkspaceReviewMutation.isPending &&
     startWorkspaceReviewMutation.variables?.conversationId === conversationId;
+  const isWorkspaceReviewFixIssuesPending =
+    startWorkspaceReviewFixerMutation.isPending &&
+    startWorkspaceReviewFixerMutation.variables?.conversationId ===
+      conversationId;
   const workspaceReviewStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewMutation.data,
     conversationId,
   );
+  const workspaceReviewFixerStartResult = workspaceReviewContextForConversation(
+    startWorkspaceReviewFixerMutation.data,
+    conversationId,
+  );
   const reviewDisplayContext = isWorkspaceReviewActionPending
-    ? workspaceReviewStartResult ?? workspaceReviewContext
-    : workspaceReviewContext ?? workspaceReviewStartResult;
+    ? (workspaceReviewStartResult ?? workspaceReviewContext)
+    : isWorkspaceReviewFixIssuesPending
+      ? (workspaceReviewFixerStartResult ?? workspaceReviewContext)
+      : (workspaceReviewContext ??
+        workspaceReviewStartResult ??
+        workspaceReviewFixerStartResult);
   const isWorkspaceReviewRunning =
     isWorkspaceReviewActionPending ||
+    isWorkspaceReviewFixIssuesPending ||
     reviewDisplayContext?.monitor.status === "reviewing" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "reviewing";
   const workspaceReviewBlocked =
-    (isWorkspaceReviewActionPending && Boolean(startWorkspaceReviewMutation.error)) ||
+    (isWorkspaceReviewActionPending &&
+      Boolean(startWorkspaceReviewMutation.error)) ||
+    (isWorkspaceReviewFixIssuesPending &&
+      Boolean(startWorkspaceReviewFixerMutation.error)) ||
     reviewDisplayContext?.monitor.status === "blocked" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "blocking" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "failed" ||
@@ -776,7 +899,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const reviewTabIconColor = (() => {
     if (isWorkspaceReviewRunning) return "var(--accent-primary)";
     if (workspaceReviewBlocked) return "var(--status-error)";
-    if (hasPassedWorkspaceReview(reviewDisplayContext)) return "var(--status-success)";
+    if (hasPassedWorkspaceReview(reviewDisplayContext))
+      return "var(--status-success)";
     if (
       reviewDisplayContext?.isOutdated ||
       reviewDisplayContext?.monitor.reviewGateStatus === "required"
@@ -820,16 +944,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     !!attachedSessionId &&
     (planArtifactQuery.isFetching || sessionQuery.isFetching);
   const verificationQuery = useVerificationStatus(
-    shouldLoadVerificationData ? attachedSessionId ?? undefined : undefined,
+    shouldLoadVerificationData ? (attachedSessionId ?? undefined) : undefined,
   );
   const dependencyQuery = useDependencyGraph(
-    shouldLoadDependencyGraph ? attachedSessionId ?? "" : "",
+    shouldLoadDependencyGraph ? (attachedSessionId ?? "") : "",
   );
   const verificationData =
     attachedSessionId && verificationQuery.data?.sessionId === attachedSessionId
       ? verificationQuery.data
       : null;
-  const dependencyGraph = attachedSessionId && sessionData ? dependencyQuery.data ?? null : null;
+  const dependencyGraph =
+    attachedSessionId && sessionData ? (dependencyQuery.data ?? null) : null;
   const verificationState =
     displayedVerificationStatus?.status ??
     verificationData?.status ??
@@ -842,7 +967,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     false;
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
-      queryClient.setQueryData(["agents", "artifact", updatedPlan.id], updatedPlan);
+      queryClient.setQueryData(
+        ["agents", "artifact", updatedPlan.id],
+        updatedPlan,
+      );
       if (attachedSessionId) {
         queryClient.setQueryData(
           ["agents", "session-plan", attachedSessionId, updatedPlan.id],
@@ -862,7 +990,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         agentWorkspaceKeys.workspace(result.workspace.conversationId),
         result.workspace,
       );
-      queryClient.setQueryData(["agents", "artifact", result.artifact.id], result.artifact);
+      queryClient.setQueryData(
+        ["agents", "artifact", result.artifact.id],
+        result.artifact,
+      );
       queryClient.setQueryData(
         ["agents", "session-plan", result.sessionId, result.artifact.id],
         result.artifact,
@@ -871,33 +1002,65 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ["agents", "plan-approval", result.sessionId],
         result.artifact,
       );
-      void invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
-      void invalidateConversationDataQueries(queryClient, result.conversation.id);
+      void invalidateWorkspaceQueries(
+        queryClient,
+        result.workspace.conversationId,
+      );
+      void invalidateConversationDataQueries(
+        queryClient,
+        result.conversation.id,
+      );
       void queryClient.invalidateQueries({
         queryKey: ideationKeys.sessionWithData(result.sessionId),
       });
       if (result.conversation.contextType === "project") {
         void queryClient.invalidateQueries({
-          queryKey: agentConversationKeys.project(result.conversation.contextId),
+          queryKey: agentConversationKeys.project(
+            result.conversation.contextId,
+          ),
         });
       }
     },
     [queryClient],
   );
-  const handleStartReview = useCallback((force: boolean) => {
+  const handleStartReview = useCallback(
+    (force: boolean) => {
+      if (
+        !conversationId ||
+        isWorkspaceReviewActionPending ||
+        isWorkspaceReviewFixIssuesPending ||
+        isWorkspaceRuntimeGenerating
+      ) {
+        return;
+      }
+      startWorkspaceReviewMutation.mutate({ conversationId, force });
+    },
+    [
+      conversationId,
+      isWorkspaceReviewActionPending,
+      isWorkspaceReviewFixIssuesPending,
+      isWorkspaceRuntimeGenerating,
+      startWorkspaceReviewMutation,
+    ],
+  );
+  const handleFixReviewIssues = useCallback(() => {
     if (
       !conversationId ||
       isWorkspaceReviewActionPending ||
-      isWorkspaceRuntimeGenerating
+      isWorkspaceReviewFixIssuesPending ||
+      isWorkspaceRuntimeGenerating ||
+      isPublishingWorkspace
     ) {
       return;
     }
-    startWorkspaceReviewMutation.mutate({ conversationId, force });
+    startWorkspaceReviewFixerMutation.mutate({ conversationId });
   }, [
     conversationId,
+    isPublishingWorkspace,
     isWorkspaceReviewActionPending,
+    isWorkspaceReviewFixIssuesPending,
     isWorkspaceRuntimeGenerating,
-    startWorkspaceReviewMutation,
+    startWorkspaceReviewFixerMutation,
   ]);
   const handleFocusWorkspaceReview = useCallback(() => {
     const reviewConversationId =
@@ -987,7 +1150,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 }}
                 className={cn(
                   "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[0.75rem] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
-                  id === "tasks" ? "hidden xl:flex" : ""
+                  id === "tasks" ? "hidden xl:flex" : "",
                 )}
                 style={{
                   color: isActive ? "var(--text-primary)" : "var(--text-muted)",
@@ -998,7 +1161,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 data-theme-button-skip="true"
               >
                 <Icon
-                  className={cn("w-4 h-4 shrink-0", iconPulse ? "animate-pulse" : "")}
+                  className={cn(
+                    "w-4 h-4 shrink-0",
+                    iconPulse ? "animate-pulse" : "",
+                  )}
                   style={iconColor ? { color: iconColor } : undefined}
                 />
                 <span>{label}</span>
@@ -1016,7 +1182,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                       background: isActive
                         ? withAlpha("var(--accent-primary)", 15)
                         : "var(--overlay-weak)",
-                      color: isActive ? "var(--accent-primary)" : "var(--text-muted)",
+                      color: isActive
+                        ? "var(--accent-primary)"
+                        : "var(--text-muted)",
                     }}
                   >
                     {count}
@@ -1052,8 +1220,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     onClick={() => onTaskModeChange("graph")}
                     className="h-7 w-7 p-0"
                     style={{
-                      color: taskMode === "graph" ? "var(--accent-primary)" : "var(--text-muted)",
-                      background: taskMode === "graph" ? "var(--accent-muted)" : "transparent",
+                      color:
+                        taskMode === "graph"
+                          ? "var(--accent-primary)"
+                          : "var(--text-muted)",
+                      background:
+                        taskMode === "graph"
+                          ? "var(--accent-muted)"
+                          : "transparent",
                     }}
                     aria-label="Graph"
                   >
@@ -1073,8 +1247,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     onClick={() => onTaskModeChange("kanban")}
                     className="h-7 w-7 p-0"
                     style={{
-                      color: taskMode === "kanban" ? "var(--accent-primary)" : "var(--text-muted)",
-                      background: taskMode === "kanban" ? "var(--accent-muted)" : "transparent",
+                      color:
+                        taskMode === "kanban"
+                          ? "var(--accent-primary)"
+                          : "var(--text-muted)",
+                      background:
+                        taskMode === "kanban"
+                          ? "var(--accent-muted)"
+                          : "transparent",
                     }}
                     aria-label="Kanban"
                   >
@@ -1133,7 +1313,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           reviewContext={workspaceReviewContext}
           reviewStartResult={workspaceReviewStartResult}
           reviewStartError={
-            isWorkspaceReviewActionPending ? startWorkspaceReviewMutation.error : null
+            isWorkspaceReviewActionPending
+              ? startWorkspaceReviewMutation.error
+              : isWorkspaceReviewFixIssuesPending
+                ? startWorkspaceReviewFixerMutation.error
+                : null
           }
           isReviewLoading={
             Boolean(reviewArtifactId) &&
@@ -1141,8 +1325,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             reviewArtifactQuery.isFetching
           }
           isReviewActionPending={isWorkspaceReviewActionPending}
+          isFixIssuesActionPending={isWorkspaceReviewFixIssuesPending}
           isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
           onStartReview={handleStartReview}
+          onFixIssues={handleFixReviewIssues}
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
@@ -1150,7 +1336,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           dependencyGraph={dependencyGraph}
           proposals={proposals}
           implementationTaskCounts={implementationTaskCounts}
-          hasImplementationWork={hasImplementationWork}
+          hasImplementationAttempt={hasImplementationAttempt}
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
           publishFocusRequest={publishFocusRequest}
@@ -1192,8 +1378,10 @@ type ArtifactContentProps = {
   reviewStartError: Error | null;
   isReviewLoading: boolean;
   isReviewActionPending: boolean;
+  isFixIssuesActionPending: boolean;
   isWorkspaceRuntimeGenerating: boolean;
   onStartReview: (force: boolean) => void;
+  onFixIssues: () => void;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -1201,15 +1389,18 @@ type ArtifactContentProps = {
   dependencyGraph: DependencyGraphResponse | null;
   proposals: TaskProposal[];
   implementationTaskCounts: StatusCounts;
-  hasImplementationWork: boolean;
+  hasImplementationAttempt: boolean;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
-  onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
-  onDisplayedVerificationStatusChange: (status: {
-    status: VerificationStatus;
-    inProgress: boolean;
-  } | null) => void;
+  onFocusVerificationSession:
+    ((parentSessionId: string, childSessionId: string) => void) | undefined;
+  onDisplayedVerificationStatusChange: (
+    status: {
+      status: VerificationStatus;
+      inProgress: boolean;
+    } | null,
+  ) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
   onOpenReview: () => void;
@@ -1242,8 +1433,10 @@ function ArtifactContent({
   reviewStartError,
   isReviewLoading,
   isReviewActionPending,
+  isFixIssuesActionPending,
   isWorkspaceRuntimeGenerating,
   onStartReview,
+  onFixIssues,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -1251,7 +1444,7 @@ function ArtifactContent({
   dependencyGraph,
   proposals,
   implementationTaskCounts,
-  hasImplementationWork,
+  hasImplementationAttempt,
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
@@ -1344,7 +1537,7 @@ function ArtifactContent({
 
   if (activeTab === "pr") {
     return (
-      <Suspense fallback={<EmptyArtifactState title="Loading pull request..." />}>
+      <Suspense fallback={<ArtifactLoadingState title="Loading pull request..." />}>
         <LazyPullRequestDetailPanel workspace={workspace} />
       </Suspense>
     );
@@ -1370,10 +1563,12 @@ function ArtifactContent({
         reviewStartError={reviewStartError}
         isReviewLoading={isReviewLoading}
         isReviewActionPending={isReviewActionPending}
+        isFixIssuesActionPending={isFixIssuesActionPending}
         isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
         isPublishingWorkspace={isPublishingWorkspace}
         onOpenPublish={onOpenPublish}
         onStartReview={onStartReview}
+        onFixIssues={onFixIssues}
       />
     );
   }
@@ -1410,7 +1605,7 @@ function ArtifactContent({
         proposals={proposals}
         dependencyGraph={dependencyGraph}
         implementationTaskCounts={implementationTaskCounts}
-        hasImplementationWork={hasImplementationWork}
+        hasImplementationAttempt={hasImplementationAttempt}
         onPlanUpdated={onPlanUpdated}
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
@@ -1439,11 +1634,17 @@ function ArtifactContent({
     }
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <Suspense fallback={<EmptyArtifactState title="Loading verification..." />}>
+        <Suspense
+          fallback={<EmptyArtifactState title="Loading verification..." />}
+        >
           <LazyVerificationPanel
             session={session}
-            onDisplayedVerificationChildChange={handleDisplayedVerificationChildChange}
-            onDisplayedVerificationStatusChange={handleDisplayedVerificationStatusChange}
+            onDisplayedVerificationChildChange={
+              handleDisplayedVerificationChildChange
+            }
+            onDisplayedVerificationStatusChange={
+              handleDisplayedVerificationStatusChange
+            }
           />
         </Suspense>
       </div>
@@ -1471,7 +1672,7 @@ function AgentPlanPanel({
   proposals,
   dependencyGraph,
   implementationTaskCounts,
-  hasImplementationWork,
+  hasImplementationAttempt,
   onPlanUpdated,
   verificationState,
   verificationInProgress,
@@ -1487,7 +1688,7 @@ function AgentPlanPanel({
   proposals: TaskProposal[];
   dependencyGraph: DependencyGraphResponse | null;
   implementationTaskCounts: StatusCounts;
-  hasImplementationWork: boolean;
+  hasImplementationAttempt: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
@@ -1496,17 +1697,25 @@ function AgentPlanPanel({
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
-  const [planBodyMode, setPlanBodyMode] =
-    useState<PlanDisplayBodyMode>("plan");
+  const [planBodyMode, setPlanBodyMode] = useState<PlanDisplayBodyMode>("plan");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [isApprovingPlan, setIsApprovingPlan] = useState(false);
-  const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
-  const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
-  const [viewingProposalId, setViewingProposalId] = useState<string | null>(null);
-  const [viewingEnrichment, setViewingEnrichment] = useState<ProposalDetailEnrichment | undefined>(undefined);
+  const [isStartingPlanVerification, setIsStartingPlanVerification] =
+    useState(false);
+  const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] =
+    useState(false);
+  const [viewingProposalId, setViewingProposalId] = useState<string | null>(
+    null,
+  );
+  const [viewingEnrichment, setViewingEnrichment] = useState<
+    ProposalDetailEnrichment | undefined
+  >(undefined);
   const queryClient = useQueryClient();
-  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
-  const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } =
+    useConfirmation();
+  const setFocusedAgentProject = useAgentSessionStore(
+    (s) => s.setFocusedProject,
+  );
   const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setStartConversationDraft = useAgentSessionStore(
     (s) => s.setStartConversationDraft,
@@ -1538,13 +1747,14 @@ function AgentPlanPanel({
     [dependencyGraph?.criticalPath],
   );
   const viewingProposal = viewingProposalId
-    ? proposals.find((proposal) => proposal.id === viewingProposalId) ?? null
+    ? (proposals.find((proposal) => proposal.id === viewingProposalId) ?? null)
     : null;
   const linkedProposalsCount = useMemo(
     () =>
       planArtifact
-        ? proposals.filter((proposal) => proposal.planArtifactId === planArtifact.id)
-            .length
+        ? proposals.filter(
+            (proposal) => proposal.planArtifactId === planArtifact.id,
+          ).length
         : 0,
     [planArtifact, proposals],
   );
@@ -1587,7 +1797,11 @@ function AgentPlanPanel({
         void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
       }
 
-      await chatApi.sendAgentMessage("ideation", session.id, PLAN_TO_PROPOSALS_REQUEST);
+      await chatApi.sendAgentMessage(
+        "ideation",
+        session.id,
+        PLAN_TO_PROPOSALS_REQUEST,
+      );
     } catch (err) {
       console.error("Failed to create proposals:", err);
       toast.error("Failed to request proposal creation");
@@ -1597,11 +1811,11 @@ function AgentPlanPanel({
   const isPlanningSession = session?.sessionFlow === "planning";
   const isOwnedCurrentPlan = Boolean(
     isPlanningSession &&
-      session?.planArtifactId &&
-      planArtifact?.id === session.planArtifactId,
+    session?.planArtifactId &&
+    planArtifact?.id === session.planArtifactId,
   );
   const planApprovalStatus = isOwnedCurrentPlan
-    ? planArtifact?.planApproval?.status ?? "draft"
+    ? (planArtifact?.planApproval?.status ?? "draft")
     : undefined;
   const planReferenceStatus =
     planArtifact?.planApproval?.status ??
@@ -1611,17 +1825,21 @@ function AgentPlanPanel({
         ? "draft"
         : undefined);
   const planReferenceSessionId = session?.id ?? null;
-  const planReferenceProjectId = session?.projectId ?? workspace?.projectId ?? null;
+  const planReferenceProjectId =
+    session?.projectId ?? workspace?.projectId ?? null;
   const isPlanApproved = planApprovalStatus === "approved";
   const canShowPlanModeControls =
     workspace?.mode === "plan" &&
     activeWorkspaceFreshness?.hasUncommittedChanges !== true;
   const canApprovePlan =
-    canShowPlanModeControls && isOwnedCurrentPlan && planApprovalStatus === "draft";
+    canShowPlanModeControls &&
+    isOwnedCurrentPlan &&
+    planApprovalStatus === "draft";
   const canShowApprovedPlanActions =
     canShowPlanModeControls && !isImplementingPlanDirectly;
   const isPlanVerificationSatisfied =
-    verificationState === "verified" || verificationState === "imported_verified";
+    verificationState === "verified" ||
+    verificationState === "imported_verified";
   const canVerifyPlan =
     canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
@@ -1632,10 +1850,10 @@ function AgentPlanPanel({
     (!isPlanningSession || isPlanApproved);
   const canImplementDirectly = Boolean(
     canShowApprovedPlanActions &&
-      isOwnedCurrentPlan &&
-      isPlanApproved &&
-      session?.projectId &&
-      workspace?.conversationId,
+    isOwnedCurrentPlan &&
+    isPlanApproved &&
+    session?.projectId &&
+    workspace?.conversationId,
   );
   const planComplexityQuery = useQuery({
     queryKey: [
@@ -1648,9 +1866,9 @@ function AgentPlanPanel({
     queryFn: () => artifactApi.getPlanComplexityAssessment(session!.id),
     enabled: Boolean(
       session &&
-        isOwnedCurrentPlan &&
-        isPlanApproved &&
-        canShowApprovedPlanActions,
+      isOwnedCurrentPlan &&
+      isPlanApproved &&
+      canShowApprovedPlanActions,
     ),
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
@@ -1667,10 +1885,9 @@ function AgentPlanPanel({
     isAssessing: isPlanRecommendationPending,
     canChoose: canImplementDirectly && canCreateProposals,
   });
-  const isAcceptedPlan =
-    session?.status === "accepted" || session?.acceptanceStatus === "accepted";
+  const isAcceptedPlan = session?.status === "accepted";
   const canRestartImplementation = Boolean(
-    isAcceptedPlan && hasImplementationWork && session?.id,
+    isAcceptedPlan && implementationTaskCounts.total > 0 && session?.id,
   );
   const workspaceConversationId = workspace?.conversationId ?? null;
 
@@ -1699,7 +1916,9 @@ function AgentPlanPanel({
       toast.success("Plan approved");
     } catch (err) {
       console.error("Failed to approve plan:", err);
-      toast.error(err instanceof Error ? err.message : "Failed to approve plan");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to approve plan",
+      );
     } finally {
       setIsApprovingPlan(false);
     }
@@ -1739,7 +1958,9 @@ function AgentPlanPanel({
       toast.success("Implementation started");
     } catch (err) {
       console.error("Failed to implement plan directly:", err);
-      toast.error(err instanceof Error ? err.message : "Failed to start implementation");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to start implementation",
+      );
     } finally {
       setIsImplementingPlanDirectly(false);
     }
@@ -1799,8 +2020,12 @@ function AgentPlanPanel({
 
       await verificationApi.confirm(session.id, disabledSpecialists);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: verificationStatusKey(session.id) }),
-        queryClient.invalidateQueries({ queryKey: ideationKeys.sessionWithData(session.id) }),
+        queryClient.invalidateQueries({
+          queryKey: verificationStatusKey(session.id),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ideationKeys.sessionWithData(session.id),
+        }),
         queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
       ]);
       onOpenVerification();
@@ -1808,12 +2033,20 @@ function AgentPlanPanel({
     } catch (err) {
       console.error("Failed to start plan verification:", err);
       toast.error(
-        err instanceof Error ? err.message : "Failed to start plan verification",
+        err instanceof Error
+          ? err.message
+          : "Failed to start plan verification",
       );
     } finally {
       setIsStartingPlanVerification(false);
     }
-  }, [canVerifyPlan, onOpenVerification, queryClient, session, verificationInProgress]);
+  }, [
+    canVerifyPlan,
+    onOpenVerification,
+    queryClient,
+    session,
+    verificationInProgress,
+  ]);
 
   const handleRestartImplementation = useCallback(() => {
     if (!session || !canRestartImplementation) {
@@ -1829,12 +2062,16 @@ function AgentPlanPanel({
       variant: "destructive",
       onConfirm: async () => {
         try {
-          const result = await restartImplementationMutation.mutateAsync(session.id);
+          const result = await restartImplementationMutation.mutateAsync(
+            session.id,
+          );
           await Promise.all([
             queryClient.invalidateQueries({
               queryKey: ideationKeys.sessionWithData(session.id),
             }),
-            queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
+            queryClient.invalidateQueries({
+              queryKey: ideationKeys.sessions(),
+            }),
             queryClient.invalidateQueries({ queryKey: taskKeys.lists() }),
             ...(workspaceConversationId
               ? [
@@ -1853,9 +2090,7 @@ function AgentPlanPanel({
           );
         } catch (err) {
           toast.error(
-            err instanceof Error
-              ? err.message
-              : "Failed to restart implementation",
+            extractErrorMessage(err, "Failed to restart implementation"),
           );
           throw err;
         }
@@ -1879,7 +2114,9 @@ function AgentPlanPanel({
     <div className="min-h-full px-4 pb-4 pt-4">
       {planArtifact ? (
         isEditing ? (
-          <Suspense fallback={<EmptyArtifactState title="Loading plan editor..." />}>
+          <Suspense
+            fallback={<EmptyArtifactState title="Loading plan editor..." />}
+          >
             <LazyPlanEditor
               plan={planArtifact}
               onSave={(updated) => {
@@ -1891,7 +2128,7 @@ function AgentPlanPanel({
           </Suspense>
         ) : (
           <>
-            {hasImplementationWork && (
+            {hasImplementationAttempt && (
               <AcceptedPlanProgressBanner
                 counts={implementationTaskCounts}
                 acceptedAt={session?.convertedAt ?? null}
@@ -1914,7 +2151,8 @@ function AgentPlanPanel({
                 onEdit={() => setIsEditing(true)}
                 onExport={() => setExportDialogOpen(true)}
                 {...(planReferenceSessionId && {
-                  onStartNewConversationWithPlan: handleStartNewConversationWithPlan,
+                  onStartNewConversationWithPlan:
+                    handleStartNewConversationWithPlan,
                 })}
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}
@@ -1942,48 +2180,60 @@ function AgentPlanPanel({
                   isPlanActionRecommendationPending: true,
                 })}
                 {...(planActionHint && { planActionHint })}
-                {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}
+                {...(canCreateProposals && {
+                  onCreateProposals: handleCreateProposals,
+                })}
                 {...(isPlanningSession && {
                   createProposalsLabel: "Create Proposals",
                 })}
               />
             </Suspense>
-            {planBodyMode === "proposals" && session && proposals.length > 0 && (
-              <>
-                <Suspense fallback={<EmptyArtifactState title="Loading proposals..." />}>
-                  <LazyProposalsTabContent
-                    session={session}
-                    proposals={proposals}
-                    dependencyGraph={dependencyGraph}
-                    criticalPathSet={criticalPathSet}
-                    highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
-                    isReadOnly
-                    onEditProposal={noop}
-                    onNavigateToTask={noop}
-                    onViewProposal={handleViewProposal}
-                    {...(viewingProposalId != null && { selectedProposalId: viewingProposalId })}
-                    onViewHistoricalPlan={noop}
-                    onImportPlan={noop}
-                    onClearAll={noop}
-                    onAcceptPlan={noop}
-                    onReviewSync={noop}
-                    onUndoSync={noop}
-                    onDismissSync={noop}
-                    hideToolbar
-                  />
-                </Suspense>
-                {viewingProposal && (
-                  <Suspense fallback={null}>
-                    <LazyProposalDetailSheet
-                      proposal={viewingProposal}
-                      {...(viewingEnrichment !== undefined && { enrichment: viewingEnrichment })}
+            {planBodyMode === "proposals" &&
+              session &&
+              proposals.length > 0 && (
+                <>
+                  <Suspense
+                    fallback={
+                      <EmptyArtifactState title="Loading proposals..." />
+                    }
+                  >
+                    <LazyProposalsTabContent
+                      session={session}
+                      proposals={proposals}
+                      dependencyGraph={dependencyGraph}
+                      criticalPathSet={criticalPathSet}
+                      highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
                       isReadOnly
-                      onClose={handleCloseProposalDetail}
+                      onEditProposal={noop}
+                      onNavigateToTask={noop}
+                      onViewProposal={handleViewProposal}
+                      {...(viewingProposalId != null && {
+                        selectedProposalId: viewingProposalId,
+                      })}
+                      onViewHistoricalPlan={noop}
+                      onImportPlan={noop}
+                      onClearAll={noop}
+                      onAcceptPlan={noop}
+                      onReviewSync={noop}
+                      onUndoSync={noop}
+                      onDismissSync={noop}
+                      hideToolbar
                     />
                   </Suspense>
-                )}
-              </>
-            )}
+                  {viewingProposal && (
+                    <Suspense fallback={null}>
+                      <LazyProposalDetailSheet
+                        proposal={viewingProposal}
+                        {...(viewingEnrichment !== undefined && {
+                          enrichment: viewingEnrichment,
+                        })}
+                        isReadOnly
+                        onClose={handleCloseProposalDetail}
+                      />
+                    </Suspense>
+                  )}
+                </>
+              )}
             <ConfirmationDialog {...confirmationDialogProps} />
           </>
         )
@@ -2054,7 +2304,9 @@ function TaskArtifactSurface({
   if (mode === "kanban") {
     return (
       <div className="relative h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
-        <Suspense fallback={<EmptyArtifactState title="Loading task board..." />}>
+        <Suspense
+          fallback={<EmptyArtifactState title="Loading task board..." />}
+        >
           <LazyTaskBoard
             projectId={projectId}
             ideationSessionId={sessionId}

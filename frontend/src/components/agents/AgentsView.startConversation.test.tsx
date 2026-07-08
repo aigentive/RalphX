@@ -26,6 +26,7 @@ import {
 } from "./agentsTestFixtures";
 import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
 import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
+import { LINKED_SETUP_FAILURE_MARKER } from "./agentStartErrors";
 import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
@@ -434,6 +435,10 @@ describe("AgentsView start conversation", () => {
         })
       )
     );
+    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "conversationId"
+    );
     await waitFor(() =>
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-2",
@@ -478,7 +483,7 @@ describe("AgentsView start conversation", () => {
     invalidateSpy.mockRestore();
   });
 
-  it("starts a new conversation from a selected pull request head branch", async () => {
+  it("starts a selected pull request in isolated branch mode by default", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
     loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
@@ -502,7 +507,7 @@ describe("AgentsView start conversation", () => {
     );
     expect(
       screen.getByRole("switch", { name: /Use isolated branch/i })
-    ).toHaveAttribute("aria-checked", "false");
+    ).toHaveAttribute("aria-checked", "true");
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "review this PR" },
     });
@@ -515,7 +520,7 @@ describe("AgentsView start conversation", () => {
           content: "review this PR",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "linked",
+            branchMode: "isolated",
             ref: "feature/pr-picker",
             displayName: "PR #42: Add PR picker",
             sourcePullRequest: expect.objectContaining({
@@ -530,7 +535,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("starts a selected pull request in isolated branch mode when enabled", async () => {
+  it("starts a selected pull request in linked branch mode after explicit opt-out", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
     loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
@@ -548,21 +553,22 @@ describe("AgentsView start conversation", () => {
     const isolatedSwitch = screen.getByRole("switch", {
       name: /Use isolated branch/i,
     });
-    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
     await user.click(isolatedSwitch);
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "review this PR separately" },
+      target: { value: "review this PR directly" },
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
     await waitFor(() =>
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          content: "review this PR separately",
+          content: "review this PR directly",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "isolated",
+            branchMode: "linked",
             ref: "feature/pr-picker",
             sourcePullRequest: expect.objectContaining({
               number: 42,
@@ -570,6 +576,114 @@ describe("AgentsView start conversation", () => {
             }),
           }),
         })
+      )
+    );
+  });
+
+  it("shows linked setup failure inline and retries the same no-file start with isolation", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
+    startAgentConversationMock
+      .mockRejectedValueOnce(
+        new Error(
+          `${LINKED_SETUP_FAILURE_MARKER} Selected branch 'feature/pr-picker' is already checked out; choose isolated branch mode`
+        )
+      )
+      .mockResolvedValueOnce({
+        conversation: conversation({
+          id: "conversation-linked-retry",
+          contextId: "project-1",
+          title: null,
+        }),
+        workspace: conversationWorkspace({
+          conversationId: "conversation-linked-retry",
+        }),
+        sendResult: {
+          conversationId: "conversation-linked-retry",
+          agentRunId: "run-linked-retry",
+          isNewConversation: true,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    const prOption = await screen.findByText("#42 Add PR picker");
+    await user.click(prOption.closest("button") as HTMLButtonElement);
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    await user.click(isolatedSwitch);
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this PR directly" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(1));
+    expect(createConversationMock).not.toHaveBeenCalled();
+    const linkedPayload = startAgentConversationMock.mock.calls[0]?.[0];
+    expect(linkedPayload).not.toHaveProperty("conversationId");
+    expect(linkedPayload).toEqual(
+      expect.objectContaining({
+        content: "review this PR directly",
+        base: expect.objectContaining({
+          ref: "feature/pr-picker",
+          branchMode: "linked",
+          sourcePullRequest: expect.objectContaining({
+            number: 42,
+            headRefName: "feature/pr-picker",
+          }),
+        }),
+      })
+    );
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().startConversationFailure).toEqual(
+        expect.objectContaining({
+          kind: "linked_setup",
+          message: expect.stringContaining("feature/pr-picker"),
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull()
+    );
+
+    const linkedError = await screen.findByTestId("agents-start-linked-setup-error");
+    expect(linkedError).toHaveTextContent("Linked branch setup failed");
+    expect(linkedError).toHaveTextContent("Selected branch 'feature/pr-picker'");
+    expect(linkedError).toHaveTextContent("Branch isolation creates a separate RalphX branch");
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "review this PR directly"
+    );
+
+    await user.click(screen.getByTestId("agents-start-linked-setup-retry"));
+
+    await waitFor(() => expect(startAgentConversationMock).toHaveBeenCalledTimes(2));
+    const retryPayload = startAgentConversationMock.mock.calls[1]?.[0];
+    expect(retryPayload).not.toHaveProperty("conversationId");
+    expect(retryPayload).toEqual(
+      expect.objectContaining({
+        content: "review this PR directly",
+        base: expect.objectContaining({
+          ref: "feature/pr-picker",
+          branchMode: "isolated",
+          sourcePullRequest: expect.objectContaining({
+            number: 42,
+            headRefName: "feature/pr-picker",
+          }),
+        }),
+      })
+    );
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+        "conversation-linked-retry"
       )
     );
   });
@@ -650,7 +764,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("auto-selects a ticket's linked pull request as the start base", async () => {
+  it("keeps the project default base when a ticket reference has linked PRs", async () => {
     mockAgentViewData();
     getTicketAssociationsMock.mockResolvedValue({
       tasks: [],
@@ -697,15 +811,11 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
-        provider: "jira",
-        ticketRef: { provider: "jira", id: "10088", key: "RX-88" },
-        projectId: "project-1",
-      })
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "Project default (main)"
+      )
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("PR #88")
-    );
+    expect(getTicketAssociationsMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
@@ -715,16 +825,10 @@ describe("AgentsView start conversation", () => {
           projectId: "project-1",
           content: "continue the ticket work",
           base: expect.objectContaining({
-            kind: "local_branch",
-            branchMode: "linked",
-            ref: "feature/ticket-pr",
-            displayName: "PR #88",
-            sourcePullRequest: expect.objectContaining({
-              number: 88,
-              url: "https://github.com/owner/repo/pull/88",
-              headRefName: "feature/ticket-pr",
-              baseRefName: "main",
-            }),
+            kind: "project_default",
+            branchMode: "isolated",
+            ref: "main",
+            displayName: "Project default (main)",
           }),
           composerIntegrationReferences: [
             expect.objectContaining({
@@ -739,9 +843,44 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("falls back to the ticket branch when ticket association lookup fails", async () => {
+  it("preserves a remembered branch base when a ticket reference is attached", async () => {
     mockAgentViewData();
-    getTicketAssociationsMock.mockRejectedValue(new Error("associations unavailable"));
+    const branchOptions: BranchBaseOption[] = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "local_branch:develop",
+        label: "develop",
+        detail: "Local branch",
+        source: "local",
+        selection: {
+          kind: "local_branch",
+          ref: "develop",
+          displayName: "develop",
+        },
+      },
+    ];
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: branchOptions,
+          selectedKey: "local_branch:develop",
+          loadedAt: "2026-05-08T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "local_branch:develop",
+      },
+    });
     useAgentSessionStore.getState().setStartConversationDraft({
       projectId: "project-1",
       content: "continue without a linked PR",
@@ -760,15 +899,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
-        provider: "linear",
-        ticketRef: { provider: "linear", id: "lin-99", key: "ENG-99" },
-        projectId: "project-1",
-      })
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("develop")
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("Ticket ENG-99")
-    );
+    expect(getTicketAssociationsMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
@@ -780,13 +913,90 @@ describe("AgentsView start conversation", () => {
           mode: "plan",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "linked",
-            ref: "ralphx/ticket/linear-eng-99",
-            displayName: "Ticket ENG-99 (ralphx/ticket/linear-eng-99)",
+            branchMode: "isolated",
+            ref: "develop",
+            displayName: "develop",
+          }),
+          composerIntegrationReferences: [
+            expect.objectContaining({
+              provider: "linear",
+              kind: "linear",
+              id: "lin-99",
+              key: "ENG-99",
+            }),
+          ],
+        })
+      )
+    );
+  });
+
+  it("forces isolated branch mode for Review PR starts with PR metadata", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agents-start-mode-chip"));
+    await user.click(screen.getByTestId("agents-start-mode-review_pr"));
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await user.click(await screen.findByText("#42 Add PR picker"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toBeDisabled();
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review selected PR" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "review_pr",
+          content: "review selected PR",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            branchMode: "isolated",
+            ref: "feature/pr-picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+            }),
           }),
         })
       )
     );
+  });
+
+  it("blocks Review PR starts without PR metadata", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agents-start-mode-chip"));
+    await user.click(screen.getByTestId("agents-start-mode-review_pr"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent(
+        "Review PR"
+      )
+    );
+    await user.type(
+      screen.getByTestId("agents-start-textarea"),
+      "review without a PR"
+    );
+    await user.click(screen.getByTestId("agents-start-submit"));
+
+    expect(await screen.findByText("Select a pull request to review.")).toBeInTheDocument();
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
   });
 
   it("keeps a selected pull request visible across later start-from searches", async () => {
@@ -830,33 +1040,21 @@ describe("AgentsView start conversation", () => {
     expect(await screen.findByText("GitHub search failed")).toBeInTheDocument();
   });
 
-  it("paints the conversation shell before the draft conversation IPC resolves", async () => {
+  it("paints the conversation shell before the no-file agent start resolves", async () => {
     mockAgentViewData();
-    const reservedConversation = conversation({
-      id: "conversation-reserved",
+    const resolvedConversation = conversation({
+      id: "conversation-resolved-no-file",
       contextId: "project-1",
       title: null,
     });
-    let resolveCreate: ((value: unknown) => void) | null = null;
-    createConversationMock.mockReturnValue(
+    let resolveStart:
+      | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
+      | null = null;
+    startAgentConversationMock.mockReturnValue(
       new Promise((resolve) => {
-        resolveCreate = resolve;
+        resolveStart = resolve;
       })
     );
-    startAgentConversationMock.mockResolvedValue({
-      conversation: reservedConversation,
-      workspace: conversationWorkspace({
-        conversationId: "conversation-reserved",
-      }),
-      sendResult: {
-        conversationId: "conversation-reserved",
-        agentRunId: "run-reserved",
-        isNewConversation: false,
-        wasQueued: false,
-        queuedAsPending: false,
-        queuedMessageId: null,
-      },
-    });
 
     const { queryClient } = renderAgentsView();
 
@@ -897,21 +1095,36 @@ describe("AgentsView start conversation", () => {
         }),
       ],
     });
-    expect(startAgentConversationMock).not.toHaveBeenCalled();
-
-    resolveCreate?.(reservedConversation);
-
     await waitFor(() =>
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          conversationId: "conversation-reserved",
           content: "start without waiting",
         })
       )
     );
+    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "conversationId"
+    );
+
+    resolveStart?.({
+      conversation: resolvedConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-resolved-no-file",
+      }),
+      sendResult: {
+        conversationId: "conversation-resolved-no-file",
+        agentRunId: "run-resolved-no-file",
+        isNewConversation: true,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+
     await waitFor(() =>
       expect(useAgentSessionStore.getState().selectedConversationId).toBe(
-        "conversation-reserved"
+        "conversation-resolved-no-file"
       )
     );
   });
@@ -925,7 +1138,6 @@ describe("AgentsView start conversation", () => {
       contextId: "project-1",
       title: null,
     });
-    createConversationMock.mockResolvedValue(pausedConversation);
     startAgentConversationMock.mockResolvedValue({
       conversation: pausedConversation,
       workspace: conversationWorkspace({
@@ -958,10 +1170,13 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          conversationId: "conversation-paused",
           content: queuedPrompt,
         })
       )
+    );
+    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "conversationId"
     );
     await waitFor(() =>
       expect(useChatStore.getState().queuedMessages["project:conversation-paused"]).toEqual([
@@ -1253,7 +1468,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByText("Manage models in Settings")).toBeInTheDocument();
   });
 
-  it("paints the conversation shell after seeding before the heavy agent start resolves", async () => {
+  it("paints the attachment-backed conversation shell after seeding before the heavy agent start resolves", async () => {
     mockAgentViewData();
     const seededConversation = conversation({
       id: "conversation-seeded",
@@ -1269,9 +1484,15 @@ describe("AgentsView start conversation", () => {
         resolveStart = resolve;
       })
     );
+    vi.mocked(invoke).mockResolvedValue({ id: "attachment-seeded" });
 
     const { queryClient } = renderAgentsView();
 
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: {
+        files: [new File(["patch"], "change.txt", { type: "text/plain" })],
+      },
+    });
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "fix agent landing flow" },
     });
@@ -1370,28 +1591,14 @@ describe("AgentsView start conversation", () => {
       contextId: "project-1",
       title: null,
     });
-    let resolveCreate:
-      | ((value: Awaited<ReturnType<typeof createConversationMock>>) => void)
+    let resolveStart:
+      | ((value: Awaited<ReturnType<typeof startAgentConversationMock>>) => void)
       | null = null;
-    createConversationMock.mockReturnValue(
+    startAgentConversationMock.mockReturnValue(
       new Promise((resolve) => {
-        resolveCreate = resolve;
+        resolveStart = resolve;
       })
     );
-    startAgentConversationMock.mockResolvedValue({
-      conversation: seededConversation,
-      workspace: conversationWorkspace({
-        conversationId: "conversation-seeded-references",
-      }),
-      sendResult: {
-        conversationId: "conversation-seeded-references",
-        agentRunId: "run-seeded-references",
-        isNewConversation: false,
-        wasQueued: false,
-        queuedAsPending: false,
-        queuedMessageId: null,
-      },
-    });
     const setOptimisticSelectedConversationId = vi.fn();
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -1471,7 +1678,21 @@ describe("AgentsView start conversation", () => {
       ],
     });
 
-    resolveCreate?.(seededConversation);
+    expect(createConversationMock).not.toHaveBeenCalled();
+    resolveStart?.({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-seeded-references",
+      }),
+      sendResult: {
+        conversationId: "conversation-seeded-references",
+        agentRunId: "run-seeded-references",
+        isNewConversation: true,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
     await startPromise;
   });
 
@@ -1647,7 +1868,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("clears optimistic running state when the seeded agent start fails", async () => {
+  it("hides the attachment-backed seeded draft when the seeded agent start fails", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: 0 },
@@ -1661,6 +1882,7 @@ describe("AgentsView start conversation", () => {
     });
     createConversationMock.mockResolvedValue(seededConversation);
     startAgentConversationMock.mockRejectedValue(new Error("backend unavailable"));
+    vi.mocked(invoke).mockResolvedValue({ id: "attachment-failed-start" });
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
@@ -1692,22 +1914,20 @@ describe("AgentsView start conversation", () => {
         },
         mode: "edit",
         base: null,
-        files: [],
+        files: [new File(["draft"], "draft.txt", { type: "text/plain" })],
       })
     ).rejects.toThrow("backend unavailable");
 
+    expect(createConversationMock).toHaveBeenCalledWith("project", "project-1");
+    expect(invoke).toHaveBeenCalledWith("upload_chat_attachment", {
+      input: expect.objectContaining({
+        conversationId: "conversation-failed-start",
+        fileName: "draft.txt",
+      }),
+    });
     expect(
       queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
-    ).toEqual({
-      conversation: expect.objectContaining({ id: "conversation-failed-start" }),
-      messages: [
-        expect.objectContaining({
-          conversationId: "conversation-failed-start",
-          role: "user",
-          content: "start then fail",
-        }),
-      ],
-    });
+    ).toBeUndefined();
     expect(
       useChatStore.getState().agentStatus["project:conversation-failed-start"]
     ).toBeUndefined();

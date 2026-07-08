@@ -50,6 +50,8 @@ pub const DISABLE_ENV_VAR: &str = "RALPHX_DISABLE_LOGIN_SHELL_ENV";
 /// the captured map so the spawn helpers' overrides remain authoritative.
 const MANAGED_KEYS: &[&str] = &[
     "PATH",
+    "RUSTC",
+    "RUSTUP_TOOLCHAIN",
     "TAURI_API_URL",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "CLAUDE_CODE_ENABLE_TASKS",
@@ -72,6 +74,16 @@ pub fn captured() -> Arc<HashMap<String, String>> {
         return Arc::clone(map);
     }
     Arc::clone(CACHE.get_or_init(|| Arc::new(probe_shell_env())))
+}
+
+/// Return the captured login-shell PATH without forwarding it wholesale through
+/// [`apply_to_std`]. The shared subprocess PATH builder consumes this ordering.
+pub(crate) fn captured_path() -> Option<OsString> {
+    captured_path_from_map(&captured())
+}
+
+fn captured_path_from_map(env: &HashMap<String, String>) -> Option<OsString> {
+    env.get("PATH").map(OsString::from)
 }
 
 /// Apply the captured login-shell env to the supplied tokio [`Command`] in a
@@ -103,7 +115,10 @@ fn should_forward(key: &str) -> bool {
     if SHELL_STATE_KEYS.contains(&key) {
         return false;
     }
-    if MANAGED_PREFIXES.iter().any(|prefix| key.starts_with(prefix)) {
+    if MANAGED_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    {
         return false;
     }
     true
@@ -183,6 +198,11 @@ pub(crate) fn set_for_test(map: HashMap<String, String>) {
 #[cfg(test)]
 pub(crate) fn managed_keys_for_test() -> &'static [&'static str] {
     MANAGED_KEYS
+}
+
+#[cfg(test)]
+pub(crate) fn captured_path_from_map_for_test(env: &HashMap<String, String>) -> Option<OsString> {
+    captured_path_from_map(env)
 }
 
 #[cfg(test)]

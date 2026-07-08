@@ -14,9 +14,11 @@ import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
-import type {
-  AgentArtifactTab,
-  AgentRuntimeSelection,
+import {
+  useAgentSessionStore,
+  type AgentArtifactTab,
+  type AgentRuntimeSelection,
+  type AgentTaskArtifactFocusRequest,
 } from "@/stores/agentSessionStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 import { PlanArtifactEventSchema } from "@/types/events";
@@ -68,7 +70,6 @@ import {
 } from "./agentConversations";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
-import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getAgentChatFocusSwitchOptions,
@@ -254,6 +255,12 @@ export function useAgentsViewController({
     setTaskArtifactFocusRequest(null);
     setSelectedTaskArtifactId(null);
   }, [selectedConversationId]);
+  const externalTaskArtifactFocusRequest = useAgentSessionStore((state) =>
+    selectedConversationId
+      ? state.taskArtifactFocusRequestByConversationId[selectedConversationId] ??
+        null
+      : null,
+  );
   useEffect(() => {
     if (!selectedConversationId || activeConversation?.contextType !== "project") {
       return;
@@ -779,6 +786,18 @@ export function useAgentsViewController({
     openArtifactTab,
     selectedConversationId,
   ]);
+  useEffect(() => {
+    if (!externalTaskArtifactFocusRequest || !selectedConversationId) {
+      return;
+    }
+    setSelectedTaskArtifactId(externalTaskArtifactFocusRequest.taskId);
+    setTaskArtifactFocusRequest(externalTaskArtifactFocusRequest);
+    openArtifactTab(selectedConversationId, "tasks");
+  }, [
+    externalTaskArtifactFocusRequest,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
   const handleOpenPlanArtifact = useCallback(() => {
     if (!selectedConversationId) {
       return;
@@ -790,14 +809,11 @@ export function useAgentsViewController({
       if (!selectedConversationId) {
         return;
       }
-      setSelectedTaskArtifactId(taskId);
-      setTaskArtifactFocusRequest((current) => ({
-        taskId,
-        requestId: (current?.requestId ?? 0) + 1,
-      }));
-      openArtifactTab(selectedConversationId, "tasks");
+      useAgentSessionStore
+        .getState()
+        .focusTaskArtifact(selectedConversationId, taskId);
     },
-    [openArtifactTab, selectedConversationId],
+    [selectedConversationId],
   );
 
   const { clearAutoManagedTitle, handleAutoManagedTitle } = useAgentsAutoTitle({
@@ -1030,11 +1046,9 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
-    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
-    setArtifactPaneVisibility,
   });
   useEffect(() => {
     return eventBus.subscribe<{

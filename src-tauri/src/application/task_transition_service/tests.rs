@@ -21,12 +21,68 @@ use crate::error::AppError;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
+use ralphx_events::{EventSink, RecordingEventSink};
 use serde_json::Value;
 
 #[test]
 fn test_tauri_event_emitter_creation() {
-    let emitter: TauriEventEmitter<tauri::Wry> = TauriEventEmitter::new(None);
-    assert!(emitter.app_handle.is_none());
+    let emitter = EnrichedEventEmitter::new(None);
+    assert!(emitter.event_sink.is_none());
+}
+
+#[tokio::test]
+async fn enriched_event_emitter_sends_basic_events_to_event_sink() {
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let emitter = EnrichedEventEmitter::new(Some(sink_arc));
+
+    emitter.emit("agent:run_completed", "task-123").await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "agent:run_completed");
+    assert_eq!(events[0].payload["taskId"], "task-123");
+    assert!(events[0].payload["timestamp"].is_string());
+}
+
+#[tokio::test]
+async fn enriched_event_emitter_sends_payload_events_to_event_sink() {
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let emitter = EnrichedEventEmitter::new(Some(sink_arc));
+
+    emitter
+        .emit_with_payload("task:custom", "task-456", "payload-body")
+        .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:custom");
+    assert_eq!(events[0].payload["taskId"], "task-456");
+    assert_eq!(events[0].payload["payload"], "payload-body");
+    assert!(events[0].payload["timestamp"].is_string());
+}
+
+#[tokio::test]
+async fn enriched_event_emitter_routes_batchable_events_through_throttled_emitter() {
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let throttled = crate::application::ThrottledEmitter::new(Arc::clone(&sink_arc));
+    let emitter = EnrichedEventEmitter::new(Some(sink_arc)).with_throttled_emitter(throttled);
+
+    emitter.emit("task:created", "task-789").await;
+    assert!(
+        sink.events().is_empty(),
+        "batchable events should wait for the throttled flush"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:created");
+    assert_eq!(events[0].payload["taskId"], "task-789");
+    assert!(events[0].payload["timestamp"].is_string());
 }
 
 #[test]
@@ -41,7 +97,7 @@ fn test_no_op_review_starter() {
     // Just verify it can be created
 }
 
-fn build_dependency_manager(app_state: &AppState) -> RepoBackedDependencyManager<tauri::Wry> {
+fn build_dependency_manager(app_state: &AppState) -> RepoBackedDependencyManager {
     RepoBackedDependencyManager::new(
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.task_repo),
@@ -141,7 +197,7 @@ async fn test_is_blocker_complete_with_merge_incomplete_state() {
 // Wave 3: Metadata Merge Tests
 // ============================================================================
 
-fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
+fn build_test_service(app_state: &AppState) -> TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     build_test_service_with_execution_state(app_state, execution_state)
 }
@@ -149,7 +205,7 @@ fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry>
 fn build_test_service_with_execution_state(
     app_state: &AppState,
     execution_state: Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
 
@@ -169,6 +225,153 @@ fn build_test_service_with_execution_state(
         None,
         Arc::clone(&app_state.memory_event_repo),
     )
+}
+
+#[tokio::test]
+async fn with_event_sink_rebuilds_status_change_emitter_without_external_events() {
+    let app_state = AppState::new_test();
+    let project = Project::new("Sink Project".to_string(), "/tmp/sink".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let service = build_test_service(&app_state).with_event_sink(sink_arc);
+
+    service
+        .event_emitter
+        .emit_status_change(task.id.as_str(), "ready", "executing")
+        .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:status_changed");
+    assert_eq!(events[0].payload["task_id"], task.id.to_string());
+    assert_eq!(events[0].payload["project_id"], project.id.to_string());
+    assert_eq!(events[0].payload["old_status"], "ready");
+    assert_eq!(events[0].payload["new_status"], "executing");
+    assert_eq!(events[0].payload["project_name"], "Sink Project");
+    assert_eq!(events[0].payload["task_title"], "Sink Task");
+}
+
+#[tokio::test]
+async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
+    let app_state = AppState::new_test();
+    let project = Project::new("Dual Sink Project".to_string(), "/tmp/dual-sink".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Dual Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let ext_repo: Arc<dyn crate::domain::repositories::ExternalEventsRepository> =
+        Arc::new(crate::infrastructure::memory::MemoryExternalEventsRepository::new());
+    let service = build_test_service(&app_state)
+        .with_event_sink(sink_arc)
+        .with_external_events_repo(Arc::clone(&ext_repo));
+
+    service
+        .event_emitter
+        .emit_status_change(task.id.as_str(), "backlog", "ready")
+        .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:status_changed");
+    assert_eq!(events[0].payload["task_id"], task.id.to_string());
+
+    let db_events = ext_repo
+        .get_events_after_cursor(&[project.id.to_string()], 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(db_events.len(), 1);
+    let db_payload: serde_json::Value = serde_json::from_str(&db_events[0].payload).unwrap();
+    assert_eq!(db_payload["task_id"], task.id.to_string());
+    assert_eq!(db_payload["project_id"], project.id.to_string());
+    assert_eq!(db_payload["old_status"], "backlog");
+    assert_eq!(db_payload["new_status"], "ready");
+}
+
+#[tokio::test]
+async fn corrective_transition_with_exit_emits_task_event_through_event_sink() {
+    let app_state = AppState::new_test();
+    let project = Project::new("Corrective Sink Project".to_string(), "/tmp/corrective".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Corrective Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let service = build_test_service(&app_state).with_event_sink(sink_arc);
+
+    let updated = service
+        .transition_task_corrective_with_exit(
+            &task.id,
+            InternalStatus::Failed,
+            Some("corrective failure".to_string()),
+            "system",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(updated.internal_status, InternalStatus::Failed);
+    let events = sink.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event, "task:event");
+    assert_eq!(events[0].payload["type"], "status_changed");
+    assert_eq!(events[0].payload["taskId"], task.id.to_string());
+    assert_eq!(events[0].payload["from"], "backlog");
+    assert_eq!(events[0].payload["to"], "failed");
+    assert_eq!(events[0].payload["changedBy"], "system");
+    assert_eq!(events[1].event, "task:status_changed");
+    assert_eq!(events[1].payload["task_id"], task.id.to_string());
+    assert_eq!(events[1].payload["old_status"], "backlog");
+    assert_eq!(events[1].payload["new_status"], "failed");
+}
+
+#[test]
+fn into_arc_wires_self_arc_for_task_services() {
+    let app_state = AppState::new_test();
+    let service = build_test_service(&app_state).into_arc();
+
+    let stored = service
+        .self_arc
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("into_arc should wire self_arc")
+        .clone();
+    assert!(Arc::ptr_eq(&stored, &service));
+}
+
+#[test]
+fn execution_entry_guard_releases_in_flight_marker_on_drop() {
+    let execution_state = Arc::new(ExecutionState::new());
+    let task_id = "task-entry-guard";
+
+    assert!(execution_state.try_start_execution_entry(task_id));
+    {
+        let _guard = ExecutionEntryGuard {
+            execution_state: Arc::clone(&execution_state),
+            task_id: task_id.to_string(),
+        };
+        assert!(execution_state.is_execution_entry_in_flight(task_id));
+    }
+
+    assert!(!execution_state.is_execution_entry_in_flight(task_id));
 }
 
 struct StaticPlanPrDescriptionDrafter;
@@ -2746,13 +2949,13 @@ mod enrichment_tests {
         }
     }
 
-    /// Build a TauriEventEmitter wired to recording sinks and repos from AppState.
+    /// Build a EnrichedEventEmitter wired to recording sinks and repos from AppState.
     fn build_recording_emitter(
         app_state: &AppState,
         ext_repo: Arc<MemoryExternalEventsRepository>,
         webhook: Arc<RecordingWebhookPublisher>,
-    ) -> TauriEventEmitter<tauri::Wry> {
-        TauriEventEmitter::new(None)
+    ) -> EnrichedEventEmitter {
+        EnrichedEventEmitter::new(None)
             .with_external_events(
                 Arc::clone(&ext_repo) as Arc<dyn ExternalEventsRepository>,
                 Arc::clone(&app_state.task_repo),
@@ -2760,6 +2963,48 @@ mod enrichment_tests {
                 Arc::clone(&app_state.ideation_session_repo),
             )
             .with_webhook_publisher(Arc::clone(&webhook) as Arc<dyn WebhookPublisher>)
+    }
+
+    #[tokio::test]
+    async fn with_event_sink_preserves_webhook_publisher_status_change_emits() {
+        let app_state = AppState::new_test();
+
+        let project = Project::new(
+            "Webhook Sink Project".to_string(),
+            "/tmp/webhook-sink".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
+        let task = Task::new(project.id.clone(), "Webhook Sink Task".to_string());
+        app_state.task_repo.create(task.clone()).await.unwrap();
+
+        let sink = RecordingEventSink::new();
+        let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+        let webhook = Arc::new(RecordingWebhookPublisher::new());
+        let service = build_test_service(&app_state)
+            .with_webhook_publisher_for_emitter(Arc::clone(&webhook) as Arc<dyn WebhookPublisher>)
+            .with_event_sink(sink_arc);
+
+        service
+            .event_emitter
+            .emit_status_change(task.id.as_str(), "ready", "reviewing")
+            .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "task:status_changed");
+        assert_eq!(events[0].payload["task_id"], task.id.to_string());
+
+        let webhook_payloads = webhook.payloads().await;
+        assert_eq!(webhook_payloads.len(), 1);
+        assert_eq!(webhook_payloads[0]["task_id"], task.id.to_string());
+        assert_eq!(webhook_payloads[0]["project_id"], project.id.to_string());
+        assert_eq!(webhook_payloads[0]["old_status"], "ready");
+        assert_eq!(webhook_payloads[0]["new_status"], "reviewing");
+        assert_eq!(webhook_payloads[0]["task_title"], "Webhook Sink Task");
     }
 
     // ── Test 1: task with project + ideation session ──────────────────────────

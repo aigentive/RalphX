@@ -46,6 +46,20 @@ export function isPipelineOwnedAgentWorkspace(
   return Boolean(workspace?.linkedPlanBranchId);
 }
 
+function isAgentWorkspacePublishSurfaceMode(
+  workspace: AgentConversationWorkspace,
+): boolean {
+  if (workspace.mode === "edit" || workspace.mode === "plan") {
+    return true;
+  }
+
+  if (workspace.mode === "ideation") {
+    return isPipelineOwnedAgentWorkspace(workspace);
+  }
+
+  return false;
+}
+
 export function getAgentWorkspacePrConflictSummary(
   workspace: AgentConversationWorkspace | null | undefined,
 ): string | null {
@@ -123,19 +137,7 @@ export function isAgentWorkspaceAutoMergeDeferred({
 export function shouldShowAgentWorkspacePublishSurface(
   workspace: AgentConversationWorkspace | null | undefined
 ): boolean {
-  if (!workspace) {
-    return false;
-  }
-
-  if (workspace.mode === "edit") {
-    return true;
-  }
-
-  if (workspace.mode === "ideation") {
-    return isPipelineOwnedAgentWorkspace(workspace);
-  }
-
-  return false;
+  return Boolean(workspace && isAgentWorkspacePublishSurfaceMode(workspace));
 }
 
 export function canInspectAgentWorkspacePublishDiffs(
@@ -146,9 +148,7 @@ export function canInspectAgentWorkspacePublishDiffs(
     return false;
   }
 
-  const isInspectableMode =
-    workspace.mode === "edit" ||
-    (workspace.mode === "ideation" && isPipelineOwnedAgentWorkspace(workspace));
+  const isInspectableMode = isAgentWorkspacePublishSurfaceMode(workspace);
 
   if (isInspectableMode && workspace.status !== "missing") {
     return true;
@@ -169,11 +169,11 @@ export function canInspectAgentWorkspaceBaseFreshness(
     return false;
   }
 
-  if (workspace.mode === "edit") {
-    return true;
+  if (workspace.mode === "plan") {
+    return workspace.status !== "missing";
   }
 
-  if (workspace.mode === "ideation" && isPipelineOwnedAgentWorkspace(workspace)) {
+  if (isAgentWorkspacePublishSurfaceMode(workspace)) {
     return true;
   }
 

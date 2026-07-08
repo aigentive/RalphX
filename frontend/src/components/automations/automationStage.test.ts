@@ -4,6 +4,7 @@ import type { Automation, AutomationRun } from "@/api/automations";
 import {
   describeAutomationStage,
   describeRunFailure,
+  isOpenAutomationRun,
   latestRun,
 } from "./automationStage";
 
@@ -177,6 +178,31 @@ describe("describeRunFailure", () => {
     expect(describeRunFailure(run({ status: "agent_failed" }))).toBe("Agent run failed");
     expect(describeRunFailure(run({ status: "pr_closed" }))).toBe("PR closed without merging");
     expect(describeRunFailure(run({ status: "merged", judgeState: "failed" }))).toBe("Judge failed");
+  });
+});
+
+describe("isOpenAutomationRun", () => {
+  it("returns false for a missing run", () => {
+    expect(isOpenAutomationRun(null)).toBe(false);
+  });
+
+  it("treats in-flight run statuses as open", () => {
+    for (const status of ["pending", "provisioning", "running", "published"] as const) {
+      expect(isOpenAutomationRun(run({ status, judgeState: "none" }))).toBe(true);
+    }
+  });
+
+  it("keeps signal-terminal runs open until the judge settles", () => {
+    expect(isOpenAutomationRun(run({ status: "merged", judgeState: "none" }))).toBe(true);
+    expect(isOpenAutomationRun(run({ status: "merged", judgeState: "in_progress" }))).toBe(true);
+    expect(isOpenAutomationRun(run({ status: "agent_failed", judgeState: "failed" }))).toBe(true);
+    expect(isOpenAutomationRun(run({ status: "pr_closed", judgeState: "none" }))).toBe(true);
+  });
+
+  it("treats settled runs as closed", () => {
+    expect(isOpenAutomationRun(run({ status: "merged", judgeState: "done" }))).toBe(false);
+    expect(isOpenAutomationRun(run({ status: "merged", judgeState: "skipped" }))).toBe(false);
+    expect(isOpenAutomationRun(run({ status: "cancelled", judgeState: "none" }))).toBe(false);
   });
 });
 

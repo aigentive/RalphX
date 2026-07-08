@@ -13,12 +13,12 @@ use crate::application::{
 };
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
+    app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
+    ChatConversationId, ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
     ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
     Project, ProjectId, Task, VerificationStatus,
 };
-use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
+use crate::domain::repositories::{AgentRunRepository, StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 
@@ -68,6 +68,135 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         Some("from-handler")
     );
     assert!(!provider_env.contains_key("CLAUDE_MODEL"));
+}
+
+#[tokio::test]
+async fn cancelled_stream_preserves_already_terminal_agent_run() {
+    let state = AppState::new_test();
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+    state
+        .agent_run_repo
+        .complete(&run.id)
+        .await
+        .expect("complete run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::Project,
+        ProjectId::new().as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Completed);
+    assert!(stored.error_message.is_none());
+}
+
+#[tokio::test]
+async fn cancelled_stream_marks_recovery_task_run_as_system_recovery() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut task = Task::new(project_id, "Recovery cancellation".to_string());
+    task.metadata = Some(serde_json::json!({ "trigger_origin": "recovery" }).to_string());
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.expect("create task");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stream cancelled by system recovery")
+    );
+}
+
+#[tokio::test]
+async fn cancelled_stream_marks_retrying_recovery_metadata_as_system_recovery() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Retrying;
+    recovery.stop_retrying = false;
+    let mut task = Task::new(project_id, "Retrying recovery cancellation".to_string());
+    task.metadata = Some(
+        recovery
+            .update_task_metadata(None)
+            .expect("recovery metadata"),
+    );
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.expect("create task");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stream cancelled by system recovery")
+    );
+}
+
+#[test]
+fn stopped_retrying_recovery_metadata_does_not_mark_system_recovery_cancellation() {
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Retrying;
+    recovery.stop_retrying = true;
+    let metadata = recovery
+        .update_task_metadata(None)
+        .expect("recovery metadata");
+
+    assert!(!task_metadata_indicates_recovery_cancellation(Some(
+        &metadata
+    )));
+    assert!(!task_metadata_indicates_recovery_cancellation(Some(
+        "not json"
+    )));
 }
 
 #[async_trait]
@@ -2348,6 +2477,92 @@ async fn test_handle_stream_error_cancelled_false_completion_takes_agent_stopped
     assert_eq!(
         count_after, 0,
         "User-stop path must NOT touch the execution slot"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_stream_error_cancelled_preserves_terminal_system_run_status() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = ProjectId::new().as_str().to_string();
+    let mut run = AgentRun::new(conversation_id.clone());
+    let agent_run_id = run.id.as_str();
+    run.fail("Agent stopped by system recovery");
+    state
+        .agent_run_repo
+        .create(run)
+        .await
+        .expect("insert terminal agent run");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        &context_id,
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        &context_id,
+        conversation_id.clone(),
+        &agent_run_id,
+        "msg-id-terminal-system-stop",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(&agent_run_id))
+        .await
+        .expect("load terminal run")
+        .expect("terminal run still exists");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stopped by system recovery")
     );
 }
 

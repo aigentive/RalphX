@@ -921,3 +921,48 @@ async fn test_from_shared_connection() {
     let found = repo2.get_by_id(&conv_id).await.unwrap();
     assert!(found.is_some());
 }
+
+// --- list_by_automation_id ---
+
+#[tokio::test]
+async fn test_list_by_automation_id_returns_setup_and_run_conversations() {
+    use crate::domain::entities::{AutomationId, AutomationRunId};
+
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let automation_id = AutomationId::from_string("automation-list-1");
+
+    // Setup conversation: automation_id only.
+    let mut setup = make_conversation(ChatContextType::Project, "project-1");
+    setup.automation_id = Some(automation_id.clone());
+    let setup_id = setup.id.clone();
+    repo.create(setup).await.unwrap();
+
+    // Run conversation: both automation_id and automation_run_id.
+    let mut run_conv = make_conversation(ChatContextType::Project, "project-1");
+    run_conv.automation_id = Some(automation_id.clone());
+    run_conv.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    let run_id = run_conv.id.clone();
+    repo.create(run_conv).await.unwrap();
+
+    // Archived conversation for the same automation is still returned (filtering
+    // happens in the delete flow, not the repo query).
+    let mut archived = make_conversation(ChatContextType::Project, "project-1");
+    archived.automation_id = Some(automation_id.clone());
+    let archived_id = archived.id.clone();
+    repo.create(archived).await.unwrap();
+    repo.archive(&archived_id).await.unwrap();
+
+    // Unrelated conversation for a different automation must be excluded.
+    let mut other = make_conversation(ChatContextType::Project, "project-1");
+    other.automation_id = Some(AutomationId::from_string("automation-other"));
+    repo.create(other).await.unwrap();
+
+    let listed = repo.list_by_automation_id(&automation_id).await.unwrap();
+    let ids: Vec<String> = listed.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.contains(&setup_id.as_str()));
+    assert!(ids.contains(&run_id.as_str()));
+    assert!(ids.contains(&archived_id.as_str()));
+}

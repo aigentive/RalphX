@@ -11,6 +11,23 @@ import {
   transformRunningProcess,
   transformRunningWorkspaceSession,
 } from "./running-processes.transforms";
+import { transformExecutionTaskAgentWorkspace } from "./execution-task-agent-workspace";
+
+describe("transformExecutionTaskAgentWorkspace", () => {
+  it("renames Agent workspace target fields from snake_case", () => {
+    expect(
+      transformExecutionTaskAgentWorkspace({
+        conversation_id: "conversation-1",
+        project_id: "project-1",
+        title: "Agent Workspace",
+      }),
+    ).toEqual({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      title: "Agent Workspace",
+    });
+  });
+});
 
 describe("transformTeammateSummary", () => {
   it("transforms required fields only (name + status)", () => {
@@ -124,6 +141,23 @@ describe("transformRunningProcess", () => {
     expect(result.teammates).toEqual([]);
     expect(result.currentWave).toBe(0);
     expect(result.totalWaves).toBe(0);
+  });
+
+  it("transforms optional Agent workspace target when present", () => {
+    const result = transformRunningProcess({
+      ...baseRaw,
+      agent_workspace: {
+        conversation_id: "conversation-1",
+        project_id: "project-1",
+        title: "Agent Workspace",
+      },
+    });
+
+    expect(result.agentWorkspace).toEqual({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      title: "Agent Workspace",
+    });
   });
 });
 

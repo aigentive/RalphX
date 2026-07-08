@@ -24,11 +24,13 @@ vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     conversation: (id: string) => ["chat", "conversations", id],
     conversationHistory: (id: string) => ["chat", "conversations", id, "history"],
+    conversationTimeline: (id: string) => ["chat", "conversations", id, "timeline"],
     conversationList: (type: string, id: string) => ["chat", "conversation-list", type, id],
   },
   invalidateConversationDataQueries: (_queryClient: unknown, conversationId: string) => {
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId] });
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "history"] });
+    mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "timeline"] });
   },
 }));
 
@@ -157,6 +159,22 @@ describe("useChatRecovery", () => {
   });
 
   describe("active-state hydration", () => {
+    it("refreshes the canonical timeline when switching back to a visible generating conversation", () => {
+      const props = makeProps({
+        activeConversationId: "conv-active",
+        isAgentRunning: true,
+        isGenerating: true,
+        agentRunStatus: "running",
+        setStreamingContentBlocks: vi.fn(),
+      });
+
+      renderHook(() => useChatRecovery(props));
+
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["chat", "conversations", "conv-active", "timeline"],
+      });
+    });
+
     it("hydrates project conversation active state after switching back to an in-flight Agents conversation", async () => {
       const setStreamingToolCalls = vi.fn();
       const setStreamingContentBlocks = vi.fn();

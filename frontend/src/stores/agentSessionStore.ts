@@ -9,6 +9,7 @@ import {
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
 import type {
+  AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
   ComposerIntegrationReference,
@@ -48,6 +49,11 @@ export interface AgentArtifactState {
   taskMode: AgentTaskArtifactMode;
 }
 
+export interface AgentTaskArtifactFocusRequest {
+  taskId: string;
+  requestId: number;
+}
+
 export interface AgentBranchBaseCacheEntry {
   options: BranchBaseOption[];
   selectedKey: string;
@@ -63,11 +69,30 @@ export interface AgentStartConversationDraft {
   composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
+export interface AgentStartConversationRetryInput {
+  projectId: string;
+  content: string;
+  runtime: AgentRuntimeSelection;
+  mode: AgentConversationWorkspaceMode;
+  base: AgentConversationBaseSelection | null;
+  codexFastMode?: boolean | null;
+  composerArtifactReferences?: ComposerArtifactReference[];
+  composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
+}
+
+export interface AgentStartConversationFailure {
+  kind: "linked_setup";
+  message: string;
+  retryInput: AgentStartConversationRetryInput;
+}
+
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
   startConversationDraft: AgentStartConversationDraft | null;
+  startConversationFailure: AgentStartConversationFailure | null;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -77,6 +102,10 @@ interface AgentSessionState {
   sidebarPublicationStateFilters: AgentSidebarPublicationState[];
   pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
+  taskArtifactFocusRequestByConversationId: Record<
+    string,
+    AgentTaskArtifactFocusRequest
+  >;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
@@ -90,6 +119,7 @@ interface AgentSessionActions {
   clearSelection: () => void;
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   consumeStartConversationDraft: () => AgentStartConversationDraft | null;
+  setStartConversationFailure: (failure: AgentStartConversationFailure | null) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -108,6 +138,7 @@ interface AgentSessionActions {
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
   setTaskArtifactMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
+  focusTaskArtifact: (conversationId: string, taskId: string) => void;
   setRuntimeForConversation: (
     conversationId: string,
     projectId: string,
@@ -251,6 +282,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       selectedProjectId: null,
       selectedConversationId: null,
       startConversationDraft: null,
+      startConversationFailure: null,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -260,6 +292,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
       pinnedConversationIds: {},
       artifactByConversationId: {},
+      taskArtifactFocusRequestByConversationId: {},
       runtimeByConversationId: {},
       lastRuntimeByProjectId: {},
       branchBaseCacheByProjectId: {},
@@ -305,6 +338,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         });
         return consumedDraft;
       },
+
+      setStartConversationFailure: (failure) =>
+        set((state) => {
+          state.startConversationFailure = failure;
+        }),
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {
@@ -402,6 +440,19 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setTaskArtifactMode: (conversationId, mode) =>
         set((state) => {
           ensureArtifactState(state, conversationId).taskMode = mode;
+        }),
+
+      focusTaskArtifact: (conversationId, taskId) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.activeTab = "tasks";
+          artifactState.isOpen = true;
+          const current =
+            state.taskArtifactFocusRequestByConversationId[conversationId];
+          state.taskArtifactFocusRequestByConversationId[conversationId] = {
+            taskId,
+            requestId: (current?.requestId ?? 0) + 1,
+          };
         }),
 
       setRuntimeForConversation: (conversationId, projectId, runtime) =>

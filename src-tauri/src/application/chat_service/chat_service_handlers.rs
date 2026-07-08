@@ -25,7 +25,7 @@ use crate::application::InteractiveProcessRegistry;
 use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunId, ChatContextType, ChatConversation,
+    app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
     MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
@@ -71,6 +71,105 @@ fn provider_pause_targets_execution(context_type: ChatContextType) -> bool {
 }
 
 const VERIFICATION_AUTO_CONTINUE_METADATA: &str = r#"{"resume_in_place":true}"#;
+const AGENT_STOPPED_BY_USER_MESSAGE: &str = "Agent stopped by user";
+const AGENT_STOPPED_BY_SYSTEM_RECOVERY_MESSAGE: &str = "Agent stream cancelled by system recovery";
+
+fn task_metadata_indicates_recovery_cancellation(metadata: Option<&str>) -> bool {
+    let Some(metadata) = metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return false;
+    };
+
+    if metadata
+        .get("trigger_origin")
+        .and_then(|value| value.as_str())
+        == Some("recovery")
+    {
+        return true;
+    }
+
+    let Some(execution_recovery) = metadata.get("execution_recovery") else {
+        return false;
+    };
+    execution_recovery
+        .get("last_state")
+        .and_then(|value| value.as_str())
+        == Some("retrying")
+        && !execution_recovery
+            .get("stop_retrying")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+}
+
+async fn cancelled_stream_failure_message(
+    context_type: ChatContextType,
+    context_id: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+) -> &'static str {
+    if matches!(
+        context_type,
+        ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
+    ) {
+        let task_id = TaskId::from_string(context_id.to_string());
+        match task_repo.get_by_id(&task_id).await {
+            Ok(Some(task))
+                if task_metadata_indicates_recovery_cancellation(task.metadata.as_deref()) =>
+            {
+                return AGENT_STOPPED_BY_SYSTEM_RECOVERY_MESSAGE;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    context_type = %context_type,
+                    context_id,
+                    error = %error,
+                    "Failed to load task while classifying stream cancellation"
+                );
+            }
+        }
+    }
+
+    AGENT_STOPPED_BY_USER_MESSAGE
+}
+
+async fn mark_cancelled_stream_as_cancelled(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    agent_run_id: &str,
+    context_type: ChatContextType,
+    context_id: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+) {
+    let run_id = AgentRunId::from_string(agent_run_id);
+    match agent_run_repo.get_by_id(&run_id).await {
+        Ok(Some(run)) if run.status != AgentRunStatus::Running => {
+            tracing::info!(
+                agent_run_id,
+                status = %run.status,
+                "Stream cancellation found an already-terminal agent run; preserving existing status"
+            );
+        }
+        Ok(_) => {
+            let message =
+                cancelled_stream_failure_message(context_type, context_id, task_repo).await;
+            if let Err(error) = agent_run_repo.fail(&run_id, message).await {
+                tracing::warn!(
+                    agent_run_id,
+                    error = %error,
+                    "Failed to mark cancelled stream as cancelled"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                agent_run_id,
+                error = %error,
+                "Failed to load agent run before cancelled stream labeling; preserving existing run state"
+            );
+        }
+    }
+}
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
@@ -397,7 +496,7 @@ fn build_transition_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-) -> TaskTransitionService<R> {
+) -> TaskTransitionService {
     let deps = build_runtime_factory_deps(
         app_handle,
         task_repo,
@@ -440,7 +539,7 @@ fn build_task_scheduler_service<R: Runtime>(
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-) -> TaskSchedulerService<R> {
+) -> TaskSchedulerService {
     let deps = build_runtime_factory_deps(
         app_handle,
         task_repo,
@@ -1909,12 +2008,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             context_id,
             "Stream cancelled — skipping error recovery and fallback transitions"
         );
-        let _ = agent_run_repo
-            .fail(
-                &AgentRunId::from_string(agent_run_id),
-                "Agent stopped by user",
-            )
-            .await;
+        mark_cancelled_stream_as_cancelled(
+            agent_run_repo,
+            agent_run_id,
+            context_type,
+            context_id,
+            task_repo,
+        )
+        .await;
 
         // Update pre-created message — append stop note to any content already flushed
         let (existing_content, existing_tool_calls, existing_content_blocks) =

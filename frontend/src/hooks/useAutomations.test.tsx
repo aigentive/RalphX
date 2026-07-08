@@ -7,6 +7,7 @@ import { automationsApi } from "@/api/automations";
 
 import {
   automationKeys,
+  evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationEvents,
   useCreateAutomationDraft,
@@ -55,15 +56,39 @@ describe("useAutomations", () => {
     });
   });
 
+  it("evicts a deleted automation's detail cache and refreshes the lists", () => {
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const removeSpy = vi.spyOn(queryClient, "removeQueries");
+
+    evictDeletedAutomation(queryClient, "automation-1");
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
+    expect(removeSpy).toHaveBeenCalledWith({
+      queryKey: automationKeys.detail("automation-1"),
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: automationKeys.detail("automation-1"),
+    });
+  });
+
   it("subscribes to automation events, filters mismatched ids, and unsubscribes", () => {
     const queryClient = new QueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const removeSpy = vi.spyOn(queryClient, "removeQueries");
     const unsubscribeAutomation = vi.fn();
     const unsubscribeRun = vi.fn();
+    const unsubscribeDeleted = vi.fn();
     const handlers = new Map<string, (payload: unknown) => void>();
     subscribeMock.mockImplementation((eventName: string, handler: (payload: unknown) => void) => {
       handlers.set(eventName, handler);
-      return eventName === "automation:updated" ? unsubscribeAutomation : unsubscribeRun;
+      if (eventName === "automation:updated") {
+        return unsubscribeAutomation;
+      }
+      if (eventName === "automation:deleted") {
+        return unsubscribeDeleted;
+      }
+      return unsubscribeRun;
     });
 
     const { unmount } = renderHook(() => useAutomationEvents("automation-1"), {
@@ -72,11 +97,17 @@ describe("useAutomations", () => {
 
     expect(subscribeMock).toHaveBeenCalledWith("automation:updated", expect.any(Function));
     expect(subscribeMock).toHaveBeenCalledWith("automation:run:updated", expect.any(Function));
+    expect(subscribeMock).toHaveBeenCalledWith("automation:deleted", expect.any(Function));
 
     act(() => {
       handlers.get("automation:updated")?.({ automation_id: "automation-2" });
       handlers.get("automation:run:updated")?.({ automationId: "automation-1" });
       handlers.get("automation:updated")?.({});
+      handlers.get("automation:deleted")?.({ automationId: "automation-9" });
+      handlers.get("automation:deleted")?.({
+        automationId: "automation-1",
+        projectId: "project-1",
+      });
     });
 
     expect(invalidateSpy).not.toHaveBeenCalledWith({
@@ -86,11 +117,19 @@ describe("useAutomations", () => {
       queryKey: automationKeys.detail("automation-1"),
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
+    // Deleted event for a mismatched id is ignored; matching id evicts the detail cache.
+    expect(removeSpy).not.toHaveBeenCalledWith({
+      queryKey: automationKeys.detail("automation-9"),
+    });
+    expect(removeSpy).toHaveBeenCalledWith({
+      queryKey: automationKeys.detail("automation-1"),
+    });
 
     unmount();
 
     expect(unsubscribeAutomation).toHaveBeenCalledTimes(1);
     expect(unsubscribeRun).toHaveBeenCalledTimes(1);
+    expect(unsubscribeDeleted).toHaveBeenCalledTimes(1);
   });
 
   it("useCreateAutomationDraft creates a draft and invalidates list + detail scopes", async () => {

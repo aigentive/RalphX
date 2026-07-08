@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
@@ -11,10 +11,12 @@ const {
   pauseAutomationMock,
   resumeAutomationMock,
   stopAutomationMock,
+  deleteAutomationMock,
   updateAutomationSetupMock,
   sendAgentMessageMock,
   useAskUserQuestionMock,
   submitAutomationSetupAnswerMock,
+  useArtifactMock,
   toastSuccessMock,
   toastErrorMock,
 } = vi.hoisted(() => ({
@@ -23,12 +25,18 @@ const {
   pauseAutomationMock: vi.fn(),
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
+  deleteAutomationMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   useAskUserQuestionMock: vi.fn(),
   submitAutomationSetupAnswerMock: vi.fn(),
+  useArtifactMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
+}));
+
+vi.mock("@/hooks/useArtifacts", () => ({
+  useArtifact: (...args: unknown[]) => useArtifactMock(...args),
 }));
 
 vi.mock("sonner", () => ({
@@ -107,6 +115,7 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
 
 vi.mock("@/hooks/useAutomations", () => ({
   invalidateAutomationQueries: vi.fn(),
+  evictDeletedAutomation: vi.fn(),
   useAutomationDetail: (...args: unknown[]) => useAutomationDetailMock(...args),
   useAutomationEvents: (...args: unknown[]) => useAutomationEventsMock(...args),
 }));
@@ -128,6 +137,7 @@ vi.mock("@/api/automations", async (importOriginal) => {
       pause: (...args: unknown[]) => pauseAutomationMock(...args),
       resume: (...args: unknown[]) => resumeAutomationMock(...args),
       stop: (...args: unknown[]) => stopAutomationMock(...args),
+      delete: (...args: unknown[]) => deleteAutomationMock(...args),
       setupAgent: {
         ...actual.automationsApi.setupAgent,
         updateAutomation: (...args: unknown[]) =>
@@ -148,6 +158,7 @@ const automationFixture = (
   pausedReasonDetail: null,
   goalPrompt: "Ship the remaining release tasks.",
   setupConversationId: "conversation-setup",
+  specArtifactId: null,
   providerHarness: "codex",
   modelId: "gpt-5.4",
   logicalEffort: "medium",
@@ -241,9 +252,15 @@ function renderPanel(onOpenAutomation: ((automationId: string) => void) | null =
 describe("AgentsAutomationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useArtifactMock.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    });
     pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
+    deleteAutomationMock.mockResolvedValue(undefined);
     updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
     sendAgentMessageMock.mockResolvedValue({
       conversationId: "conversation-setup",
@@ -283,6 +300,9 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-phases")).toHaveTextContent(
       "Build shared context model",
     );
+    expect(screen.getByTestId("agents-automation-spec")).toHaveTextContent(
+      "No spec linked yet.",
+    );
     expect(screen.getByTestId("agents-automation-setup-summary")).toHaveTextContent(
       "Configure selected artifact context for chat.",
     );
@@ -300,6 +320,93 @@ describe("AgentsAutomationPanel", () => {
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
     expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
+  });
+
+  it("renders the linked spec name and preview in the Spec section", () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Release automation spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model in a scoped PR.",
+        created_at: "2026-07-05T10:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ specArtifactId: "artifact-spec-1" }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const spec = screen.getByTestId("agents-automation-spec");
+    expect(spec).toHaveTextContent("Release automation spec");
+    expect(spec).toHaveTextContent("Build the shared context model in a scoped PR.");
+    expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
+  });
+
+  it("shows phase progress and a collapsed expandable spec", () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Release automation spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model in a scoped PR.",
+        created_at: "2026-07-05T10:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          specArtifactId: "artifact-spec-1",
+          goalItemsJson: JSON.stringify([
+            { id: "p1", title: "Build shared context model", status: "done" },
+            { id: "p2", title: "Wire the scheduler", status: "in_progress" },
+          ]),
+        }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const phases = screen.getByTestId("agents-automation-phases");
+    expect(phases).toHaveTextContent("1/2 done");
+    expect(within(phases).getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "1",
+    );
+    expect(within(phases).getByText("In progress")).toBeInTheDocument();
+
+    const spec = screen.getByTestId("agents-automation-spec");
+    expect(within(spec).getByTestId("automation-spec-toggle")).toHaveTextContent(
+      "Show full spec",
+    );
+    expect(
+      within(spec).queryByTestId("automation-spec-markdown"),
+    ).not.toBeInTheDocument();
   });
 
   it("updates draft setup settings from the automation artifact panel", async () => {
@@ -339,6 +446,7 @@ describe("AgentsAutomationPanel", () => {
     await waitFor(() =>
       expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
         runMode: "plan",
+        completionSignal: "agent_completed",
       }),
     );
     await waitFor(() =>
@@ -631,6 +739,54 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-resume")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-stop")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-delete")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-open")).toBeDisabled();
+  });
+
+  it("deletes draft automations after confirming the archive inventory", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "draft",
+          setupConversationId: "conversation-setup",
+          specArtifactId: "spec-1",
+        }),
+        runs: [],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const deleteButton = screen.getByTestId("agents-automation-delete");
+    expect(deleteButton).toHaveTextContent("Delete draft");
+
+    fireEvent.click(deleteButton);
+
+    expect(await screen.findByText("Delete draft automation?")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Archives the setup conversation and 0 run conversations\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Archives the linked spec\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Permanently removes the automation and its run history\./),
+    ).toBeInTheDocument();
+
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+
+    await waitFor(() =>
+      expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted"),
+    );
+  });
+
+  it("does not show a delete action for non-draft automations", () => {
+    renderPanel();
+
+    expect(screen.queryByTestId("agents-automation-delete")).not.toBeInTheDocument();
   });
 });
