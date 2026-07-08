@@ -8,6 +8,7 @@ type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknow
 type TauriGet = (path: string) => Promise<unknown>;
 export type AgentWorkspaceToolRuntimeContext = {
     parentConversationId?: string;
+    agentRunId?: string;
 };
 export declare const AGENT_WORKSPACE_TOOLS: Tool[];
 export declare function isAgentWorkspaceToolName(name: string): boolean;
