@@ -301,6 +301,47 @@ async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
     assert_eq!(db_payload["new_status"], "ready");
 }
 
+#[tokio::test]
+async fn corrective_transition_with_exit_emits_task_event_through_event_sink() {
+    let app_state = AppState::new_test();
+    let project = Project::new("Corrective Sink Project".to_string(), "/tmp/corrective".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Corrective Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let service = build_test_service(&app_state).with_event_sink(sink_arc);
+
+    let updated = service
+        .transition_task_corrective_with_exit(
+            &task.id,
+            InternalStatus::Failed,
+            Some("corrective failure".to_string()),
+            "system",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(updated.internal_status, InternalStatus::Failed);
+    let events = sink.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event, "task:event");
+    assert_eq!(events[0].payload["type"], "status_changed");
+    assert_eq!(events[0].payload["taskId"], task.id.to_string());
+    assert_eq!(events[0].payload["from"], "backlog");
+    assert_eq!(events[0].payload["to"], "failed");
+    assert_eq!(events[0].payload["changedBy"], "system");
+    assert_eq!(events[1].event, "task:status_changed");
+    assert_eq!(events[1].payload["task_id"], task.id.to_string());
+    assert_eq!(events[1].payload["old_status"], "backlog");
+    assert_eq!(events[1].payload["new_status"], "failed");
+}
+
 #[test]
 fn into_arc_wires_self_arc_for_task_services() {
     let app_state = AppState::new_test();

@@ -215,6 +215,12 @@ jobs:
               "tauri::async_runtime::spawn(async move {",
           )
           BLOCK_START_MARKERS_BY_SOURCE = {
+              "src/application/task_transition_service.rs": (
+                  "let throttled_emitter = app_handle.as_ref().and_then(|handle| {",
+                  "if let Some(throttled) = throttled_emitter {",
+                  "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
+                  "self.emit_task_event(serde_json::json!({",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
@@ -222,15 +228,22 @@ jobs:
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
               "src/application/app_setup.rs",
+              "src/application/chat_resumption.rs",
               "src/application/chat_service/chat_service_merge.rs",
               "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/freshness_routing.rs",
+              "src/application/ready_task_scheduler.rs",
+              "src/application/reconciliation.rs",
               "src/application/reconciliation/handlers/merge.rs",
+              "src/application/runtime_factory.rs",
               "src/application/runtime_wiring.rs",
+              "src/application/services/pr_merge_poller.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
+              "src/application/startup_jobs.rs",
               "src/commands/git_commands.rs",
+              "src/commands/project_commands.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
               "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
@@ -488,17 +501,31 @@ jobs:
               "tauri::async_runtime::spawn(async move {",
           )
           BLOCK_START_MARKERS_BY_SOURCE = {
+              "src/application/task_transition_service.rs": (
+                  "let throttled_emitter = app_handle.as_ref().and_then(|handle| {",
+                  "if let Some(throttled) = throttled_emitter {",
+                  "if let Some(transition_service) = self.self_arc.lock().unwrap().as_ref() {",
+                  "self.emit_task_event(serde_json::json!({",
+              ),
               "src/commands/ideation_commands/ideation_commands_restart.rs": (
                   "#[tauri::command]",
               ),
           }
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
+              "src/application/chat_resumption.rs",
               "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
+              "src/application/ready_task_scheduler.rs",
+              "src/application/reconciliation.rs",
+              "src/application/runtime_factory.rs",
+              "src/application/runtime_wiring.rs",
+              "src/application/services/pr_merge_poller.rs",
+              "src/application/startup_jobs.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/project_commands.rs",
               "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
               "src/commands/provider_cli_management_commands.rs",
