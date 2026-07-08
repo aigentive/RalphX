@@ -91,12 +91,14 @@ async fn shell_commands_receive_agent_subprocess_path_for_node_managed_tools() {
     write_executable(&node, "#!/bin/sh\n");
 
     let _path = EnvGuard::set_os("PATH", "");
+    let _nvm_bin = EnvGuard::set_os("NVM_BIN", "");
+    let _volta_home = EnvGuard::set_os("VOLTA_HOME", "");
     let _node = EnvGuard::set_os("RALPHX_NODE_PATH", node.as_os_str());
     let _disable_login_shell =
         EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
 
     let result = spawn_cancellable_command(
-        "npm --version",
+        "printf '%s\n' \"$PATH\"; npm --version",
         &cwd,
         &tokio_util::sync::CancellationToken::new(),
     )
@@ -109,7 +111,24 @@ async fn shell_commands_receive_agent_subprocess_path_for_node_managed_tools() {
                 "expected npm from managed node bin to resolve, stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(String::from_utf8_lossy(&output.stdout), "fake-npm");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let (path_line, npm_output) = stdout
+                .split_once('\n')
+                .expect("PATH line and npm output should be present");
+            let path_entries = std::env::split_paths(path_line).collect::<Vec<_>>();
+            let node_index = path_entries
+                .iter()
+                .position(|entry| entry == &bin_dir)
+                .expect("managed node bin should be in PATH");
+            let system_index = path_entries
+                .iter()
+                .position(|entry| entry == std::path::Path::new("/usr/bin"))
+                .expect("system fallback should be in PATH");
+            assert!(
+                node_index < system_index,
+                "managed node bin should be inserted before system fallback PATH"
+            );
+            assert_eq!(npm_output, "fake-npm");
         }
         CancellableCommandResult::SpawnError(error) => {
             panic!("shell command should spawn: {error}");

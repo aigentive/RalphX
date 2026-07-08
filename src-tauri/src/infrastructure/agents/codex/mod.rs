@@ -881,7 +881,7 @@ fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
     );
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
     let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
@@ -923,7 +923,7 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     // Put Codex (and its descendants — MCP server, any subprocesses it
     // spawns) into their own process group so the Tauri exit handler can
     // SIGTERM the whole tree without risking the app itself. See
