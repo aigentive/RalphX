@@ -4185,7 +4185,7 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the Proposals tab when a plan session has proposal content", async () => {
+  it("keeps proposal content inside Plan when a stale Proposals tab is active", async () => {
     const user = userEvent.setup();
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -4216,10 +4216,10 @@ describe("AgentsArtifactPane", () => {
           id: "proposal-1",
           sessionId: "session-1",
           title: "Gate proposal tab visibility",
-          description: "Show the Proposals tab only when it has content.",
+          description: "Keep proposal content inside the Plan tab.",
           category: "frontend",
           steps: ["Update shared tab helper"],
-          acceptanceCriteria: ["Empty sessions do not show Proposals"],
+          acceptanceCriteria: ["Plan owns proposal content"],
           suggestedPriority: "high",
           priorityScore: 90,
           priorityReason: "Avoids dead-end navigation",
@@ -4261,7 +4261,7 @@ describe("AgentsArtifactPane", () => {
     });
 
     renderPane(
-      "plan",
+      "proposal",
       workspace({
         mode: "plan",
         linkedIdeationSessionId: "session-1",
@@ -4275,8 +4275,8 @@ describe("AgentsArtifactPane", () => {
       await screen.findByTestId("agents-artifact-tab-plan"),
     ).toBeInTheDocument();
     expect(
-      await screen.findByTestId("agents-artifact-tab-proposal"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByTestId("agents-artifact-tab-verification"),
     ).not.toBeInTheDocument();

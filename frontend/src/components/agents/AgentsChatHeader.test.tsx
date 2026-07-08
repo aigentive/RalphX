@@ -1176,7 +1176,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
   });
 
-  it("shows ideation artifact shortcuts for ideation-mode conversations", () => {
+  it("filters stale Proposals shortcuts for ideation-mode conversations", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "ideation" })}
@@ -1193,7 +1193,7 @@ describe("AgentsChatHeader", () => {
 
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
     expect(screen.getByLabelText("Verification")).toBeInTheDocument();
-    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Tasks")).toBeInTheDocument();
   });
 
