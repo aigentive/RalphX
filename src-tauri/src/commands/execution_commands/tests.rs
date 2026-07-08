@@ -5951,6 +5951,180 @@ fn test_categorize_direct_resume_states() {
 }
 
 #[test]
+fn test_restart_transition_routes_execution_states_through_ready() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::Executing),
+        InternalStatus::Ready
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::ReExecuting),
+        InternalStatus::Ready
+    );
+}
+
+#[test]
+fn test_restart_transition_preserves_non_execution_categorized_target() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::QaPassed),
+        InternalStatus::PendingReview
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::Merging),
+        InternalStatus::Merging
+    );
+}
+
+#[test]
+fn test_restart_transition_only_ready_route_is_legal_from_stopped() {
+    assert!(InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Executing)));
+    assert!(!InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Merging)));
+}
+
+fn stopped_task_metadata(from_status: InternalStatus) -> String {
+    crate::domain::state_machine::transition_handler::metadata_builder::build_stop_metadata(
+        from_status,
+        Some("stopped for restart".to_string()),
+    )
+    .merge_into(None)
+}
+
+#[tokio::test]
+async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_stale_refs() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    execution_state.pause();
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Restart Command Project".to_string(),
+        "/tmp/restart-command-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let missing_worktree_parent = tempfile::tempdir().expect("temp dir");
+    let missing_worktree = missing_worktree_parent.path().join("missing-worktree");
+    let mut task = Task::new(project.id.clone(), "Stopped execution".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.task_branch = Some("task/stale-execution".to_string());
+    task.worktree_path = Some(missing_worktree.to_string_lossy().into_owned());
+    task.merge_commit_sha = Some("deadbeef".to_string());
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Executing));
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("restart command should complete");
+
+    match result {
+        RestartResult::Success {
+            category,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(category, ResumeCategory::Direct);
+            assert_eq!(resumed_to_status, InternalStatus::Ready.as_str());
+        }
+        other => panic!("expected successful ready restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
+    assert!(stored.task_branch.is_none());
+    assert!(stored.worktree_path.is_none());
+    assert!(stored.merge_commit_sha.is_none());
+    let metadata: serde_json::Value =
+        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert!(metadata.get("stop_metadata").is_none());
+}
+
+#[tokio::test]
+async fn restart_task_from_stopped_merge_returns_validation_warning_before_transition() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Unsupported Restart Project".to_string(),
+        "/tmp/unsupported-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Stopped merge".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Merging));
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        true,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("restart command should return validation result");
+
+    match result {
+        RestartResult::ValidationFailed {
+            warnings,
+            stopped_from_status,
+        } => {
+            assert_eq!(stopped_from_status, InternalStatus::Merging.as_str());
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].code, "unsupported_restart_target");
+            assert!(warnings[0].message.contains("cannot safely restart"));
+        }
+        other => panic!("expected unsupported restart validation, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Stopped);
+    assert!(stored
+        .metadata
+        .as_deref()
+        .unwrap()
+        .contains("stop_metadata"));
+}
+
+#[test]
 fn test_categorize_validated_resume_states() {
     // Validated resume: check git state first
     let validated_states = [

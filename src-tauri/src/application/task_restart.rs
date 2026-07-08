@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use crate::application::git_service::GitService;
 use crate::domain::entities::{
     ExecutionRecoveryMetadata, ExecutionRecoveryState, InternalStatus, Task, TaskId, TaskStepStatus,
 };
 use crate::domain::repositories::{TaskRepository, TaskStepRepository};
 use crate::domain::state_machine::transition_handler::{parse_metadata, set_trigger_origin};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReadyRestartPreparation {
@@ -21,6 +22,7 @@ pub async fn prepare_terminal_task_for_ready_restart(
     if !old_task.internal_status.is_terminal() {
         return Ok(ReadyRestartPreparation::default());
     }
+    ensure_restart_worktree_is_safe_to_clear(old_task).await?;
 
     let mut task_mut = old_task.clone();
 
@@ -92,6 +94,27 @@ pub async fn clear_failed_steps_for_failed_restart(
     }
 
     Ok(cleared)
+}
+
+async fn ensure_restart_worktree_is_safe_to_clear(task: &Task) -> AppResult<()> {
+    let Some(worktree_path) = task.worktree_path.as_deref() else {
+        return Ok(());
+    };
+    let worktree = crate::utils::path_safety::validate_absolute_non_root_path(
+        std::path::Path::new(worktree_path),
+        "task restart worktree",
+    )?;
+    if !crate::utils::path_safety::checked_exists(&worktree, "task restart worktree")? {
+        return Ok(());
+    }
+    if GitService::has_uncommitted_changes(&worktree).await? {
+        return Err(AppError::Validation(format!(
+            "Cannot restart task {} safely because worktree '{}' has uncommitted changes",
+            task.id.as_str(),
+            worktree.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -243,6 +266,97 @@ mod tests {
         assert!(metadata["execution_recovery"]
             .get("unrecoverable_reason")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn stopped_ready_restart_clears_stale_refs_without_preserving_steps() {
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+        let project_id = ProjectId::from_string("project-stopped-restart".to_string());
+
+        let mut task = Task::new(project_id, "Stopped restart".to_string());
+        task.internal_status = InternalStatus::Stopped;
+        task.task_branch = Some("task/stopped-stale".to_string());
+        task.worktree_path = Some("/tmp/stopped-stale-worktree".to_string());
+        task.merge_commit_sha = Some("0badcafe".to_string());
+        task.metadata = Some(stopped_recovery_metadata(4));
+        let task_id = task.id.clone();
+        task_repo.create(task.clone()).await.unwrap();
+
+        let preparation =
+            prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+                .await
+                .unwrap();
+
+        assert_eq!(preparation.cleared_failed_steps, 0);
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert!(updated_task.task_branch.is_none());
+        assert!(updated_task.worktree_path.is_none());
+        assert!(updated_task.merge_commit_sha.is_none());
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(metadata["trigger_origin"], "retry");
+        assert!(metadata.get("preserve_steps").is_none());
+        assert_eq!(
+            metadata["execution_recovery"]["last_state"],
+            serde_json::json!("retrying")
+        );
+        assert_eq!(
+            metadata["execution_recovery"]["auto_recovery_count"],
+            serde_json::json!(4)
+        );
+        assert_eq!(
+            metadata["execution_recovery"]["stop_retrying"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_ready_restart_blocks_when_existing_worktree_is_dirty() {
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+        let project_id = ProjectId::from_string("project-dirty-restart".to_string());
+        let worktree = tempfile::tempdir().expect("temp worktree");
+        let git_init = std::process::Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .arg(worktree.path())
+            .status()
+            .expect("run git init");
+        assert!(git_init.success(), "git init should succeed");
+        std::fs::write(worktree.path().join("dirty.txt"), "dirty").expect("write dirty file");
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+
+        let mut task = Task::new(project_id, "Dirty restart".to_string());
+        task.internal_status = InternalStatus::Failed;
+        task.task_branch = Some("task/dirty-stale".to_string());
+        task.worktree_path = Some(worktree_path.clone());
+        task.merge_commit_sha = Some("baadf00d".to_string());
+        task.metadata = Some(stopped_recovery_metadata(5));
+        let task_id = task.id.clone();
+        task_repo.create(task.clone()).await.unwrap();
+
+        let err = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+            .await
+            .expect_err("dirty restart should be blocked");
+
+        match err {
+            AppError::Validation(message) => {
+                assert!(message.contains("Cannot restart task"));
+                assert!(message.contains("has uncommitted changes"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+
+        let stored = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert_eq!(stored.task_branch.as_deref(), Some("task/dirty-stale"));
+        assert_eq!(
+            stored.worktree_path.as_deref(),
+            Some(worktree_path.as_str())
+        );
+        assert_eq!(stored.merge_commit_sha.as_deref(), Some("baadf00d"));
     }
 
     #[tokio::test]
