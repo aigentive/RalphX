@@ -4167,6 +4167,30 @@ x
     }
 
     #[tokio::test]
+    async fn manual_blocking_review_fixer_requires_current_review_target() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let missing_repo = temp.path().join("missing-repo");
+        let state = AppState::new_test();
+        let project = seed_project(&state, &missing_repo).await;
+        let workspace = workspace(
+            &project,
+            &temp.path().join("missing-worktree"),
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            None,
+        );
+
+        let error = start_agent_workspace_review_blocking_fixer(&state, &workspace)
+            .await
+            .expect_err("manual fixer should require a reviewable target");
+
+        assert!(matches!(
+            error,
+            AppError::Validation(message) if message.contains("current review target")
+        ));
+    }
+
+    #[tokio::test]
     async fn existing_review_artifact_marks_context_current_then_outdated() {
         let (_temp, repo, base_sha) = init_repo();
         committed_workspace_delta(&repo);
