@@ -52,6 +52,25 @@ describe("PrMarkdown", () => {
     expect(within(details).getByText("Collapsed by default")).toBeInTheDocument();
   });
 
+  it("uses text-only summary labels when GitHub summary contains markup", () => {
+    render(
+      <PrMarkdown
+        content={[
+          "<details>",
+          "<summary><strong>View</strong> full &amp; final plan<!-- hidden --></summary>",
+          "",
+          "Body",
+          "</details>",
+        ].join("\n")}
+      />,
+    );
+
+    const details = screen.getByTestId("pr-markdown-details");
+    expect(within(details).getByText("View full & final plan")).toBeInTheDocument();
+    expect(details).not.toHaveTextContent("hidden");
+    expect(details).not.toHaveTextContent("<strong>");
+  });
+
   it("does not render unsupported raw HTML as DOM", () => {
     const { container } = render(
       <PrMarkdown content={"Before\n\n<script>alert('x')</script>\n\nAfter"} />,

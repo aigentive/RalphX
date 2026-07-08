@@ -17,8 +17,6 @@ const PR_MARKDOWN_COMPONENTS = { ...markdownComponents, img: TicketMarkdownImage
 const DETAILS_TAG_RE = /<\/?details\b[^>]*>/gi;
 const SUMMARY_TAG_RE = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i;
 const FENCE_LINE_RE = /^[ \t]{0,3}(```+|~~~+)/;
-const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
-const HTML_TAG_RE = /<[^>]+>/g;
 
 type MarkdownSegment =
   | { type: "markdown"; content: string }
@@ -52,10 +50,38 @@ function decodeHtmlEntity(entity: string): string {
   return `&${entity};`;
 }
 
+function summaryTextWithoutMarkup(rawSummary: string): string {
+  let text = "";
+  let index = 0;
+
+  while (index < rawSummary.length) {
+    if (rawSummary.startsWith("<!--", index)) {
+      const commentEnd = rawSummary.indexOf("-->", index + 4);
+      index = commentEnd === -1 ? rawSummary.length : commentEnd + 3;
+      continue;
+    }
+
+    const char = rawSummary[index];
+    if (char === "<") {
+      const tagEnd = rawSummary.indexOf(">", index + 1);
+      if (tagEnd === -1) {
+        text += char;
+        index += 1;
+        continue;
+      }
+      index = tagEnd + 1;
+      continue;
+    }
+
+    text += char;
+    index += 1;
+  }
+
+  return text;
+}
+
 function summaryText(rawSummary: string): string {
-  const text = rawSummary
-    .replace(HTML_COMMENT_RE, "")
-    .replace(HTML_TAG_RE, "")
+  const text = summaryTextWithoutMarkup(rawSummary)
     .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, entity: string) => decodeHtmlEntity(entity))
     .replace(/\s+/g, " ")
     .trim();
