@@ -20,6 +20,7 @@ import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import {
+  AGENT_WORKSPACE_TOOLS,
   callAgentWorkspaceTool,
   callCheckAgentWorkspacePublishReadinessTool,
   callCompleteAgentWorkspacePrFixTool,
@@ -1810,9 +1811,12 @@ describe('agent workspace publish tool transport', () => {
           target_scope: 'workspace_delta',
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
-          created_by_run_id: 'run-1',
+          created_by_run_id: 'event-id-from-context',
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1824,7 +1828,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
   });
@@ -1853,10 +1857,13 @@ describe('agent workspace publish tool transport', () => {
           target_scope: 'workspace_delta',
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
-          created_by_run_id: 'run-1',
+          created_by_run_id: 'event-id-from-context',
           annotations,
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1866,7 +1873,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
         annotations,
       }
     );
@@ -1882,9 +1889,12 @@ describe('agent workspace publish tool transport', () => {
           outcome: 'passed',
           summary: 'Review completed',
           blocker: undefined,
-          created_by_run_id: 'run-1',
+          created_by_run_id: 'event-id-from-context',
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        {
+          parentConversationId: 'conversation-from-runtime',
+          agentRunId: 'run-from-runtime',
+        }
       )
     ).resolves.toEqual({ success: true });
 
@@ -1894,9 +1904,28 @@ describe('agent workspace publish tool transport', () => {
         outcome: 'passed',
         summary: 'Review completed',
         blocker: undefined,
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
+  });
+
+  it('does not expose workspace Review run bookkeeping in model-facing schemas', () => {
+    const workspaceReviewToolNames = [
+      'write_workspace_review_artifact',
+      'write_workspace_review_hunk_annotations',
+      'complete_workspace_review_run',
+    ];
+
+    for (const toolName of workspaceReviewToolNames) {
+      const tool = AGENT_WORKSPACE_TOOLS.find((candidate) => candidate.name === toolName);
+      expect(tool, toolName).toBeDefined();
+      const schema = tool?.inputSchema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(schema.properties ?? {}).not.toHaveProperty('created_by_run_id');
+      expect(schema.required ?? []).not.toContain('created_by_run_id');
+    }
   });
 
   it('routes proposed Review PR actions to the agent workspace endpoint', async () => {
@@ -2005,6 +2034,10 @@ describe('agent workspace publish tool transport', () => {
   it('dispatches Review PR tools through the generic agent workspace router', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
     const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+    const runtimeContext = {
+      parentConversationId: 'conversation-from-runtime',
+      agentRunId: 'run-from-runtime',
+    };
 
     await expect(
       callAgentWorkspaceTool(
@@ -2012,7 +2045,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         {},
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2021,7 +2054,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { summary: 'Ready to submit' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2030,7 +2063,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { outcome: 'approved' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2039,7 +2072,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { content: '## Review' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2048,7 +2081,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         {},
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2063,7 +2096,7 @@ describe('agent workspace publish tool transport', () => {
           diff_fingerprint: 'fingerprint-1',
           created_by_run_id: 'run-1',
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2078,7 +2111,7 @@ describe('agent workspace publish tool transport', () => {
           created_by_run_id: 'run-1',
           annotations: [],
         },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
     await expect(
@@ -2087,7 +2120,7 @@ describe('agent workspace publish tool transport', () => {
         callTauri,
         callTauriGet,
         { summary: 'Done', outcome: 'passed', created_by_run_id: 'run-1' },
-        { parentConversationId: 'conversation-from-runtime' }
+        runtimeContext
       )
     ).resolves.toEqual({ success: true });
 
@@ -2135,7 +2168,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'selected_source',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
     expect(callTauri).toHaveBeenCalledWith(
@@ -2144,7 +2177,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'selected_source',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
         annotations: [],
       }
     );
@@ -2154,7 +2187,7 @@ describe('agent workspace publish tool transport', () => {
         outcome: 'passed',
         summary: 'Done',
         blocker: undefined,
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       }
     );
   });
@@ -2239,7 +2272,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     [
@@ -2250,7 +2283,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
         annotations: undefined,
       },
     ],
@@ -2262,7 +2295,7 @@ describe('agent workspace publish tool transport', () => {
         outcome: 'passed',
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
-        created_by_run_id: 'run-1',
+        created_by_run_id: 'run-from-runtime',
       },
     ],
     [
@@ -2321,7 +2354,9 @@ describe('agent workspace publish tool transport', () => {
       };
 
       await expect(
-        callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args)
+        callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args, {
+          agentRunId: 'run-from-runtime',
+        })
       ).resolves.toEqual({ ok: method });
       expect(isAgentWorkspaceToolName(toolName)).toBe(true);
 

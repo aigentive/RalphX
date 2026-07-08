@@ -149,12 +149,8 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Target diff fingerprint from get_workspace_review_context.",
                 },
-                created_by_run_id: {
-                    type: "string",
-                    description: "monitor.last_run_id from get_workspace_review_context.",
-                },
             },
-            required: ["content", "target_scope", "head_sha", "diff_fingerprint", "created_by_run_id"],
+            required: ["content", "target_scope", "head_sha", "diff_fingerprint"],
         },
     },
     {
@@ -180,10 +176,6 @@ export const AGENT_WORKSPACE_TOOLS = [
                 diff_fingerprint: {
                     type: "string",
                     description: "Target diff fingerprint from get_workspace_review_context.",
-                },
-                created_by_run_id: {
-                    type: "string",
-                    description: "monitor.last_run_id from get_workspace_review_context.",
                 },
                 annotations: {
                     type: "array",
@@ -246,7 +238,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                     },
                 },
             },
-            required: ["target_scope", "head_sha", "diff_fingerprint", "created_by_run_id", "annotations"],
+            required: ["target_scope", "head_sha", "diff_fingerprint", "annotations"],
         },
     },
     {
@@ -272,12 +264,8 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Optional blocker when review could not be completed safely.",
                 },
-                created_by_run_id: {
-                    type: "string",
-                    description: "monitor.last_run_id from get_workspace_review_context.",
-                },
             },
-            required: ["summary", "created_by_run_id"],
+            required: ["summary"],
         },
     },
     {
@@ -548,6 +536,10 @@ function resolveAgentWorkspaceConversationId(toolName, args, runtimeContext) {
     }
     throw new Error(`${toolName} requires conversation_id because RalphX did not provide the current workspace conversation id to the MCP runtime context.`);
 }
+function resolveWorkspaceReviewCallerRunId(runtimeContext) {
+    const runId = runtimeContext?.agentRunId?.trim() ?? "";
+    return runId.length > 0 ? runId : undefined;
+}
 export async function callGetAgentWorkspacePublishStatusTool(callTauriGet, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("get_agent_workspace_publish_status", args, runtimeContext);
     return callTauriGet(`agent-workspaces/${conversation_id}/publish-status`);
@@ -591,7 +583,7 @@ export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runt
         target_scope: artifactArgs.target_scope,
         head_sha: artifactArgs.head_sha,
         diff_fingerprint: artifactArgs.diff_fingerprint,
-        created_by_run_id: artifactArgs.created_by_run_id,
+        created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });
 }
 export async function callWriteWorkspaceReviewHunkAnnotationsTool(callTauri, args, runtimeContext) {
@@ -601,7 +593,7 @@ export async function callWriteWorkspaceReviewHunkAnnotationsTool(callTauri, arg
         target_scope: annotationArgs.target_scope,
         head_sha: annotationArgs.head_sha,
         diff_fingerprint: annotationArgs.diff_fingerprint,
-        created_by_run_id: annotationArgs.created_by_run_id,
+        created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
         annotations: annotationArgs.annotations,
     });
 }
@@ -612,7 +604,7 @@ export async function callCompleteWorkspaceReviewRunTool(callTauri, args, runtim
         outcome: runArgs.outcome,
         summary: runArgs.summary,
         blocker: runArgs.blocker,
-        created_by_run_id: runArgs.created_by_run_id,
+        created_by_run_id: resolveWorkspaceReviewCallerRunId(runtimeContext),
     });
 }
 export async function callProposePrReviewActionTool(callTauri, args, runtimeContext) {
