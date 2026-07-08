@@ -72,6 +72,7 @@ const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
   pending: "Running",
   provisioning: "Running",
   running: "Running",
+  awaiting_plan_approval: "Awaiting plan approval",
   published: "Running",
   completed: "Completed",
   merged: "Merged",

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::entities::{
-    AutomationId, AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus,
-    ChatConversationId,
+    AutomationId, AutomationJudgeState, AutomationPlanJudgeState, AutomationRun, AutomationRunId,
+    AutomationRunStatus, ChatConversationId,
 };
 use crate::error::AppResult;
 
@@ -98,6 +98,45 @@ pub trait AutomationRunRepository: Send + Sync {
         judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool>;
+
+    async fn compare_and_swap_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool>;
+
+    async fn set_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        plan_pending_instructions: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_revision_round(
+        &self,
+        id: &AutomationRunId,
+        plan_revision_round: i64,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_last_parked_artifact_id(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_reminder_count(
+        &self,
+        id: &AutomationRunId,
+        plan_reminder_count: i64,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        agent_phase_started_at: Option<DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>>;
 
     /// Atomically mark the latest unjudged terminal run as skipped and insert its successor.
     /// Returns `None` when the previous run is stale, no longer unjudged, or no longer latest.

@@ -11,7 +11,8 @@ use super::transition::NoopAutomationEventEmitter;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
-    AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
     AutomationRunStatus, AutomationStatus, ChatContextType, IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{
@@ -50,6 +51,9 @@ fn automation(id: &str) -> Automation {
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Build the first PR".to_string()),
@@ -69,6 +73,14 @@ fn run(automation_id: AutomationId) -> AutomationRun {
         status: AutomationRunStatus::Pending,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Build the first PR".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,

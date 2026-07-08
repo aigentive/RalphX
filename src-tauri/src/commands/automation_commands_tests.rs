@@ -14,6 +14,7 @@ use crate::application::automation::service::{AutomationDetail, AutomationSchedu
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRun, Automation, AutomationId, AutomationJudgeState,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
     AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
     ChatContextType, ChatConversationId, Project, ProjectId,
 };
@@ -43,6 +44,9 @@ fn automation() -> Automation {
         ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -62,6 +66,14 @@ fn automation_run(automation_id: &AutomationId) -> AutomationRun {
         status: AutomationRunStatus::Merged,
         judge_state: AutomationJudgeState::Done,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run 1 prompt".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -129,8 +141,7 @@ fn setup_git_project() -> (tempfile::TempDir, Project) {
     git(&repo_path, &["init", "-b", "main"]);
     git(&repo_path, &["config", "user.email", "test@example.com"]);
     git(&repo_path, &["config", "user.name", "Test User"]);
-    std::fs::write(repo_path.join("README.md"), "hello\n")
-        .expect("fixture file should be written");
+    std::fs::write(repo_path.join("README.md"), "hello\n").expect("fixture file should be written");
     git(&repo_path, &["add", "README.md"]);
     git(&repo_path, &["commit", "-m", "initial"]);
 
@@ -294,7 +305,9 @@ async fn create_draft_creates_bound_setup_conversation_with_automation_workspace
     assert_eq!(persisted.setup_conversation_id, Some(setup_conversation_id));
     assert_eq!(persisted.base_ref_kind, "local_branch");
     assert!(
-        persisted.base_ref.starts_with("ralphx/automation-workspace/automation-"),
+        persisted
+            .base_ref
+            .starts_with("ralphx/automation-workspace/automation-"),
         "automation setup branch should be automation-scoped, got {}",
         persisted.base_ref
     );

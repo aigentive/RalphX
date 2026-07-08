@@ -10,7 +10,8 @@ use chrono::Utc;
 use super::*;
 use crate::application::AppState;
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationStatus, ChatConversation, ChatConversationId, ProjectId,
+    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
+    ChatConversation, ChatConversationId, ProjectId,
 };
 
 fn caller_headers(conversation_id: &ChatConversationId) -> HeaderMap {
@@ -46,6 +47,9 @@ fn automation(id: &AutomationId, project_id: ProjectId, status: AutomationStatus
         ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),

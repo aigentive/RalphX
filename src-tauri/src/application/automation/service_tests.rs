@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use ralphx_domain::entities::is_open_automation_run;
 use serde_json::json;
 
 use crate::application::automation::judge::{
@@ -9,6 +10,7 @@ use crate::application::automation::judge::{
     AutomationJudgeVerdict,
 };
 use crate::application::automation::service::{
+    run_status_blocks_trigger_run_now, run_status_is_cancellable,
     ApplyAutomationJudgeVerdictInput, AutomationRunNowAction, AutomationService,
     CreateAutomationDraftInput, CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput,
     UpdateAutomationConfigInput, UpdateAutomationSettingsInput,
@@ -17,9 +19,10 @@ use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
 };
 use crate::domain::entities::{
-    Artifact, ArtifactId, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
-    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
-    ProjectId,
+    Artifact, ArtifactId, Automation, AutomationId, AutomationJudgeState,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
+    ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     ArtifactRepository, ArtifactVersionSummary, AutomationConfigPatch, AutomationRepository,
@@ -250,6 +253,9 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -275,6 +281,14 @@ fn automation_run(
         status,
         judge_state,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: Some(ChatConversationId::from_string(format!(
             "conversation-{run_index}"
         ))),
@@ -626,6 +640,69 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn compare_and_swap_plan_judge_state(
+        &self,
+        _id: &AutomationRunId,
+        _from: AutomationPlanJudgeState,
+        _to: AutomationPlanJudgeState,
+        _plan_judge_verdict_json: Option<String>,
+        _plan_judge_lease_expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> crate::error::AppResult<bool> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn set_plan_pending_instructions(
+        &self,
+        _id: &AutomationRunId,
+        _plan_pending_instructions: Option<String>,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn set_plan_revision_round(
+        &self,
+        _id: &AutomationRunId,
+        _plan_revision_round: i64,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn set_plan_last_parked_artifact_id(
+        &self,
+        _id: &AutomationRunId,
+        _plan_last_parked_artifact_id: Option<String>,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn set_plan_reminder_count(
+        &self,
+        _id: &AutomationRunId,
+        _plan_reminder_count: i64,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn set_agent_phase_started_at(
+        &self,
+        _id: &AutomationRunId,
+        _agent_phase_started_at: Option<chrono::DateTime<Utc>>,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn skip_judge_and_create_successor_run(
         &self,
         _automation_id: &AutomationId,
@@ -840,13 +917,11 @@ async fn service_update_config_rejects_missing_spec_artifact_id() {
         .await
         .unwrap_err();
 
-    assert!(matches!(error, AppError::Validation(message) if message.contains("does not reference an existing artifact")));
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("does not reference an existing artifact"))
+    );
     // Fail closed: nothing persisted, no id linked, no event emitted.
-    let stored = automation_repo
-        .get_by_id(&draft.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let stored = automation_repo.get_by_id(&draft.id).await.unwrap().unwrap();
     assert_eq!(stored.spec_artifact_id, None);
     assert!(emitter.events().is_empty());
 }
@@ -867,13 +942,19 @@ async fn service_update_config_materializes_spec_content_and_versions_on_reautho
         .await
         .unwrap();
 
-    let first_spec_id = first.spec_artifact_id.clone().expect("spec artifact linked");
+    let first_spec_id = first
+        .spec_artifact_id
+        .clone()
+        .expect("spec artifact linked");
     let first_artifact = artifact_repo
         .get_by_id(&ArtifactId::from_string(first_spec_id.clone()))
         .await
         .unwrap()
         .expect("spec artifact exists");
-    assert_eq!(first_artifact.artifact_type, crate::domain::entities::ArtifactType::Specification);
+    assert_eq!(
+        first_artifact.artifact_type,
+        crate::domain::entities::ArtifactType::Specification
+    );
     assert_eq!(first_artifact.metadata.version, 1);
     match &first_artifact.content {
         crate::domain::entities::ArtifactContent::Inline { text } => {
@@ -897,7 +978,10 @@ async fn service_update_config_materializes_spec_content_and_versions_on_reautho
         .spec_artifact_id
         .clone()
         .expect("versioned spec artifact linked");
-    assert_ne!(second_spec_id, first_spec_id, "re-author mints a new artifact id");
+    assert_ne!(
+        second_spec_id, first_spec_id,
+        "re-author mints a new artifact id"
+    );
 
     let versioned = artifact_repo.versioned_from();
     assert_eq!(
@@ -2297,6 +2381,24 @@ async fn service_persists_successor_run_prompt_verbatim_for_loop_guard() {
     assert!(automation_judge_loop_suspected(
         &successor,
         &continue_verdict_struct(next_prompt, AutomationJudgeNextBaseBranch::AutomationBase),
+    ));
+}
+
+#[test]
+fn awaiting_plan_approval_service_guards_match_domain_open_predicate() {
+    use AutomationJudgeState::{Done, Failed, InProgress, None, Skipped};
+
+    for judge_state in [None, InProgress, Done, Failed, Skipped] {
+        assert!(
+            is_open_automation_run(AutomationRunStatus::AwaitingPlanApproval, judge_state),
+            "awaiting-plan-approval runs should stay open for {judge_state:?}"
+        );
+    }
+    assert!(run_status_is_cancellable(
+        AutomationRunStatus::AwaitingPlanApproval
+    ));
+    assert!(run_status_blocks_trigger_run_now(
+        AutomationRunStatus::AwaitingPlanApproval
     ));
 }
 

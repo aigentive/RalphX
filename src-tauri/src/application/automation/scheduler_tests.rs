@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
+use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
-use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::scheduler::{
     load_spec_attachment, AutomationJudgeInvocation, AutomationJudgeInvocationOutput,
     AutomationJudgeInvoker, AutomationScheduler, AutomationSchedulerConfig,
@@ -20,8 +20,9 @@ use super::scheduler::{
 use super::transition::NoopAutomationEventEmitter;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Artifact, ArtifactId,
-    ArtifactType, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
-    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
+    ArtifactType, Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
     IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{
@@ -198,6 +199,9 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -234,6 +238,14 @@ fn automation_run(
         status,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id,
         run_prompt: "Run prompt".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -1541,7 +1553,9 @@ impl ArtifactRepository for FailingArtifactRepository {
     }
 
     async fn get_by_id(&self, _id: &ArtifactId) -> AppResult<Option<Artifact>> {
-        Err(AppError::Infrastructure("artifact lookup failed".to_string()))
+        Err(AppError::Infrastructure(
+            "artifact lookup failed".to_string(),
+        ))
     }
 
     async fn get_by_id_at_version(
@@ -1559,10 +1573,7 @@ impl ArtifactRepository for FailingArtifactRepository {
         self.inner.get_by_bucket(bucket_id).await
     }
 
-    async fn get_by_type(
-        &self,
-        artifact_type: ArtifactType,
-    ) -> AppResult<Vec<Artifact>> {
+    async fn get_by_type(&self, artifact_type: ArtifactType) -> AppResult<Vec<Artifact>> {
         self.inner.get_by_type(artifact_type).await
     }
 

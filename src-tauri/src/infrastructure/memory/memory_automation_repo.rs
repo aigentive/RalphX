@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 
 use crate::domain::entities::{
     is_open_automation_run, judge_transition_clears_verdict, Automation, AutomationId,
-    AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatConversationId, ProjectId,
+    AutomationJudgeState, AutomationPlanJudgeState, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
@@ -518,6 +518,104 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.error_detail = error_detail;
         run.updated_at = Utc::now();
         Ok(true)
+    }
+
+    async fn compare_and_swap_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if run.plan_judge_state != from {
+            return Ok(false);
+        }
+        run.plan_judge_state = to;
+        if let Some(verdict) = plan_judge_verdict_json {
+            run.plan_judge_verdict_json = Some(verdict);
+        }
+        if to == AutomationPlanJudgeState::InProgress {
+            run.plan_judge_lease_expires_at = plan_judge_lease_expires_at;
+        } else {
+            run.plan_judge_lease_expires_at = None;
+        }
+        run.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn set_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        plan_pending_instructions: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_pending_instructions = plan_pending_instructions;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_revision_round(
+        &self,
+        id: &AutomationRunId,
+        plan_revision_round: i64,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_revision_round = plan_revision_round;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_last_parked_artifact_id(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_last_parked_artifact_id = plan_last_parked_artifact_id;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_reminder_count(
+        &self,
+        id: &AutomationRunId,
+        plan_reminder_count: i64,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_reminder_count = plan_reminder_count;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        agent_phase_started_at: Option<DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.agent_phase_started_at = agent_phase_started_at;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
     }
 
     async fn skip_judge_and_create_successor_run(

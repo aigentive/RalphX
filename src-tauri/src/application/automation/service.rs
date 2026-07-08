@@ -14,6 +14,7 @@ use crate::application::automation::transition::{
 use crate::domain::entities::{
     is_open_automation_run, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
     ArtifactMetadata, ArtifactType, Automation, AutomationId, AutomationJudgeState,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
     AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
     ChatConversationId, ProjectId,
 };
@@ -212,6 +213,9 @@ impl AutomationService {
             goal_items_json: None,
             chain_mode: DEFAULT_CHAIN_MODE.to_string(),
             completion_signal: DEFAULT_COMPLETION_SIGNAL.to_string(),
+            plan_approval_mode: AutomationPlanApprovalMode::Manual,
+            pr_merge_mode: AutomationPrMergeMode::Manual,
+            plan_deep_verification: false,
             max_runs: DEFAULT_MAX_RUNS,
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             first_run_prompt: None,
@@ -279,15 +283,13 @@ impl AutomationService {
                 automation.status.as_str()
             )));
         }
-        let completion_signal = input
-            .completion_signal
-            .or_else(|| {
-                input
-                    .run_mode
-                    .as_deref()
-                    .map(completion_signal_for_run_mode)
-                    .map(str::to_string)
-            });
+        let completion_signal = input.completion_signal.or_else(|| {
+            input
+                .run_mode
+                .as_deref()
+                .map(completion_signal_for_run_mode)
+                .map(str::to_string)
+        });
         let spec_artifact_id = self
             .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
             .await?;
@@ -497,13 +499,8 @@ impl AutomationService {
             )));
         };
 
-        if matches!(
-            latest.status,
-            AutomationRunStatus::Pending
-                | AutomationRunStatus::Provisioning
-                | AutomationRunStatus::Running
-                | AutomationRunStatus::Published
-        ) || latest.judge_state == AutomationJudgeState::InProgress
+        if run_status_blocks_trigger_run_now(latest.status)
+            || latest.judge_state == AutomationJudgeState::InProgress
         {
             return Ok(AutomationRunNowAction::Outcome(schedule_not_scheduled(
                 "run in flight",
@@ -733,6 +730,14 @@ impl AutomationService {
             status: AutomationRunStatus::Pending,
             judge_state: AutomationJudgeState::None,
             judge_lease_expires_at: None,
+            plan_judge_state: AutomationPlanJudgeState::None,
+            plan_judge_lease_expires_at: None,
+            plan_judge_verdict_json: None,
+            plan_revision_round: 0,
+            plan_reminder_count: 0,
+            plan_pending_instructions: None,
+            plan_last_parked_artifact_id: None,
+            agent_phase_started_at: None,
             conversation_id: None,
             run_prompt: input.run_prompt,
             prompt_author: input.prompt_author,
@@ -1135,12 +1140,24 @@ fn successor_not_scheduled(reason: &str) -> AutomationSuccessorRunOutcome {
     }
 }
 
-fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
+pub(crate) fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
     matches!(
         status,
         AutomationRunStatus::Pending
             | AutomationRunStatus::Provisioning
             | AutomationRunStatus::Running
+            | AutomationRunStatus::AwaitingPlanApproval
+            | AutomationRunStatus::Published
+    )
+}
+
+pub(crate) fn run_status_blocks_trigger_run_now(status: AutomationRunStatus) -> bool {
+    matches!(
+        status,
+        AutomationRunStatus::Pending
+            | AutomationRunStatus::Provisioning
+            | AutomationRunStatus::Running
+            | AutomationRunStatus::AwaitingPlanApproval
             | AutomationRunStatus::Published
     )
 }
@@ -1249,6 +1266,14 @@ fn pending_successor_run(
         status: AutomationRunStatus::Pending,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt,
         prompt_author,

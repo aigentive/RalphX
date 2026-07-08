@@ -1,8 +1,9 @@
 use super::{
     automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
     judge_is_transition_allowed, judge_transition_clears_verdict, AutomationContextRefKind,
-    AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRunId,
-    AutomationRunStatus, AutomationStatus,
+    AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRunId, AutomationRunStatus,
+    AutomationStatus,
 };
 
 #[test]
@@ -42,7 +43,12 @@ fn automation_enum_strings_round_trip_and_reject_unknown_values() {
         (AutomationRunStatus::Pending, "pending"),
         (AutomationRunStatus::Provisioning, "provisioning"),
         (AutomationRunStatus::Running, "running"),
+        (
+            AutomationRunStatus::AwaitingPlanApproval,
+            "awaiting_plan_approval",
+        ),
         (AutomationRunStatus::Published, "published"),
+        (AutomationRunStatus::Completed, "completed"),
         (AutomationRunStatus::Merged, "merged"),
         (AutomationRunStatus::PrClosed, "pr_closed"),
         (AutomationRunStatus::AgentFailed, "agent_failed"),
@@ -64,6 +70,35 @@ fn automation_enum_strings_round_trip_and_reject_unknown_values() {
         assert_eq!(AutomationJudgeState::parse(raw), Some(state));
     }
     assert_eq!(AutomationJudgeState::parse("retrying"), None);
+
+    for (mode, raw) in [
+        (AutomationPlanApprovalMode::Manual, "manual"),
+        (AutomationPlanApprovalMode::Automatic, "automatic"),
+    ] {
+        assert_eq!(mode.as_str(), raw);
+        assert_eq!(AutomationPlanApprovalMode::parse(raw), Some(mode));
+    }
+    assert_eq!(AutomationPlanApprovalMode::parse("off"), None);
+
+    for (mode, raw) in [
+        (AutomationPrMergeMode::Manual, "manual"),
+        (AutomationPrMergeMode::Automatic, "automatic"),
+    ] {
+        assert_eq!(mode.as_str(), raw);
+        assert_eq!(AutomationPrMergeMode::parse(raw), Some(mode));
+    }
+    assert_eq!(AutomationPrMergeMode::parse("squash"), None);
+
+    for (state, raw) in [
+        (AutomationPlanJudgeState::None, "none"),
+        (AutomationPlanJudgeState::InProgress, "in_progress"),
+        (AutomationPlanJudgeState::Done, "done"),
+        (AutomationPlanJudgeState::Failed, "failed"),
+    ] {
+        assert_eq!(state.as_str(), raw);
+        assert_eq!(AutomationPlanJudgeState::parse(raw), Some(state));
+    }
+    assert_eq!(AutomationPlanJudgeState::parse("skipped"), None);
 
     for (author, raw) in [
         (AutomationPromptAuthor::SetupAgent, "setup_agent"),
@@ -123,6 +158,7 @@ fn run_status_transition_matrix_matches_signal_status_contract() {
         Pending,
         Provisioning,
         Running,
+        AwaitingPlanApproval,
         Published,
         Completed,
         Merged,
@@ -140,6 +176,9 @@ fn run_status_transition_matrix_matches_signal_status_contract() {
         (Running, Completed),
         (Running, AgentFailed),
         (Running, Cancelled),
+        (Running, AwaitingPlanApproval),
+        (AwaitingPlanApproval, Running),
+        (AwaitingPlanApproval, Cancelled),
         (Published, Merged),
         (Published, PrClosed),
         (Published, Cancelled),
@@ -205,7 +244,13 @@ fn open_run_predicate_keeps_unjudged_signal_terminal_runs_open() {
     use AutomationJudgeState::*;
     use AutomationRunStatus::*;
 
-    for status in [Pending, Provisioning, Running, Published] {
+    for status in [
+        Pending,
+        Provisioning,
+        Running,
+        AwaitingPlanApproval,
+        Published,
+    ] {
         for judge_state in [None, InProgress, Done, Failed, Skipped] {
             assert!(
                 is_open_automation_run(status, judge_state),

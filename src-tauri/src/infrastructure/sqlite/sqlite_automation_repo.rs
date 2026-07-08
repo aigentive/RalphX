@@ -7,8 +7,9 @@ use tokio::sync::Mutex;
 
 use crate::domain::entities::{
     judge_transition_clears_verdict, Automation, AutomationId, AutomationJudgeState,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatConversationId, ProjectId,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus,
+    AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
@@ -58,13 +59,18 @@ impl SqliteAutomationRepository {
             goal_items_json: row.get(16)?,
             chain_mode: row.get(17)?,
             completion_signal: row.get(18)?,
-            max_runs: row.get(19)?,
-            max_consecutive_failures: row.get(20)?,
-            first_run_prompt: row.get(21)?,
-            setup_analysis_summary: row.get(22)?,
-            spec_artifact_id: row.get(23)?,
-            created_at: parse_datetime_required(row.get(24)?),
-            updated_at: parse_datetime_required(row.get(25)?),
+            plan_approval_mode: AutomationPlanApprovalMode::parse(&row.get::<_, String>(19)?)
+                .unwrap_or(AutomationPlanApprovalMode::Manual),
+            pr_merge_mode: AutomationPrMergeMode::parse(&row.get::<_, String>(20)?)
+                .unwrap_or(AutomationPrMergeMode::Manual),
+            plan_deep_verification: row.get::<_, i64>(21)? != 0,
+            max_runs: row.get(22)?,
+            max_consecutive_failures: row.get(23)?,
+            first_run_prompt: row.get(24)?,
+            setup_analysis_summary: row.get(25)?,
+            spec_artifact_id: row.get(26)?,
+            created_at: parse_datetime_required(row.get(27)?),
+            updated_at: parse_datetime_required(row.get(28)?),
         })
     }
 }
@@ -73,8 +79,9 @@ const SELECT_AUTOMATION: &str = "SELECT
     id, project_id, name, status, paused_reason_code, paused_reason_detail,
     goal_prompt, setup_conversation_id, provider_harness, model_id, logical_effort,
     run_mode, base_ref_kind, base_ref, base_display_name, base_source_pull_request_json,
-    goal_items_json, chain_mode, completion_signal, max_runs, max_consecutive_failures,
-    first_run_prompt, setup_analysis_summary, spec_artifact_id, created_at, updated_at
+    goal_items_json, chain_mode, completion_signal, plan_approval_mode, pr_merge_mode,
+    plan_deep_verification, max_runs, max_consecutive_failures, first_run_prompt,
+    setup_analysis_summary, spec_artifact_id, created_at, updated_at
 FROM automations";
 
 #[async_trait]
@@ -89,11 +96,14 @@ impl AutomationRepository for SqliteAutomationRepository {
                         goal_prompt, setup_conversation_id, provider_harness, model_id,
                         logical_effort, run_mode, base_ref_kind, base_ref, base_display_name,
                         base_source_pull_request_json, goal_items_json, chain_mode,
-                        completion_signal, max_runs, max_consecutive_failures, first_run_prompt,
-                        setup_analysis_summary, spec_artifact_id, created_at, updated_at
+                        completion_signal, plan_approval_mode, pr_merge_mode,
+                        plan_deep_verification, max_runs, max_consecutive_failures,
+                        first_run_prompt, setup_analysis_summary, spec_artifact_id,
+                        created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+                        ?25, ?26, ?27, ?28, ?29
                     )",
                     params![
                         to_insert.id.as_str(),
@@ -115,6 +125,13 @@ impl AutomationRepository for SqliteAutomationRepository {
                         to_insert.goal_items_json,
                         to_insert.chain_mode,
                         to_insert.completion_signal,
+                        to_insert.plan_approval_mode.as_str(),
+                        to_insert.pr_merge_mode.as_str(),
+                        if to_insert.plan_deep_verification {
+                            1_i64
+                        } else {
+                            0_i64
+                        },
                         to_insert.max_runs,
                         to_insert.max_consecutive_failures,
                         to_insert.first_run_prompt,
@@ -386,16 +403,19 @@ impl SqliteAutomationRunRepository {
         conn.execute(
             "INSERT INTO automation_runs (
                 id, automation_id, run_index, status, judge_state, judge_lease_expires_at,
-                conversation_id, run_prompt, prompt_author, base_ref_kind, base_ref_used,
-                base_from_run_id, branch_name, pr_number, pr_url, pr_title,
-                pr_head_ref_name, pr_base_ref_name, pr_merged_at, merge_commit_sha,
-                diff_stats_json, agent_summary, judge_verdict_json, judge_model_id,
-                error_code, error_detail, signal_check_failures, started_at, finished_at,
-                created_at, updated_at
+                plan_judge_state, plan_judge_lease_expires_at, plan_judge_verdict_json,
+                plan_revision_round, plan_reminder_count, plan_pending_instructions,
+                plan_last_parked_artifact_id, agent_phase_started_at, conversation_id,
+                run_prompt, prompt_author, base_ref_kind, base_ref_used, base_from_run_id,
+                branch_name, pr_number, pr_url, pr_title, pr_head_ref_name, pr_base_ref_name,
+                pr_merged_at, merge_commit_sha, diff_stats_json, agent_summary,
+                judge_verdict_json, judge_model_id, error_code, error_detail,
+                signal_check_failures, started_at, finished_at, created_at, updated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30, ?31
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+                ?36, ?37, ?38, ?39
             )",
             params![
                 run.id.as_str(),
@@ -404,6 +424,14 @@ impl SqliteAutomationRunRepository {
                 run.status.as_str(),
                 run.judge_state.as_str(),
                 run.judge_lease_expires_at.map(|dt| dt.to_rfc3339()),
+                run.plan_judge_state.as_str(),
+                run.plan_judge_lease_expires_at.map(|dt| dt.to_rfc3339()),
+                run.plan_judge_verdict_json.as_deref(),
+                run.plan_revision_round,
+                run.plan_reminder_count,
+                run.plan_pending_instructions.as_deref(),
+                run.plan_last_parked_artifact_id.as_deref(),
+                run.agent_phase_started_at.map(|dt| dt.to_rfc3339()),
                 run.conversation_id.as_ref().map(|id| id.as_str()),
                 run.run_prompt.as_str(),
                 run.prompt_author.as_str(),
@@ -453,47 +481,58 @@ impl SqliteAutomationRunRepository {
             judge_state: AutomationJudgeState::parse(&row.get::<_, String>(4)?)
                 .unwrap_or(AutomationJudgeState::None),
             judge_lease_expires_at: parse_datetime(row.get(5)?),
+            plan_judge_state: AutomationPlanJudgeState::parse(&row.get::<_, String>(6)?)
+                .unwrap_or(AutomationPlanJudgeState::None),
+            plan_judge_lease_expires_at: parse_datetime(row.get(7)?),
+            plan_judge_verdict_json: row.get(8)?,
+            plan_revision_round: row.get(9)?,
+            plan_reminder_count: row.get(10)?,
+            plan_pending_instructions: row.get(11)?,
+            plan_last_parked_artifact_id: row.get(12)?,
+            agent_phase_started_at: parse_datetime(row.get(13)?),
             conversation_id: row
-                .get::<_, Option<String>>(6)?
+                .get::<_, Option<String>>(14)?
                 .map(ChatConversationId::from_string),
-            run_prompt: row.get(7)?,
-            prompt_author: AutomationPromptAuthor::parse(&row.get::<_, String>(8)?)
+            run_prompt: row.get(15)?,
+            prompt_author: AutomationPromptAuthor::parse(&row.get::<_, String>(16)?)
                 .unwrap_or(AutomationPromptAuthor::SetupAgent),
-            base_ref_kind: row.get(9)?,
-            base_ref_used: row.get(10)?,
+            base_ref_kind: row.get(17)?,
+            base_ref_used: row.get(18)?,
             base_from_run_id: row
-                .get::<_, Option<String>>(11)?
+                .get::<_, Option<String>>(19)?
                 .map(AutomationRunId::from_string),
-            branch_name: row.get(12)?,
-            pr_number: row.get(13)?,
-            pr_url: row.get(14)?,
-            pr_title: row.get(15)?,
-            pr_head_ref_name: row.get(16)?,
-            pr_base_ref_name: row.get(17)?,
-            pr_merged_at: parse_datetime(row.get(18)?),
-            merge_commit_sha: row.get(19)?,
-            diff_stats_json: row.get(20)?,
-            agent_summary: row.get(21)?,
-            judge_verdict_json: row.get(22)?,
-            judge_model_id: row.get(23)?,
-            error_code: row.get(24)?,
-            error_detail: row.get(25)?,
-            signal_check_failures: row.get(26)?,
-            started_at: parse_datetime(row.get(27)?),
-            finished_at: parse_datetime(row.get(28)?),
-            created_at: parse_datetime_required(row.get(29)?),
-            updated_at: parse_datetime_required(row.get(30)?),
+            branch_name: row.get(20)?,
+            pr_number: row.get(21)?,
+            pr_url: row.get(22)?,
+            pr_title: row.get(23)?,
+            pr_head_ref_name: row.get(24)?,
+            pr_base_ref_name: row.get(25)?,
+            pr_merged_at: parse_datetime(row.get(26)?),
+            merge_commit_sha: row.get(27)?,
+            diff_stats_json: row.get(28)?,
+            agent_summary: row.get(29)?,
+            judge_verdict_json: row.get(30)?,
+            judge_model_id: row.get(31)?,
+            error_code: row.get(32)?,
+            error_detail: row.get(33)?,
+            signal_check_failures: row.get(34)?,
+            started_at: parse_datetime(row.get(35)?),
+            finished_at: parse_datetime(row.get(36)?),
+            created_at: parse_datetime_required(row.get(37)?),
+            updated_at: parse_datetime_required(row.get(38)?),
         })
     }
 }
 
 const SELECT_RUN: &str = "SELECT
     id, automation_id, run_index, status, judge_state, judge_lease_expires_at,
-    conversation_id, run_prompt, prompt_author, base_ref_kind, base_ref_used,
-    base_from_run_id, branch_name, pr_number, pr_url, pr_title, pr_head_ref_name,
-    pr_base_ref_name, pr_merged_at, merge_commit_sha, diff_stats_json, agent_summary,
-    judge_verdict_json, judge_model_id, error_code, error_detail, signal_check_failures,
-    started_at, finished_at, created_at, updated_at
+    plan_judge_state, plan_judge_lease_expires_at, plan_judge_verdict_json,
+    plan_revision_round, plan_reminder_count, plan_pending_instructions,
+    plan_last_parked_artifact_id, agent_phase_started_at, conversation_id, run_prompt,
+    prompt_author, base_ref_kind, base_ref_used, base_from_run_id, branch_name, pr_number,
+    pr_url, pr_title, pr_head_ref_name, pr_base_ref_name, pr_merged_at, merge_commit_sha,
+    diff_stats_json, agent_summary, judge_verdict_json, judge_model_id, error_code,
+    error_detail, signal_check_failures, started_at, finished_at, created_at, updated_at
 FROM automation_runs";
 const AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT: &str =
     "UNIQUE constraint failed: automation_runs.automation_id";
@@ -824,6 +863,176 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                     ],
                 )?;
                 Ok(affected == 1)
+            })
+            .await
+    }
+
+    async fn compare_and_swap_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_judge_state = ?1,
+                         plan_judge_verdict_json = COALESCE(?2, plan_judge_verdict_json),
+                         plan_judge_lease_expires_at = CASE
+                             WHEN ?3 = 'in_progress' THEN ?4
+                             ELSE NULL
+                         END,
+                         updated_at = ?5
+                     WHERE id = ?6 AND plan_judge_state = ?7",
+                    params![
+                        to.as_str(),
+                        plan_judge_verdict_json,
+                        to.as_str(),
+                        plan_judge_lease_expires_at.map(|dt| dt.to_rfc3339()),
+                        Utc::now().to_rfc3339(),
+                        id,
+                        from.as_str(),
+                    ],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
+    async fn set_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        plan_pending_instructions: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_pending_instructions = ?2,
+                         updated_at = ?3
+                     WHERE id = ?1",
+                    params![id, plan_pending_instructions, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn set_plan_revision_round(
+        &self,
+        id: &AutomationRunId,
+        plan_revision_round: i64,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_revision_round = ?2,
+                         updated_at = ?3
+                     WHERE id = ?1",
+                    params![id, plan_revision_round, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn set_plan_last_parked_artifact_id(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_last_parked_artifact_id = ?2,
+                         updated_at = ?3
+                     WHERE id = ?1",
+                    params![id, plan_last_parked_artifact_id, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn set_plan_reminder_count(
+        &self,
+        id: &AutomationRunId,
+        plan_reminder_count: i64,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_reminder_count = ?2,
+                         updated_at = ?3
+                     WHERE id = ?1",
+                    params![id, plan_reminder_count, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn set_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        agent_phase_started_at: Option<DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET agent_phase_started_at = ?2,
+                         updated_at = ?3
+                     WHERE id = ?1",
+                    params![
+                        id,
+                        agent_phase_started_at.map(|dt| dt.to_rfc3339()),
+                        Utc::now().to_rfc3339(),
+                    ],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
             })
             .await
     }

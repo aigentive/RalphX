@@ -10,7 +10,8 @@ use super::judge::{
     BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
 };
 use crate::error::AppError;
@@ -37,6 +38,9 @@ fn automation_with_goal_items(goal_items_json: Option<String>) -> Automation {
         goal_items_json,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1 prompt".to_string()),
@@ -56,6 +60,14 @@ fn automation_run(index: i64, status: AutomationRunStatus) -> AutomationRun {
         status,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: format!("Implement item {index} from the migration spec."),
         prompt_author: AutomationPromptAuthor::SetupAgent,

@@ -6,7 +6,8 @@ use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
@@ -52,6 +53,9 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -71,6 +75,14 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
         status,
         judge_state,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run prompt".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,

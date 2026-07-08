@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
@@ -34,6 +35,9 @@ fn automation(id: &str, project_id: &str, status: AutomationStatus) -> Automatio
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -59,6 +63,14 @@ fn run(
         status,
         judge_state,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: format!("Run {index} prompt"),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -85,6 +97,26 @@ fn run(
         created_at: now,
         updated_at: now,
     }
+}
+
+#[tokio::test]
+async fn memory_automation_repo_round_trips_plan_gate_config_fields() {
+    let repo = MemoryAutomationRepository::new();
+    let mut automation = automation("automation-1", "project-1", AutomationStatus::Draft);
+    automation.plan_approval_mode = AutomationPlanApprovalMode::Automatic;
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation.plan_deep_verification = true;
+
+    repo.create(automation.clone()).await.unwrap();
+
+    let stored = repo.get_by_id(&automation.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.plan_approval_mode,
+        AutomationPlanApprovalMode::Automatic
+    );
+    assert_eq!(stored.pr_merge_mode, AutomationPrMergeMode::Automatic);
+    assert!(stored.plan_deep_verification);
+    assert_eq!(stored, automation);
 }
 
 fn successor_run(
@@ -391,6 +423,168 @@ async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
 }
 
 #[tokio::test]
+async fn memory_run_repo_round_trips_and_updates_plan_gate_fields() {
+    let repo = MemoryAutomationRunRepository::new();
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
+    let agent_phase_started_at = Utc::now();
+    let mut run = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_judge_state = AutomationPlanJudgeState::InProgress;
+    run.plan_judge_lease_expires_at = Some(lease_expires_at);
+    run.plan_judge_verdict_json = Some(r#"{"decision":"revise"}"#.to_string());
+    run.plan_revision_round = 2;
+    run.plan_reminder_count = 1;
+    run.plan_pending_instructions = Some("Tighten the rollout section.".to_string());
+    run.plan_last_parked_artifact_id = Some("artifact-plan-1".to_string());
+    run.agent_phase_started_at = Some(agent_phase_started_at);
+    repo.create_run(run.clone()).await.unwrap();
+
+    let stored = repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored, run);
+
+    assert!(repo
+        .compare_and_swap_plan_judge_state(
+            &run.id,
+            AutomationPlanJudgeState::InProgress,
+            AutomationPlanJudgeState::Done,
+            Some(r#"{"decision":"approve"}"#.to_string()),
+            None,
+        )
+        .await
+        .unwrap());
+    let updated = repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(updated.plan_judge_state, AutomationPlanJudgeState::Done);
+    assert_eq!(
+        updated.plan_judge_verdict_json.as_deref(),
+        Some(r#"{"decision":"approve"}"#)
+    );
+    assert_eq!(updated.plan_judge_lease_expires_at, None);
+
+    assert!(repo
+        .set_plan_pending_instructions(&run.id, None)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_pending_instructions
+        .is_none());
+    assert_eq!(
+        repo.set_plan_revision_round(&run.id, 3)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_revision_round,
+        3
+    );
+    assert_eq!(
+        repo.set_plan_last_parked_artifact_id(&run.id, Some("artifact-plan-2".to_string()))
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_last_parked_artifact_id
+            .as_deref(),
+        Some("artifact-plan-2")
+    );
+    assert_eq!(
+        repo.set_plan_reminder_count(&run.id, 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .plan_reminder_count,
+        2
+    );
+    let new_phase_started_at = Utc::now() + chrono::Duration::minutes(1);
+    assert_eq!(
+        repo.set_agent_phase_started_at(&run.id, Some(new_phase_started_at))
+            .await
+            .unwrap()
+            .unwrap()
+            .agent_phase_started_at,
+        Some(new_phase_started_at)
+    );
+}
+
+#[tokio::test]
+async fn memory_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
+    let repo = MemoryAutomationRunRepository::new();
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
+    let mut run = run(
+        "run-plan-cas-stale",
+        "automation-1",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_judge_state = AutomationPlanJudgeState::InProgress;
+    run.plan_judge_lease_expires_at = Some(lease_expires_at);
+    run.plan_judge_verdict_json = Some(r#"{"decision":"revise"}"#.to_string());
+    repo.create_run(run.clone()).await.unwrap();
+
+    assert!(!repo
+        .compare_and_swap_plan_judge_state(
+            &run.id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some(r#"{"decision":"approve"}"#.to_string()),
+            None,
+        )
+        .await
+        .unwrap());
+
+    let unchanged = repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(
+        unchanged.plan_judge_state,
+        AutomationPlanJudgeState::InProgress
+    );
+    assert_eq!(unchanged.plan_judge_lease_expires_at, Some(lease_expires_at));
+    assert_eq!(
+        unchanged.plan_judge_verdict_json.as_deref(),
+        Some(r#"{"decision":"revise"}"#)
+    );
+}
+
+#[tokio::test]
+async fn memory_plan_judge_dispatch_sets_lease_and_preserves_stored_verdict() {
+    let repo = MemoryAutomationRunRepository::new();
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
+    let mut run = run(
+        "run-plan-cas-dispatch",
+        "automation-1",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_judge_verdict_json = Some(r#"{"decision":"revise"}"#.to_string());
+    repo.create_run(run.clone()).await.unwrap();
+
+    assert!(repo
+        .compare_and_swap_plan_judge_state(
+            &run.id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::InProgress,
+            None,
+            Some(lease_expires_at),
+        )
+        .await
+        .unwrap());
+
+    let dispatched = repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(
+        dispatched.plan_judge_state,
+        AutomationPlanJudgeState::InProgress
+    );
+    assert_eq!(dispatched.plan_judge_lease_expires_at, Some(lease_expires_at));
+    assert_eq!(
+        dispatched.plan_judge_verdict_json.as_deref(),
+        Some(r#"{"decision":"revise"}"#)
+    );
+}
+
+#[tokio::test]
 async fn memory_automation_repo_child_row_deletes_are_noop_ok() {
     // The in-memory repo does not model attachment / context-ref rows, so the
     // deletes mirror the SQLite contract by returning Ok(0) instead of erroring.
@@ -440,8 +634,9 @@ async fn memory_find_run_by_conversation_id_returns_latest_linked_run() {
         AutomationRunStatus::Running,
         AutomationJudgeState::None,
     );
-    unrelated.conversation_id =
-        Some(ChatConversationId::from_string("22222222-2222-2222-2222-222222222222"));
+    unrelated.conversation_id = Some(ChatConversationId::from_string(
+        "22222222-2222-2222-2222-222222222222",
+    ));
 
     repo.create_run(first).await.unwrap();
     repo.create_run(second.clone()).await.unwrap();

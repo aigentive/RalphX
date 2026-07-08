@@ -100,6 +100,7 @@ pub enum AutomationRunStatus {
     Pending,
     Provisioning,
     Running,
+    AwaitingPlanApproval,
     Published,
     Completed,
     Merged,
@@ -114,6 +115,7 @@ impl AutomationRunStatus {
             Self::Pending => "pending",
             Self::Provisioning => "provisioning",
             Self::Running => "running",
+            Self::AwaitingPlanApproval => "awaiting_plan_approval",
             Self::Published => "published",
             Self::Completed => "completed",
             Self::Merged => "merged",
@@ -128,6 +130,7 @@ impl AutomationRunStatus {
             "pending" => Some(Self::Pending),
             "provisioning" => Some(Self::Provisioning),
             "running" => Some(Self::Running),
+            "awaiting_plan_approval" => Some(Self::AwaitingPlanApproval),
             "published" => Some(Self::Published),
             "completed" => Some(Self::Completed),
             "merged" => Some(Self::Merged),
@@ -167,6 +170,84 @@ impl AutomationJudgeState {
             "done" => Some(Self::Done),
             "failed" => Some(Self::Failed),
             "skipped" => Some(Self::Skipped),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationPlanApprovalMode {
+    Manual,
+    Automatic,
+}
+
+impl AutomationPlanApprovalMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Automatic => "automatic",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "automatic" => Some(Self::Automatic),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationPrMergeMode {
+    Manual,
+    Automatic,
+}
+
+impl AutomationPrMergeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Automatic => "automatic",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "automatic" => Some(Self::Automatic),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationPlanJudgeState {
+    None,
+    InProgress,
+    Done,
+    Failed,
+}
+
+impl AutomationPlanJudgeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::InProgress => "in_progress",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "in_progress" => Some(Self::InProgress),
+            "done" => Some(Self::Done),
+            "failed" => Some(Self::Failed),
             _ => None,
         }
     }
@@ -247,6 +328,9 @@ pub struct Automation {
     pub goal_items_json: Option<String>,
     pub chain_mode: String,
     pub completion_signal: String,
+    pub plan_approval_mode: AutomationPlanApprovalMode,
+    pub pr_merge_mode: AutomationPrMergeMode,
+    pub plan_deep_verification: bool,
     pub max_runs: i64,
     pub max_consecutive_failures: i64,
     pub first_run_prompt: Option<String>,
@@ -264,6 +348,14 @@ pub struct AutomationRun {
     pub status: AutomationRunStatus,
     pub judge_state: AutomationJudgeState,
     pub judge_lease_expires_at: Option<DateTime<Utc>>,
+    pub plan_judge_state: AutomationPlanJudgeState,
+    pub plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    pub plan_judge_verdict_json: Option<String>,
+    pub plan_revision_round: i64,
+    pub plan_reminder_count: i64,
+    pub plan_pending_instructions: Option<String>,
+    pub plan_last_parked_artifact_id: Option<String>,
+    pub agent_phase_started_at: Option<DateTime<Utc>>,
     pub conversation_id: Option<ChatConversationId>,
     pub run_prompt: String,
     pub prompt_author: AutomationPromptAuthor,
@@ -349,13 +441,22 @@ pub fn automation_run_is_transition_allowed(
             | (AutomationRunStatus::Running, AutomationRunStatus::Published)
             | (
                 AutomationRunStatus::Running,
-                AutomationRunStatus::Completed
+                AutomationRunStatus::AwaitingPlanApproval
             )
+            | (AutomationRunStatus::Running, AutomationRunStatus::Completed)
             | (
                 AutomationRunStatus::Running,
                 AutomationRunStatus::AgentFailed
             )
             | (AutomationRunStatus::Running, AutomationRunStatus::Cancelled)
+            | (
+                AutomationRunStatus::AwaitingPlanApproval,
+                AutomationRunStatus::Running
+            )
+            | (
+                AutomationRunStatus::AwaitingPlanApproval,
+                AutomationRunStatus::Cancelled
+            )
             | (AutomationRunStatus::Published, AutomationRunStatus::Merged)
             | (
                 AutomationRunStatus::Published,
@@ -401,6 +502,7 @@ pub fn is_open_automation_run(
         AutomationRunStatus::Pending
             | AutomationRunStatus::Provisioning
             | AutomationRunStatus::Running
+            | AutomationRunStatus::AwaitingPlanApproval
             | AutomationRunStatus::Published
     ) || (matches!(
         status,
