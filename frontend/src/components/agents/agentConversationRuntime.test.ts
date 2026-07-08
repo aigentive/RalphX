@@ -84,7 +84,7 @@ describe("getAgentTerminalUnavailableReason", () => {
     ).toBeNull();
   });
 
-  it("keeps terminal access disabled for linked plan-owned workspaces", () => {
+  it("allows terminal access for linked plan-owned workspaces", () => {
     expect(
       getAgentTerminalUnavailableReason(
         projectConversation(),
@@ -93,9 +93,7 @@ describe("getAgentTerminalUnavailableReason", () => {
           linkedIdeationSessionId: "ideation-session-1",
         }),
       ),
-    ).toBe(
-      "Terminal disabled while ideation or execution owns this workspace",
-    );
+    ).toBeNull();
     expect(
       getAgentTerminalUnavailableReason(
         projectConversation(),
@@ -104,9 +102,7 @@ describe("getAgentTerminalUnavailableReason", () => {
           linkedPlanBranchId: "plan-branch-1",
         }),
       ),
-    ).toBe(
-      "Terminal disabled while ideation or execution owns this workspace",
-    );
+    ).toBeNull();
   });
 });
 
@@ -147,17 +143,17 @@ describe("getAgentTerminalArchivedReason", () => {
     );
   });
 
-  it("does not archive plan-owned workspaces because they stay disabled", () => {
+  it("archives terminal-published plan-owned workspaces", () => {
     const workspace = agentWorkspace({
       mode: "plan",
       linkedIdeationSessionId: "ideation-session-1",
       publicationPrStatus: "merged",
     });
 
-    expect(getAgentTerminalArchivedReason(projectConversation(), workspace)).toBeNull();
-    expect(getAgentTerminalUnavailableReason(projectConversation(), workspace)).toBe(
-      "Terminal disabled while ideation or execution owns this workspace",
+    expect(getAgentTerminalArchivedReason(projectConversation(), workspace)).toBe(
+      "Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace.",
     );
+    expect(getAgentTerminalUnavailableReason(projectConversation(), workspace)).toBeNull();
   });
 });
 
