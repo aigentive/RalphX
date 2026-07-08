@@ -5,8 +5,16 @@ import {
   Loader2,
   MoreVertical,
   RefreshCw,
+  Wrench,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState, type ElementType } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useState,
+  type ElementType,
+} from "react";
 
 import type {
   AgentWorkspaceReviewContext,
@@ -42,8 +50,15 @@ type ReviewDisplayContext = Pick<
 
 type ReviewAction = {
   label: string;
-  force: boolean;
-};
+} & (
+  | {
+      kind: "review";
+      force: boolean;
+    }
+  | {
+      kind: "fix";
+    }
+);
 
 type ReviewStatus = {
   label: string;
@@ -60,19 +75,25 @@ interface AgentReviewPanelProps {
   reviewStartError: Error | null;
   isReviewLoading: boolean;
   isReviewActionPending: boolean;
+  isFixIssuesActionPending?: boolean;
   isWorkspaceRuntimeGenerating?: boolean;
   isPublishingWorkspace?: boolean;
   onOpenPublish?: () => void;
   onStartReview: (force: boolean) => void;
+  onFixIssues: () => void;
 }
 
-function reviewTargetLabel(context: ReviewDisplayContext | null): string | null {
+function reviewTargetLabel(
+  context: ReviewDisplayContext | null,
+): string | null {
   const target = context?.target;
   if (!target) return null;
   if (target.sourcePullRequestNumber) {
     return `PR #${target.sourcePullRequestNumber} source changes`;
   }
-  return target.scope === "workspace_delta" ? "Workspace changes" : "Selected source changes";
+  return target.scope === "workspace_delta"
+    ? "Workspace changes"
+    : "Selected source changes";
 }
 
 function reviewErrorMessage(
@@ -92,12 +113,40 @@ function reviewErrorMessage(
   return null;
 }
 
-function hasPassedWorkspaceReview(context: ReviewDisplayContext | null): boolean {
+function hasPassedWorkspaceReview(
+  context: ReviewDisplayContext | null,
+): boolean {
   const gateStatus = context?.monitor.reviewGateStatus ?? null;
   if (gateStatus) {
     return gateStatus === "passed";
   }
-  return Boolean(context?.isCurrent && context.monitor.reviewOutcome === "passed");
+  return Boolean(
+    context?.isCurrent && context.monitor.reviewOutcome === "passed",
+  );
+}
+
+function isWorkspaceReviewFixerActive(
+  status: string | null | undefined,
+): boolean {
+  return status === "routing" || status === "queued" || status === "running";
+}
+
+function canFixBlockingReview(
+  context: ReviewDisplayContext | null,
+  isRunning: boolean,
+): boolean {
+  if (
+    !context?.target ||
+    isRunning ||
+    !context.isCurrent ||
+    context.isOutdated
+  ) {
+    return false;
+  }
+  return (
+    context.monitor.reviewGateStatus === "blocking" ||
+    context.monitor.reviewOutcome === "blocking"
+  );
 }
 
 function reviewActionForState({
@@ -105,31 +154,46 @@ function reviewActionForState({
   hasArtifact,
   isRunFailed,
   isRunning,
+  isFixerActive,
 }: {
   context: ReviewDisplayContext | null;
   hasArtifact: boolean;
   isRunFailed: boolean;
   isRunning: boolean;
+  isFixerActive: boolean;
 }): ReviewAction | null {
   if (!context?.target || isRunning) return null;
-  if (isRunFailed) return { label: "Retry review", force: true };
-  if (!hasArtifact) return { label: "Run review", force: false };
-  if (context.isOutdated) return { label: "Update review", force: true };
-  if (context.isCurrent) return { label: "Run again", force: true };
-  return { label: "Run review", force: true };
+  if (canFixBlockingReview(context, isRunning)) {
+    if (isFixerActive) return null;
+    return { label: "Fix Issues", kind: "fix" };
+  }
+  if (isRunFailed)
+    return { label: "Retry review", kind: "review", force: true };
+  if (!hasArtifact)
+    return { label: "Run review", kind: "review", force: false };
+  if (context.isOutdated)
+    return { label: "Update review", kind: "review", force: true };
+  if (context.isCurrent)
+    return { label: "Run again", kind: "review", force: true };
+  return { label: "Run review", kind: "review", force: true };
 }
 
 function reviewActionDisabledReason({
   isReviewActionPending,
+  isFixIssuesActionPending,
   isWorkspaceRuntimeGenerating,
   isPublishingWorkspace,
 }: {
   isReviewActionPending: boolean;
+  isFixIssuesActionPending: boolean;
   isWorkspaceRuntimeGenerating: boolean;
   isPublishingWorkspace: boolean;
 }): string | null {
   if (isReviewActionPending) {
     return "Review is starting. Wait for this request to finish.";
+  }
+  if (isFixIssuesActionPending) {
+    return "Fixer is starting. Wait for this request to finish.";
   }
   if (isWorkspaceRuntimeGenerating) {
     return "Review is available after the current agent run finishes.";
@@ -155,7 +219,8 @@ function reviewStatusForState({
   if (isRunning) {
     return {
       label: "Reviewing",
-      detail: "The reviewer is checking the current changes. The Review will appear here when it finishes.",
+      detail:
+        "The reviewer is checking the current changes. The Review will appear here when it finishes.",
       color: "var(--accent-primary)",
       icon: Loader2,
       iconClassName: "animate-spin",
@@ -182,7 +247,8 @@ function reviewStatusForState({
   if (context?.isOutdated) {
     return {
       label: "Review is outdated",
-      detail: "This Review was generated for earlier changes. Update it when you want a fresh reviewer pass.",
+      detail:
+        "This Review was generated for earlier changes. Update it when you want a fresh reviewer pass.",
       color: "var(--status-warning)",
       icon: AlertCircle,
     };
@@ -198,7 +264,8 @@ function reviewStatusForState({
   if (context?.target && !hasArtifact) {
     return {
       label: "Review not run",
-      detail: "Reviewable changes are available. Run review when you want a reviewer pass.",
+      detail:
+        "Reviewable changes are available. Run review when you want a reviewer pass.",
       color: "var(--text-muted)",
       icon: AlertCircle,
     };
@@ -228,10 +295,12 @@ export function AgentReviewPanel({
   reviewStartError,
   isReviewLoading,
   isReviewActionPending,
+  isFixIssuesActionPending = false,
   isWorkspaceRuntimeGenerating = false,
   isPublishingWorkspace = false,
   onOpenPublish,
   onStartReview,
+  onFixIssues,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
 
@@ -241,11 +310,14 @@ export function AgentReviewPanel({
 
   const displayContext = (
     isReviewActionPending
-      ? reviewStartResult ?? reviewContext
-      : reviewContext ?? reviewStartResult
+      ? (reviewStartResult ?? reviewContext)
+      : (reviewContext ?? reviewStartResult)
   ) as ReviewDisplayContext | null;
   const isRunning =
     isReviewActionPending || displayContext?.monitor.status === "reviewing";
+  const isFixerActive =
+    isFixIssuesActionPending ||
+    isWorkspaceReviewFixerActive(displayContext?.monitor.reviewFixerStatus);
   const errorMessage = reviewErrorMessage(displayContext, reviewStartError);
   const isRunFailed = Boolean(errorMessage) && !isRunning;
   const status = reviewStatusForState({
@@ -259,6 +331,7 @@ export function AgentReviewPanel({
     hasArtifact: Boolean(reviewArtifact),
     isRunFailed,
     isRunning,
+    isFixerActive,
   });
   const targetLabel = reviewTargetLabel(displayContext);
   const skippedReason = reviewStartResult?.skippedReason ?? null;
@@ -266,14 +339,20 @@ export function AgentReviewPanel({
     ? `v${displayContext.monitor.reviewArtifactVersion}`
     : null;
   const StatusIcon = status.icon;
-  const actionIconClassName = isReviewActionPending ? "animate-spin" : "";
-  const ActionIcon = isReviewActionPending ? Loader2 : RefreshCw;
+  const isAnyActionPending = isReviewActionPending || isFixIssuesActionPending;
+  const actionIconClassName = isAnyActionPending ? "animate-spin" : "";
+  const ActionIcon = isAnyActionPending
+    ? Loader2
+    : action?.kind === "fix"
+      ? Wrench
+      : RefreshCw;
   const reviewUpdatedAt = displayContext?.monitor.reviewArtifactUpdatedAt
     ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
     : null;
   const actionDisabledReason = action
     ? reviewActionDisabledReason({
         isReviewActionPending,
+        isFixIssuesActionPending,
         isWorkspaceRuntimeGenerating,
         isPublishingWorkspace,
       })
@@ -293,6 +372,21 @@ export function AgentReviewPanel({
         >
           <Loader2 className="h-4 w-4 animate-spin" />
           Running
+        </Button>
+      );
+    }
+    if (isFixerActive && !action) {
+      return (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled
+          className="h-8 gap-1.5"
+          data-testid="agents-review-fixing"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Fixing...
         </Button>
       );
     }
@@ -357,7 +451,9 @@ export function AgentReviewPanel({
                 data-testid="agents-review-rerun"
                 onSelect={(event) => {
                   event.preventDefault();
-                  onStartReview(action.force);
+                  if (action.kind === "review") {
+                    onStartReview(action.force);
+                  }
                 }}
                 disabled={isActionDisabled}
                 {...(actionDisabledReasonId !== undefined && {
@@ -376,7 +472,9 @@ export function AgentReviewPanel({
       <Button
         type="button"
         size="sm"
-        onClick={() => onStartReview(action.force)}
+        onClick={() =>
+          action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
+        }
         disabled={isActionDisabled}
         {...(actionDisabledReasonId !== undefined && {
           "aria-describedby": actionDisabledReasonId,
@@ -405,10 +503,12 @@ export function AgentReviewPanel({
     actionDisabledReasonId,
     actionIconClassName,
     displayContext,
+    isFixerActive,
     isReviewActionPending,
     isPublishingWorkspace,
     isRunning,
     onOpenPublish,
+    onFixIssues,
     onStartReview,
   ]);
 
@@ -478,11 +578,17 @@ export function AgentReviewPanel({
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+              <p
+                className="mt-1 text-xs"
+                style={{ color: "var(--text-muted)" }}
+              >
                 {errorMessage ?? status.detail}
               </p>
               {(targetLabel || reviewUpdatedAt) && (
-                <p className="mt-2 text-[0.6875rem]" style={{ color: "var(--text-subtle)" }}>
+                <p
+                  className="mt-2 text-[0.6875rem]"
+                  style={{ color: "var(--text-subtle)" }}
+                >
                   {[targetLabel, reviewUpdatedAt].filter(Boolean).join(" · ")}
                 </p>
               )}
@@ -537,7 +643,8 @@ export function AgentReviewPanel({
             color: "var(--text-secondary)",
           }}
         >
-          Outdated for current changes. The Review below is still available for reference.
+          Outdated for current changes. The Review below is still available for
+          reference.
         </div>
       )}
 

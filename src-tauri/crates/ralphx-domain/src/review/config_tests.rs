@@ -8,9 +8,15 @@ fn test_review_settings_default() {
     assert!(!settings.require_fix_approval);
     assert!(!settings.require_human_review);
     assert!(settings.require_workspace_review);
+    assert!(settings.autofix_workspace_review_blocking_findings);
     assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
+}
+
+#[test]
+fn test_autofix_workspace_review_blocking_findings_default_helper() {
+    assert!(default_autofix_workspace_review_blocking_findings());
 }
 
 #[test]
@@ -109,6 +115,7 @@ fn test_review_settings_serialize() {
     assert!(json.contains("\"require_fix_approval\":false"));
     assert!(json.contains("\"require_human_review\":false"));
     assert!(json.contains("\"require_workspace_review\":true"));
+    assert!(json.contains("\"autofix_workspace_review_blocking_findings\":true"));
     assert!(json.contains("\"max_fix_attempts\":3"));
     assert!(json.contains("\"auto_create_followup_agent_conversation\":true"));
     assert!(json.contains("\"run_task_validations\":true"));
@@ -122,6 +129,7 @@ fn test_review_settings_deserialize() {
         "require_fix_approval": true,
         "require_human_review": true,
         "require_workspace_review": false,
+        "autofix_workspace_review_blocking_findings": false,
         "max_fix_attempts": 5,
         "max_revision_cycles": 8,
         "auto_create_followup_agent_conversation": false,
@@ -133,6 +141,7 @@ fn test_review_settings_deserialize() {
     assert!(settings.require_fix_approval);
     assert!(settings.require_human_review);
     assert!(!settings.require_workspace_review);
+    assert!(!settings.autofix_workspace_review_blocking_findings);
     assert_eq!(settings.max_fix_attempts, 5);
     assert_eq!(settings.max_revision_cycles, 8);
     assert!(!settings.auto_create_followup_agent_conversation);
@@ -147,6 +156,7 @@ fn test_review_settings_roundtrip() {
         require_fix_approval: true,
         require_human_review: false,
         require_workspace_review: false,
+        autofix_workspace_review_blocking_findings: false,
         max_fix_attempts: 7,
         max_revision_cycles: 8,
         auto_create_followup_agent_conversation: false,
@@ -171,6 +181,7 @@ fn test_review_settings_partial_json_with_defaults() {
     let settings: ReviewSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings, ReviewSettings::default());
     assert!(settings.require_workspace_review);
+    assert!(settings.autofix_workspace_review_blocking_findings);
     assert!(settings.run_task_validations);
 }
 

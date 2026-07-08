@@ -9,7 +9,14 @@
  * Design spec: specs/design/refined-studio-patterns.md
  */
 
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useCallback,
+} from "react";
 import { type VirtuosoHandle } from "react-virtuoso";
 import {
   useChat,
@@ -47,7 +54,11 @@ import { withAlpha } from "@/lib/theme-colors";
 import { getContextConfig, buildStoreKey } from "@/lib/chat-context-registry";
 import type { Task } from "@/types/task";
 import type { ContextType } from "@/types/chat-conversation";
-import { ALL_REVIEW_STATUSES, EXECUTION_STATUSES, MERGE_STATUSES } from "@/types/status";
+import {
+  ALL_REVIEW_STATUSES,
+  EXECUTION_STATUSES,
+  MERGE_STATUSES,
+} from "@/types/status";
 import { AGENT_MERGER, AGENT_WORKER, AGENT_REVIEWER } from "@/constants/agents";
 import { type AgentType } from "./StatusActivityBadge";
 import { ChatSessionToolbar } from "./ChatSessionToolbar";
@@ -90,7 +101,13 @@ import {
 import { useIdeationStore } from "@/stores/ideationStore";
 import { getModelLabel } from "@/lib/model-utils";
 import { selectIsTeamActive, selectEffectiveModel } from "@/stores/chatStore";
-import { useTeamStore, selectTeammates, selectActiveTeam, selectTeammateByName, type TeammateStatus } from "@/stores/teamStore";
+import {
+  useTeamStore,
+  selectTeammates,
+  selectActiveTeam,
+  selectTeammateByName,
+  type TeammateStatus,
+} from "@/stores/teamStore";
 import { useTeamEvents } from "@/hooks/useTeamEvents";
 import { useTeamActions } from "@/hooks/useTeamActions";
 import { TeamContextBar } from "./TeamContextBar";
@@ -111,22 +128,24 @@ const EMPTY_TASKS: never[] = [];
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 
-type TranscriptWindowData = {
-  messages: readonly unknown[];
-  totalMessageCount?: number;
-} | undefined;
+type TranscriptWindowData =
+  | {
+      messages: readonly unknown[];
+      totalMessageCount?: number;
+    }
+  | undefined;
 
 function transcriptWindowHasMessages(data: TranscriptWindowData): boolean {
   return (data?.totalMessageCount ?? data?.messages.length ?? 0) > 0;
 }
 
 function automationProposalApplyOptionIndex(
-  question: AskUserQuestionPayload | null | undefined
+  question: AskUserQuestionPayload | null | undefined,
 ): number {
   if (!question) return -1;
 
   const optionIndex = question.options.findIndex(
-    (option) => option.value === AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE
+    (option) => option.value === AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE,
   );
   if (optionIndex < 0) return -1;
 
@@ -186,13 +205,18 @@ interface IntegratedChatPanelProps {
   /** Whether this panel is currently visible (used in dual-panel mode to suppress toasts on hidden panel) */
   isVisible?: boolean;
   /** Back navigation action rendered in the toolbar (e.g. "Back to Plan") */
-  toolbarBackAction?: { label: string; icon?: React.ReactNode; onClick: () => void };
+  toolbarBackAction?: {
+    label: string;
+    icon?: React.ReactNode;
+    onClick: () => void;
+  };
   /** Force a specific conversation ID for externally-owned session lists. */
   conversationIdOverride?: string | undefined;
   /** Override task selection so host surfaces can ignore the global task detail state. */
   selectedTaskIdOverride?: string | null | undefined;
   /** Force task chat runtime mode when selected task status alone is not deterministic. */
-  taskRuntimeContextTypeOverride?: "task_execution" | "review" | "merge" | undefined;
+  taskRuntimeContextTypeOverride?:
+    "task_execution" | "review" | "merge" | undefined;
   /** Force a specific store key for externally-owned queue/running state. */
   storeContextKeyOverride?: string | undefined;
   /** Override the backend process/queue context id used for recovery, stop, and queued-message edits. */
@@ -209,7 +233,9 @@ interface IntegratedChatPanelProps {
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
   /** Whether ResizeObserver-driven below-transcript chrome changes belong to the visible runtime. */
   belowTranscriptLayoutOwnedByVisibleRuntime?: boolean;
-  renderComposer?: (props: IntegratedChatComposerRenderProps) => React.ReactNode;
+  renderComposer?: (
+    props: IntegratedChatComposerRenderProps,
+  ) => React.ReactNode;
   onUserMessageSent?: (payload: {
     content: string;
     result: SendAgentMessageResult;
@@ -287,13 +313,19 @@ export function IntegratedChatPanel({
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const pollStartRef = useRef<number | null>(null);
-  const [transcriptPaintCoverConversationId, setTranscriptPaintCoverConversationId] =
-    useState<string | null>(null);
-  const [childSessionModalId, setChildSessionModalId] = useState<string | null>(null);
+  const [
+    transcriptPaintCoverConversationId,
+    setTranscriptPaintCoverConversationId,
+  ] = useState<string | null>(null);
+  const [childSessionModalId, setChildSessionModalId] = useState<string | null>(
+    null,
+  );
   const ideationSessionsById = useIdeationStore((s) => s.sessions);
   const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
   const selectedTaskId =
-    selectedTaskIdOverride === undefined ? globalSelectedTaskId : selectedTaskIdOverride;
+    selectedTaskIdOverride === undefined
+      ? globalSelectedTaskId
+      : selectedTaskIdOverride;
   // History state from store - shared with TaskDetailOverlay for time-travel feature
   const taskHistoryState = useUiStore((s) => s.taskHistoryState);
   const isHistoryMode = !!taskHistoryState;
@@ -309,11 +341,13 @@ export function IntegratedChatPanel({
 
   // Read from Zustand store (event-updated, sync) — same pattern as TaskDetailOverlay
   const taskFromStore = useTaskStore((state) =>
-    selectedTaskId ? state.tasks[selectedTaskId] : undefined
+    selectedTaskId ? state.tasks[selectedTaskId] : undefined,
   );
 
   // Find from list query
-  const taskFromList = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : undefined;
+  const taskFromList = selectedTaskId
+    ? tasks.find((t) => t.id === selectedTaskId)
+    : undefined;
 
   // Fallback: fetch the specific task by ID when not found in store or list
   const { data: taskFromDetail } = useQuery<Task, Error>({
@@ -322,16 +356,24 @@ export function IntegratedChatPanel({
     enabled: Boolean(selectedTaskId) && !taskFromStore && !taskFromList,
   });
 
-  const selectedTask: Task | undefined = taskFromStore ?? taskFromList ?? taskFromDetail;
+  const selectedTask: Task | undefined =
+    taskFromStore ?? taskFromList ?? taskFromDetail;
 
   // Determine effective status - use historical status in history mode, otherwise current status
-  const effectiveStatus = taskHistoryState?.status ?? selectedTask?.internalStatus;
+  const effectiveStatus =
+    taskHistoryState?.status ?? selectedTask?.internalStatus;
 
   // Agent-status-aware overrides: keep mode active while agent is still running,
   // even if task status has already transitioned
-  const executionKey = selectedTaskId ? buildStoreKey("task_execution", selectedTaskId) : "";
-  const executionAgentRunning = useChatStore(selectIsAgentRunning(executionKey));
-  const reviewKey = selectedTaskId ? buildStoreKey("review", selectedTaskId) : "";
+  const executionKey = selectedTaskId
+    ? buildStoreKey("task_execution", selectedTaskId)
+    : "";
+  const executionAgentRunning = useChatStore(
+    selectIsAgentRunning(executionKey),
+  );
+  const reviewKey = selectedTaskId
+    ? buildStoreKey("review", selectedTaskId)
+    : "";
   const reviewAgentRunning = useChatStore(selectIsAgentRunning(reviewKey));
   const mergeKey = selectedTaskId ? buildStoreKey("merge", selectedTaskId) : "";
   const mergeAgentRunning = useChatStore(selectIsAgentRunning(mergeKey));
@@ -343,32 +385,40 @@ export function IntegratedChatPanel({
   // Agent-status override is gated on !taskHistoryState: in history mode, no agent
   // is running so the override is always false, but the explicit guard prevents
   // stale agentStatus entries from activating mode flags for historical contexts.
-  const isExecutionMode = !ideationSessionId && !!selectedTaskId && (
-    forcedTaskRuntimeContext === "task_execution" ||
-    (!forcedTaskRuntimeContext && (
-      (effectiveStatus ? (EXECUTION_STATUSES as readonly string[]).includes(effectiveStatus) : false)
-      || (!taskHistoryState && executionAgentRunning)
-    ))
-  );
+  const isExecutionMode =
+    !ideationSessionId &&
+    !!selectedTaskId &&
+    (forcedTaskRuntimeContext === "task_execution" ||
+      (!forcedTaskRuntimeContext &&
+        ((effectiveStatus
+          ? (EXECUTION_STATUSES as readonly string[]).includes(effectiveStatus)
+          : false) ||
+          (!taskHistoryState && executionAgentRunning))));
 
   // Review states: reviewer agent conversation (only when NOT in ideation mode)
   // Include 'approved' so historical view loads the reviewer's conversation
-  const isReviewMode = !ideationSessionId && !!selectedTaskId && (
-    forcedTaskRuntimeContext === "review" ||
-    (!forcedTaskRuntimeContext && (
-      (effectiveStatus ? ((ALL_REVIEW_STATUSES as readonly string[]).includes(effectiveStatus) || effectiveStatus === "approved") : false)
-      || (!taskHistoryState && reviewAgentRunning)
-    ))
-  );
+  const isReviewMode =
+    !ideationSessionId &&
+    !!selectedTaskId &&
+    (forcedTaskRuntimeContext === "review" ||
+      (!forcedTaskRuntimeContext &&
+        ((effectiveStatus
+          ? (ALL_REVIEW_STATUSES as readonly string[]).includes(
+              effectiveStatus,
+            ) || effectiveStatus === "approved"
+          : false) ||
+          (!taskHistoryState && reviewAgentRunning))));
 
   // Merge states: merger agent conversation (only when NOT in ideation mode)
-  const isMergeMode = !ideationSessionId && !!selectedTaskId && (
-    forcedTaskRuntimeContext === "merge" ||
-    (!forcedTaskRuntimeContext && (
-      (effectiveStatus ? (MERGE_STATUSES as readonly string[]).includes(effectiveStatus) : false)
-      || (!taskHistoryState && mergeAgentRunning)
-    ))
-  );
+  const isMergeMode =
+    !ideationSessionId &&
+    !!selectedTaskId &&
+    (forcedTaskRuntimeContext === "merge" ||
+      (!forcedTaskRuntimeContext &&
+        ((effectiveStatus
+          ? (MERGE_STATUSES as readonly string[]).includes(effectiveStatus)
+          : false) ||
+          (!taskHistoryState && mergeAgentRunning))));
 
   // Use extracted context management hook
   const {
@@ -401,17 +451,16 @@ export function IntegratedChatPanel({
     overrideAgentRunId: taskHistoryState?.agentRunId,
     isVisible,
   });
-  const agentProcessContextId = agentProcessContextIdOverride ?? currentContextId;
+  const agentProcessContextId =
+    agentProcessContextIdOverride ?? currentContextId;
   useQueuedMessagesHydration({
     contextType: currentContextType,
     contextId: agentProcessContextId,
     storeContextKey,
     enabled: !isHistoryMode,
   });
-  const {
-    ideationTeamModeAvailable,
-    executionTeamModeAvailable,
-  } = useTeamModeAvailability(projectId);
+  const { ideationTeamModeAvailable, executionTeamModeAvailable } =
+    useTeamModeAvailability(projectId);
 
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
 
@@ -429,9 +478,15 @@ export function IntegratedChatPanel({
   }, [storeContextKey, currentContextType, currentContextId, isHistoryMode]);
 
   // Team mode state
-  const isTeamActiveSelector = useMemo(() => selectIsTeamActive(storeContextKey), [storeContextKey]);
+  const isTeamActiveSelector = useMemo(
+    () => selectIsTeamActive(storeContextKey),
+    [storeContextKey],
+  );
   const isTeamActive = useChatStore(isTeamActiveSelector);
-  const teammatesSelector = useMemo(() => selectTeammates(storeContextKey), [storeContextKey]);
+  const teammatesSelector = useMemo(
+    () => selectTeammates(storeContextKey),
+    [storeContextKey],
+  );
   const teammates = useTeamStore(teammatesSelector);
   const pendingPlan = useTeamStore((s) => s.pendingPlans[storeContextKey]);
   const [teamFilter, setTeamFilter] = useState<TeamFilterValue>("lead");
@@ -447,14 +502,22 @@ export function IntegratedChatPanel({
   // Teammate tab: resolve the teammate's conversation_id for standard chat pipeline
   const isTeammateTab = showTeamUi && !!teamFilter && teamFilter !== "lead";
   const activeTeammateSelector = useMemo(
-    () => isTeammateTab ? selectTeammateByName(storeContextKey, teamFilter) : () => null,
+    () =>
+      isTeammateTab
+        ? selectTeammateByName(storeContextKey, teamFilter)
+        : () => null,
     [storeContextKey, teamFilter, isTeammateTab],
   );
   const activeTeammate = useTeamStore(activeTeammateSelector);
-  const teammateConversationId = isTeammateTab ? (activeTeammate?.conversationId ?? null) : null;
+  const teammateConversationId = isTeammateTab
+    ? (activeTeammate?.conversationId ?? null)
+    : null;
 
   // Track whether the team in this context is historical (hydrated from backend)
-  const activeTeamSelector = useMemo(() => selectActiveTeam(storeContextKey), [storeContextKey]);
+  const activeTeamSelector = useMemo(
+    () => selectActiveTeam(storeContextKey),
+    [storeContextKey],
+  );
   const activeTeam = useTeamStore(activeTeamSelector);
   const isTeamHistorical = activeTeam?.isHistorical === true;
 
@@ -473,7 +536,10 @@ export function IntegratedChatPanel({
   //   - disbandedAt === null → team still active → fetch live status and hydrate as live
   //     (unlocks Effect 2 in useTeamEvents and useTeamStatus polling)
   //   - disbandedAt !== null → team done → hydrate as historical
-  const { data: teamHistory } = useTeamHistory(currentContextType, currentContextId);
+  const { data: teamHistory } = useTeamHistory(
+    currentContextType,
+    currentContextId,
+  );
   const hydrateFromHistory = useTeamStore((s) => s.hydrateFromHistory);
   const createTeam = useTeamStore((s) => s.createTeam);
   const addTeammate = useTeamStore((s) => s.addTeammate);
@@ -502,7 +568,11 @@ export function IntegratedChatPanel({
           setTeamActive(storeContextKey, true);
           return;
         }
-        createTeam(storeContextKey, liveStatus.name, liveStatus.lead_name ?? liveStatus.name);
+        createTeam(
+          storeContextKey,
+          liveStatus.name,
+          liveStatus.lead_name ?? liveStatus.name,
+        );
         for (const mate of liveStatus.teammates) {
           addTeammate(storeContextKey, {
             name: mate.name,
@@ -524,8 +594,18 @@ export function IntegratedChatPanel({
         hydrateFromHistory(storeContextKey, teamHistory);
         setTeamActive(storeContextKey, true);
       });
-    return () => { cancelled = true; };
-  }, [teamHistory, isTeamActive, storeContextKey, hydrateFromHistory, setTeamActive, createTeam, addTeammate]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    teamHistory,
+    isTeamActive,
+    storeContextKey,
+    hydrateFromHistory,
+    setTeamActive,
+    createTeam,
+    addTeammate,
+  ]);
 
   // Team actions
   const teamActions = useTeamActions(
@@ -554,7 +634,10 @@ export function IntegratedChatPanel({
         payload.context_id === currentContextIdRef.current &&
         payload.conversation_id
       ) {
-        setActiveConversation(storeContextKeyRef.current, payload.conversation_id);
+        setActiveConversation(
+          storeContextKeyRef.current,
+          payload.conversation_id,
+        );
         return;
       }
       // Handle retry scenario: task context watching a new execution starting
@@ -570,8 +653,14 @@ export function IntegratedChatPanel({
         payload.context_id === currentContextIdRef.current &&
         payload.conversation_id
       ) {
-        setActiveConversation(storeContextKeyRef.current, payload.conversation_id);
-        const executionKey = buildStoreKey(payload.context_type as ContextType, payload.context_id);
+        setActiveConversation(
+          storeContextKeyRef.current,
+          payload.conversation_id,
+        );
+        const executionKey = buildStoreKey(
+          payload.context_type as ContextType,
+          payload.context_id,
+        );
         if (executionKey !== storeContextKeyRef.current) {
           setActiveConversation(executionKey, payload.conversation_id);
         }
@@ -588,15 +677,24 @@ export function IntegratedChatPanel({
     }>("agent:conversation_created", (payload) => {
       if (payload.context_id !== currentContextId) return;
       void queryClient.invalidateQueries({
-        queryKey: chatKeys.conversationList(payload.context_type as ContextType, payload.context_id),
+        queryKey: chatKeys.conversationList(
+          payload.context_type as ContextType,
+          payload.context_id,
+        ),
       });
     });
   }, [bus, queryClient, currentContextId]);
 
   // Use context-aware selectors - unified queue works for all modes
-  const queuedMessagesSelector = useMemo(() => selectQueuedMessages(storeContextKey), [storeContextKey]);
+  const queuedMessagesSelector = useMemo(
+    () => selectQueuedMessages(storeContextKey),
+    [storeContextKey],
+  );
   const queuedMessages = useChatStore(queuedMessagesSelector);
-  const agentStatusSelector = useMemo(() => selectAgentStatus(storeContextKey), [storeContextKey]);
+  const agentStatusSelector = useMemo(
+    () => selectAgentStatus(storeContextKey),
+    [storeContextKey],
+  );
   const agentStatus = useChatStore(agentStatusSelector);
   const agentActivityLabelSelector = useMemo(
     () => selectAgentActivityLabel(storeContextKey),
@@ -604,28 +702,49 @@ export function IntegratedChatPanel({
   );
   const agentActivityLabel = useChatStore(agentActivityLabelSelector);
   const isAgentRunning = agentStatus !== "idle"; // backward-compat boolean (agent process alive)
-  const lastAgentEventTsSelector = useMemo(() => selectLastAgentEventTimestamp(storeContextKey), [storeContextKey]);
+  const lastAgentEventTsSelector = useMemo(
+    () => selectLastAgentEventTimestamp(storeContextKey),
+    [storeContextKey],
+  );
   const lastAgentEventTs = useChatStore(lastAgentEventTsSelector);
   const toolCallStartTimesSelector = useMemo(
     () => selectToolCallStartTimes(storeContextKey),
     [storeContextKey],
   );
   const toolCallStartTimes = useChatStore(toolCallStartTimesSelector);
-  const isSendingSelector = useMemo(() => selectIsSending(storeContextKey), [storeContextKey]);
-  const effectiveModelSelector = useMemo(() => selectEffectiveModel(storeContextKey), [storeContextKey]);
+  const isSendingSelector = useMemo(
+    () => selectIsSending(storeContextKey),
+    [storeContextKey],
+  );
+  const effectiveModelSelector = useMemo(
+    () => selectEffectiveModel(storeContextKey),
+    [storeContextKey],
+  );
   const effectiveModel = useChatStore(effectiveModelSelector);
 
   // Timeout warning state — track dismissed bash tool call ID
-  const [dismissedTimeoutCallId, setDismissedTimeoutCallId] = useState<string | null>(null);
-  const activeBashCall = streamingToolCalls.find((tc) => tc.name.toLowerCase() === "bash");
-  const bashStartTime = activeBashCall ? toolCallStartTimes[activeBashCall.id] : undefined;
+  const [dismissedTimeoutCallId, setDismissedTimeoutCallId] = useState<
+    string | null
+  >(null);
+  const activeBashCall = streamingToolCalls.find(
+    (tc) => tc.name.toLowerCase() === "bash",
+  );
+  const bashStartTime = activeBashCall
+    ? toolCallStartTimes[activeBashCall.id]
+    : undefined;
   // Context-aware threshold: 3600s for team mode, 600s otherwise
   const effectiveTimeoutMs = showTeamUi ? 3_600_000 : 600_000;
-  const showTimeoutWarning = activeBashCall !== undefined && bashStartTime !== undefined && activeBashCall.id !== dismissedTimeoutCallId;
+  const showTimeoutWarning =
+    activeBashCall !== undefined &&
+    bashStartTime !== undefined &&
+    activeBashCall.id !== dismissedTimeoutCallId;
 
   // Auto-reset dismissed ID when the dismissed call is no longer active
   useEffect(() => {
-    if (dismissedTimeoutCallId && !streamingToolCalls.find((tc) => tc.id === dismissedTimeoutCallId)) {
+    if (
+      dismissedTimeoutCallId &&
+      !streamingToolCalls.find((tc) => tc.id === dismissedTimeoutCallId)
+    ) {
       setDismissedTimeoutCallId(null);
     }
   }, [streamingToolCalls, dismissedTimeoutCallId]);
@@ -646,8 +765,15 @@ export function IntegratedChatPanel({
   const isAgentContext = isExecutionMode || isReviewMode || isMergeMode;
 
   const agentConversationsQuery = useQuery({
-    queryKey: chatKeys.conversationList(currentContextType, selectedTaskId ?? ""),
-    queryFn: () => chatApi.listConversations(currentContextType as ContextType, selectedTaskId ?? ""),
+    queryKey: chatKeys.conversationList(
+      currentContextType,
+      selectedTaskId ?? "",
+    ),
+    queryFn: () =>
+      chatApi.listConversations(
+        currentContextType as ContextType,
+        selectedTaskId ?? "",
+      ),
     enabled: isAgentContext && !!selectedTaskId,
     staleTime: 0,
   });
@@ -672,25 +798,48 @@ export function IntegratedChatPanel({
     }
     pollStartRef.current = Date.now();
     const id = setInterval(() => {
-      if (pollStartRef.current !== null && Date.now() - pollStartRef.current >= POLL_MAX_MS) {
+      if (
+        pollStartRef.current !== null &&
+        Date.now() - pollStartRef.current >= POLL_MAX_MS
+      ) {
         clearInterval(id);
         pollStartRef.current = null;
         return;
       }
       void queryClient.invalidateQueries({
-        queryKey: chatKeys.conversationList(currentContextType, currentContextId),
+        queryKey: chatKeys.conversationList(
+          currentContextType,
+          currentContextId,
+        ),
       });
     }, POLL_INTERVAL_MS);
-    return () => { clearInterval(id); };
-  }, [isVisible, isAgentContext, conversations.data, queryClient, currentContextType, currentContextId]);
+    return () => {
+      clearInterval(id);
+    };
+  }, [
+    isVisible,
+    isAgentContext,
+    conversations.data,
+    queryClient,
+    currentContextType,
+    currentContextId,
+  ]);
 
   // Auto-select the most recent conversation in execution/review/merge modes
   // Extract stable primitives from TanStack Query result to avoid re-render on every query object change
   const conversationsData = conversations.data;
   const conversationsLoading = conversations.isLoading;
   useEffect(() => {
-    autoSelectConversation({ data: conversationsData, isLoading: conversationsLoading });
-  }, [autoSelectConversation, conversationsData, conversationsLoading, isVisible]);
+    autoSelectConversation({
+      data: conversationsData,
+      isLoading: conversationsLoading,
+    });
+  }, [
+    autoSelectConversation,
+    conversationsData,
+    conversationsLoading,
+    isVisible,
+  ]);
 
   const {
     sendMessage,
@@ -705,9 +854,11 @@ export function IntegratedChatPanel({
     {
       enabled: !!teammateConversationId && isTeammateTab,
       pageSize: 40,
-    }
+    },
   );
-  const teammateTimelineHasMessages = transcriptWindowHasMessages(teammateConversationHistory.data);
+  const teammateTimelineHasMessages = transcriptWindowHasMessages(
+    teammateConversationHistory.data,
+  );
   const teammateLogicalConversationHistory = useConversationHistoryWindow(
     isTeammateTab ? teammateConversationId : null,
     {
@@ -717,16 +868,18 @@ export function IntegratedChatPanel({
         !teammateConversationHistory.isLoading &&
         !teammateTimelineHasMessages,
       pageSize: 40,
-    }
+    },
   );
   const primaryConversationHistory = useConversationTimelineWindow(
     !isTeammateTab ? activeConversationId : null,
     {
       enabled: !!activeConversationId && !isTeammateTab,
       pageSize: 40,
-    }
+    },
   );
-  const primaryTimelineHasMessages = transcriptWindowHasMessages(primaryConversationHistory.data);
+  const primaryTimelineHasMessages = transcriptWindowHasMessages(
+    primaryConversationHistory.data,
+  );
   const primaryLogicalConversationHistory = useConversationHistoryWindow(
     !isTeammateTab ? activeConversationId : null,
     {
@@ -736,10 +889,14 @@ export function IntegratedChatPanel({
         !primaryConversationHistory.isLoading &&
         !primaryTimelineHasMessages,
       pageSize: 40,
-    }
+    },
   );
-  const primaryLegacyHasMessages = transcriptWindowHasMessages(primaryLogicalConversationHistory.data);
-  const teammateLegacyHasMessages = transcriptWindowHasMessages(teammateLogicalConversationHistory.data);
+  const primaryLegacyHasMessages = transcriptWindowHasMessages(
+    primaryLogicalConversationHistory.data,
+  );
+  const teammateLegacyHasMessages = transcriptWindowHasMessages(
+    teammateLogicalConversationHistory.data,
+  );
   const shouldUsePrimaryLogicalHistory =
     !primaryTimelineHasMessages &&
     !primaryConversationHistory.isLoading &&
@@ -755,22 +912,20 @@ export function IntegratedChatPanel({
     !primaryConversationHistory.isLoading &&
     !primaryLegacyHasMessages;
 
-  const primaryConversationData =
-    !isTeammateTab
-      ? shouldUsePrimaryLogicalHistory
-        ? primaryLogicalConversationHistory.data
-        : (primaryConversationHistory.data ??
-            (shouldUsePrimaryOptimisticFallback || shouldUsePrimaryRegularFallback
-              ? regularChatData.messages.data
-              : undefined))
-      : regularChatData.messages.data;
+  const primaryConversationData = !isTeammateTab
+    ? shouldUsePrimaryLogicalHistory
+      ? primaryLogicalConversationHistory.data
+      : (primaryConversationHistory.data ??
+        (shouldUsePrimaryOptimisticFallback || shouldUsePrimaryRegularFallback
+          ? regularChatData.messages.data
+          : undefined))
+    : regularChatData.messages.data;
   const primaryTranscriptWindow = shouldUsePrimaryLogicalHistory
     ? primaryLogicalConversationHistory
     : primaryConversationHistory;
-  const teammateConversationData =
-    shouldUseTeammateLogicalHistory
-      ? teammateLogicalConversationHistory.data
-      : teammateConversationHistory.data;
+  const teammateConversationData = shouldUseTeammateLogicalHistory
+    ? teammateLogicalConversationHistory.data
+    : teammateConversationHistory.data;
   const teammateTranscriptWindow = shouldUseTeammateLogicalHistory
     ? teammateLogicalConversationHistory
     : teammateConversationHistory;
@@ -782,7 +937,11 @@ export function IntegratedChatPanel({
     : shouldUsePrimaryLogicalHistory;
 
   useEffect(() => {
-    if (!isVisible || !activeTranscriptConversationId || !activeTranscriptRequiresLogicalHistory) {
+    if (
+      !isVisible ||
+      !activeTranscriptConversationId ||
+      !activeTranscriptRequiresLogicalHistory
+    ) {
       return;
     }
     void queryClient.invalidateQueries({
@@ -813,24 +972,36 @@ export function IntegratedChatPanel({
   // Check if active conversation belongs to current context (needed by recovery effects below)
   const activeConversationContext = isTeammateTab
     ? currentTeammateConversationData?.conversation
-    : (
-      currentPrimaryConversationData?.conversation ??
-      conversationsData?.find((conversation) => conversation.id === activeConversationId)
-    );
+    : (currentPrimaryConversationData?.conversation ??
+      conversationsData?.find(
+        (conversation) => conversation.id === activeConversationId,
+      ));
   const isConversationInCurrentContext = useMemo(
     () =>
-      Boolean(currentPrimaryConversationData && !currentPrimaryConversationData.conversation) ||
-      (activeConversationContext?.contextType === currentContextType ||
-       (currentContextType === "task" && activeConversationContext?.contextType === "task_execution")) &&
-      activeConversationContext?.contextId === currentContextId,
-    [currentPrimaryConversationData, activeConversationContext?.contextType, activeConversationContext?.contextId,
-     currentContextType, currentContextId]
+      Boolean(
+        currentPrimaryConversationData &&
+        !currentPrimaryConversationData.conversation,
+      ) ||
+      ((activeConversationContext?.contextType === currentContextType ||
+        (currentContextType === "task" &&
+          activeConversationContext?.contextType === "task_execution")) &&
+        activeConversationContext?.contextId === currentContextId),
+    [
+      currentPrimaryConversationData,
+      activeConversationContext?.contextType,
+      activeConversationContext?.contextId,
+      currentContextType,
+      currentContextId,
+    ],
   );
 
   // Fetch agent run status for the active conversation
   const agentRunQuery = useQuery({
     queryKey: chatKeys.agentRun(activeConversationId ?? ""),
-    queryFn: () => activeConversationId ? chatApi.getAgentRunStatus(activeConversationId) : null,
+    queryFn: () =>
+      activeConversationId
+        ? chatApi.getAgentRunStatus(activeConversationId)
+        : null,
     enabled: !!activeConversationId,
     staleTime: 5000,
   });
@@ -860,14 +1031,19 @@ export function IntegratedChatPanel({
 
   // Track dismissed error banners by run ID
   const [dismissedErrorId, setDismissedErrorId] = useState<string | null>(null);
-  const failedRun = agentRunQuery.data?.status === "failed" ? agentRunQuery.data : null;
-  const showFailedBanner = failedRun && failedRun.errorMessage && failedRun.id !== dismissedErrorId;
+  const failedRun =
+    agentRunQuery.data?.status === "failed" ? agentRunQuery.data : null;
+  const showFailedBanner =
+    failedRun && failedRun.errorMessage && failedRun.id !== dismissedErrorId;
 
   // Memoize failedRun prop to avoid creating a new object reference each render,
   // which would bust ChatMessageList's virtuosoComponents useMemo via the failedRun dep.
   const failedRunProp = useMemo(
-    () => showFailedBanner && failedRun ? { id: failedRun.id, errorMessage: failedRun.errorMessage! } : null,
-    [showFailedBanner, failedRun]
+    () =>
+      showFailedBanner && failedRun
+        ? { id: failedRun.id, errorMessage: failedRun.errorMessage! }
+        : null,
+    [showFailedBanner, failedRun],
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -884,12 +1060,15 @@ export function IntegratedChatPanel({
   const transcriptLayoutOwnedByVisibleRuntime =
     transcriptLayoutSignal.ownedByVisibleRuntime;
 
-  const incrementTranscriptLayoutVersion = useCallback((ownedByVisibleRuntime: boolean) => {
-    setTranscriptLayoutSignal((current) => ({
-      version: current.version + 1,
-      ownedByVisibleRuntime,
-    }));
-  }, []);
+  const incrementTranscriptLayoutVersion = useCallback(
+    (ownedByVisibleRuntime: boolean) => {
+      setTranscriptLayoutSignal((current) => ({
+        version: current.version + 1,
+        ownedByVisibleRuntime,
+      }));
+    },
+    [],
+  );
 
   const updateBelowTranscriptChromeHeight = useCallback(
     (height: number, { force = false } = {}) => {
@@ -927,7 +1106,8 @@ export function IntegratedChatPanel({
 
     const observer = new ResizeObserver((entries) => {
       updateBelowTranscriptChromeHeight(
-        entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
+        entries[0]?.contentRect.height ??
+          container.getBoundingClientRect().height,
       );
     });
     observer.observe(container);
@@ -938,12 +1118,16 @@ export function IntegratedChatPanel({
   }, [updateBelowTranscriptChromeHeight]);
 
   // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
-  const effectiveConversationId = isTeammateTab ? teammateConversationId : activeConversationId;
+  const effectiveConversationId = isTeammateTab
+    ? teammateConversationId
+    : activeConversationId;
   const composerDraftKey = effectiveConversationId
     ? `conversation:${effectiveConversationId}`
     : null;
   const composerDraft = useChatStore(selectComposerDraft(composerDraftKey));
-  const setComposerDraftContent = useChatStore((s) => s.setComposerDraftContent);
+  const setComposerDraftContent = useChatStore(
+    (s) => s.setComposerDraftContent,
+  );
   const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
 
   // File attachments - use effectiveConversationId for attachment association
@@ -981,54 +1165,57 @@ export function IntegratedChatPanel({
 
   // Memoize messagesData to avoid dependency chain issues in useEffect hooks
   // No time-based filtering needed - we switch context types based on historical state
-  const messagesData = useMemo(
-    () => {
-      if (isTeammateTab) {
-        return currentTeammateConversationData?.messages ?? [];
-      }
-      return activeConversationId && isConversationInCurrentContext && currentPrimaryConversationData
-        ? currentPrimaryConversationData.messages
-        : [];
-    },
-    [
-      isTeammateTab,
-      currentTeammateConversationData?.messages,
-      activeConversationId,
-      isConversationInCurrentContext,
-      currentPrimaryConversationData,
-    ]
-  );
+  const messagesData = useMemo(() => {
+    if (isTeammateTab) {
+      return currentTeammateConversationData?.messages ?? [];
+    }
+    return activeConversationId &&
+      isConversationInCurrentContext &&
+      currentPrimaryConversationData
+      ? currentPrimaryConversationData.messages
+      : [];
+  }, [
+    isTeammateTab,
+    currentTeammateConversationData?.messages,
+    activeConversationId,
+    isConversationInCurrentContext,
+    currentPrimaryConversationData,
+  ]);
 
   // Loading state: show skeleton when conversations list is loading OR active conversation is loading
   const isConversationsLoading = conversations.isLoading;
   const isActiveConversationLoading = activeConversationId
     ? isTeammateTab
-      ? (
-          teammateConversationHistory.isLoading ||
-          (shouldUseTeammateLogicalHistory && teammateLogicalConversationHistory.isLoading) ||
-          (shouldUseTeammateLogicalHistory && !teammateConversationData)
-        ) && !currentTeammateConversationData
-      : (
-          primaryConversationHistory.isLoading ||
-          (shouldUsePrimaryLogicalHistory && primaryLogicalConversationHistory.isLoading) ||
-          (shouldUsePrimaryLogicalHistory && !primaryConversationData)
-        ) && !primaryConversationData
+      ? (teammateConversationHistory.isLoading ||
+          (shouldUseTeammateLogicalHistory &&
+            teammateLogicalConversationHistory.isLoading) ||
+          (shouldUseTeammateLogicalHistory && !teammateConversationData)) &&
+        !currentTeammateConversationData
+      : (primaryConversationHistory.isLoading ||
+          (shouldUsePrimaryLogicalHistory &&
+            primaryLogicalConversationHistory.isLoading) ||
+          (shouldUsePrimaryLogicalHistory && !primaryConversationData)) &&
+        !primaryConversationData
     : false;
   const isLoading = isConversationsLoading || isActiveConversationLoading;
-  const transcriptConversationId = effectiveConversationId ?? activeConversationId ?? null;
+  const transcriptConversationId =
+    effectiveConversationId ?? activeConversationId ?? null;
 
   useLayoutEffect(() => {
     setTranscriptPaintCoverConversationId(transcriptConversationId);
   }, [transcriptConversationId]);
 
-  const handleTranscriptInitialPaintReady = useCallback((conversationId: string) => {
-    setTranscriptPaintCoverConversationId((current) =>
-      current === conversationId ? null : current,
-    );
-  }, []);
+  const handleTranscriptInitialPaintReady = useCallback(
+    (conversationId: string) => {
+      setTranscriptPaintCoverConversationId((current) =>
+        current === conversationId ? null : current,
+      );
+    },
+    [],
+  );
 
   // Debug logging for history mode
-  logger.debug('[IntegratedChatPanel] Context mode:', {
+  logger.debug("[IntegratedChatPanel] Context mode:", {
     isHistoryMode,
     effectiveStatus,
     isExecutionMode,
@@ -1060,38 +1247,41 @@ export function IntegratedChatPanel({
   // Wrap handleSend to include attachment IDs, team target, and clear attachments after send.
   // Auto-scroll on new user messages is handled by ChatMessageList (see its
   // "new user message → scrollToBottom" effect).
-  const handleSend = useCallback(async (
-    message: string,
-    options?: {
-      projectReferences?: ComposerProjectReference[];
-      integrationReferences?: ComposerIntegrationReference[];
+  const handleSend = useCallback(
+    async (
+      message: string,
+      options?: {
+        projectReferences?: ComposerProjectReference[];
+        integrationReferences?: ComposerIntegrationReference[];
+      },
+    ) => {
+      const attachmentIds = attachments.map((a) => a.id);
+      logger.debug("[ChatScroll] handleSend firing", {
+        hasAttachments: attachmentIds.length > 0,
+        isTeamActive: showTeamUi,
+      });
+      await handleSendBase(
+        message,
+        attachmentIds.length > 0 ? attachmentIds : undefined,
+        showTeamUi ? sendTarget : undefined,
+        options,
+      );
+      if (composerDraftKey) {
+        clearComposerDraft(composerDraftKey);
+      } else if (attachmentIds.length > 0) {
+        clearAttachments();
+      }
     },
-  ) => {
-    const attachmentIds = attachments.map(a => a.id);
-    logger.debug("[ChatScroll] handleSend firing", {
-      hasAttachments: attachmentIds.length > 0,
-      isTeamActive: showTeamUi,
-    });
-    await handleSendBase(
-      message,
-      attachmentIds.length > 0 ? attachmentIds : undefined,
-      showTeamUi ? sendTarget : undefined,
-      options
-    );
-    if (composerDraftKey) {
-      clearComposerDraft(composerDraftKey);
-    } else if (attachmentIds.length > 0) {
-      clearAttachments();
-    }
-  }, [
-    attachments,
-    clearAttachments,
-    clearComposerDraft,
-    composerDraftKey,
-    handleSendBase,
-    showTeamUi,
-    sendTarget,
-  ]);
+    [
+      attachments,
+      clearAttachments,
+      clearComposerDraft,
+      composerDraftKey,
+      handleSendBase,
+      showTeamUi,
+      sendTarget,
+    ],
+  );
 
   // Wrapper for handleEditLastQueued that provides the queued messages
   const handleEditLastQueuedWrapper = () => {
@@ -1105,10 +1295,17 @@ export function IntegratedChatPanel({
       teamActions.stopTeam.mutate();
     }
     await handleStopAgent();
-    setStreamingToolCalls(prev => prev.length === 0 ? prev : []);
-    setStreamingContentBlocks(prev => prev.length === 0 ? prev : []);
-    setStreamingTasks(prev => prev.size === 0 ? prev : new Map());
-  }, [showTeamUi, teamActions, handleStopAgent, setStreamingToolCalls, setStreamingContentBlocks, setStreamingTasks]);
+    setStreamingToolCalls((prev) => (prev.length === 0 ? prev : []));
+    setStreamingContentBlocks((prev) => (prev.length === 0 ? prev : []));
+    setStreamingTasks((prev) => (prev.size === 0 ? prev : new Map()));
+  }, [
+    showTeamUi,
+    teamActions,
+    handleStopAgent,
+    setStreamingToolCalls,
+    setStreamingContentBlocks,
+    setStreamingTasks,
+  ]);
 
   useChatEvents({
     activeConversationId: effectiveConversationId,
@@ -1124,7 +1321,8 @@ export function IntegratedChatPanel({
   });
 
   const bridgedQuestionSessionId = useMemo(
-    () => additionalQuestionSessionIds?.find((id) => id && id !== currentContextId),
+    () =>
+      additionalQuestionSessionIds?.find((id) => id && id !== currentContextId),
     [additionalQuestionSessionIds, currentContextId],
   );
 
@@ -1144,7 +1342,9 @@ export function IntegratedChatPanel({
     isLoading: isSubmittingAnswer,
   } = questionState;
   const handleSubmitQuestionAnswer = useCallback(
-    async (response: AskUserQuestionResponse): Promise<SubmitQuestionAnswerResult> => {
+    async (
+      response: AskUserQuestionResponse,
+    ): Promise<SubmitQuestionAnswerResult> => {
       const question = activeQuestion ?? null;
       const result = await submitAnswer(response);
       if (question && result.success) {
@@ -1170,7 +1370,8 @@ export function IntegratedChatPanel({
     submitAnswer: handleSubmitQuestionAnswer,
     handleSend,
   });
-  const automationProposalApplyIndex = automationProposalApplyOptionIndex(activeQuestion);
+  const automationProposalApplyIndex =
+    automationProposalApplyOptionIndex(activeQuestion);
   const questionBannerAction =
     automationProposalApplyIndex >= 0 && activeQuestion
       ? {
@@ -1187,13 +1388,16 @@ export function IntegratedChatPanel({
       : planApprovalAction;
 
   // Handler for opening a child ideation run without leaving the parent chat.
-  const handleNavigateToChildSession = useCallback(async (childSessionId: string) => {
-    if (onChildSessionNavigate) {
-      await onChildSessionNavigate(childSessionId);
-      return;
-    }
-    setChildSessionModalId(childSessionId);
-  }, [onChildSessionNavigate]);
+  const handleNavigateToChildSession = useCallback(
+    async (childSessionId: string) => {
+      if (onChildSessionNavigate) {
+        await onChildSessionNavigate(childSessionId);
+        return;
+      }
+      setChildSessionModalId(childSessionId);
+    },
+    [onChildSessionNavigate],
+  );
 
   // Hydrate effectiveModel from HTTP session data for inactive ideation sessions.
   // This covers the case where the user opens a past session that was never live
@@ -1203,7 +1407,10 @@ export function IntegratedChatPanel({
     const session = ideationSessionsById[ideationSessionId];
     const lastEffectiveModel = session?.lastEffectiveModel;
     if (!lastEffectiveModel) return;
-    const model = { id: lastEffectiveModel, label: getModelLabel(lastEffectiveModel) };
+    const model = {
+      id: lastEffectiveModel,
+      label: getModelLabel(lastEffectiveModel),
+    };
     useChatStore.getState().setEffectiveModel(storeContextKey, model);
   }, [ideationSessionId, ideationSessionsById, storeContextKey]);
 
@@ -1233,7 +1440,8 @@ export function IntegratedChatPanel({
       if (!msg) continue;
       if (msg.role === "user") continue;
       if (!modelId && msg.effectiveModelId) modelId = msg.effectiveModelId;
-      if (!providerHarness && msg.providerHarness) providerHarness = msg.providerHarness;
+      if (!providerHarness && msg.providerHarness)
+        providerHarness = msg.providerHarness;
       if (modelId && providerHarness) break;
     }
     return { modelId, providerHarness };
@@ -1267,49 +1475,59 @@ export function IntegratedChatPanel({
   // Sort messages by createdAt always. Secondary sort by id provides stable
   // tiebreaking when timestamps are equal (e.g. optimistic + DB messages share ms).
   const sortedMessages = useMemo(() => {
-    return [...messagesData]
-      // Hide session recovery rehydration prompts from UI.
-      // Primary: metadata flag set by backend. Fallback: content prefix for pre-existing rows.
-      .filter((msg) => {
-        if (msg.metadata) {
-          try {
-            const meta = JSON.parse(msg.metadata);
-            if (meta.recovery_context) return false;
-          } catch { /* not JSON, keep message */ }
-        }
-        if (msg.role === "user" && msg.content.startsWith("<instructions>")) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        if (a.timelineSequence != null && b.timelineSequence != null) {
-          return a.timelineSequence - b.timelineSequence;
-        }
-        const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-        if (timeDiff !== 0) return timeDiff;
-        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-      });
+    return (
+      [...messagesData]
+        // Hide session recovery rehydration prompts from UI.
+        // Primary: metadata flag set by backend. Fallback: content prefix for pre-existing rows.
+        .filter((msg) => {
+          if (msg.metadata) {
+            try {
+              const meta = JSON.parse(msg.metadata);
+              if (meta.hidden_from_ui) return false;
+              if (meta.recovery_context) return false;
+            } catch {
+              /* not JSON, keep message */
+            }
+          }
+          if (msg.role === "user" && msg.content.startsWith("<instructions>"))
+            return false;
+          return true;
+        })
+        .sort((a, b) => {
+          if (a.timelineSequence != null && b.timelineSequence != null) {
+            return a.timelineSequence - b.timelineSequence;
+          }
+          const timeDiff =
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          if (timeDiff !== 0) return timeDiff;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        })
+    );
   }, [messagesData]);
   const hasPersistedStreamingTimelineItems = useMemo(
-    () => sortedMessages.some((message) => message.timelineStatus === "streaming"),
-    [sortedMessages]
+    () =>
+      sortedMessages.some((message) => message.timelineStatus === "streaming"),
+    [sortedMessages],
   );
   const hasClientLiveStreamingState =
     streamingToolCalls.length > 0 ||
     (streamingContentBlocks?.length ?? 0) > 0 ||
     streamingTasks.size > 0;
   const shouldUsePersistedStreamingTimelineItems =
-    hasPersistedStreamingTimelineItems && (!hasClientLiveStreamingState || !isStreamingHydrated);
+    hasPersistedStreamingTimelineItems &&
+    (!hasClientLiveStreamingState || !isStreamingHydrated);
   const statsFallbackMessages = useMemo(
     () =>
       effectiveConversationId
         ? getCachedConversationMessages(queryClient, effectiveConversationId)
         : sortedMessages,
-    [effectiveConversationId, queryClient, sortedMessages]
+    [effectiveConversationId, queryClient, sortedMessages],
   );
 
   // Status badge helpers - disabled in history mode (no live agent)
   // isAgentActive: only true when actively generating (not waiting_for_input)
-  const isAgentActive = !isHistoryMode && (isSending || agentStatus === "generating");
+  const isAgentActive =
+    !isHistoryMode && (isSending || agentStatus === "generating");
   const agentType: AgentType = isHistoryMode
     ? "idle"
     : isExecutionMode
@@ -1318,25 +1536,36 @@ export function IntegratedChatPanel({
         ? AGENT_REVIEWER
         : isMergeMode
           ? AGENT_MERGER
-          : (isSending || agentStatus === "generating")
-          ? "agent"
-          : "idle";
+          : isSending || agentStatus === "generating"
+            ? "agent"
+            : "idle";
 
   // Empty state: only show when we KNOW there are no messages (not while loading)
   // Also don't show empty if conversations are loading - we might auto-select one
-  const hasNoConversations = !isConversationsLoading && (conversations.data?.length ?? 0) === 0;
-  const hasEmptyConversation = !isLoading && activeConversationId && sortedMessages.length === 0;
+  const hasNoConversations =
+    !isConversationsLoading && (conversations.data?.length ?? 0) === 0;
+  const hasEmptyConversation =
+    !isLoading && activeConversationId && sortedMessages.length === 0;
   const isEmpty = hasNoConversations || hasEmptyConversation;
 
   // Recency guard: suppress PreviousRunBanner if the agent was active within the last 10s.
   // Aligned with agentRunQuery.staleTime (10s) to avoid banner flash during run_completed transition.
   const [isRecentlyActive, setIsRecentlyActive] = useState(false);
   useEffect(() => {
-    if (lastAgentEventTs <= 0) { setIsRecentlyActive(false); return; }
+    if (lastAgentEventTs <= 0) {
+      setIsRecentlyActive(false);
+      return;
+    }
     const elapsed = Date.now() - lastAgentEventTs;
-    if (elapsed >= 10_000) { setIsRecentlyActive(false); return; }
+    if (elapsed >= 10_000) {
+      setIsRecentlyActive(false);
+      return;
+    }
     setIsRecentlyActive(true);
-    const timer = setTimeout(() => setIsRecentlyActive(false), 10_000 - elapsed);
+    const timer = setTimeout(
+      () => setIsRecentlyActive(false),
+      10_000 - elapsed,
+    );
     return () => clearTimeout(timer);
   }, [lastAgentEventTs]);
   const conversationContentShellClassName = cn(
@@ -1348,7 +1577,10 @@ export function IntegratedChatPanel({
   return (
     <>
       <style>{animationStyles}</style>
-      <RecoveryPromptDialog surface="chat" taskId={selectedTaskId ?? undefined} />
+      <RecoveryPromptDialog
+        surface="chat"
+        taskId={selectedTaskId ?? undefined}
+      />
       {/* Outer container — fills to layout edges. Phase 1 region border
          on [data-testid="integrated-chat-panel"] separates chat from
          main content, so no floating-card chrome needed here. */}
@@ -1363,7 +1595,8 @@ export function IntegratedChatPanel({
             surfaceBackground === "transparent"
               ? { background: "transparent" }
               : {
-                  background: surfaceBackground ?? withAlpha("var(--bg-surface)", 92),
+                  background:
+                    surfaceBackground ?? withAlpha("var(--bg-surface)", 92),
                   backdropFilter: "blur(20px) saturate(180%)",
                   WebkitBackdropFilter: "blur(20px) saturate(180%)",
                 }
@@ -1379,11 +1612,19 @@ export function IntegratedChatPanel({
             data-testid="integrated-chat-header"
             className="flex items-center justify-between h-11 px-3 shrink-0 gap-3"
             style={{
-              backgroundColor: "color-mix(in srgb, var(--text-primary) 2%, transparent)",
+              backgroundColor:
+                "color-mix(in srgb, var(--text-primary) 2%, transparent)",
               borderBottom: "1px solid var(--overlay-faint)",
             }}
           >
-            {headerContent ?? <ContextIndicator context={chatContext} isExecutionMode={isExecutionMode} isReviewMode={isReviewMode} isMergeMode={isMergeMode} />}
+            {headerContent ?? (
+              <ContextIndicator
+                context={chatContext}
+                isExecutionMode={isExecutionMode}
+                isReviewMode={isReviewMode}
+                isMergeMode={isMergeMode}
+              />
+            )}
 
             {/* Provider-context chips rendered inline next to the
                 ConversationSelector — per 2026-04-19 feedback, the CODEX
@@ -1396,13 +1637,23 @@ export function IntegratedChatPanel({
                   contextId={ideationSessionId || selectedTaskId || null}
                   isAgentActive={isAgentActive}
                   conversationId={effectiveConversationId}
-                  providerHarness={activeConversationMeta?.providerHarness ?? null}
-                  providerSessionId={activeConversationMeta?.providerSessionId ?? null}
-                  upstreamProvider={activeConversationMeta?.upstreamProvider ?? null}
-                  providerProfile={activeConversationMeta?.providerProfile ?? null}
+                  providerHarness={
+                    activeConversationMeta?.providerHarness ?? null
+                  }
+                  providerSessionId={
+                    activeConversationMeta?.providerSessionId ?? null
+                  }
+                  upstreamProvider={
+                    activeConversationMeta?.upstreamProvider ?? null
+                  }
+                  providerProfile={
+                    activeConversationMeta?.providerProfile ?? null
+                  }
                   fallbackConversation={activeConversationMeta}
                   fallbackMessages={statsFallbackMessages}
-                  {...(effectiveModel !== undefined ? { modelDisplay: effectiveModel } : {})}
+                  {...(effectiveModel !== undefined
+                    ? { modelDisplay: effectiveModel }
+                    : {})}
                 />
 
                 {/* Conversation Selector */}
@@ -1446,14 +1697,22 @@ export function IntegratedChatPanel({
               storeKey={storeContextKey}
               conversationId={effectiveConversationId}
               providerHarness={activeConversationMeta?.providerHarness ?? null}
-              providerSessionId={activeConversationMeta?.providerSessionId ?? null}
-              upstreamProvider={activeConversationMeta?.upstreamProvider ?? null}
+              providerSessionId={
+                activeConversationMeta?.providerSessionId ?? null
+              }
+              upstreamProvider={
+                activeConversationMeta?.upstreamProvider ?? null
+              }
               providerProfile={activeConversationMeta?.providerProfile ?? null}
               fallbackConversation={activeConversationMeta}
               fallbackMessages={statsFallbackMessages}
               hideProviderContext
-              {...(toolbarBackAction !== undefined ? { backAction: toolbarBackAction } : {})}
-              {...(effectiveModel !== undefined ? { modelDisplay: effectiveModel } : {})}
+              {...(toolbarBackAction !== undefined
+                ? { backAction: toolbarBackAction }
+                : {})}
+              {...(effectiveModel !== undefined
+                ? { modelDisplay: effectiveModel }
+                : {})}
             />
           )}
 
@@ -1479,286 +1738,354 @@ export function IntegratedChatPanel({
           )}
 
           {/* Messages Area — wrapped with navigation context for child session widgets */}
-          <ChildSessionNavigationContext.Provider value={handleNavigateToChildSession}>
-          {isLoading ? (
-            <div className="flex-1 flex items-center justify-center" data-testid="integrated-chat-messages">
-              <LoadingState />
-            </div>
-          ) : isEmpty ? (
-            <div className="flex-1 flex items-center justify-center" data-testid="integrated-chat-messages">
-              {emptyState ??
-                (isHistoryMode && !hasHistoryConversation ? (
-                  <HistoryEmptyState />
-                ) : (
-                  <EmptyState />
-                ))}
-            </div>
-          ) : (
-            <ChatMessageList
-              ref={virtuosoRef}
-              messages={sortedMessages}
-              conversationId={effectiveConversationId}
-              initialPaintCoverKey={
-                transcriptPaintCoverConversationId === transcriptConversationId
-                  ? transcriptPaintCoverConversationId
-                  : null
-              }
-              onInitialPaintReady={handleTranscriptInitialPaintReady}
-              firstItemIndex={
-                isTeammateTab
-                  ? teammateTranscriptWindow.loadedStartIndex
-                  : primaryTranscriptWindow.loadedStartIndex
-              }
-              failedRun={failedRunProp}
-              onDismissFailedRun={setDismissedErrorId}
-              isSending={isSending}
-              isAgentRunning={agentStatus === "generating"}
-              typingIndicatorLabel={agentActivityLabel}
-              streamingToolCalls={
-                shouldUsePersistedStreamingTimelineItems ? [] : streamingToolCalls
-              }
-              streamingTasks={shouldUsePersistedStreamingTimelineItems ? new Map() : streamingTasks}
-              streamingContentBlocks={
-                shouldUsePersistedStreamingTimelineItems ? [] : streamingContentBlocks
-              }
-              scrollToTimestamp={isHistoryMode ? taskHistoryState?.timestamp : null}
-              isFinalizing={isFinalizing}
-              teamFilter={showTeamUi && activeTeam ? teamFilter : undefined}
-              contextKey={showTeamUi && activeTeam ? storeContextKey : undefined}
-              providerHarness={activeConversationMeta?.providerHarness ?? null}
-              providerSessionId={activeConversationMeta?.providerSessionId ?? null}
-              contentWidthClassName={contentWidthClassName}
-              topInsetClassName={transcriptTopInsetClassName}
-              hasOlderMessages={
-                isTeammateTab
-                  ? teammateTranscriptWindow.hasOlderMessages
-                  : primaryTranscriptWindow.hasOlderMessages
-              }
-              isFetchingOlderMessages={
-                isTeammateTab
-                  ? teammateTranscriptWindow.isFetchingOlderMessages
-                  : primaryTranscriptWindow.isFetchingOlderMessages
-              }
-              onLoadOlderMessages={
-                isTeammateTab
-                  ? teammateTranscriptWindow.fetchOlderMessages
-                  : primaryTranscriptWindow.fetchOlderMessages
-              }
-              externalLayoutVersion={transcriptLayoutVersion}
-              externalLayoutOwnedByVisibleRuntime={transcriptLayoutOwnedByVisibleRuntime}
-            />
-          )}
-
-          <div
-            ref={belowTranscriptChromeRef}
-            data-testid="chat-below-transcript-chrome"
-            className="shrink-0"
+          <ChildSessionNavigationContext.Provider
+            value={handleNavigateToChildSession}
           >
-          {/* StreamingToolIndicator — outside scroll container so it's always visible.
+            {isLoading ? (
+              <div
+                className="flex-1 flex items-center justify-center"
+                data-testid="integrated-chat-messages"
+              >
+                <LoadingState />
+              </div>
+            ) : isEmpty ? (
+              <div
+                className="flex-1 flex items-center justify-center"
+                data-testid="integrated-chat-messages"
+              >
+                {emptyState ??
+                  (isHistoryMode && !hasHistoryConversation ? (
+                    <HistoryEmptyState />
+                  ) : (
+                    <EmptyState />
+                  ))}
+              </div>
+            ) : (
+              <ChatMessageList
+                ref={virtuosoRef}
+                messages={sortedMessages}
+                conversationId={effectiveConversationId}
+                initialPaintCoverKey={
+                  transcriptPaintCoverConversationId ===
+                  transcriptConversationId
+                    ? transcriptPaintCoverConversationId
+                    : null
+                }
+                onInitialPaintReady={handleTranscriptInitialPaintReady}
+                firstItemIndex={
+                  isTeammateTab
+                    ? teammateTranscriptWindow.loadedStartIndex
+                    : primaryTranscriptWindow.loadedStartIndex
+                }
+                failedRun={failedRunProp}
+                onDismissFailedRun={setDismissedErrorId}
+                isSending={isSending}
+                isAgentRunning={agentStatus === "generating"}
+                typingIndicatorLabel={agentActivityLabel}
+                streamingToolCalls={
+                  shouldUsePersistedStreamingTimelineItems
+                    ? []
+                    : streamingToolCalls
+                }
+                streamingTasks={
+                  shouldUsePersistedStreamingTimelineItems
+                    ? new Map()
+                    : streamingTasks
+                }
+                streamingContentBlocks={
+                  shouldUsePersistedStreamingTimelineItems
+                    ? []
+                    : streamingContentBlocks
+                }
+                scrollToTimestamp={
+                  isHistoryMode ? taskHistoryState?.timestamp : null
+                }
+                isFinalizing={isFinalizing}
+                teamFilter={showTeamUi && activeTeam ? teamFilter : undefined}
+                contextKey={
+                  showTeamUi && activeTeam ? storeContextKey : undefined
+                }
+                providerHarness={
+                  activeConversationMeta?.providerHarness ?? null
+                }
+                providerSessionId={
+                  activeConversationMeta?.providerSessionId ?? null
+                }
+                contentWidthClassName={contentWidthClassName}
+                topInsetClassName={transcriptTopInsetClassName}
+                hasOlderMessages={
+                  isTeammateTab
+                    ? teammateTranscriptWindow.hasOlderMessages
+                    : primaryTranscriptWindow.hasOlderMessages
+                }
+                isFetchingOlderMessages={
+                  isTeammateTab
+                    ? teammateTranscriptWindow.isFetchingOlderMessages
+                    : primaryTranscriptWindow.isFetchingOlderMessages
+                }
+                onLoadOlderMessages={
+                  isTeammateTab
+                    ? teammateTranscriptWindow.fetchOlderMessages
+                    : primaryTranscriptWindow.fetchOlderMessages
+                }
+                externalLayoutVersion={transcriptLayoutVersion}
+                externalLayoutOwnedByVisibleRuntime={
+                  transcriptLayoutOwnedByVisibleRuntime
+                }
+              />
+            )}
+
+            <div
+              ref={belowTranscriptChromeRef}
+              data-testid="chat-below-transcript-chrome"
+              className="shrink-0"
+            >
+              {/* StreamingToolIndicator — outside scroll container so it's always visible.
               Filters out Task calls (shown as TaskSubagentCard), diff calls (shown inline),
               and any tool calls already rendered inline via streamingContentBlocks to avoid duplication. */}
-          {(isSending || agentStatus === "generating") && (() => {
-            // IDs of tool calls already rendered inline from streamingContentBlocks
-            const inlineToolIds = new Set(
-              streamingContentBlocks
-                ?.filter((b) => b.type === "tool_use")
-                .map((b) => b.type === "tool_use" ? b.toolCall.id : "") ?? []
-            );
-            const otherToolCalls = streamingToolCalls.filter(
-              (tc) => !inlineToolIds.has(tc.id) &&
+              {(isSending || agentStatus === "generating") &&
+                (() => {
+                  // IDs of tool calls already rendered inline from streamingContentBlocks
+                  const inlineToolIds = new Set(
+                    streamingContentBlocks
+                      ?.filter((b) => b.type === "tool_use")
+                      .map((b) =>
+                        b.type === "tool_use" ? b.toolCall.id : "",
+                      ) ?? [],
+                  );
+                  const otherToolCalls = streamingToolCalls.filter(
+                    (tc) =>
+                      !inlineToolIds.has(tc.id) &&
                       tc.name.toLowerCase() !== "task" &&
-                      (!isDiffToolCall(tc.name) || tc.arguments == null)
-            );
-            return otherToolCalls.length > 0 ? (
-              <div className="shrink-0 px-3 pb-2">
-                <div className={conversationContentShellClassName}>
-                  <StreamingToolIndicator toolCalls={otherToolCalls} isActive={true} toolCallStartTimes={toolCallStartTimes} />
+                      (!isDiffToolCall(tc.name) || tc.arguments == null),
+                  );
+                  return otherToolCalls.length > 0 ? (
+                    <div className="shrink-0 px-3 pb-2">
+                      <div className={conversationContentShellClassName}>
+                        <StreamingToolIndicator
+                          toolCalls={otherToolCalls}
+                          isActive={true}
+                          toolCallStartTimes={toolCallStartTimes}
+                        />
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+
+              {/* Team Plan Approval (shown when lead requests plan approval) */}
+              {showTeamUi && pendingPlan && (
+                <div className="px-3">
+                  <div className={conversationContentShellClassName}>
+                    <TeamPlanApproval
+                      plan={pendingPlan}
+                      contextKey={storeContextKey}
+                    />
+                  </div>
                 </div>
-              </div>
-            ) : null;
-          })()}
+              )}
 
-          {/* Team Plan Approval (shown when lead requests plan approval) */}
-          {showTeamUi && pendingPlan && (
-            <div className="px-3">
-              <div className={conversationContentShellClassName}>
-                <TeamPlanApproval
-                  plan={pendingPlan}
-                  contextKey={storeContextKey}
-                />
-              </div>
-            </div>
-          )}
+              {/* Child Session Notification - shows when follow-up is created (ideation mode only) */}
+              {ideationSessionId && !isHistoryMode && (
+                <div className="px-3">
+                  <div className={conversationContentShellClassName}>
+                    <ChildSessionNotification sessionId={ideationSessionId} />
+                  </div>
+                </div>
+              )}
+              <ChildSessionTranscriptModal
+                sessionId={childSessionModalId}
+                open={!!childSessionModalId}
+                onOpenChange={(isOpen) => {
+                  if (!isOpen) {
+                    setChildSessionModalId(null);
+                  }
+                }}
+              />
+              {/* Previous Run Banner - shown when viewing stale agent conversation */}
+              {isAgentContext &&
+                !isHistoryMode &&
+                agentStatus === "idle" &&
+                agentRunQuery.data?.status !== "running" &&
+                !isSending &&
+                sortedMessages.length > 0 &&
+                !isRecentlyActive && (
+                  <div className="px-3">
+                    <div className={conversationContentShellClassName}>
+                      <PreviousRunBanner
+                        agentRunStatus={agentRunQuery.data?.status ?? null}
+                        contextType={
+                          isMergeMode
+                            ? "merge"
+                            : isReviewMode
+                              ? "review"
+                              : "execution"
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
 
-          {/* Child Session Notification - shows when follow-up is created (ideation mode only) */}
-          {ideationSessionId && !isHistoryMode && (
-            <div className="px-3">
-              <div className={conversationContentShellClassName}>
-                <ChildSessionNotification
-                  sessionId={ideationSessionId}
-                />
-              </div>
-            </div>
-          )}
-            <ChildSessionTranscriptModal
-              sessionId={childSessionModalId}
-              open={!!childSessionModalId}
-              onOpenChange={(isOpen) => {
-                if (!isOpen) {
-                  setChildSessionModalId(null);
-                }
-              }}
-            />
-          {/* Previous Run Banner - shown when viewing stale agent conversation */}
-          {isAgentContext && !isHistoryMode && agentStatus === "idle" && agentRunQuery.data?.status !== "running" && !isSending && sortedMessages.length > 0 && !isRecentlyActive && (
-            <div className="px-3">
-              <div className={conversationContentShellClassName}>
-                <PreviousRunBanner
-                  agentRunStatus={agentRunQuery.data?.status ?? null}
-                  contextType={isMergeMode ? "merge" : isReviewMode ? "review" : "execution"}
-                />
-              </div>
-            </div>
-          )}
+              {/* Team Filter Tabs (team mode — above input area) */}
+              {showTeamUi && teammates.length > 0 && (
+                <div className="px-3">
+                  <div className={conversationContentShellClassName}>
+                    <TeamFilterTabs
+                      teammates={teammates}
+                      activeFilter={teamFilter}
+                      onFilterChange={setTeamFilter}
+                    />
+                  </div>
+                </div>
+              )}
 
-          {/* Team Filter Tabs (team mode — above input area) */}
-          {showTeamUi && teammates.length > 0 && (
-            <div className="px-3">
-              <div className={conversationContentShellClassName}>
-                <TeamFilterTabs
-                  teammates={teammates}
-                  activeFilter={teamFilter}
-                  onFilterChange={setTeamFilter}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Input Area — same theme-agnostic tint as header for symmetric
+              {/* Input Area — same theme-agnostic tint as header for symmetric
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded
              darker than body on Dark, producing a three-tier sandwich. */}
-          <div
-            data-testid="chat-input-container"
-            className={inputContainerClassName ?? "shrink-0"}
-            style={inputContainerClassName ? undefined : {
-              backgroundColor: "color-mix(in srgb, var(--text-primary) 2%, transparent)",
-              borderTop: "1px solid var(--border-subtle)",
-            }}
-          >
-            <div
-              data-testid="integrated-chat-input-shell"
-              className={conversationContentShellClassName}
-            >
-              {/* Queued Messages - unified queue with context-aware keys */}
-              {queuedMessages.length > 0 && (
-                <div className="p-3 pb-0">
-                  <QueuedMessageList
-                    messages={queuedMessages}
-                    onEdit={handleEditQueuedMessage}
-                    onDelete={handleDeleteQueuedMessage}
-                    onSendNow={handleSendQueuedMessageNow}
-                  />
-                </div>
-              )}
+              <div
+                data-testid="chat-input-container"
+                className={inputContainerClassName ?? "shrink-0"}
+                style={
+                  inputContainerClassName
+                    ? undefined
+                    : {
+                        backgroundColor:
+                          "color-mix(in srgb, var(--text-primary) 2%, transparent)",
+                        borderTop: "1px solid var(--border-subtle)",
+                      }
+                }
+              >
+                <div
+                  data-testid="integrated-chat-input-shell"
+                  className={conversationContentShellClassName}
+                >
+                  {/* Queued Messages - unified queue with context-aware keys */}
+                  {queuedMessages.length > 0 && (
+                    <div className="p-3 pb-0">
+                      <QueuedMessageList
+                        messages={queuedMessages}
+                        onEdit={handleEditQueuedMessage}
+                        onDelete={handleDeleteQueuedMessage}
+                        onSendNow={handleSendQueuedMessageNow}
+                      />
+                    </div>
+                  )}
 
-              {/* Question Input Banner - renders above ChatInput when question is active */}
-              {(activeQuestion || answeredQuestion) && (
-                <QuestionInputBanner
-                  key={activeQuestion?.requestId ?? 'answered'}
-                  question={activeQuestion ?? null}
-                  selectedIndices={selectedOptions}
-                  onChipClick={handleChipClick}
-                  onSkip={handleQuestionSkip}
-                  onDismiss={dismissQuestion}
-                  answeredValue={answeredQuestion}
-                  onDismissAnswered={clearAnswered}
-                  {...(questionBannerAction !== undefined && {
-                    planApprovalAction: questionBannerAction,
-                  })}
-                />
-              )}
+                  {/* Question Input Banner - renders above ChatInput when question is active */}
+                  {(activeQuestion || answeredQuestion) && (
+                    <QuestionInputBanner
+                      key={activeQuestion?.requestId ?? "answered"}
+                      question={activeQuestion ?? null}
+                      selectedIndices={selectedOptions}
+                      onChipClick={handleChipClick}
+                      onSkip={handleQuestionSkip}
+                      onDismiss={dismissQuestion}
+                      answeredValue={answeredQuestion}
+                      onDismissAnswered={clearAnswered}
+                      {...(questionBannerAction !== undefined && {
+                        planApprovalAction: questionBannerAction,
+                      })}
+                    />
+                  )}
 
-              {/* Chat Input — wrapper padding matches ExecutionControlBar's
+                  {/* Chat Input — wrapper padding matches ExecutionControlBar's
                   outer `p-2` so the top border of the composer aligns with
                   the top border of the execution bar across the split pane. */}
-              <div className="p-2">
-                {renderComposer ? (
-                  renderComposer({
-                    onSend: activeQuestion ? handleQuestionSend : handleSend,
-                    onStop: handleStopAgentWrapper,
-                    agentStatus,
-                    isSending: isSending || isSubmittingAnswer,
-                    hasQueuedMessages: queuedMessages.length > 0,
-                    onEditLastQueued: handleEditLastQueuedWrapper,
-                    isReadOnly: isHistoryMode,
-                    placeholder: getContextConfig(currentContextType).placeholder,
-                    autoFocus: autoFocusInput,
-                    enableAttachments: !!effectiveConversationId && !isHistoryMode,
-                    attachments,
-                    onFilesSelected: uploadFiles,
-                    onRemoveAttachment: removeAttachment,
-                    attachmentsUploading: uploading,
-                    effectiveModel,
-                    providerHarness:
-                      activeConversationMeta?.providerHarness ??
-                      fallbackProviderHarness ??
-                      null,
-                    onLayoutChange: notifyInputLayoutChanged,
-                    ...(activeQuestion
-                      ? {
-                          value: questionInputValue,
-                          onChange: setQuestionInputValue,
-                          questionMode: {
-                            optionCount: activeQuestion.options.length,
-                            multiSelect: activeQuestion.multiSelect,
-                            onMatchedOptions: handleMatchedOptions,
-                          },
+                  <div className="p-2">
+                    {renderComposer ? (
+                      renderComposer({
+                        onSend: activeQuestion
+                          ? handleQuestionSend
+                          : handleSend,
+                        onStop: handleStopAgentWrapper,
+                        agentStatus,
+                        isSending: isSending || isSubmittingAnswer,
+                        hasQueuedMessages: queuedMessages.length > 0,
+                        onEditLastQueued: handleEditLastQueuedWrapper,
+                        isReadOnly: isHistoryMode,
+                        placeholder:
+                          getContextConfig(currentContextType).placeholder,
+                        autoFocus: autoFocusInput,
+                        enableAttachments:
+                          !!effectiveConversationId && !isHistoryMode,
+                        attachments,
+                        onFilesSelected: uploadFiles,
+                        onRemoveAttachment: removeAttachment,
+                        attachmentsUploading: uploading,
+                        effectiveModel,
+                        providerHarness:
+                          activeConversationMeta?.providerHarness ??
+                          fallbackProviderHarness ??
+                          null,
+                        onLayoutChange: notifyInputLayoutChanged,
+                        ...(activeQuestion
+                          ? {
+                              value: questionInputValue,
+                              onChange: setQuestionInputValue,
+                              questionMode: {
+                                optionCount: activeQuestion.options.length,
+                                multiSelect: activeQuestion.multiSelect,
+                                onMatchedOptions: handleMatchedOptions,
+                              },
+                            }
+                          : composerDraftKey
+                            ? {
+                                value: composerDraft?.content ?? "",
+                                onChange: (value: string) =>
+                                  setComposerDraftContent(
+                                    composerDraftKey,
+                                    value,
+                                  ),
+                              }
+                            : {}),
+                      })
+                    ) : (
+                      <ChatInput
+                        onSend={
+                          activeQuestion ? handleQuestionSend : handleSend
                         }
-                      : composerDraftKey
-                        ? {
-                            value: composerDraft?.content ?? "",
-                            onChange: (value: string) =>
-                              setComposerDraftContent(composerDraftKey, value),
-                          }
-                        : {})
-                  })
-                ) : (
-                  <ChatInput
-                    onSend={activeQuestion ? handleQuestionSend : handleSend}
-                    onStop={handleStopAgentWrapper}
-                    agentStatus={agentStatus}
-                    isSending={isSending || isSubmittingAnswer}
-                    hasQueuedMessages={queuedMessages.length > 0}
-                    onEditLastQueued={handleEditLastQueuedWrapper}
-                    isReadOnly={isHistoryMode}
-                    placeholder={getContextConfig(currentContextType).placeholder}
-                    showHelperText={showHelperTextAlways}
-                    {...(activeQuestion ? {
-                      value: questionInputValue,
-                      onChange: setQuestionInputValue,
-                      questionMode: {
-                        optionCount: activeQuestion.options.length,
-                        multiSelect: activeQuestion.multiSelect,
-                        onMatchedOptions: handleMatchedOptions,
-                      },
-                    } : composerDraftKey
-                      ? {
-                          value: composerDraft?.content ?? "",
-                          onChange: (value: string) =>
-                            setComposerDraftContent(composerDraftKey, value),
+                        onStop={handleStopAgentWrapper}
+                        agentStatus={agentStatus}
+                        isSending={isSending || isSubmittingAnswer}
+                        hasQueuedMessages={queuedMessages.length > 0}
+                        onEditLastQueued={handleEditLastQueuedWrapper}
+                        isReadOnly={isHistoryMode}
+                        placeholder={
+                          getContextConfig(currentContextType).placeholder
                         }
-                      : {})}
-                    autoFocus={autoFocusInput}
-                    enableAttachments={!!effectiveConversationId && !isHistoryMode}
-                    attachments={attachments}
-                    onFilesSelected={uploadFiles}
-                    onRemoveAttachment={removeAttachment}
-                  />
-                )}
+                        showHelperText={showHelperTextAlways}
+                        {...(activeQuestion
+                          ? {
+                              value: questionInputValue,
+                              onChange: setQuestionInputValue,
+                              questionMode: {
+                                optionCount: activeQuestion.options.length,
+                                multiSelect: activeQuestion.multiSelect,
+                                onMatchedOptions: handleMatchedOptions,
+                              },
+                            }
+                          : composerDraftKey
+                            ? {
+                                value: composerDraft?.content ?? "",
+                                onChange: (value: string) =>
+                                  setComposerDraftContent(
+                                    composerDraftKey,
+                                    value,
+                                  ),
+                              }
+                            : {})}
+                        autoFocus={autoFocusInput}
+                        enableAttachments={
+                          !!effectiveConversationId && !isHistoryMode
+                        }
+                        attachments={attachments}
+                        onFilesSelected={uploadFiles}
+                        onRemoveAttachment={removeAttachment}
+                      />
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-          </div>
           </ChildSessionNavigationContext.Provider>
         </div>
       </div>
