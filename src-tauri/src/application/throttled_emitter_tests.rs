@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::application::ThrottledEmitter;
-    use ralphx_events::NullEventSink;
+    use ralphx_events::{NullEventSink, RecordingEventSink};
     use std::sync::Arc;
 
     #[test]
@@ -38,5 +38,18 @@ mod tests {
             result.is_ok(),
             "ThrottledEmitter::new() panicked — likely uses tokio::spawn instead of std::thread::spawn. See .claude/rules/tokio-runtime-safety.md"
         );
+    }
+
+    #[test]
+    fn non_batchable_events_emit_immediately_to_event_sink() {
+        let sink = RecordingEventSink::new();
+        let emitter = ThrottledEmitter::new(Arc::new(sink.clone()));
+
+        emitter.emit("agent:run_completed", serde_json::json!({ "id": "run-1" }));
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "agent:run_completed");
+        assert_eq!(events[0].payload["id"], "run-1");
     }
 }
