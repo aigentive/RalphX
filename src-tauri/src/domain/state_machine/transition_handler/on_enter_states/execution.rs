@@ -454,16 +454,24 @@ impl<'a> TransitionHandler<'a> {
                         );
                         if let Some(ref stored_wt) = task.worktree_path.clone() {
                             let stored = std::path::PathBuf::from(stored_wt);
-                            if stored.exists() {
-                                let _ = GitService::delete_worktree(repo_path, &stored).await;
-                            }
+                            delete_existing_execution_worktree_or_block(
+                                repo_path,
+                                &stored,
+                                task_id_str,
+                                "deleted branch self-heal stored path cleanup",
+                            )
+                            .await?;
                         }
                         let expected_wt_path_str =
                             compute_task_worktree_path(&project, task_id_str);
                         let expected_wt_path = std::path::PathBuf::from(&expected_wt_path_str);
-                        if expected_wt_path.exists() {
-                            let _ = GitService::delete_worktree(repo_path, &expected_wt_path).await;
-                        }
+                        delete_existing_execution_worktree_or_block(
+                            repo_path,
+                            &expected_wt_path,
+                            task_id_str,
+                            "deleted branch self-heal expected path cleanup",
+                        )
+                        .await?;
                         task.task_branch = None;
                         task.worktree_path = None;
                         task.merge_commit_sha = None;
@@ -922,6 +930,30 @@ mod execution_worktree_validation_tests {
         }
     }
 
+    fn run_git(repo_path: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn setup_git_repo(repo_path: &std::path::Path) {
+        std::fs::create_dir_all(repo_path).expect("create repo dir");
+        run_git(repo_path, &["init", "-b", "main"]);
+        run_git(repo_path, &["config", "user.email", "test@test.com"]);
+        run_git(repo_path, &["config", "user.name", "Test"]);
+        std::fs::write(repo_path.join("README.md"), "# test repo").expect("write readme");
+        run_git(repo_path, &["add", "."]);
+        run_git(repo_path, &["commit", "-m", "initial commit"]);
+    }
+
     #[test]
     fn validate_execution_worktree_rejects_missing_path_metadata() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1029,5 +1061,138 @@ mod execution_worktree_validation_tests {
 
         validate_persisted_execution_worktree_path(&task, &project, task_id_str)
             .expect("existing expected execution worktree should validate");
+    }
+
+    #[test]
+    fn stale_execution_worktree_cleanup_failure_blocks() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let worktree_path = temp.path().join("task-cleanup-blocked");
+
+        let error = super::super::stale_execution_worktree_cleanup_blocked_error(
+            "task-cleanup-blocked",
+            &worktree_path,
+            "delete denied",
+            "test cleanup",
+        );
+
+        let AppError::ExecutionBlocked(message) = error else {
+            panic!("cleanup failure should become ExecutionBlocked");
+        };
+        assert!(message.contains(GIT_ISOLATION_ERROR_PREFIX));
+        assert!(message.contains("task-cleanup-blocked"));
+        assert!(message.contains("delete denied"));
+    }
+
+    #[test]
+    fn registered_task_worktree_reuse_requires_exact_path_and_branch() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let expected_path = temp.path().join("task-reusable");
+        let expected_path_str = expected_path.to_string_lossy().to_string();
+        let branch = "ralphx/validation-project/task-reusable";
+
+        assert!(super::super::registered_task_worktree_matches_branch(
+            &expected_path_str,
+            Some(branch),
+            &expected_path,
+            branch,
+        ));
+        assert!(!super::super::registered_task_worktree_matches_branch(
+            &expected_path_str,
+            Some(branch),
+            &expected_path,
+            "ralphx/validation-project/task-other",
+        ));
+        assert!(!super::super::registered_task_worktree_matches_branch(
+            &expected_path_str,
+            Some(branch),
+            &temp.path().join("task-other"),
+            branch,
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_existing_execution_worktree_ignores_missing_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_path = temp.path().join("not-a-repo");
+        let worktree_path = temp.path().join("missing-task-worktree");
+
+        super::super::delete_existing_execution_worktree_or_block(
+            &repo_path,
+            &worktree_path,
+            "missing-task-worktree",
+            "test missing cleanup",
+        )
+        .await
+        .expect("missing worktree path should not block cleanup");
+    }
+
+    #[tokio::test]
+    async fn existing_task_worktree_reuse_matches_registered_branch() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_path = temp.path().join("repo");
+        setup_git_repo(&repo_path);
+        let worktree_path = temp.path().join("task-reusable");
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
+        let branch = "ralphx/validation-project/task-reusable";
+        run_git(
+            &repo_path,
+            &["worktree", "add", "-b", branch, &worktree_path_str, "main"],
+        );
+        let registered_worktree_path = worktree_path
+            .canonicalize()
+            .expect("canonical worktree path");
+
+        assert!(
+            super::super::existing_task_worktree_is_reusable(
+                &repo_path,
+                &registered_worktree_path,
+                branch,
+                "task-reusable",
+            )
+            .await
+        );
+        assert!(
+            !super::super::existing_task_worktree_is_reusable(
+                &repo_path,
+                &registered_worktree_path,
+                "ralphx/validation-project/task-other",
+                "task-reusable",
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_existing_execution_worktree_removes_registered_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_path = temp.path().join("repo");
+        setup_git_repo(&repo_path);
+        let worktree_path = temp.path().join("task-delete");
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
+        let branch = "ralphx/validation-project/task-delete";
+        run_git(
+            &repo_path,
+            &["worktree", "add", "-b", branch, &worktree_path_str, "main"],
+        );
+
+        super::super::delete_existing_execution_worktree_or_block(
+            &repo_path,
+            &worktree_path,
+            "task-delete",
+            "test registered cleanup",
+        )
+        .await
+        .expect("registered worktree should be removed");
+
+        assert!(!worktree_path.exists(), "worktree path should be removed");
+        let worktrees = GitService::list_worktrees(&repo_path)
+            .await
+            .expect("list worktrees after cleanup");
+        assert!(
+            worktrees
+                .iter()
+                .all(|worktree| worktree.path != worktree_path_str),
+            "deleted worktree should not remain registered"
+        );
     }
 }

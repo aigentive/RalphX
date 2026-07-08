@@ -188,6 +188,24 @@ fn maps_source_update_conflicts_to_agent_fixable_publish_outcome() {
 }
 
 #[test]
+fn maps_source_update_branch_missing_to_operational_publish_outcome() {
+    let outcome = publish_branch_freshness_outcome_from_source_update(
+        SourceUpdateResult::BranchMissing {
+            branch: "feature/missing".to_string(),
+        },
+        "origin/main",
+        "target-sha",
+    );
+
+    assert_eq!(
+        outcome,
+        PublishBranchFreshnessOutcome::OperationalError {
+            message: "branch missing before freshness update: feature/missing".to_string(),
+        }
+    );
+}
+
+#[test]
 fn maps_successful_source_update_to_updated_publish_base() {
     let outcome = publish_branch_freshness_outcome_from_source_update(
         SourceUpdateResult::Updated,
