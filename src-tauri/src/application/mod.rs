@@ -327,6 +327,8 @@ mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
 #[cfg(test)]
+mod validation_service_tests;
+#[cfg(test)]
 mod ticketing_cache_invalidator_tests;
 #[cfg(test)]
 mod pull_request_detail_tests;
