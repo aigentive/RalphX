@@ -33,7 +33,7 @@ async fn spawn_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Chil
 fn build_runner(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ChatResumptionRunner<tauri::Wry> {
+) -> ChatResumptionRunner {
     build_runner_with_agent_run_repo(
         app_state,
         execution_state,
@@ -45,7 +45,7 @@ fn build_runner_with_agent_run_repo(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
-) -> ChatResumptionRunner<tauri::Wry> {
+) -> ChatResumptionRunner {
     ChatResumptionRunner::new(
         agent_run_repo,
         Arc::clone(&app_state.task_repo),

@@ -13,7 +13,7 @@
 // - Sends "Continue where you left off." message to resume the stored provider session
 
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime};
+use tauri::AppHandle;
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_continuation::{
@@ -49,7 +49,7 @@ const DURABLE_SILENT_COMPLETION_RECOVERY_MESSAGE_LIMIT: u32 = 20;
 ///
 /// Finds all conversations that were interrupted when the app shut down
 /// and resumes them by sending a message with `--resume` to continue the provider session.
-pub struct ChatResumptionRunner<R: Runtime = tauri::Wry> {
+pub struct ChatResumptionRunner {
     agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_runtime_deps: ChatRuntimeFactoryDeps,
     task_repo: Arc<dyn TaskRepository>,
@@ -59,10 +59,10 @@ pub struct ChatResumptionRunner<R: Runtime = tauri::Wry> {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-    app_handle: Option<AppHandle<R>>,
+    app_handle: Option<AppHandle>,
 }
 
-impl<R: Runtime> ChatResumptionRunner<R> {
+impl ChatResumptionRunner {
     /// Create a new ChatResumptionRunner with all required dependencies.
     pub(crate) fn new(
         agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -123,7 +123,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
     }
 
     /// Set the Tauri app handle (builder pattern).
-    pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
         self
     }
@@ -536,7 +536,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
     }
 
     /// Create a ChatService instance for resumption.
-    fn create_chat_service(&self) -> AppChatService<R> {
+    fn create_chat_service(&self) -> AppChatService {
         let deps = self.chat_runtime_deps.clone().with_runtime_support(
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),

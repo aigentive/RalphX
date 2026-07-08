@@ -555,7 +555,7 @@ pub async fn complete_review(
 
 async fn transition_ai_review_approval(
     state: &HttpServerState,
-    transition_service: &TaskTransitionService<tauri::Wry>,
+    transition_service: &TaskTransitionService,
     task_id: &TaskId,
     require_human_review: bool,
 ) -> Result<InternalStatus, (StatusCode, String)> {

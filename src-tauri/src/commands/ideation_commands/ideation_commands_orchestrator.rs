@@ -48,7 +48,7 @@ pub async fn send_orchestrator_message(
     }
 
     // Create unified chat service
-    let chat_service: AppChatService<tauri::Wry> = state.build_chat_service();
+    let chat_service: AppChatService = state.build_chat_service();
 
     validate_chat_runtime_for_context(
         &state,

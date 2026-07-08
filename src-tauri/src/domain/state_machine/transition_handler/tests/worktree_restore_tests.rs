@@ -147,7 +147,7 @@ async fn re_review_worktree_restore() {
 
 fn build_transition_service(
     app_state: &AppState,
-) -> crate::application::TaskTransitionService<tauri::Wry> {
+) -> crate::application::TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());

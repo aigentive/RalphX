@@ -20,7 +20,7 @@ async fn setup_test_state() -> HttpServerState {
     }
 }
 
-fn build_chat_service(state: &HttpServerState) -> AppChatService<tauri::Wry> {
+fn build_chat_service(state: &HttpServerState) -> AppChatService {
     let app = &state.app_state;
     AppChatService::new(
         Arc::clone(&app.chat_message_repo),

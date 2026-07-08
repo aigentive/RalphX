@@ -1131,7 +1131,7 @@ pub async fn change_project_git_mode(
 fn create_transition_service(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     // Create scheduler for post-merge scheduling (unblocked plan_merge tasks)
     let scheduler_concrete =
         Arc::new(state.build_task_scheduler_for_runtime(

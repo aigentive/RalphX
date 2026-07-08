@@ -1419,10 +1419,10 @@ pub async fn reconcile_pr_mode_switch<R: tauri::Runtime + 'static>(
 fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
-) -> Arc<TaskTransitionService<R>> {
+    _app_handle: tauri::AppHandle<R>,
+) -> Arc<TaskTransitionService> {
     let mut svc =
-        state.build_transition_service_for_runtime(Arc::clone(execution_state), Some(app_handle));
+        state.build_transition_service_for_runtime(Arc::clone(execution_state), None);
 
     svc = svc.with_pr_poller_registry(Arc::clone(&state.pr_poller_registry));
 

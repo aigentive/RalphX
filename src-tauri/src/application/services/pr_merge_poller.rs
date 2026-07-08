@@ -232,7 +232,7 @@ impl PrPollerRegistry {
         pr_number: i64,
         working_dir: PathBuf,
         base_branch: String,
-        transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+        transition_service: Arc<TaskTransitionService>,
     ) {
         use dashmap::mapref::entry::Entry;
 
@@ -357,7 +357,7 @@ impl PrPollerRegistry {
         task_id: &TaskId,
         pr_number: i64,
         working_dir: &Path,
-        transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+        transition_service: Arc<TaskTransitionService>,
         history_actor: &str,
     ) -> crate::AppResult<bool> {
         let Some(github) = self.github_service.as_ref() else {
@@ -424,7 +424,7 @@ async fn poll_loop(
     semaphore: Arc<tokio::sync::Semaphore>,
     rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
 ) {
     let start_time = Instant::now();
     let max_backoff = Duration::from_secs(600); // 10 min cap
@@ -1618,7 +1618,7 @@ async fn route_review_feedback_if_present(
     working_dir: &Path,
     pr_number: i64,
     task_id: &TaskId,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
     history_actor: &str,
 ) -> crate::AppResult<bool> {
     let Some(feedback) = github

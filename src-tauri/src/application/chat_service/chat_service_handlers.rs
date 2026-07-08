@@ -496,7 +496,7 @@ fn build_transition_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-) -> TaskTransitionService<R> {
+) -> TaskTransitionService {
     let deps = build_runtime_factory_deps(
         app_handle,
         task_repo,
@@ -539,7 +539,7 @@ fn build_task_scheduler_service<R: Runtime>(
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-) -> TaskSchedulerService<R> {
+) -> TaskSchedulerService {
     let deps = build_runtime_factory_deps(
         app_handle,
         task_repo,

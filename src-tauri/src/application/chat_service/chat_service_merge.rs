@@ -132,7 +132,7 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
         }))
     }
 
-    fn build_transition_service(&self) -> Arc<TaskTransitionService<R>> {
+    fn build_transition_service(&self) -> Arc<TaskTransitionService> {
         let deps = self.build_runtime_factory_deps();
         build_transition_service_with_fallback(
             &self.app_handle.cloned(),
@@ -142,7 +142,7 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
         .into_arc()
     }
 
-    fn build_scheduler_service(&self) -> TaskSchedulerService<R> {
+    fn build_scheduler_service(&self) -> TaskSchedulerService {
         let deps = self.build_runtime_factory_deps();
         build_task_scheduler_with_fallback(
             &self.app_handle.cloned(),
@@ -289,10 +289,14 @@ async fn get_task_in_merging_state<R: Runtime + 'static>(
             use crate::application::task_transition_service::RepoBackedDependencyManager;
             use crate::domain::state_machine::services::DependencyManager;
 
+            let event_sink = ctx
+                .app_handle
+                .and_then(|handle| handle.try_state::<AppState>())
+                .map(|state| Arc::clone(&state.events));
             let dependency_manager = RepoBackedDependencyManager::new(
                 Arc::clone(ctx.task_dependency_repo),
                 Arc::clone(ctx.task_repo),
-                ctx.app_handle.cloned(),
+                event_sink,
             );
             dependency_manager.unblock_dependents(ctx.task_id_str).await;
         }
@@ -1183,10 +1187,14 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         use crate::application::task_transition_service::RepoBackedDependencyManager;
         use crate::domain::state_machine::services::DependencyManager;
 
+        let event_sink = ctx
+            .app_handle
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|state| Arc::clone(&state.events));
         let dependency_manager = RepoBackedDependencyManager::new(
             Arc::clone(ctx.task_dependency_repo),
             Arc::clone(ctx.task_repo),
-            ctx.app_handle.cloned(),
+            event_sink,
         );
         dependency_manager.unblock_dependents(ctx.task_id_str).await;
 
@@ -1822,7 +1830,7 @@ mod tests {
             execution_state: &execution_state,
             execution_settings_repo: Some(&app_state.execution_settings_repo),
             plan_branch_repo: &plan_branch_repo,
-            app_handle: None::<&AppHandle<tauri::Wry>>,
+            app_handle: None::<&AppHandle>,
             interactive_process_registry: &interactive_process_registry,
         };
 

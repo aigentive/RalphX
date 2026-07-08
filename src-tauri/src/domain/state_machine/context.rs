@@ -26,7 +26,6 @@ use ralphx_domain::repositories::ExternalEventsRepository;
 use ralphx_events::EventSink;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::Wry;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -131,7 +130,7 @@ pub struct TaskServices {
     /// Task transition service for triggering state transitions from within state machine actions.
     /// Used by PR merge poller (started in on_enter(Merging)) to fire Merging → Merged when
     /// GitHub reports the PR as merged. Optional — None when not wired (tests, non-PR paths).
-    pub transition_service: Option<Arc<TaskTransitionService<Wry>>>,
+    pub transition_service: Option<Arc<TaskTransitionService>>,
 
     /// Webhook publisher for broadcasting events to registered external endpoints.
     /// Optional — None when webhook delivery is not configured.
@@ -313,7 +312,7 @@ impl TaskServices {
 
     /// Set the task transition service for PR merge poller (builder pattern).
     /// The poller uses this to fire Merging → Merged when GitHub reports the PR as merged.
-    pub fn with_transition_service(mut self, svc: Arc<TaskTransitionService<Wry>>) -> Self {
+    pub fn with_transition_service(mut self, svc: Arc<TaskTransitionService>) -> Self {
         self.transition_service = Some(svc);
         self
     }

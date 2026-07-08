@@ -9,25 +9,25 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Runtime};
+use ralphx_events::EventSink;
 
-pub struct ThrottledEmitter<R: Runtime = tauri::Wry> {
-    handle: AppHandle<R>,
+pub struct ThrottledEmitter {
+    sink: Arc<dyn EventSink>,
     pending: Mutex<Vec<(String, serde_json::Value)>>,
 }
 
-impl<R: Runtime> ThrottledEmitter<R> {
+impl ThrottledEmitter {
     /// Create a new ThrottledEmitter. Spawns a background task that flushes
     /// pending batchable events every 100ms. The task exits automatically when
     /// the Arc<ThrottledEmitter> is dropped (via Weak reference).
-    pub fn new(handle: AppHandle<R>) -> Arc<Self> {
+    pub fn new(sink: Arc<dyn EventSink>) -> Arc<Self> {
         let emitter = Arc::new(Self {
-            handle,
+            sink,
             pending: Mutex::new(Vec::new()),
         });
 
         let weak = Arc::downgrade(&emitter);
-        let handle_clone = emitter.handle.clone();
+        let sink = Arc::clone(&emitter.sink);
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_millis(100));
@@ -43,7 +43,7 @@ impl<R: Runtime> ThrottledEmitter<R> {
                 };
                 drop(strong);
                 for (event, payload) in events {
-                    let _ = handle_clone.emit(&event, payload);
+                    sink.emit(&event, payload);
                 }
             }
         });
@@ -61,7 +61,7 @@ impl<R: Runtime> ThrottledEmitter<R> {
                 .expect("ThrottledEmitter pending lock poisoned");
             guard.push((event.to_string(), payload));
         } else {
-            let _ = self.handle.emit(event, payload);
+            self.sink.emit(event, payload);
         }
     }
 
