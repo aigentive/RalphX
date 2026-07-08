@@ -118,6 +118,13 @@ pub fn categorize_resume_state(stopped_from_status: InternalStatus) -> Categoriz
     }
 }
 
+pub fn restart_transition_target(stopped_from_status: InternalStatus) -> InternalStatus {
+    match stopped_from_status {
+        InternalStatus::Executing | InternalStatus::ReExecuting => InternalStatus::Ready,
+        _ => categorize_resume_state(stopped_from_status).target_status,
+    }
+}
+
 /// Validation warning for resume operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumeValidationWarning {

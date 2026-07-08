@@ -2342,10 +2342,40 @@ impl<R: Runtime> ReconciliationRunner<R> {
                     }
                 }
 
-                // Set trigger_origin="recovery" before resuming agent
+                let mut recovery_task = match self.task_repo.get_by_id(&task.id).await {
+                    Ok(Some(fresh_task)) => fresh_task,
+                    Ok(None) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            "Skipping recovery re-spawn — task disappeared before entry actions"
+                        );
+                        return false;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            error = %error,
+                            "Skipping recovery re-spawn — failed to reload task before entry actions"
+                        );
+                        return false;
+                    }
+                };
+                if recovery_task.internal_status != status {
+                    tracing::info!(
+                        task_id = task.id.as_str(),
+                        expected_status = %status,
+                        actual_status = %recovery_task.internal_status,
+                        "Skipping recovery re-spawn — task status changed before entry actions"
+                    );
+                    return false;
+                }
+
+                // Set trigger_origin="recovery" before resuming agent. Merge against the
+                // freshly reloaded task so this write cannot erase retry metadata recorded
+                // immediately before re-entry.
                 let updated_metadata = MetadataUpdate::new()
                     .with_string("trigger_origin", "recovery")
-                    .merge_into(task.metadata.as_deref());
+                    .merge_into(recovery_task.metadata.as_deref());
                 if let Err(e) = self
                     .task_repo
                     .update_metadata(&task.id, Some(updated_metadata))
@@ -2357,9 +2387,14 @@ impl<R: Runtime> ReconciliationRunner<R> {
                         "Failed to set trigger_origin=recovery in metadata"
                     );
                 }
+                recovery_task.metadata = Some(
+                    MetadataUpdate::new()
+                        .with_string("trigger_origin", "recovery")
+                        .merge_into(recovery_task.metadata.as_deref()),
+                );
 
                 self.transition_service
-                    .execute_entry_actions(&task.id, task, status)
+                    .execute_entry_actions(&task.id, &recovery_task, status)
                     .await;
                 true
             }
