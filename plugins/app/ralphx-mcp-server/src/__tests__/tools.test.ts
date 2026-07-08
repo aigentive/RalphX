@@ -1540,6 +1540,13 @@ describe('ticket attachment tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('attachment_id');
   });
 
+  it('fetch_ticket_attachment description should preserve the no-secret URL contract', () => {
+    const tool = allTools.find((candidate) => candidate.name === 'fetch_ticket_attachment');
+
+    expect(tool?.description).toContain('Never exposes provider secrets or bearer-token URLs');
+    expect(tool?.description).not.toMatch(/Authorization|access_token=|Bearer [a-z0-9]/i);
+  });
+
   it.each([
     GENERAL_WORKER,
     GENERAL_EXPLORER,
@@ -1552,6 +1559,32 @@ describe('ticket attachment tools', () => {
   ])('%s should expose ticket attachment tools through canonical metadata', (agent) => {
     expect(toolsByAgent()[agent]).toEqual(loadCanonicalMcpTools(agent));
     expect(toolsByAgent()[agent]).toEqual(expect.arrayContaining(attachmentTools));
+  });
+
+  it.each([
+    GENERAL_WORKER,
+    GENERAL_EXPLORER,
+    WORKER,
+    CODER,
+    WORKER_TEAM_LEAD,
+    WORKER_TEAM_MEMBER,
+    CHAT_TASK,
+    CHAT_PROJECT,
+  ])('%s should expose ticket attachment tools through the filtered tool surface', (agent) => {
+    setAgentType(agent);
+    const toolNames = getFilteredTools().map((tool) => tool.name);
+
+    expect(toolNames).toEqual(expect.arrayContaining(attachmentTools));
+  });
+
+  it.each([
+    REVIEWER,
+    MERGER,
+    PLAN_VERIFIER,
+    ORCHESTRATOR_IDEATION,
+    ORCHESTRATOR_IDEATION_READONLY,
+  ])('%s should not expose ticket attachment tools without a ticket-reference contract', (agent) => {
+    expect(toolsByAgent()[agent]).not.toEqual(expect.arrayContaining(attachmentTools));
   });
 
   it('dispatches list and fetch requests to the backend ticket attachment routes', async () => {
