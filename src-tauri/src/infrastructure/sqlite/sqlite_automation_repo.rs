@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 use crate::domain::entities::{
     judge_transition_clears_verdict, Automation, AutomationId, AutomationJudgeState,
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus,
-    AutomationStatus, ChatConversationId, ProjectId,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
+    ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
@@ -628,6 +628,7 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         | AutomationRunStatus::AgentFailed
                         | AutomationRunStatus::Cancelled
                 );
+                let entering_running = to == AutomationRunStatus::Running;
                 let affected = conn.execute(
                     "UPDATE automation_runs
                      SET status = ?1,
@@ -637,14 +638,19 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                              WHEN ?4 = 1 THEN COALESCE(finished_at, ?5)
                              ELSE finished_at
                          END,
+                         agent_phase_started_at = CASE
+                             WHEN ?6 = 1 THEN ?5
+                             ELSE agent_phase_started_at
+                         END,
                          updated_at = ?5
-                     WHERE id = ?6 AND status = ?7",
+                     WHERE id = ?7 AND status = ?8",
                     params![
                         to.as_str(),
                         error_code,
                         error_detail,
                         if terminal { 1_i64 } else { 0_i64 },
                         now,
+                        if entering_running { 1_i64 } else { 0_i64 },
                         id,
                         from.as_str(),
                     ],

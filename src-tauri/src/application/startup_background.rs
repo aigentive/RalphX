@@ -11,6 +11,7 @@ use crate::application::agent_conversation_start_service::{
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::plan_gate::AutomationRunResumer;
 use crate::application::automation::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
@@ -19,14 +20,17 @@ use crate::application::automation::scheduler::{
     GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
 };
 use crate::application::automation::transition::TauriAutomationEventEmitter;
+use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::{AppState, TeamService};
 use crate::commands::ExecutionState;
+use crate::domain::entities::{ChatContextType, ChatConversationId};
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
     TaskRepository,
 };
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
 use crate::utils::backend_endpoint::backend_http_port;
 use tauri::Manager;
@@ -80,6 +84,120 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
         Ok(AutomationRunStartOutcome {
             branch_name: result.workspace.map(|workspace| workspace.branch_name),
         })
+    }
+}
+
+pub struct AgentConversationAutomationRunResumer<R: tauri::Runtime + 'static> {
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle<R>,
+}
+
+impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunResumer<R> {
+    pub fn new(
+        state: AppState,
+        execution_state: Arc<ExecutionState>,
+        app_handle: tauri::AppHandle<R>,
+    ) -> Self {
+        Self {
+            state,
+            execution_state,
+            app_handle,
+        }
+    }
+
+    fn chat_service(&self) -> impl ChatService {
+        let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
+        build_chat_service_from_deps(
+            Some(self.app_handle.clone()),
+            Some(Arc::clone(&self.execution_state)),
+            &chat_deps,
+        )
+    }
+}
+
+#[async_trait]
+impl<R: tauri::Runtime + 'static> AutomationRunResumer
+    for AgentConversationAutomationRunResumer<R>
+{
+    async fn is_agent_running(&self, conversation_id: &ChatConversationId) -> AppResult<bool> {
+        let context_id = conversation_id.as_str();
+        Ok(self
+            .chat_service()
+            .is_agent_running(ChatContextType::Project, &context_id)
+            .await)
+    }
+
+    async fn launches_paused(&self) -> AppResult<bool> {
+        Ok(self.execution_state.is_paused())
+    }
+
+    async fn resume_with_prompt(
+        &self,
+        conversation_id: &ChatConversationId,
+        prompt: &str,
+    ) -> AppResult<()> {
+        let conversation = self
+            .state
+            .chat_conversation_repo
+            .get_by_id(conversation_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "automation run conversation {} not found",
+                    conversation_id
+                ))
+            })?;
+        if conversation.context_type != ChatContextType::Project {
+            return Err(AppError::Validation(format!(
+                "automation run conversation {} is not project-backed",
+                conversation_id
+            )));
+        }
+
+        let chat_service = self.chat_service();
+        let runtime_context_id = conversation_id.as_str();
+
+        let result = chat_service
+            .send_message(
+                ChatContextType::Project,
+                &conversation.context_id,
+                prompt,
+                SendMessageOptions {
+                    conversation_id_override: Some(conversation_id.clone()),
+                    caller_context: SendCallerContext::StartupResumption,
+                    ..SendMessageOptions::default()
+                },
+            )
+            .await
+            .map_err(|error| {
+                AppError::Infrastructure(format!("automation plan reminder send failed: {error}"))
+            })?;
+
+        if result.was_queued {
+            if let Some(queued_message_id) = result.queued_message_id.as_deref() {
+                if let Err(error) = chat_service
+                    .delete_queued_message(
+                        ChatContextType::Project,
+                        &runtime_context_id,
+                        queued_message_id,
+                    )
+                    .await
+                {
+                    warn!(
+                        conversation_id = conversation_id.as_str(),
+                        queued_message_id,
+                        error = %error,
+                        "Failed to purge queued automation plan reminder"
+                    );
+                }
+            }
+            return Err(AppError::Infrastructure(
+                "automation plan reminder send was queued instead of spawning".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -152,8 +270,13 @@ pub fn spawn_automation_scheduler(
         .map(|state| state.inner().clone());
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         state.clone(),
-        execution_state,
+        Arc::clone(&execution_state),
         team_service,
+        app_handle.clone(),
+    ));
+    let resumer = Arc::new(AgentConversationAutomationRunResumer::new(
+        state.clone(),
+        Arc::clone(&execution_state),
         app_handle.clone(),
     ));
     let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
@@ -168,7 +291,9 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.agent_run_repo),
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.ideation_session_repo),
         starter,
+        resumer,
         signal_checker,
         judge_invoker,
         event_emitter,

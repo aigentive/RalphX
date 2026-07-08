@@ -17,8 +17,10 @@ use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
+    switch_agent_conversation_mode_for_state_allowing_running,
     switch_agent_conversation_mode_for_state_stopping_running_agent, AgentRunStatusResponse,
-    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse,
+    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
+    AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE, ModeSwitchInitiator, QueuedMessageResponse,
     SendAgentMessageResponse, SwitchAgentConversationModeInput,
 };
 use ralphx_lib::commands::ExecutionState;
@@ -26,10 +28,10 @@ use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessio
 use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, ChatContextType,
-    ChatConversation, ChatConversationId, ExecutionPlan, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, PlanBranch, PlanBranchStatus,
-    Project, ProjectId,
+    AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, AutomationId,
+    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ExecutionPlan,
+    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
+    PlanBranch, PlanBranchStatus, Project, ProjectId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -208,6 +210,52 @@ async fn seed_mode_switch_workspace(
         .expect("workspace persisted");
 }
 
+async fn seed_automation_mode_switch_workspace(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    project_id: ProjectId,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let mut project = Project::new(
+        "Automation Mode Switch Project".to_string(),
+        "/tmp/project".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id;
+    conversation.automation_id = Some(AutomationId::from_string("automation-1"));
+    conversation.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    conversation.set_agent_mode(Some(mode));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("automation conversation persisted");
+
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project_id,
+        mode,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "feature/mode-switch".to_string(),
+        Some("Current branch (feature/mode-switch)".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/agent-mode-switch".to_string(),
+        "/tmp/ralphx-agent-mode-switch".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("automation workspace persisted");
+}
+
 #[tokio::test]
 async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace_mode() {
     let state = AppState::new_test();
@@ -250,6 +298,114 @@ async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace
     assert_eq!(stored.mode, AgentConversationWorkspaceMode::Chat);
     assert!(stored.linked_ideation_session_id.is_none());
     assert!(stored.linked_plan_branch_id.is_none());
+}
+
+#[tokio::test]
+async fn user_mode_switch_rejects_automation_run_conversation() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-automation-user-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("37373737-3737-4737-8737-373737373737");
+    seed_automation_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("user switch should not bypass automation plan gate");
+
+    assert!(error.contains(AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE));
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should still exist");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+}
+
+#[tokio::test]
+async fn system_mode_switch_allows_automation_run_conversation() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-automation-system-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("38383838-3838-4838-8838-383838383838");
+    seed_automation_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+
+    let response = switch_agent_conversation_mode_for_state_allowing_running(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        ModeSwitchInitiator::System,
+    )
+    .await
+    .expect("system switch should be allowed for automation run conversations");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should still exist");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Edit);
+}
+
+#[tokio::test]
+async fn user_mode_switch_still_allows_non_automation_conversation() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-non-automation-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("39393939-3939-4939-8939-393939393939");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect("non-automation user switch should remain allowed");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
 }
 
 #[tokio::test]

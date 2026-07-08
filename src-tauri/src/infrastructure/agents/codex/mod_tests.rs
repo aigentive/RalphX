@@ -1037,6 +1037,24 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
         args.contains("--allowed-tools=") && args.contains("ask_user_question"),
         "Codex Plan chat must keep ask_user_question for interactive Agent conversations: {overrides:?}"
     );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "features.apply_patch_freeform=false"),
+        "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it: {overrides:?}"
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "features.apply_patch_streaming_events=false"),
+        "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them: {overrides:?}"
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "include_apply_patch_tool=false"),
+        "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it: {overrides:?}"
+    );
 }
 
 #[test]

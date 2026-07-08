@@ -27,6 +27,9 @@ use crate::error::{AppError, AppResult};
 
 const AUTOMATION_RUN_BASE_BRANCH_MODE: &str = "isolated";
 const AUTOMATION_START_FAILED_CODE: &str = "start_failed";
+pub(crate) const AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK: &str = r#"<automation_plan_phase>
+You are in the automation run planning phase. Explore the codebase, then author the run plan artifact with the scope, files to inspect or change, approach, risks, and how it advances the current goal item. Use the plan tools to create or update the plan artifact, then end the turn. Implementation continues in a later resumed turn.
+</automation_plan_phase>"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationRunStartRequest {
@@ -91,7 +94,7 @@ impl AutomationRunStartRequest {
             provider_harness: automation.provider_harness.clone(),
             model_id: automation.model_id.clone(),
             logical_effort: automation.logical_effort.clone(),
-            run_mode: automation.run_mode.clone(),
+            run_mode: AgentConversationWorkspaceMode::Plan.to_string(),
             base_ref_kind: run.base_ref_kind.clone(),
             base_ref: run.base_ref_used.clone(),
             base_display_name,
@@ -111,9 +114,15 @@ impl AutomationRunStartRequest {
         // fingerprint (stored prompt vs judge nextRunPrompt) keeps working.
         let content = match &self.automation_context {
             Some(context) if !context.trim().is_empty() => {
-                format!("{context}\n{}", self.run_prompt)
+                format!(
+                    "{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\n{context}\n{}",
+                    self.run_prompt
+                )
             }
-            _ => self.run_prompt.clone(),
+            _ => format!(
+                "{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\n{}",
+                self.run_prompt
+            ),
         };
         Ok(StartAgentConversationInput {
             project_id: self.project_id,
@@ -324,17 +333,10 @@ impl AutomationRunProvisioner {
         automation: &Automation,
         run: &AutomationRun,
     ) -> AppResult<ChatConversation> {
-        let mode = AgentConversationWorkspaceMode::from_str(automation.run_mode.trim()).map_err(
-            |error| {
-                AppError::Validation(format!(
-                    "automation run_mode is not valid for run provisioning: {error}"
-                ))
-            },
-        )?;
         let mut conversation = ChatConversation::new_project(automation.project_id.clone());
         conversation.automation_id = Some(automation.id.clone());
         conversation.automation_run_id = Some(run.id.clone());
-        conversation.set_agent_mode(Some(mode));
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Plan));
         conversation.set_title(format!("{} run {}", automation.name, run.run_index));
         self.conversation_repo.create(conversation).await
     }

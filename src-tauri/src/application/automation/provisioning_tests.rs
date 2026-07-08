@@ -5,7 +5,7 @@ use chrono::Utc;
 
 use super::provisioning::{
     AutomationRunProvisioner, AutomationRunStartOutcome, AutomationRunStartRequest,
-    AutomationRunStarter,
+    AutomationRunStarter, AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK,
 };
 use super::transition::NoopAutomationEventEmitter;
 use crate::domain::agents::LogicalEffort;
@@ -135,10 +135,14 @@ impl AutomationRunStarter for RecordingStarter {
         request: AutomationRunStartRequest,
     ) -> AppResult<AutomationRunStartOutcome> {
         self.requests.lock().unwrap().push(request.clone());
+        let workspace_mode = request
+            .run_mode
+            .parse::<AgentConversationWorkspaceMode>()
+            .unwrap_or(AgentConversationWorkspaceMode::Edit);
         let workspace = AgentConversationWorkspace::new(
             request.conversation_id.clone(),
             ProjectId::from_string(request.project_id.clone()),
-            AgentConversationWorkspaceMode::Edit,
+            workspace_mode,
             IdeationAnalysisBaseRefKind::LocalBranch,
             request.base_ref.clone(),
             request.base_display_name.clone(),
@@ -205,12 +209,15 @@ fn automation_run_start_request_maps_to_manual_start_input() {
     let input = request.into_start_input().unwrap();
 
     assert_eq!(input.project_id, "project-1");
-    assert_eq!(input.content, "Build the first PR");
+    assert_eq!(
+        input.content,
+        format!("{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\nBuild the first PR")
+    );
     assert_eq!(input.conversation_id.as_deref(), Some(conversation_id));
     assert_eq!(input.provider_harness.as_deref(), Some("codex"));
     assert_eq!(input.model_override.as_deref(), Some("gpt-5.4"));
     assert_eq!(input.logical_effort, Some(LogicalEffort::High));
-    assert_eq!(input.mode.as_deref(), Some("edit"));
+    assert_eq!(input.mode.as_deref(), Some("plan"));
     assert_eq!(input.base_ref_kind.as_deref(), Some("local_branch"));
     assert_eq!(input.base_branch_mode.as_deref(), Some("isolated"));
     assert_eq!(input.base_ref.as_deref(), Some("feature/base"));
@@ -259,7 +266,10 @@ fn automation_run_start_request_injects_spec_reference_and_context_when_spec_lin
     let input = request.into_start_input().unwrap();
     assert_eq!(input.composer_artifact_references.len(), 1);
     assert_eq!(input.composer_artifact_references[0].kind, "spec");
-    assert!(input.content.starts_with("<automation_context>"));
+    assert!(input
+        .content
+        .starts_with(AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK));
+    assert!(input.content.contains("<automation_context>"));
     assert!(input.content.contains("Migrate every module"));
     assert!(input.content.contains("Build the first PR"));
 }
@@ -283,7 +293,10 @@ fn automation_run_start_request_has_no_spec_reference_or_context_when_unlinked()
 
     let input = request.into_start_input().unwrap();
     assert!(input.composer_artifact_references.is_empty());
-    assert_eq!(input.content, "Build the first PR");
+    assert_eq!(
+        input.content,
+        format!("{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\nBuild the first PR")
+    );
 }
 
 #[test]
@@ -460,7 +473,7 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     assert_eq!(conversation.automation_run_id, Some(started.id.clone()));
     assert_eq!(
         conversation.agent_mode,
-        Some(AgentConversationWorkspaceMode::Edit)
+        Some(AgentConversationWorkspaceMode::Plan)
     );
     assert_eq!(conversation.title.as_deref(), Some("Large migration run 1"));
 
@@ -469,12 +482,14 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         .await
         .unwrap()
         .expect("fake starter should create workspace");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
     assert!(workspace.auto_publish_initial_pr_enabled);
 
     let requests = starter.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].conversation_id, *conversation_id);
     assert_eq!(requests[0].run_prompt, "Build the first PR");
+    assert_eq!(requests[0].run_mode, "plan");
     assert_eq!(requests[0].provider_harness, "codex");
     assert_eq!(requests[0].model_id, "gpt-5.4");
     assert_eq!(requests[0].base_ref_kind, "local_branch");
@@ -494,6 +509,7 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         .expect("latest run should exist");
     assert_eq!(latest.id, started.id);
     assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert_eq!(latest.run_prompt, "Build the first PR");
 }
 
 #[tokio::test]

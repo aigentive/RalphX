@@ -15,6 +15,10 @@ use crate::application::automation::judge::{
     AutomationJudgeContextRefSummary, AutomationJudgeValidationContext,
     BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
+use crate::application::automation::plan_gate::{
+    arm_plan_reminder, current_plan_artifact_id_for_workspace, refresh_plan_park_baseline,
+    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT,
+};
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
 };
@@ -33,13 +37,14 @@ use crate::application::harness_runtime_registry::{
 use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRunStatus, ArtifactContent, ArtifactId, Automation,
-    AutomationId, AutomationJudgeState, AutomationRun, AutomationRunStatus, AutomationStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRunStatus, ArtifactContent,
+    ArtifactId, Automation, AutomationId, AutomationJudgeState, AutomationRun, AutomationRunStatus,
+    AutomationStatus,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    ChatConversationRepository,
+    ChatConversationRepository, IdeationSessionRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -555,7 +560,9 @@ pub struct AutomationScheduler {
     agent_run_repo: Arc<dyn AgentRunRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     transition_service: AutomationTransitionService,
+    resumer: Arc<dyn AutomationRunResumer>,
     signal_checker: Arc<dyn AutomationSignalChecker>,
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     registry: Arc<AutomationSchedulerRegistry>,
@@ -569,7 +576,9 @@ impl AutomationScheduler {
         agent_run_repo: Arc<dyn AgentRunRepository>,
         conversation_repo: Arc<dyn ChatConversationRepository>,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         starter: Arc<dyn AutomationRunStarter>,
+        resumer: Arc<dyn AutomationRunResumer>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
@@ -603,7 +612,9 @@ impl AutomationScheduler {
             agent_run_repo,
             run_repo,
             workspace_repo,
+            ideation_session_repo,
             transition_service,
+            resumer,
             signal_checker,
             judge_invoker,
             registry,
@@ -715,6 +726,9 @@ impl AutomationScheduler {
             AutomationRunStatus::Running => {
                 self.observe_running_run(automation, run, summary).await?;
             }
+            AutomationRunStatus::AwaitingPlanApproval => {
+                self.observe_awaiting_plan_approval_run(run).await?;
+            }
             AutomationRunStatus::Published => {
                 self.observe_published_run(automation, run, summary).await?;
             }
@@ -756,7 +770,32 @@ impl AutomationScheduler {
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
-        if run_has_exceeded(run, self.config.max_run_duration) {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            if running_run_has_exceeded(run, self.config.max_run_duration) {
+                self.fail_running_run(
+                    run,
+                    "timeout",
+                    "Automation run exceeded max_run_duration_secs",
+                    summary,
+                )
+                .await?;
+            }
+            return Ok(());
+        };
+
+        let workspace = self
+            .workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?;
+        if let Some(workspace) = workspace.as_ref() {
+            if workspace.mode == AgentConversationWorkspaceMode::Plan {
+                self.observe_plan_phase_running_run(run, workspace, summary)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        if running_run_has_exceeded(run, self.config.max_run_duration) {
             if self
                 .transition_service
                 .transition_run_status(
@@ -773,9 +812,6 @@ impl AutomationScheduler {
             return Ok(());
         }
 
-        let Some(conversation_id) = run.conversation_id.as_ref() else {
-            return Ok(());
-        };
         if automation.completion_signal == "agent_completed" {
             match self
                 .agent_run_repo
@@ -828,11 +864,7 @@ impl AutomationScheduler {
                 Some(AgentRunStatus::Running) | None => return Ok(()),
             }
         }
-        let Some(workspace) = self
-            .workspace_repo
-            .get_by_conversation_id(conversation_id)
-            .await?
-        else {
+        let Some(workspace) = workspace else {
             return Ok(());
         };
 
@@ -924,6 +956,167 @@ impl AutomationScheduler {
             }
             _ => {}
         }
+
+        Ok(())
+    }
+
+    async fn observe_plan_phase_running_run(
+        &self,
+        run: &AutomationRun,
+        workspace: &AgentConversationWorkspace,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(());
+        };
+
+        let agent_status = self
+            .agent_run_repo
+            .get_latest_for_conversation(conversation_id)
+            .await?
+            .map(|agent_run| agent_run.status);
+
+        match agent_status {
+            Some(AgentRunStatus::Failed) => {
+                self.fail_running_run(
+                    run,
+                    "agent_failed",
+                    "Automation run agent failed during the planning phase",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Cancelled) => {
+                if self
+                    .transition_service
+                    .transition_run_status(
+                        &run.id,
+                        AutomationRunStatus::Running,
+                        AutomationRunStatus::Cancelled,
+                        Some("agent_cancelled".to_string()),
+                        Some("Automation run planning agent was cancelled".to_string()),
+                    )
+                    .await?
+                {
+                    summary.failed_runs += 1;
+                }
+            }
+            Some(AgentRunStatus::Completed) => {
+                let plan_artifact_id =
+                    current_plan_artifact_id_for_workspace(&self.ideation_session_repo, workspace)
+                        .await?;
+                if plan_artifact_id.is_some() {
+                    if self
+                        .transition_service
+                        .transition_run_status(
+                            &run.id,
+                            AutomationRunStatus::Running,
+                            AutomationRunStatus::AwaitingPlanApproval,
+                            None,
+                            None,
+                        )
+                        .await?
+                    {
+                        refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id).await?;
+                    }
+                    return Ok(());
+                }
+
+                self.handle_missing_plan_artifact_after_completed_turn(run, summary)
+                    .await?;
+            }
+            Some(AgentRunStatus::Running) | None => {
+                if running_run_has_exceeded(run, self.config.max_run_duration) {
+                    self.fail_running_run(
+                        run,
+                        "timeout",
+                        "Automation run exceeded max_run_duration_secs",
+                        summary,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_missing_plan_artifact_after_completed_turn(
+        &self,
+        run: &AutomationRun,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(());
+        };
+
+        if run.plan_reminder_count > 0 {
+            self.fail_running_run(
+                run,
+                "plan_not_submitted",
+                "Automation planning turn ended without submitting a plan artifact",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if self.resumer.is_agent_running(conversation_id).await? {
+            return Ok(());
+        }
+        if self.resumer.launches_paused().await? {
+            return Ok(());
+        }
+
+        arm_plan_reminder(&self.run_repo, run).await?;
+        if let Err(error) = self
+            .resumer
+            .resume_with_prompt(conversation_id, AUTOMATION_PLAN_REMINDER_PROMPT)
+            .await
+        {
+            self.fail_running_run(
+                run,
+                "plan_reminder_failed",
+                &format!("Automation plan reminder failed: {error}"),
+                summary,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn observe_awaiting_plan_approval_run(&self, run: &AutomationRun) -> AppResult<()> {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(());
+        };
+        let Some(workspace) = self
+            .workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        if workspace.mode != AgentConversationWorkspaceMode::Plan {
+            return Ok(());
+        }
+
+        if self.resumer.is_agent_running(conversation_id).await? {
+            self.transition_service
+                .transition_run_status(
+                    &run.id,
+                    AutomationRunStatus::AwaitingPlanApproval,
+                    AutomationRunStatus::Running,
+                    None,
+                    None,
+                )
+                .await?;
+            return Ok(());
+        }
+
+        let plan_artifact_id =
+            current_plan_artifact_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
+        refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id).await?;
 
         Ok(())
     }
@@ -1299,6 +1492,13 @@ impl JudgeInvocationFailure {
 
 fn run_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
     let started_at = run.started_at.unwrap_or(run.created_at);
+    elapsed_since(started_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+fn running_run_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
+    let started_at = run
+        .agent_phase_started_at
+        .unwrap_or_else(|| run.started_at.unwrap_or(run.created_at));
     elapsed_since(started_at).is_some_and(|elapsed| elapsed >= limit)
 }
 

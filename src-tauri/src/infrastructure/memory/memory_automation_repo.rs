@@ -360,6 +360,9 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         updated.status = to;
         updated.error_code = error_code;
         updated.error_detail = error_detail;
+        if to == AutomationRunStatus::Running {
+            updated.agent_phase_started_at = Some(now);
+        }
         if matches!(
             to,
             AutomationRunStatus::Merged

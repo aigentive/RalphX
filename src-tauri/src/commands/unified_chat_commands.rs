@@ -134,6 +134,8 @@ const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
+#[doc(hidden)]
+pub const AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE: &str = "[ralphx:automation_run_mode_locked]";
 
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
     format!("{}/{}", ChatContextType::Project, conversation_id.as_str())
@@ -3038,19 +3040,22 @@ pub async fn switch_agent_conversation_mode_for_state(
         input,
         state,
         ModeSwitchRunningAgentPolicy::Reject,
+        ModeSwitchInitiator::User,
     )
     .await
 }
 
 #[doc(hidden)]
-pub(crate) async fn switch_agent_conversation_mode_for_state_allowing_running(
+pub async fn switch_agent_conversation_mode_for_state_allowing_running(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
+    initiator: ModeSwitchInitiator,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     switch_agent_conversation_mode_for_state_with_running_policy(
         input,
         state,
         ModeSwitchRunningAgentPolicy::Allow,
+        initiator,
     )
     .await
 }
@@ -3065,8 +3070,15 @@ pub async fn switch_agent_conversation_mode_for_state_stopping_running_agent(
         input,
         state,
         ModeSwitchRunningAgentPolicy::StopWithService(chat_service),
+        ModeSwitchInitiator::User,
     )
     .await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeSwitchInitiator {
+    User,
+    System,
 }
 
 #[derive(Clone, Copy)]
@@ -3080,6 +3092,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
     running_agent_policy: ModeSwitchRunningAgentPolicy<'_>,
+    initiator: ModeSwitchInitiator,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
@@ -3103,6 +3116,11 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         .ok_or_else(|| format!("Conversation not found: {}", conversation_id))?;
     if conversation.context_type != ChatContextType::Project {
         return Err("Only project agent conversations can change mode".to_string());
+    }
+    if initiator == ModeSwitchInitiator::User && conversation.automation_run_id.is_some() {
+        return Err(format!(
+            "{AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE} Automation run conversations cannot be switched manually"
+        ));
     }
 
     let running_key = RunningAgentKey::new(
@@ -9975,7 +9993,7 @@ mod tests {
         AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
         AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
         CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
-        ForkAgentConversationResponse, SwitchAgentConversationModeInput,
+        ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
         AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
@@ -16727,6 +16745,7 @@ mod tests {
                 base_source_pull_request: None,
             },
             &state,
+            ModeSwitchInitiator::User,
         )
         .await
         .expect("accepted proposal switch should bypass running guard");

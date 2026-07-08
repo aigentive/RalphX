@@ -1,6 +1,7 @@
 pub mod api;
 pub mod delete;
 pub mod judge;
+pub mod plan_gate;
 pub mod provisioning;
 pub mod review_gate;
 pub mod scheduler;

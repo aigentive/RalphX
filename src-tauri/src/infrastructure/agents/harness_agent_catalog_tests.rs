@@ -720,6 +720,13 @@ fn codex_runtime_features_load_from_harness_metadata() {
         Some(&false),
         "workspace reviewer should disable Codex shell_tool declaratively"
     );
+
+    let general_worker = load_canonical_codex_metadata(&root, "ralphx-general-worker");
+    assert_eq!(
+        general_worker.runtime_features.get("shell_tool"),
+        Some(&true),
+        "general worker should declare Codex metadata instead of falling back to default"
+    );
 }
 
 #[test]

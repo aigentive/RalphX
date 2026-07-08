@@ -29,6 +29,13 @@ use crate::infrastructure::external_mcp_supervisor::{
 };
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
 
+const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
+const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
+    "features.apply_patch_freeform=false",
+    "features.apply_patch_streaming_events=false",
+    "include_apply_patch_tool=false",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexCliCapabilities {
     pub version: Option<String>,
@@ -210,6 +217,7 @@ pub fn build_codex_mcp_overrides_for_profile(
                 Some(&codex_metadata.internal_mcp_tools),
             )?);
         }
+        append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
         return Ok(overrides);
     }
 
@@ -226,8 +234,24 @@ pub fn build_codex_mcp_overrides_for_profile(
     for (feature_name, enabled) in codex_metadata.runtime_features {
         overrides.push(format!("features.{feature_name}={enabled}"));
     }
+    append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
 
     Ok(overrides)
+}
+
+fn append_codex_plan_read_only_feature_overrides(
+    overrides: &mut Vec<String>,
+    agent_profile: Option<&str>,
+) {
+    if agent_profile != Some(CODEX_PLAN_AGENT_PROFILE) {
+        return;
+    }
+    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature gates, while -c accepts the top-level include_apply_patch_tool override.
+    overrides.extend(
+        CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES
+            .iter()
+            .map(|entry| (*entry).to_string()),
+    );
 }
 
 fn build_codex_internal_mcp_overrides(
