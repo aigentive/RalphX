@@ -319,7 +319,7 @@ fn run_claude_command(cli_path: &Path, args: &[&str]) -> Result<String, String> 
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
     );
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
     let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;

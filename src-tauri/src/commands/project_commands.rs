@@ -193,7 +193,7 @@ pub async fn get_project(
 fn is_git_initialized(path: &str) -> bool {
     let mut cmd = Command::new(resolve_git_cli_path());
     cmd.args(["rev-parse", "--git-dir"]).current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut cmd);
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
@@ -211,7 +211,7 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
     // Initialize git
     let mut init_cmd = Command::new(resolve_git_cli_path());
     init_cmd.args(["init"]).current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut init_cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut init_cmd);
     let output = init_cmd
         .output()
         .map_err(|e| format!("Failed to run git init: {}", e))?;
@@ -231,7 +231,7 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
             "Initial commit (auto-created by RalphX)",
         ])
         .current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut commit_cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut commit_cmd);
     let _ = commit_cmd.output();
 
     Ok(())
@@ -263,7 +263,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
         // Run git init
         let mut init_cmd = TokioCommand::new(resolve_git_cli_path());
         init_cmd.args(["init"]).current_dir(path);
-        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(init_cmd.as_std_mut());
+        crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(init_cmd.as_std_mut());
         let output = init_cmd
             .output()
             .await
@@ -278,7 +278,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
     // Check if HEAD has any commits (git log returns success only if commits exist)
     let mut log_cmd = TokioCommand::new(resolve_git_cli_path());
     log_cmd.args(["log", "--oneline", "-1"]).current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(log_cmd.as_std_mut());
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(log_cmd.as_std_mut());
     let has_commits = log_cmd
         .output()
         .await
@@ -296,7 +296,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
                 "Initial commit (auto-created by RalphX)",
             ])
             .current_dir(path);
-        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
+        crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(
             commit_cmd.as_std_mut(),
         );
         let commit_result = commit_cmd.output().await;
