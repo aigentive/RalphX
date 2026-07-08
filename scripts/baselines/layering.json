@@ -368,28 +368,7 @@
         "text": "use crate::http_server::helpers::{"
       }
     ],
-    "root_domain_no_tauri_usage": [
-      {
-        "path": "src-tauri/src/domain/state_machine/context.rs",
-        "target": "tauri::",
-        "text": "use tauri::Wry;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/freshness_return_path_integration_tests.rs",
-        "target": "tauri::",
-        "text": "fn build_transition_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs",
-        "target": "tauri::",
-        "text": "fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService<tauri::Wry>> {"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
-        "target": "tauri::",
-        "text": ") -> crate::application::TaskTransitionService<tauri::Wry> {"
-      }
-    ],
+    "root_domain_no_tauri_usage": [],
     "root_domain_no_upward_imports": [
       {
         "path": "src-tauri/src/domain/repositories/permission_repository.rs",
@@ -1104,7 +1083,7 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
         "target": "crate::application",
-        "text": ") -> crate::application::TaskTransitionService<tauri::Wry> {"
+        "text": ") -> crate::application::TaskTransitionService {"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
