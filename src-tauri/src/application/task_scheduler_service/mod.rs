@@ -22,7 +22,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc, Mutex,
 };
-use tauri::{AppHandle, Runtime};
+use tauri::AppHandle;
 use tokio::sync::{Mutex as TokioMutex, RwLock};
 
 use crate::application::chat_service::uses_execution_slot;
@@ -64,7 +64,7 @@ use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_t
 ///
 /// Phase 82: Supports optional project scoping via `active_project_id` filter.
 /// When set, only tasks from that project will be scheduled.
-pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
+pub struct TaskSchedulerService {
     pub(super) execution_state: Arc<ExecutionState>,
     pub(super) project_repo: Arc<dyn ProjectRepository>,
     pub(super) task_repo: Arc<dyn TaskRepository>,
@@ -79,7 +79,7 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) message_queue: Arc<MessageQueue>,
     pub(super) running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub(super) memory_event_repo: Arc<dyn MemoryEventRepository>,
-    pub(super) app_handle: Option<AppHandle<R>>,
+    pub(super) app_handle: Option<AppHandle>,
     /// Optional plan branch repository for feature branch resolution.
     pub(super) plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     /// Optional execution plan repository for filtering out superseded plan tasks.
@@ -118,7 +118,7 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) contention_retry_pending: Arc<AtomicU32>,
 }
 
-impl<R: Runtime> TaskSchedulerService<R> {
+impl TaskSchedulerService {
     /// Create a new TaskSchedulerService with all required dependencies.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -136,7 +136,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         message_queue: Arc<MessageQueue>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) -> Self {
         Self {
             execution_state,
@@ -397,10 +397,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
     ///
     /// Creates a fresh instance to avoid circular dependency issues when
     /// the scheduler is called from within TransitionHandler.
-    pub(super) fn build_transition_service(&self) -> Arc<TaskTransitionService<R>>
-    where
-        R: Runtime + 'static,
-    {
+    pub(super) fn build_transition_service(&self) -> Arc<TaskTransitionService> {
         let deps = RuntimeFactoryDeps::from_core(
             Arc::clone(&self.task_repo),
             Arc::clone(&self.task_dependency_repo),
@@ -446,7 +443,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
 }
 
 #[async_trait]
-impl<R: Runtime + 'static> TaskScheduler for TaskSchedulerService<R> {
+impl TaskScheduler for TaskSchedulerService {
     /// Try to schedule Ready tasks if execution slots are available.
     ///
     /// This method loops to fill all available execution slots:
@@ -607,7 +604,6 @@ mod tests {
     use crate::domain::entities::{AgentWorkspacePrDescription, PlanBranch, Project};
     use crate::domain::services::PrReviewState;
     use crate::error::AppResult;
-    use tauri::test::MockRuntime;
 
     struct StaticPlanPrDescriptionDrafter;
 
@@ -627,7 +623,7 @@ mod tests {
         }
     }
 
-    fn scheduler_for_state(state: &AppState) -> TaskSchedulerService<MockRuntime> {
+    fn scheduler_for_state(state: &AppState) -> TaskSchedulerService {
         TaskSchedulerService::new(
             Arc::new(ExecutionState::new()),
             Arc::clone(&state.project_repo),

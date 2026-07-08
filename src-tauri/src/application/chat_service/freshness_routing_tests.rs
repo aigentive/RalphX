@@ -43,8 +43,8 @@ use crate::AppError;
 // Helpers
 // ============================================================================
 
-/// Build a minimal TaskTransitionService<tauri::Wry> using in-memory repos.
-fn build_transition_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
+/// Build a minimal TaskTransitionService using in-memory repos.
+fn build_transition_service(app_state: &AppState) -> TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),

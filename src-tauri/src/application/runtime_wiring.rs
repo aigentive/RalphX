@@ -218,7 +218,8 @@ pub fn register_managed_state(
     let team_session_repo = Arc::clone(&app_state.team_session_repo);
     let team_message_repo = Arc::clone(&app_state.team_message_repo);
 
-    let throttled_emitter = crate::application::ThrottledEmitter::new(app.handle().clone());
+    let throttled_emitter =
+        crate::application::ThrottledEmitter::new(Arc::clone(&app_state.events));
     app.manage(throttled_emitter);
     app.manage(app_state);
 

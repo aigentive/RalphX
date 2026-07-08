@@ -1185,7 +1185,7 @@ async fn test_stop_cancels_multiple_agent_active_tasks() {
     app_state.task_repo.create(task4.clone()).await.unwrap();
 
     // Build transition service (same as stop_execution does)
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -1367,7 +1367,7 @@ async fn test_pause_transitions_agent_active_tasks_to_paused() {
     app_state.task_repo.create(task4.clone()).await.unwrap();
 
     // Build transition service (same as pause_execution does)
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4422,7 +4422,7 @@ async fn test_pause_resets_running_count() {
     assert_eq!(execution_state.running_count(), 3);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4580,7 +4580,7 @@ async fn test_stop_resets_running_count() {
     assert_eq!(execution_state.running_count(), 3);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4649,7 +4649,7 @@ async fn test_running_count_decrements_on_task_completion() {
     assert_eq!(execution_state.running_count(), 1);
 
     // Build transition service with execution state
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4738,7 +4738,7 @@ async fn test_running_count_decrements_for_all_agent_active_states() {
     assert_eq!(execution_state.running_count(), 5);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4940,7 +4940,7 @@ async fn test_resume_restores_paused_tasks_to_previous_status() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5020,7 +5020,7 @@ async fn test_determine_paused_restore_status_falls_back_to_history_when_metadat
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
 
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5167,7 +5167,7 @@ async fn test_resume_does_not_restore_stopped_tasks() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5232,7 +5232,7 @@ async fn test_resume_restores_multiple_paused_tasks() {
         .unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5346,7 +5346,7 @@ async fn test_resume_with_mixed_paused_and_stopped_tasks() {
         .unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5966,7 +5966,7 @@ async fn test_project_switch_prevents_other_projects_from_scheduling() {
     active_project_state.set(Some(project1.id.clone())).await;
 
     // Build scheduler with active project 1
-    let scheduler = Arc::new(TaskSchedulerService::<tauri::Wry>::new(
+    let scheduler = Arc::new(TaskSchedulerService::new(
         Arc::clone(&execution_state),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.task_repo),
@@ -6021,7 +6021,7 @@ async fn test_project_switch_prevents_other_projects_from_scheduling() {
     active_project_state.set(Some(project2.id.clone())).await;
 
     // Create new scheduler instance for project 2
-    let scheduler2 = Arc::new(TaskSchedulerService::<tauri::Wry>::new(
+    let scheduler2 = Arc::new(TaskSchedulerService::new(
         Arc::clone(&execution_state),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.task_repo),
@@ -6422,7 +6422,7 @@ async fn test_resume_restores_paused_before_scheduling_ordering() {
         .await
         .unwrap();
 
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),

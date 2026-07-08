@@ -34,7 +34,7 @@ use crate::common::{MockGithubService, SubmittingPlanPrAgentClient};
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -56,7 +56,7 @@ fn build_transition_service(
 fn build_reconciler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ReconciliationRunner<tauri::Wry> {
+) -> ReconciliationRunner {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),

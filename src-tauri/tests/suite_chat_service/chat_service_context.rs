@@ -377,7 +377,7 @@ async fn finalize_structured_assistant_message_splits_verification_transcript_se
         },
     ];
 
-    finalize_structured_assistant_message_for_test::<tauri::Wry>(
+    finalize_structured_assistant_message_for_test(
         &state.chat_message_repo,
         None,
         ChatContextType::Ideation,

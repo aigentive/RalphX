@@ -25,8 +25,8 @@ use serde_json::Value;
 
 #[test]
 fn test_tauri_event_emitter_creation() {
-    let emitter: TauriEventEmitter<tauri::Wry> = TauriEventEmitter::new(None);
-    assert!(emitter.app_handle.is_none());
+    let emitter = EnrichedEventEmitter::new(None);
+    assert!(emitter.event_sink.is_none());
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_no_op_review_starter() {
     // Just verify it can be created
 }
 
-fn build_dependency_manager(app_state: &AppState) -> RepoBackedDependencyManager<tauri::Wry> {
+fn build_dependency_manager(app_state: &AppState) -> RepoBackedDependencyManager {
     RepoBackedDependencyManager::new(
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.task_repo),
@@ -141,7 +141,7 @@ async fn test_is_blocker_complete_with_merge_incomplete_state() {
 // Wave 3: Metadata Merge Tests
 // ============================================================================
 
-fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
+fn build_test_service(app_state: &AppState) -> TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     build_test_service_with_execution_state(app_state, execution_state)
 }
@@ -149,7 +149,7 @@ fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry>
 fn build_test_service_with_execution_state(
     app_state: &AppState,
     execution_state: Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
 
@@ -2763,13 +2763,13 @@ mod enrichment_tests {
         }
     }
 
-    /// Build a TauriEventEmitter wired to recording sinks and repos from AppState.
+    /// Build a EnrichedEventEmitter wired to recording sinks and repos from AppState.
     fn build_recording_emitter(
         app_state: &AppState,
         ext_repo: Arc<MemoryExternalEventsRepository>,
         webhook: Arc<RecordingWebhookPublisher>,
-    ) -> TauriEventEmitter<tauri::Wry> {
-        TauriEventEmitter::new(None)
+    ) -> EnrichedEventEmitter {
+        EnrichedEventEmitter::new(None)
             .with_external_events(
                 Arc::clone(&ext_repo) as Arc<dyn ExternalEventsRepository>,
                 Arc::clone(&app_state.task_repo),

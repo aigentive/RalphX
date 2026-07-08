@@ -1,7 +1,6 @@
 // Merge-specific reconciliation handlers: Merging, PendingMerge, MergeIncomplete, MergeConflict.
 
 use std::sync::Arc;
-use tauri::Runtime;
 use tracing::{debug, info, warn};
 
 use crate::application::harness_runtime_registry::{
@@ -29,7 +28,7 @@ use super::super::policy::{
 };
 use super::super::ReconciliationRunner;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     #[doc(hidden)]
     pub async fn reconcile_merging_task(
         &self,
@@ -1103,24 +1102,6 @@ impl<R: Runtime> ReconciliationRunner<R> {
         }
     }
 
-    /// Attempt to obtain the concrete `Arc<TaskTransitionService<tauri::Wry>>` from the
-    /// reconciler's generic `self.transition_service`. Required by `PrPollerRegistry::start_polling`,
-    /// which takes the concrete Wry type.
-    ///
-    /// Returns `None` in test environments where `R != tauri::Wry` (e.g. MockRuntime).
-    fn try_wry_transition_service(
-        &self,
-    ) -> Option<Arc<crate::application::TaskTransitionService<tauri::Wry>>> {
-        // Coerce Arc<TaskTransitionService<R>> → Arc<dyn Any + Send + Sync>
-        // then downcast to the concrete Wry type.
-        // This succeeds in production (R = tauri::Wry) and returns None in tests (R ≠ Wry).
-        let any_arc: Arc<dyn std::any::Any + Send + Sync> =
-            Arc::clone(&self.transition_service) as _;
-        any_arc
-            .downcast::<crate::application::TaskTransitionService<tauri::Wry>>()
-            .ok()
-    }
-
     async fn restart_pr_merge_poller(
         &self,
         task: &crate::domain::entities::Task,
@@ -1159,23 +1140,13 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 return false;
             }
         };
-        let Some(ts_wry) = self.try_wry_transition_service() else {
-            warn!(
-                task_id = task.id.as_str(),
-                pr_number = pr_number,
-                reason = reason,
-                "Cannot restart PR poller because Wry transition service is unavailable"
-            );
-            return false;
-        };
-
         registry.start_polling(
             task.id.clone(),
             plan_branch.id.clone(),
             pr_number,
             std::path::PathBuf::from(&project.working_directory),
             plan_branch.source_branch.clone(),
-            ts_wry,
+            Arc::clone(&self.transition_service),
         );
         true
     }

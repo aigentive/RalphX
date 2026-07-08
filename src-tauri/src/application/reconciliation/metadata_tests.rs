@@ -43,7 +43,7 @@ fn task_with_execution_recovery(recovery: ExecutionRecoveryMetadata) -> Task {
 #[test]
 fn failure_source_to_reason_code_maps_agent_incomplete() {
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::failure_source_to_reason_code(
+        ReconciliationRunner::failure_source_to_reason_code(
             ExecutionFailureSource::AgentIncomplete,
         ),
         ExecutionRecoveryReasonCode::IncompleteSteps,
@@ -116,7 +116,7 @@ fn merge_conflict_auto_retry_count_excludes_target_branch_busy_deferrals() {
     let task = task_with_merge_recovery(recovery);
 
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::merge_conflict_auto_retry_count(&task),
+        ReconciliationRunner::merge_conflict_auto_retry_count(&task),
         1
     );
 }
@@ -126,7 +126,7 @@ fn failure_source_helpers_read_flat_metadata_sources() {
     let agent_reported = task_with_metadata(
         serde_json::json!({ "merge_failure_source": "agent_reported" }).to_string(),
     );
-    assert!(ReconciliationRunner::<tauri::Wry>::is_agent_reported_failure(&agent_reported));
+    assert!(ReconciliationRunner::is_agent_reported_failure(&agent_reported));
 
     let validation_failed = task_with_metadata(
         serde_json::json!({
@@ -138,19 +138,19 @@ fn failure_source_helpers_read_flat_metadata_sources() {
         .to_string(),
     );
 
-    assert!(ReconciliationRunner::<tauri::Wry>::is_validation_failure(
+    assert!(ReconciliationRunner::is_validation_failure(
         &validation_failed
     ));
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::validation_revert_count(&validation_failed),
+        ReconciliationRunner::validation_revert_count(&validation_failed),
         2
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::consecutive_validation_failures(&validation_failed),
+        ReconciliationRunner::consecutive_validation_failures(&validation_failed),
         3
     );
     assert_eq!(
-        ReconciliationRunner::<tauri::Wry>::last_retried_at(&validation_failed)
+        ReconciliationRunner::last_retried_at(&validation_failed)
             .expect("last retried timestamp")
             .to_rfc3339(),
         "2026-06-24T12:00:00+00:00"
@@ -176,7 +176,7 @@ fn should_circuit_break_counts_only_auto_retryable_recent_failures() {
     }
     let task = task_with_merge_recovery(recovery);
 
-    let reason = ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 3, 5)
+    let reason = ReconciliationRunner::should_circuit_break(&task, 3, 5)
         .expect("three auto-retryable failures should trip circuit breaker");
 
     assert!(reason.contains("3/5"));
@@ -198,7 +198,7 @@ fn should_circuit_break_ignores_insufficient_or_unclassified_failures() {
     ));
     let task = task_with_merge_recovery(recovery);
 
-    assert!(ReconciliationRunner::<tauri::Wry>::should_circuit_break(&task, 1, 3).is_none());
+    assert!(ReconciliationRunner::should_circuit_break(&task, 1, 3).is_none());
 }
 
 #[test]
@@ -225,18 +225,18 @@ fn execution_retry_helpers_read_structured_recovery_metadata() {
 
     let task = task_with_execution_recovery(recovery);
 
-    let default_delay = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(1, None);
-    let git_delay = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(
+    let default_delay = ReconciliationRunner::execution_failed_retry_delay(1, None);
+    let git_delay = ReconciliationRunner::execution_failed_retry_delay(
         1,
         Some(ExecutionFailureSource::GitIsolation),
     );
     assert!(git_delay < default_delay);
-    assert!(ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(
+    assert!(ReconciliationRunner::execution_next_retry_at(
         &task,
         Some(ExecutionFailureSource::GitIsolation),
     )
     .is_some());
-    assert!(!ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task));
+    assert!(!ReconciliationRunner::has_recent_startup_recovery(&task));
 }
 
 #[test]
@@ -253,5 +253,5 @@ fn has_recent_startup_recovery_detects_recent_startup_source() {
     );
     let task = task_with_execution_recovery(recovery);
 
-    assert!(ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task));
+    assert!(ReconciliationRunner::has_recent_startup_recovery(&task));
 }

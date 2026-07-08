@@ -101,7 +101,7 @@ async fn create_active_session_with_purpose(
     id
 }
 
-fn build_ideation_chat_service(state: &HttpServerState) -> AppChatService<tauri::Wry> {
+fn build_ideation_chat_service(state: &HttpServerState) -> AppChatService {
     state
         .app_state
         .build_chat_service_with_execution_state(Arc::clone(&state.execution_state))

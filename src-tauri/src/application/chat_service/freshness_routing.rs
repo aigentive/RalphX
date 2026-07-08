@@ -8,7 +8,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::Runtime;
 
 use crate::application::git_service::GitService;
 use crate::application::interactive_process_registry::{
@@ -60,10 +59,10 @@ pub(crate) enum FreshnessRouteResult {
 /// Returns `Err` if the DB update or task transition fails. On transition
 /// failure the function re-inserts `plan_update_conflict` and
 /// `branch_freshness_conflict` so the next attempt can retry.
-pub(crate) async fn freshness_return_route<R: Runtime>(
+pub(crate) async fn freshness_return_route(
     task: &Task,
     task_repo: Arc<dyn TaskRepository>,
-    transition_service: &TaskTransitionService<R>,
+    transition_service: &TaskTransitionService,
     project: &Project,
     interactive_process_registry: Option<&InteractiveProcessRegistry>,
     pr_sync_services: Option<&PlanBranchPrSyncServices>,
