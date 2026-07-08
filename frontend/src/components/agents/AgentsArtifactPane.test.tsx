@@ -1711,6 +1711,15 @@ describe("AgentsArtifactPane", () => {
 
   it("passes task runtime focus requests from task details to the host chat", async () => {
     const onFocusTaskRuntime = vi.fn();
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-1", executionPlanId: "exec-current" })],
+      isLoading: false,
+      isFetching: false,
+    });
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
