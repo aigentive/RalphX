@@ -67,8 +67,9 @@ function StatusChip({
 function SkeletonChip() {
   return (
     <span
+      data-testid="pr-status-skeleton-chip"
       className="inline-block h-5 w-20 animate-pulse rounded-full"
-      style={{ backgroundColor: "var(--bg-surface)" }}
+      style={{ backgroundColor: "var(--bg-hover)" }}
     />
   );
 }
