@@ -1117,9 +1117,21 @@ jobs:
           done
 
           echo "Timed out waiting for Codecov patch status to pass."
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
-            --jq 'map(select(.context == "codecov/patch"))[0]'
-          gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
-            -f check_name="codecov/patch" \
-            --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
+          final_status="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+              --jq 'map(select(.context == "codecov/patch"))[0] // empty'
+          )"
+          final_check="$(
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              -f check_name="codecov/patch" \
+              --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] // empty'
+          )"
+          printf '%s\n' "${final_status}"
+          printf '%s\n' "${final_check}"
+
+          if [[ -z "${final_status}" && -z "${final_check}" ]]; then
+            echo "::warning::Codecov did not post codecov/patch after successful coverage uploads; treating the missing external status as non-blocking."
+            exit 0
+          fi
+
           exit 1
