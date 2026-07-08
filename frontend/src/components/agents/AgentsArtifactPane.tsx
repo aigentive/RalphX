@@ -38,6 +38,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { extractErrorMessage } from "@/lib/errors";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
   PlanDisplayConversationReference,
@@ -123,23 +124,34 @@ function getVisibleImplementationTasks({
   tasks,
   proposals,
   activeExecutionPlanId,
+  sessionId,
 }: {
   tasks: readonly Task[];
   proposals: readonly TaskProposal[];
   activeExecutionPlanId: string | null;
+  sessionId: string | null;
 }): Task[] {
-  const activeTasks = tasks.filter((task) => task.archivedAt === null);
+  const activeTasks = tasks.filter(
+    (task) =>
+      task.archivedAt === null &&
+      (sessionId === null || task.ideationSessionId === sessionId),
+  );
+  const createdTaskIds = getProposalCreatedTaskIds(proposals);
+  const proposalCreatedTasks =
+    createdTaskIds.size === 0
+      ? []
+      : activeTasks.filter((task) => createdTaskIds.has(task.id));
+
   if (activeExecutionPlanId) {
-    return activeTasks.filter(
+    const activeExecutionPlanTasks = activeTasks.filter(
       (task) => task.executionPlanId === activeExecutionPlanId,
     );
+    return activeExecutionPlanTasks.length > 0
+      ? activeExecutionPlanTasks
+      : proposalCreatedTasks;
   }
 
-  const createdTaskIds = getProposalCreatedTaskIds(proposals);
-  if (createdTaskIds.size === 0) {
-    return [];
-  }
-  return activeTasks.filter((task) => createdTaskIds.has(task.id));
+  return proposalCreatedTasks;
 }
 
 type WorkspaceReviewPassState = Pick<
@@ -604,8 +616,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         tasks: implementationTasksQuery.data ?? [],
         proposals,
         activeExecutionPlanId,
+        sessionId: attachedSessionId,
       }),
-    [activeExecutionPlanId, implementationTasksQuery.data, proposals],
+    [activeExecutionPlanId, attachedSessionId, implementationTasksQuery.data, proposals],
   );
   const implementationTaskCounts = useMemo(
     () => getStatusCounts(visibleImplementationTasks),
@@ -613,9 +626,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const visibleImplementationTaskCount = implementationTaskCounts.total;
   const hasImplementationAttempt = Boolean(
-    activeExecutionPlanId ||
-      visibleImplementationTaskCount > 0 ||
-      hasProposalCreatedTasks,
+    visibleImplementationTaskCount > 0 || hasProposalCreatedTasks,
   );
   const planArtifactId = shouldLoadIdeationData
     ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
@@ -1856,9 +1867,7 @@ function AgentPlanPanel({
           );
         } catch (err) {
           toast.error(
-            err instanceof Error
-              ? err.message
-              : "Failed to restart implementation",
+            extractErrorMessage(err, "Failed to restart implementation"),
           );
           throw err;
         }
