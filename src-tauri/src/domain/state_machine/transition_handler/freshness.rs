@@ -708,6 +708,15 @@ pub async fn ensure_branches_fresh(
                     freshness_metadata: freshness,
                 });
             }
+            Ok(SourceUpdateResult::BranchMissing { branch }) => {
+                return Err(block_freshness_update_error(
+                    activity_event_repo,
+                    task_id_str,
+                    "source_update",
+                    format!("branch missing before source update: {}", branch),
+                )
+                .await);
+            }
             Ok(SourceUpdateResult::Error(e)) => {
                 warn!(
                     task_id = task_id_str,
@@ -855,6 +864,9 @@ fn source_retry_decision_after_error(
                 "update_source_from_target returned conflicts after retry following error: {:?}",
                 conflict_files
             ),
+        },
+        Some(SourceUpdateResult::BranchMissing { branch }) => FreshnessRetryDecision::Block {
+            reason: format!("branch missing before source update retry: {}", branch),
         },
         Some(SourceUpdateResult::Error(retry_error)) => FreshnessRetryDecision::Block {
             reason: format!(
@@ -1383,6 +1395,17 @@ mod field_sync_tests {
             source_retry_decision_after_error(Some(SourceUpdateResult::Error("again".into())), 11),
             FreshnessRetryDecision::Block {
                 reason: "update_source_from_target failed after retry: again".to_string()
+            }
+        );
+        assert_eq!(
+            source_retry_decision_after_error(
+                Some(SourceUpdateResult::BranchMissing {
+                    branch: "feature/missing".to_string(),
+                }),
+                11,
+            ),
+            FreshnessRetryDecision::Block {
+                reason: "branch missing before source update retry: feature/missing".to_string()
             }
         );
         assert_eq!(

@@ -1,6 +1,13 @@
 use super::*;
 use crate::domain::state_machine::transition_handler::{
-    cleanup_helpers, merge_coordination, merge_helpers, BranchPair, ProjectCtx, TaskCore,
+    cleanup_helpers, merge_coordination, merge_helpers,
+    merge_outcome_handler::{MergeContext, MergeHandlerOptions},
+    merge_strategies::MergeOutcome,
+    BranchPair, ProjectCtx, TaskCore,
+};
+use crate::domain::entities::task_metadata::{
+    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    MergeRecoverySource, MergeRecoveryState,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
 
@@ -8,6 +15,48 @@ mod branch_discovery;
 mod in_flight_guard;
 mod pr_mode;
 mod scope_backstop;
+
+fn append_source_update_failure_recovery_event(
+    task: &mut Task,
+    err: &str,
+    source_branch: &str,
+    target_branch: &str,
+) {
+    let mut recovery = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+        .unwrap_or(None)
+        .unwrap_or_else(MergeRecoveryMetadata::new);
+    let attempt = recovery
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                MergeRecoveryEventKind::AutoRetryTriggered
+                    | MergeRecoveryEventKind::AttemptFailed
+            )
+        })
+        .count() as u32
+        + 1;
+    let event = MergeRecoveryEvent::new(
+        MergeRecoveryEventKind::AttemptFailed,
+        MergeRecoverySource::System,
+        MergeRecoveryReasonCode::GitError,
+        format!("Source branch update failed: {}", err),
+    )
+    .with_source_branch(source_branch)
+    .with_target_branch(target_branch)
+    .with_attempt(attempt)
+    .with_failure_source(MergeFailureSource::TransientGit);
+    recovery.append_event_with_state(event, MergeRecoveryState::Failed);
+
+    match recovery.update_task_metadata(task.metadata.as_deref()) {
+        Ok(updated_json) => task.metadata = Some(updated_json),
+        Err(e) => tracing::error!(
+            error = %e,
+            "Failed to serialize source update recovery metadata"
+        ),
+    }
+}
 
 impl<'a> TransitionHandler<'a> {
     /// Inner body of `attempt_programmatic_merge`. Extracted so the outer wrapper
@@ -677,6 +726,44 @@ impl<'a> TransitionHandler<'a> {
                 }
                 return;
             }
+            Ok(merge_coordination::SourceUpdateResult::BranchMissing { branch }) => {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    missing_branch = %branch,
+                    elapsed_ms = source_update_elapsed.as_millis() as u64,
+                    "Source branch update found a missing branch"
+                );
+                emit_merge_progress(
+                    event_sink,
+                    task_id_str,
+                    MergePhase::new(MergePhase::BRANCH_FRESHNESS),
+                    MergePhaseStatus::Failed,
+                    format!("Branch missing before source update: {}", branch),
+                );
+                self.emit_merge_activity_event(
+                    task_id_str,
+                    "Merge pipeline: branch missing during source freshness update",
+                    MergePhase::BRANCH_FRESHNESS,
+                    "failed",
+                )
+                .await;
+                let opts = MergeHandlerOptions::merge();
+                let mut ctx = MergeContext {
+                    task: &mut *task,
+                    task_id: &task_id,
+                    task_id_str,
+                    project,
+                    repo_path,
+                    source_branch: &source_branch,
+                    target_branch: &target_branch,
+                    task_repo,
+                    plan_branch_repo,
+                    opts: &opts,
+                };
+                self.handle_merge_outcome(MergeOutcome::BranchNotFound { branch }, &mut ctx)
+                    .await;
+                return;
+            }
             Ok(merge_coordination::SourceUpdateResult::Error(err)) => {
                 tracing::error!(
                     task_id = task_id_str,
@@ -698,6 +785,12 @@ impl<'a> TransitionHandler<'a> {
                     "failed",
                 )
                 .await;
+                append_source_update_failure_recovery_event(
+                    &mut *task,
+                    &err,
+                    &source_branch,
+                    &target_branch,
+                );
                 let metadata = serde_json::json!({
                     "error": format!("Source branch update failed: {}", err),
                     "source_branch": source_branch,

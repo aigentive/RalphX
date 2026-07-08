@@ -205,7 +205,7 @@ async fn source_behind_target_with_conflicts_returns_conflicts() {
 // ==================
 
 #[tokio::test]
-async fn nonexistent_target_branch_returns_error() {
+async fn nonexistent_target_branch_returns_branch_missing() {
     let repo = setup_real_git_repo();
     let project = make_test_project(&repo.path_string());
 
@@ -220,14 +220,14 @@ async fn nonexistent_target_branch_returns_error() {
     .await;
 
     assert!(
-        matches!(result, SourceUpdateResult::Error(_)),
-        "Nonexistent target branch should return Error. Got: {:?}",
+        matches!(result, SourceUpdateResult::BranchMissing { .. }),
+        "Nonexistent target branch should return BranchMissing. Got: {:?}",
         result
     );
 }
 
 #[tokio::test]
-async fn nonexistent_source_branch_returns_error() {
+async fn nonexistent_source_branch_returns_branch_missing() {
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -255,8 +255,8 @@ async fn nonexistent_source_branch_returns_error() {
     .await;
 
     assert!(
-        matches!(result, SourceUpdateResult::Error(_)),
-        "Nonexistent source branch should return Error. Got: {:?}",
+        matches!(result, SourceUpdateResult::BranchMissing { .. }),
+        "Nonexistent source branch should return BranchMissing. Got: {:?}",
         result
     );
 }

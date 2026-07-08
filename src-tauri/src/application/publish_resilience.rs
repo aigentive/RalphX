@@ -496,6 +496,11 @@ pub(crate) fn publish_branch_freshness_outcome_from_source_update(
                 target_ref: target_ref.to_string(),
             }
         }
+        SourceUpdateResult::BranchMissing { branch } => {
+            PublishBranchFreshnessOutcome::OperationalError {
+                message: format!("branch missing before freshness update: {}", branch),
+            }
+        }
         SourceUpdateResult::Error(message) => {
             PublishBranchFreshnessOutcome::OperationalError { message }
         }
