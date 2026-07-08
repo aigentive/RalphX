@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +20,14 @@ use crate::application::automation::plan_gate::{
     approval_delivery_prompt, arm_plan_reminder, clear_plan_phase_publication_metadata,
     current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
     matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
-    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_RESUME_FAILED_ERROR_CODE,
+    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
+    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
+};
+use crate::application::automation::plan_judge::{
+    append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
+    parse_automation_plan_judge_verdict, AutomationPlanJudgeDecision,
+    AutomationPlanJudgeValidationContext, AutomationPlanJudgeVerdict,
+    BuildAutomationPlanJudgePromptInput,
 };
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
@@ -33,20 +41,25 @@ use crate::application::automation::transition::{
 };
 use crate::application::harness_runtime_registry::{
     default_automation_judge_timeout_secs, default_automation_max_run_duration_secs,
+    default_automation_plan_judge_models, default_automation_plan_max_revision_rounds,
     default_automation_publish_grace_secs, default_automation_scheduler_poll_secs,
     default_automation_signal_failure_pause_threshold, resolve_harness_agent_bootstrap,
 };
+use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
 use crate::application::AppState;
-use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{
+    plan_judge_model_for_provider, AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS,
+};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
-    ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState, AutomationRun,
-    AutomationRunStatus, AutomationStatus, ChatConversationId,
+    ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationRun, AutomationRunStatus,
+    AutomationStatus, ChatConversationId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    ChatConversationRepository, IdeationSessionRepository, PlanArtifactApproval,
+    ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
     PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
@@ -62,6 +75,8 @@ pub struct AutomationSchedulerConfig {
     pub judge_timeout: Duration,
     pub publish_grace: Duration,
     pub max_run_duration: Duration,
+    pub plan_judge_models: HashMap<AgentHarnessKind, String>,
+    pub plan_max_revision_rounds: i64,
 }
 
 impl AutomationSchedulerConfig {
@@ -72,6 +87,9 @@ impl AutomationSchedulerConfig {
             judge_timeout: Duration::from_secs(config.judge_timeout_secs.max(1)),
             publish_grace: Duration::from_secs(config.publish_grace_secs),
             max_run_duration: Duration::from_secs(config.max_run_duration_secs.max(1)),
+            plan_judge_models: config.plan_judge_model.clone(),
+            plan_max_revision_rounds: i64::try_from(config.plan_max_revision_rounds.max(1))
+                .unwrap_or(i64::MAX),
         }
     }
 }
@@ -84,6 +102,8 @@ impl Default for AutomationSchedulerConfig {
             judge_timeout_secs: default_automation_judge_timeout_secs(),
             publish_grace_secs: default_automation_publish_grace_secs(),
             max_run_duration_secs: default_automation_max_run_duration_secs(),
+            plan_judge_model: default_automation_plan_judge_models(),
+            plan_max_revision_rounds: default_automation_plan_max_revision_rounds(),
         })
     }
 }
@@ -405,6 +425,135 @@ impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationPlanJudgeInvocation {
+    pub automation: Automation,
+    pub run: AutomationRun,
+    pub plan_artifact_id: String,
+    pub plan_content: String,
+    pub previous_verdict_json: Option<String>,
+    pub retry_reminder: bool,
+    pub timeout: Duration,
+    pub plan_judge_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationPlanJudgeInvocationOutput {
+    pub raw_output: String,
+    pub model_id: Option<String>,
+}
+
+#[async_trait]
+pub trait AutomationPlanJudgeInvoker: Send + Sync {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput>;
+}
+
+#[derive(Clone)]
+pub struct HarnessAutomationPlanJudgeInvoker {
+    state: AppState,
+}
+
+impl HarnessAutomationPlanJudgeInvoker {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for HarnessAutomationPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        let attachments = load_spec_attachment(&self.state.artifact_repo, &input.automation).await;
+        let mut prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+            automation: &input.automation,
+            run: &input.run,
+            evaluated_artifact_id: &input.plan_artifact_id,
+            plan_content: &input.plan_content,
+            spec_attachments: &attachments,
+            previous_verdict_json: input.previous_verdict_json.as_deref(),
+        })?;
+        if input.retry_reminder && !append_automation_plan_judge_retry_instruction(&mut prompt) {
+            tracing::warn!(
+                automation_id = %input.automation.id,
+                run_id = %input.run.id,
+                "Automation plan judge retry instruction omitted because the prompt is at the argv-safe budget"
+            );
+        }
+
+        let harness = AgentHarnessKind::from_str(input.automation.provider_harness.trim())
+            .map_err(AppError::Validation)?;
+        let mut runtime = self
+            .state
+            .resolve_background_agent_runtime_for_harness(harness, "automation plan judge")
+            .await?;
+        runtime.model = input.plan_judge_model.clone();
+        let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let project = self
+            .state
+            .project_repo
+            .get_by_id(&input.automation.project_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "automation plan judge project {} not found",
+                    input.automation.project_id.as_str()
+                ))
+            })?;
+        let project_working_directory = validate_absolute_non_root_path(
+            Path::new(&project.working_directory),
+            "automation plan judge project checkout",
+        )?;
+        let bootstrap = resolve_harness_agent_bootstrap(
+            helper_harness,
+            agent_names::AGENT_AUTOMATION_PLAN_JUDGE,
+            project_working_directory,
+        );
+        let env = runtime.env_with_overrides(bootstrap.env);
+        let client = Arc::clone(&runtime.client);
+        let model_id = runtime.model.clone();
+        let handle = client
+            .spawn_agent(AgentConfig {
+                role: AgentRole::Custom(bootstrap.agent_role.clone()),
+                prompt,
+                working_directory: bootstrap.working_directory,
+                plugin_dir: Some(bootstrap.plugin_dir),
+                agent: Some(bootstrap.agent_name),
+                model: runtime.model,
+                harness: runtime.harness,
+                cli_path_override: runtime.cli_path_override,
+                logical_effort: runtime.logical_effort,
+                approval_policy: runtime.approval_policy,
+                sandbox_mode: runtime.sandbox_mode,
+                service_tier: runtime.service_tier,
+                max_tokens: None,
+                timeout_secs: Some(input.timeout.as_secs().max(1)),
+                env,
+            })
+            .await
+            .map_err(|error| {
+                AppError::Infrastructure(format!("failed to spawn automation plan judge: {error}"))
+            })?;
+        let output = client.wait_for_completion(&handle).await.map_err(|error| {
+            AppError::Infrastructure(format!("automation plan judge failed: {error}"))
+        })?;
+        if !output.success {
+            return Err(AppError::Infrastructure(format!(
+                "automation plan judge exited unsuccessfully: {}",
+                output.content.trim()
+            )));
+        }
+        Ok(AutomationPlanJudgeInvocationOutput {
+            raw_output: output.content,
+            model_id,
+        })
+    }
+}
+
 #[derive(Clone)]
 struct AutomationJudgeTask {
     service: AutomationService,
@@ -430,6 +579,493 @@ impl AutomationJudgeTaskOutcome {
             terminal_automation_status: outcome.terminal_automation_status,
         }
     }
+}
+
+#[derive(Clone)]
+struct AutomationPlanJudgeTask {
+    transition_service: AutomationTransitionService,
+    run_repo: Arc<dyn AutomationRunRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
+    plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+}
+
+#[derive(Debug, Default)]
+struct AutomationPlanJudgeTaskOutcome {
+    judge_succeeded: bool,
+    judge_failed: bool,
+    paused_automation: bool,
+}
+
+impl AutomationPlanJudgeTask {
+    async fn run_for_parked_run(
+        &self,
+        automation: Automation,
+        run: AutomationRun,
+    ) -> AppResult<AutomationPlanJudgeTaskOutcome> {
+        let payload = match self.load_plan_payload(&run).await {
+            Ok(payload) => payload,
+            Err(detail) => {
+                self.mark_plan_judge_failed(&automation, &run, detail)
+                    .await?;
+                return Ok(AutomationPlanJudgeTaskOutcome {
+                    judge_failed: true,
+                    paused_automation: true,
+                    ..AutomationPlanJudgeTaskOutcome::default()
+                });
+            }
+        };
+        let parsed = match self
+            .invoke_and_parse_plan_judge(&automation, &run, &payload, false)
+            .await
+        {
+            Ok(parsed) => parsed,
+            Err(JudgeInvocationFailure::InvalidOutput { .. }) => match self
+                .invoke_and_parse_plan_judge(&automation, &run, &payload, true)
+                .await
+            {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    self.mark_plan_judge_failed(&automation, &run, error.detail())
+                        .await?;
+                    return Ok(AutomationPlanJudgeTaskOutcome {
+                        judge_failed: true,
+                        paused_automation: true,
+                        ..AutomationPlanJudgeTaskOutcome::default()
+                    });
+                }
+            },
+            Err(error) => {
+                self.mark_plan_judge_failed(&automation, &run, error.detail())
+                    .await?;
+                return Ok(AutomationPlanJudgeTaskOutcome {
+                    judge_failed: true,
+                    paused_automation: true,
+                    ..AutomationPlanJudgeTaskOutcome::default()
+                });
+            }
+        };
+
+        let apply = self
+            .apply_fresh_plan_judge_verdict(&automation, &run, parsed)
+            .await?;
+        Ok(apply)
+    }
+
+    async fn load_plan_payload(
+        &self,
+        run: &AutomationRun,
+    ) -> Result<AutomationPlanJudgePayload, String> {
+        let conversation_id = run
+            .conversation_id
+            .as_ref()
+            .ok_or_else(|| "automation plan judge run has no conversation id".to_string())?;
+        let workspace = self
+            .workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .map_err(|error| format!("failed to read plan workspace: {error}"))?
+            .ok_or_else(|| "automation plan judge workspace not found".to_string())?;
+        let session_id = workspace
+            .linked_ideation_session_id
+            .clone()
+            .ok_or_else(|| "automation plan judge workspace has no planning session".to_string())?;
+        let session = self
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .map_err(|error| format!("failed to read planning session: {error}"))?
+            .ok_or_else(|| "automation plan judge planning session not found".to_string())?;
+        let plan_artifact_id = session.plan_artifact_id.clone().ok_or_else(|| {
+            "automation plan judge planning session has no plan artifact".to_string()
+        })?;
+        let artifact = self
+            .artifact_repo
+            .get_by_id(&plan_artifact_id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to read plan artifact {}: {error}",
+                    plan_artifact_id.as_str()
+                )
+            })?
+            .ok_or_else(|| {
+                format!(
+                    "automation plan judge plan artifact {} not found",
+                    plan_artifact_id.as_str()
+                )
+            })?;
+        let ArtifactContent::Inline { text } = artifact.content else {
+            return Err(format!(
+                "automation plan judge plan artifact {} is not inline-readable",
+                plan_artifact_id.as_str()
+            ));
+        };
+        Ok(AutomationPlanJudgePayload {
+            plan_artifact_id: plan_artifact_id.as_str().to_string(),
+            plan_content: text,
+        })
+    }
+
+    async fn invoke_and_parse_plan_judge(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        payload: &AutomationPlanJudgePayload,
+        retry_reminder: bool,
+    ) -> Result<ParsedPlanJudgeInvocation, JudgeInvocationFailure> {
+        let harness =
+            AgentHarnessKind::from_str(automation.provider_harness.trim()).map_err(|error| {
+                JudgeInvocationFailure::Invocation {
+                    detail: error.to_string(),
+                }
+            })?;
+        let output = self
+            .plan_judge_invoker
+            .invoke(AutomationPlanJudgeInvocation {
+                automation: automation.clone(),
+                run: run.clone(),
+                plan_artifact_id: payload.plan_artifact_id.clone(),
+                plan_content: payload.plan_content.clone(),
+                previous_verdict_json: run.plan_judge_verdict_json.clone(),
+                retry_reminder,
+                timeout: self.config.judge_timeout,
+                plan_judge_model: Some(self.plan_judge_model_for_harness(harness)),
+            })
+            .await
+            .map_err(|error| JudgeInvocationFailure::Invocation {
+                detail: error.to_string(),
+            })?;
+        let verdict = parse_automation_plan_judge_verdict(
+            &output.raw_output,
+            AutomationPlanJudgeValidationContext {
+                expected_artifact_id: Some(&payload.plan_artifact_id),
+            },
+        )
+        .map_err(|error| JudgeInvocationFailure::InvalidOutput {
+            detail: error.to_string(),
+            raw_output: output.raw_output.clone(),
+        })?;
+        let verdict_json = serde_json::to_string(&verdict).map_err(|error| {
+            JudgeInvocationFailure::InvalidOutput {
+                detail: format!("failed to serialize normalized plan judge verdict: {error}"),
+                raw_output: output.raw_output,
+            }
+        })?;
+        Ok(ParsedPlanJudgeInvocation {
+            verdict,
+            verdict_json,
+        })
+    }
+
+    fn plan_judge_model_for_harness(&self, harness: AgentHarnessKind) -> String {
+        self.config
+            .plan_judge_models
+            .get(&harness)
+            .cloned()
+            .unwrap_or_else(|| plan_judge_model_for_provider(harness).to_string())
+    }
+
+    async fn apply_fresh_plan_judge_verdict(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        parsed: ParsedPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeTaskOutcome> {
+        let Some(current) = self.current_plan_application_context(run).await? else {
+            self.mark_plan_judge_failed(
+                automation,
+                run,
+                "automation plan judge could not re-read current plan context".to_string(),
+            )
+            .await?;
+            return Ok(AutomationPlanJudgeTaskOutcome {
+                judge_failed: true,
+                paused_automation: true,
+                ..AutomationPlanJudgeTaskOutcome::default()
+            });
+        };
+        if current.plan_artifact_id != parsed.verdict.evaluated_artifact_id {
+            tracing::warn!(
+                automation_id = %automation.id,
+                run_id = %run.id,
+                evaluated_artifact_id = parsed.verdict.evaluated_artifact_id,
+                current_artifact_id = current.plan_artifact_id,
+                "Discarding automation plan judge verdict because the plan artifact changed"
+            );
+            self.transition_service
+                .transition_plan_judge_state(
+                    &run.id,
+                    AutomationPlanJudgeState::InProgress,
+                    AutomationPlanJudgeState::Done,
+                    None,
+                    None,
+                )
+                .await?;
+            return Ok(AutomationPlanJudgeTaskOutcome {
+                judge_succeeded: true,
+                ..AutomationPlanJudgeTaskOutcome::default()
+            });
+        }
+
+        match parsed.verdict.decision {
+            AutomationPlanJudgeDecision::Approve => {
+                if !self
+                    .transition_service
+                    .transition_plan_judge_state(
+                        &run.id,
+                        AutomationPlanJudgeState::InProgress,
+                        AutomationPlanJudgeState::Done,
+                        None,
+                        None,
+                    )
+                    .await?
+                {
+                    tracing::debug!(
+                        automation_id = %automation.id,
+                        run_id = %run.id,
+                        "Discarding automation plan judge approval because the judge cycle was superseded"
+                    );
+                    return Ok(AutomationPlanJudgeTaskOutcome {
+                        judge_succeeded: true,
+                        ..AutomationPlanJudgeTaskOutcome::default()
+                    });
+                }
+                if self
+                    .plan_approval_repo
+                    .get_by_session(&current.session_id)
+                    .await?
+                    .is_some_and(|approval| {
+                        approval.artifact_id.as_str() == current.plan_artifact_id
+                    })
+                {
+                    return Ok(AutomationPlanJudgeTaskOutcome {
+                        judge_succeeded: true,
+                        ..AutomationPlanJudgeTaskOutcome::default()
+                    });
+                }
+                match self
+                    .plan_approval_writer
+                    .approve_current_plan_artifact(
+                        current.session_id.clone(),
+                        Some(current.plan_artifact_id.clone()),
+                        PlanApprovalActor::Judge,
+                    )
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(AppError::Conflict(detail)) => {
+                        tracing::debug!(
+                            automation_id = %automation.id,
+                            run_id = %run.id,
+                            detail,
+                            "Discarding automation plan judge approval because the plan changed before approval write"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            AutomationPlanJudgeDecision::Revise => {
+                if let Some(approval) = self
+                    .plan_approval_repo
+                    .get_by_session(&current.session_id)
+                    .await?
+                    .filter(|approval| approval.artifact_id.as_str() == current.plan_artifact_id)
+                {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        run_id = %run.id,
+                        artifact_id = %approval.artifact_id,
+                        "Discarding automation plan judge revision because the plan is already approved"
+                    );
+                    if !self
+                        .transition_service
+                        .transition_plan_judge_state(
+                            &run.id,
+                            AutomationPlanJudgeState::InProgress,
+                            AutomationPlanJudgeState::Done,
+                            None,
+                            None,
+                        )
+                        .await?
+                    {
+                        tracing::debug!(
+                            automation_id = %automation.id,
+                            run_id = %run.id,
+                            "Discarding automation plan judge already-approved revision because the judge cycle was superseded"
+                        );
+                    }
+                    return Ok(AutomationPlanJudgeTaskOutcome {
+                        judge_succeeded: true,
+                        ..AutomationPlanJudgeTaskOutcome::default()
+                    });
+                }
+
+                let instructions = parsed
+                    .verdict
+                    .revision_instructions
+                    .as_deref()
+                    .unwrap_or("");
+                if prior_revision_instruction_repeats(
+                    run.plan_judge_verdict_json.as_deref(),
+                    &current.plan_artifact_id,
+                    instructions,
+                ) {
+                    if !self
+                        .transition_service
+                        .transition_plan_judge_state(
+                            &run.id,
+                            AutomationPlanJudgeState::InProgress,
+                            AutomationPlanJudgeState::Failed,
+                            None,
+                            None,
+                        )
+                        .await?
+                    {
+                        tracing::debug!(
+                            automation_id = %automation.id,
+                            run_id = %run.id,
+                            "Discarding repeated automation plan judge revision because the judge cycle was superseded"
+                        );
+                        return Ok(AutomationPlanJudgeTaskOutcome {
+                            judge_succeeded: true,
+                            ..AutomationPlanJudgeTaskOutcome::default()
+                        });
+                    }
+                    let paused = self
+                        .transition_service
+                        .transition_automation_status(
+                            &automation.id,
+                            AutomationStatus::Active,
+                            AutomationStatus::Paused,
+                            Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE.to_string()),
+                            Some(
+                                "Automation plan judge repeated revision instructions".to_string(),
+                            ),
+                        )
+                        .await?;
+                    return Ok(AutomationPlanJudgeTaskOutcome {
+                        judge_failed: true,
+                        paused_automation: paused,
+                        ..AutomationPlanJudgeTaskOutcome::default()
+                    });
+                }
+
+                if !self
+                    .transition_service
+                    .transition_plan_judge_state(
+                        &run.id,
+                        AutomationPlanJudgeState::InProgress,
+                        AutomationPlanJudgeState::Done,
+                        Some(parsed.verdict_json),
+                        None,
+                    )
+                    .await?
+                {
+                    tracing::debug!(
+                        automation_id = %automation.id,
+                        run_id = %run.id,
+                        "Discarding automation plan judge revision because the judge cycle was superseded"
+                    );
+                    return Ok(AutomationPlanJudgeTaskOutcome {
+                        judge_succeeded: true,
+                        ..AutomationPlanJudgeTaskOutcome::default()
+                    });
+                }
+                self.run_repo
+                    .set_plan_pending_instructions(&run.id, Some(instructions.to_string()))
+                    .await?;
+            }
+        }
+
+        Ok(AutomationPlanJudgeTaskOutcome {
+            judge_succeeded: true,
+            ..AutomationPlanJudgeTaskOutcome::default()
+        })
+    }
+
+    async fn current_plan_application_context(
+        &self,
+        run: &AutomationRun,
+    ) -> AppResult<Option<PlanApplicationContext>> {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(workspace) = self
+            .workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
+            return Ok(None);
+        };
+        let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(PlanApplicationContext {
+            session_id: session_id.clone(),
+            plan_artifact_id: plan_artifact_id.as_str().to_string(),
+        }))
+    }
+
+    async fn mark_plan_judge_failed(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: String,
+    ) -> AppResult<bool> {
+        let transitioned = self
+            .transition_service
+            .transition_plan_judge_state(
+                &run.id,
+                AutomationPlanJudgeState::InProgress,
+                AutomationPlanJudgeState::Failed,
+                None,
+                None,
+            )
+            .await?;
+        if !transitioned {
+            tracing::debug!(
+                automation_id = %automation.id,
+                run_id = %run.id,
+                "Discarding automation plan judge failure because the judge cycle was superseded"
+            );
+        }
+        if transitioned {
+            self.transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE.to_string()),
+                    Some(detail),
+                )
+                .await
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AutomationPlanJudgePayload {
+    plan_artifact_id: String,
+    plan_content: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlanApplicationContext {
+    session_id: crate::domain::entities::IdeationSessionId,
+    plan_artifact_id: String,
 }
 
 impl AutomationJudgeTask {
@@ -566,16 +1202,19 @@ pub struct AutomationScheduler {
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
+    plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
     transition_service: AutomationTransitionService,
     resumer: Arc<dyn AutomationRunResumer>,
     signal_checker: Arc<dyn AutomationSignalChecker>,
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     registry: Arc<AutomationSchedulerRegistry>,
     config: AutomationSchedulerConfig,
 }
 
 impl AutomationScheduler {
-    pub fn new(
+    pub(crate) fn new(
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -583,10 +1222,12 @@ impl AutomationScheduler {
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
+        plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
         starter: Arc<dyn AutomationRunStarter>,
         resumer: Arc<dyn AutomationRunResumer>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+        plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
         registry: Arc<AutomationSchedulerRegistry>,
@@ -610,7 +1251,7 @@ impl AutomationScheduler {
             Arc::clone(&workspace_repo),
             starter,
             event_emitter,
-            artifact_repo,
+            Arc::clone(&artifact_repo),
         );
         Self {
             service,
@@ -620,10 +1261,13 @@ impl AutomationScheduler {
             workspace_repo,
             ideation_session_repo,
             plan_approval_repo,
+            plan_approval_writer,
+            artifact_repo,
             transition_service,
             resumer,
             signal_checker,
             judge_invoker,
+            plan_judge_invoker,
             registry,
             config,
         }
@@ -808,7 +1452,7 @@ impl AutomationScheduler {
                 self.observe_running_run(automation, run, summary).await?;
             }
             AutomationRunStatus::AwaitingPlanApproval => {
-                self.observe_awaiting_plan_approval_run(run, summary)
+                self.observe_awaiting_plan_approval_run(automation, run, summary)
                     .await?;
             }
             AutomationRunStatus::Published => {
@@ -1281,6 +1925,7 @@ impl AutomationScheduler {
 
     async fn observe_awaiting_plan_approval_run(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
@@ -1311,6 +1956,11 @@ impl AutomationScheduler {
         let plan_artifact_id =
             current_plan_artifact_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
         refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id).await?;
+        let run = self
+            .run_repo
+            .get_by_id(&run.id)
+            .await?
+            .unwrap_or_else(|| run.clone());
 
         if let Some(approval) = matching_plan_approval_for_workspace(
             &self.ideation_session_repo,
@@ -1319,20 +1969,89 @@ impl AutomationScheduler {
         )
         .await?
         {
-            self.deliver_plan_approval(run, &workspace, &approval, summary)
+            self.deliver_plan_approval(&run, &workspace, &approval, summary)
                 .await?;
             return Ok(());
         }
 
         if let Some(instructions) = run.plan_pending_instructions.as_deref() {
             if workspace.mode == AgentConversationWorkspaceMode::Plan {
-                self.deliver_plan_revision(run, conversation_id, instructions, summary)
+                self.deliver_plan_revision(&run, conversation_id, instructions, summary)
                     .await?;
             }
             return Ok(());
         }
 
-        // Manual mode waits indefinitely here. Automatic judge orchestration is the PR 5 arm.
+        if automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic {
+            self.observe_automatic_plan_judge(automation, &run, summary)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn observe_automatic_plan_judge(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        // N = max judge-issued revisions; the (N+1)th plan version parks for human review.
+        if run.plan_revision_round.saturating_sub(1) >= self.config.plan_max_revision_rounds {
+            self.pause_automation_for_plan_revision_exhaustion(
+                automation,
+                "Automation plan revision round limit reached".to_string(),
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        match run.plan_judge_state {
+            AutomationPlanJudgeState::None => {
+                if self
+                    .transition_service
+                    .transition_plan_judge_state(
+                        &run.id,
+                        AutomationPlanJudgeState::None,
+                        AutomationPlanJudgeState::InProgress,
+                        None,
+                        Some(automation_judge_lease_expires_at(self.config.judge_timeout)),
+                    )
+                    .await?
+                {
+                    summary.judges_started += 1;
+                    spawn_automation_plan_judge_task(
+                        self.transition_service.clone(),
+                        Arc::clone(&self.run_repo),
+                        Arc::clone(&self.workspace_repo),
+                        Arc::clone(&self.ideation_session_repo),
+                        Arc::clone(&self.plan_approval_repo),
+                        Arc::clone(&self.plan_approval_writer),
+                        Arc::clone(&self.artifact_repo),
+                        Arc::clone(&self.plan_judge_invoker),
+                        self.config.clone(),
+                        automation.clone(),
+                        run.clone(),
+                    );
+                }
+            }
+            AutomationPlanJudgeState::InProgress
+                if plan_judge_has_exceeded(run, self.config.judge_timeout) =>
+            {
+                self.mark_plan_judge_failed(
+                    automation,
+                    run,
+                    "Automation plan judge exceeded judge_timeout_secs".to_string(),
+                    summary,
+                )
+                .await?;
+            }
+            AutomationPlanJudgeState::Done => {
+                self.apply_stored_plan_judge_verdict(automation, run, summary)
+                    .await?;
+            }
+            AutomationPlanJudgeState::InProgress | AutomationPlanJudgeState::Failed => {}
+        }
         Ok(())
     }
 
@@ -1414,6 +2133,16 @@ impl AutomationScheduler {
         {
             return Ok(());
         }
+
+        self.transition_service
+            .transition_plan_judge_state(
+                &run.id,
+                AutomationPlanJudgeState::Done,
+                AutomationPlanJudgeState::None,
+                None,
+                None,
+            )
+            .await?;
 
         let prompt = revision_delivery_prompt(instructions);
         if let Err(error) = self
@@ -1548,6 +2277,100 @@ impl AutomationScheduler {
         Ok(())
     }
 
+    async fn mark_plan_judge_failed(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: String,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_plan_judge_state(
+                &run.id,
+                AutomationPlanJudgeState::InProgress,
+                AutomationPlanJudgeState::Failed,
+                None,
+                None,
+            )
+            .await?
+        {
+            summary.judge_failures += 1;
+            if self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE.to_string()),
+                    Some(detail),
+                )
+                .await?
+            {
+                summary.paused_automations += 1;
+            }
+        }
+        Ok(())
+    }
+
+    async fn mark_corrupt_stored_plan_judge_verdict_failed(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: String,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_plan_judge_state(
+                &run.id,
+                AutomationPlanJudgeState::Done,
+                AutomationPlanJudgeState::Failed,
+                None,
+                None,
+            )
+            .await?
+        {
+            summary.judge_failures += 1;
+            if self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE.to_string()),
+                    Some(detail),
+                )
+                .await?
+            {
+                summary.paused_automations += 1;
+            }
+        }
+        Ok(())
+    }
+
+    async fn pause_automation_for_plan_revision_exhaustion(
+        &self,
+        automation: &Automation,
+        detail: String,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE.to_string()),
+                Some(detail),
+            )
+            .await?
+        {
+            summary.paused_automations += 1;
+        }
+        Ok(())
+    }
+
     async fn apply_stored_judge_verdict(
         &self,
         automation: &Automation,
@@ -1589,6 +2412,130 @@ impl AutomationScheduler {
             Some(AutomationStatus::Completed) => summary.completed_automations += 1,
             _ => {}
         }
+    }
+
+    async fn apply_stored_plan_judge_verdict(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        _summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(verdict_json) = run.plan_judge_verdict_json.as_deref() else {
+            return Ok(());
+        };
+        let verdict = match parse_automation_plan_judge_verdict(
+            verdict_json,
+            AutomationPlanJudgeValidationContext {
+                expected_artifact_id: None,
+            },
+        ) {
+            Ok(verdict) => verdict,
+            Err(error) => {
+                self.mark_corrupt_stored_plan_judge_verdict_failed(
+                    automation,
+                    run,
+                    format!("Automation stored plan judge verdict is invalid: {error}"),
+                    _summary,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+        let Some(current) = self.current_plan_application_context(run).await? else {
+            return Ok(());
+        };
+        if current.plan_artifact_id != verdict.evaluated_artifact_id {
+            tracing::warn!(
+                automation_id = %automation.id,
+                run_id = %run.id,
+                evaluated_artifact_id = verdict.evaluated_artifact_id,
+                current_artifact_id = current.plan_artifact_id,
+                "Ignoring stored automation plan judge verdict because the plan artifact changed"
+            );
+            self.transition_service
+                .transition_plan_judge_state(
+                    &run.id,
+                    AutomationPlanJudgeState::Done,
+                    AutomationPlanJudgeState::None,
+                    None,
+                    None,
+                )
+                .await?;
+            return Ok(());
+        }
+
+        match verdict.decision {
+            AutomationPlanJudgeDecision::Approve => {
+                if self
+                    .plan_approval_repo
+                    .get_by_session(&current.session_id)
+                    .await?
+                    .is_some_and(|approval| {
+                        approval.artifact_id.as_str() == current.plan_artifact_id
+                    })
+                {
+                    return Ok(());
+                }
+                self.plan_approval_writer
+                    .approve_current_plan_artifact(
+                        current.session_id.clone(),
+                        Some(current.plan_artifact_id),
+                        PlanApprovalActor::Judge,
+                    )
+                    .await?;
+            }
+            AutomationPlanJudgeDecision::Revise => {
+                if self
+                    .plan_approval_repo
+                    .get_by_session(&current.session_id)
+                    .await?
+                    .is_some_and(|approval| {
+                        approval.artifact_id.as_str() == current.plan_artifact_id
+                    })
+                {
+                    return Ok(());
+                }
+                let Some(instructions) = verdict.revision_instructions.as_deref() else {
+                    return Ok(());
+                };
+                if run.plan_pending_instructions.as_deref() == Some(instructions) {
+                    return Ok(());
+                }
+                self.run_repo
+                    .set_plan_pending_instructions(&run.id, Some(instructions.to_string()))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn current_plan_application_context(
+        &self,
+        run: &AutomationRun,
+    ) -> AppResult<Option<PlanApplicationContext>> {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(workspace) = self
+            .workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
+            return Ok(None);
+        };
+        let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(PlanApplicationContext {
+            session_id: session_id.clone(),
+            plan_artifact_id: plan_artifact_id.as_str().to_string(),
+        }))
     }
 
     async fn observe_published_run(
@@ -1758,6 +2705,57 @@ pub(crate) fn spawn_automation_judge_task(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_automation_plan_judge_task(
+    transition_service: AutomationTransitionService,
+    run_repo: Arc<dyn AutomationRunRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
+    plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+    automation: Automation,
+    run: AutomationRun,
+) {
+    let task = AutomationPlanJudgeTask {
+        transition_service,
+        run_repo,
+        workspace_repo,
+        ideation_session_repo,
+        plan_approval_repo,
+        plan_approval_writer,
+        artifact_repo,
+        plan_judge_invoker,
+        config,
+    };
+    tauri::async_runtime::spawn(async move {
+        let automation_id = automation.id.clone();
+        let run_id = run.id.clone();
+        match task.run_for_parked_run(automation, run).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    judge_succeeded = outcome.judge_succeeded,
+                    judge_failed = outcome.judge_failed,
+                    paused_automation = outcome.paused_automation,
+                    "Automation plan judge task completed"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    error = %error,
+                    "Automation plan judge task failed"
+                );
+            }
+        }
+    });
+}
+
 fn publication_metadata_from_workspace(
     workspace: &AgentConversationWorkspace,
 ) -> AutomationRunPublicationMetadata {
@@ -1782,6 +2780,11 @@ struct ParsedJudgeInvocation {
     verdict: crate::application::automation::judge::AutomationJudgeVerdict,
     verdict_json: String,
     model_id: Option<String>,
+}
+
+struct ParsedPlanJudgeInvocation {
+    verdict: AutomationPlanJudgeVerdict,
+    verdict_json: String,
 }
 
 enum JudgeInvocationFailure {
@@ -1823,6 +2826,39 @@ fn judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
         return Utc::now() >= expires_at;
     }
     elapsed_since(run.updated_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+fn plan_judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
+    if let Some(expires_at) = run.plan_judge_lease_expires_at {
+        return Utc::now() >= expires_at;
+    }
+    elapsed_since(run.updated_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+fn prior_revision_instruction_repeats(
+    prior_verdict_json: Option<&str>,
+    current_artifact_id: &str,
+    next_instructions: &str,
+) -> bool {
+    let Some(prior_verdict_json) = prior_verdict_json else {
+        return false;
+    };
+    let Ok(prior) = parse_automation_plan_judge_verdict(
+        prior_verdict_json,
+        AutomationPlanJudgeValidationContext {
+            expected_artifact_id: None,
+        },
+    ) else {
+        return false;
+    };
+    let Some(prior_instructions) = prior.revision_instructions.as_deref() else {
+        return false;
+    };
+    if prior.evaluated_artifact_id != current_artifact_id {
+        return false;
+    }
+    crate::application::automation::judge::normalized_prompt_fingerprint(prior_instructions)
+        == crate::application::automation::judge::normalized_prompt_fingerprint(next_instructions)
 }
 
 pub(crate) fn automation_judge_lease_expires_at(limit: Duration) -> DateTime<Utc> {

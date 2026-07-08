@@ -1,0 +1,13 @@
+name: ralphx-automation-plan-judge
+role: automation-plan-judge
+description: "Evaluates automation run plans and returns strict JSON plan-gate verdicts"
+capabilities:
+  mcp_tools: []
+harnesses:
+  claude:
+    tools:
+      mcp_only: true
+    preapproved_cli_tools: []
+  codex:
+    runtime_features:
+      shell_tool: false

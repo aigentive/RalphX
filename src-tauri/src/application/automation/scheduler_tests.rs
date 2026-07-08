@@ -11,17 +11,20 @@ use tokio::time::{sleep, timeout};
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::plan_gate::{
     AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
-    PLAN_RESUME_FAILED_ERROR_CODE,
+    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
 use super::scheduler::{
     load_spec_attachment, AutomationJudgeInvocation, AutomationJudgeInvocationOutput,
-    AutomationJudgeInvoker, AutomationScheduler, AutomationSchedulerConfig,
+    AutomationJudgeInvoker, AutomationPlanJudgeInvocation, AutomationPlanJudgeInvocationOutput,
+    AutomationPlanJudgeInvoker, AutomationScheduler, AutomationSchedulerConfig,
     AutomationSchedulerRegistry, AutomationSignalChecker,
 };
 use super::transition::NoopAutomationEventEmitter;
+use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus, Artifact,
     ArtifactId, ArtifactType, Automation, AutomationId, AutomationJudgeState,
@@ -32,7 +35,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
-    AutomationRepository, AutomationRunRepository, IdeationSessionRepository,
+    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
     PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::PrStatus;
@@ -251,6 +255,80 @@ impl AutomationJudgeInvoker for BlockingJudgeInvoker {
     }
 }
 
+#[derive(Default)]
+struct RecordingPlanJudgeInvoker {
+    calls: Mutex<Vec<AutomationPlanJudgeInvocation>>,
+    responses: Mutex<VecDeque<Result<String, String>>>,
+}
+
+impl RecordingPlanJudgeInvoker {
+    fn with_outputs(outputs: Vec<String>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(
+                outputs.into_iter().map(Ok).collect::<Vec<_>>(),
+            )),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+
+    fn calls(&self) -> Vec<AutomationPlanJudgeInvocation> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for RecordingPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        self.calls.lock().unwrap().push(input);
+        match self.responses.lock().unwrap().pop_front() {
+            Some(Ok(raw_output)) => Ok(AutomationPlanJudgeInvocationOutput {
+                raw_output,
+                model_id: Some("plan-judge-model".to_string()),
+            }),
+            Some(Err(error)) => Err(AppError::Validation(error)),
+            None => Ok(AutomationPlanJudgeInvocationOutput {
+                raw_output: valid_plan_approve_verdict("plan-artifact-1"),
+                model_id: Some("plan-judge-model".to_string()),
+            }),
+        }
+    }
+}
+
+struct MutatingPlanJudgeInvoker {
+    session_repo: Arc<MemoryIdeationSessionRepository>,
+    session_id: crate::domain::entities::IdeationSessionId,
+    replacement_artifact_id: ArtifactId,
+    output: String,
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for MutatingPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        self.session_repo
+            .update_plan_artifact_id(
+                &self.session_id,
+                Some(self.replacement_artifact_id.as_str().to_string()),
+            )
+            .await?;
+        Ok(AutomationPlanJudgeInvocationOutput {
+            raw_output: self
+                .output
+                .replace("plan-artifact-1", &input.plan_artifact_id),
+            model_id: Some("plan-judge-model".to_string()),
+        })
+    }
+}
+
 #[async_trait]
 impl AutomationSignalChecker for RecordingSignalChecker {
     async fn check_pr_status(
@@ -267,6 +345,156 @@ impl AutomationSignalChecker for RecordingSignalChecker {
             Some(Err(error)) => Err(AppError::Validation(error)),
             None => Ok(PrStatus::Open),
         }
+    }
+}
+
+struct ApprovingPlanJudgeInvoker {
+    approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+    session_id: crate::domain::entities::IdeationSessionId,
+    artifact_id: ArtifactId,
+    artifact_version: u32,
+    output: String,
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for ApprovingPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        self.approval_repo.approve(
+            self.session_id.clone(),
+            self.artifact_id.clone(),
+            self.artifact_version,
+            PlanApprovalActor::User,
+        );
+        Ok(AutomationPlanJudgeInvocationOutput {
+            raw_output: self
+                .output
+                .replace("plan-artifact-1", &input.plan_artifact_id),
+            model_id: Some("plan-judge-model".to_string()),
+        })
+    }
+}
+
+struct SupersedingPlanJudgeInvoker {
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    superseded_state: AutomationPlanJudgeState,
+    output: String,
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for SupersedingPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        self.run_repo
+            .compare_and_swap_plan_judge_state(
+                &input.run.id,
+                AutomationPlanJudgeState::InProgress,
+                self.superseded_state,
+                None,
+                None,
+            )
+            .await?;
+        Ok(AutomationPlanJudgeInvocationOutput {
+            raw_output: self.output.replace("plan-artifact-1", &input.plan_artifact_id),
+            model_id: Some("plan-judge-model".to_string()),
+        })
+    }
+}
+
+struct ResettingFailingPlanJudgeInvoker {
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    session_repo: Arc<MemoryIdeationSessionRepository>,
+    session_id: crate::domain::entities::IdeationSessionId,
+    replacement_artifact_id: ArtifactId,
+    calls: Mutex<usize>,
+}
+
+impl ResettingFailingPlanJudgeInvoker {
+    fn call_count(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for ResettingFailingPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        *self.calls.lock().unwrap() += 1;
+        self.session_repo
+            .update_plan_artifact_id(
+                &self.session_id,
+                Some(self.replacement_artifact_id.as_str().to_string()),
+            )
+            .await?;
+        self.run_repo
+            .compare_and_swap_plan_judge_state(
+                &input.run.id,
+                AutomationPlanJudgeState::InProgress,
+                AutomationPlanJudgeState::None,
+                None,
+                None,
+            )
+            .await?;
+        Err(AppError::Validation("stale judge failure".to_string()))
+    }
+}
+
+struct MemoryPlanArtifactApprovalWriter {
+    approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+}
+
+#[async_trait]
+impl PlanArtifactApprovalWriter for MemoryPlanArtifactApprovalWriter {
+    async fn approve_current_plan_artifact(
+        &self,
+        session_id: crate::domain::entities::IdeationSessionId,
+        requested_artifact_id: Option<String>,
+        approved_by: PlanApprovalActor,
+    ) -> AppResult<PlanArtifactApproval> {
+        let artifact_id = requested_artifact_id
+            .map(ArtifactId::from_string)
+            .ok_or_else(|| {
+                AppError::Validation("test approval requires artifact id".to_string())
+            })?;
+        let artifact = self
+            .artifact_repo
+            .get_by_id(&artifact_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("artifact {} not found", artifact_id)))?;
+        self.approval_repo.approve(
+            session_id.clone(),
+            artifact_id.clone(),
+            artifact.metadata.version,
+            approved_by,
+        );
+        Ok(self
+            .approval_repo
+            .get_by_session(&session_id)
+            .await?
+            .expect("approval inserted"))
+    }
+}
+
+struct ConflictingPlanArtifactApprovalWriter;
+
+#[async_trait]
+impl PlanArtifactApprovalWriter for ConflictingPlanArtifactApprovalWriter {
+    async fn approve_current_plan_artifact(
+        &self,
+        _session_id: crate::domain::entities::IdeationSessionId,
+        _requested_artifact_id: Option<String>,
+        _approved_by: PlanApprovalActor,
+    ) -> AppResult<PlanArtifactApproval> {
+        Err(AppError::Conflict(
+            "Plan changed before approval. Refresh the current plan and approve again.".to_string(),
+        ))
     }
 }
 
@@ -409,6 +637,7 @@ struct ParkedPlanGateScenario {
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
     session_repo: Arc<MemoryIdeationSessionRepository>,
     approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+    artifact_repo: Arc<MemoryArtifactRepository>,
     resumer: Arc<RecordingResumer>,
     automation_id: AutomationId,
     conversation_id: ChatConversationId,
@@ -426,21 +655,22 @@ impl ParkedPlanGateScenario {
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
         let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
+        let artifact_repo = Arc::new(MemoryArtifactRepository::new());
         let resumer = Arc::new(RecordingResumer::default());
         let automation_id = AutomationId::from_string("automation-1");
         let mut automation = automation(automation_id.as_str(), automation_status);
         automation.paused_reason_code = paused_reason_code.map(str::to_string);
         automation_repo.create(automation).await.unwrap();
         let conversation_id = ChatConversationId::from_string("conversation-1");
-        run_repo
-            .create_run(automation_run(
-                "run-1",
-                &automation_id,
-                AutomationRunStatus::AwaitingPlanApproval,
-                Some(conversation_id.clone()),
-            ))
-            .await
-            .unwrap();
+        let mut run = automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            Some(conversation_id.clone()),
+        );
+        run.plan_last_parked_artifact_id = Some(plan_artifact_id.to_string());
+        run.plan_revision_round = 1;
+        run_repo.create_run(run).await.unwrap();
         let (workspace, session) =
             plan_workspace_with_session(&conversation_id, Some(plan_artifact_id));
         let session_id = session.id.clone();
@@ -453,6 +683,7 @@ impl ParkedPlanGateScenario {
             workspace_repo,
             session_repo,
             approval_repo,
+            artifact_repo,
             resumer,
             automation_id,
             conversation_id,
@@ -465,26 +696,70 @@ impl ParkedPlanGateScenario {
             self.session_id.clone(),
             ArtifactId::from_string(artifact_id.to_string()),
             artifact_version,
-            "user",
+            PlanApprovalActor::User,
         );
     }
 
+    async fn use_automatic_plan_approval(&self, provider_harness: &str) {
+        self.automation_repo
+            .update_config(
+                &self.automation_id,
+                crate::domain::repositories::AutomationConfigPatch {
+                    provider_harness: Some(provider_harness.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        self.automation_repo
+            .update_settings(
+                &self.automation_id,
+                AutomationSettingsPatch {
+                    plan_approval_mode: Some(AutomationPlanApprovalMode::Automatic),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     fn scheduler(&self) -> AutomationScheduler {
+        self.scheduler_with_plan_judge(Arc::new(RecordingPlanJudgeInvoker::default()))
+    }
+
+    fn scheduler_with_plan_judge(
+        &self,
+        plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    ) -> AutomationScheduler {
         let session_repo: Arc<dyn IdeationSessionRepository> = self.session_repo.clone();
-        let approval_repo: Arc<dyn PlanArtifactApprovalRepository> = self.approval_repo.clone();
         let resumer: Arc<dyn AutomationRunResumer> = self.resumer.clone();
-        scheduler_with_judge_agent_runs_and_plan_deps(
+        let artifact_repo: Arc<dyn ArtifactRepository> = self.artifact_repo.clone();
+        scheduler_with_judge_agent_runs_plan_deps_and_artifacts(
             Arc::clone(&self.automation_repo),
             Arc::clone(&self.run_repo),
             Arc::clone(&self.workspace_repo),
             Arc::new(MemoryAgentRunRepository::new()),
             session_repo,
-            approval_repo,
+            self.approval_repo.clone(),
             resumer,
             Arc::new(RecordingSignalChecker::default()),
             Arc::new(RecordingJudgeInvoker::default()),
+            plan_judge_invoker,
+            artifact_repo,
             AutomationSchedulerConfig::default(),
         )
+    }
+
+    async fn seed_plan_artifact(&self, artifact_id: &str, text: &str, version: u32) {
+        let mut artifact = Artifact::new_inline(
+            "Run Plan",
+            ArtifactType::Specification,
+            text.to_string(),
+            "assistant",
+        );
+        artifact.id = ArtifactId::from_string(artifact_id.to_string());
+        artifact.metadata.version = version;
+        self.artifact_repo.create(artifact).await.unwrap();
     }
 }
 
@@ -559,12 +834,81 @@ fn scheduler_with_judge_agent_runs_and_plan_deps(
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
-    plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
+    plan_approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
     resumer: Arc<dyn AutomationRunResumer>,
     signal_checker: Arc<dyn AutomationSignalChecker>,
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     config: AutomationSchedulerConfig,
 ) -> AutomationScheduler {
+    scheduler_with_judge_agent_runs_plan_deps_and_artifacts(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        agent_run_repo,
+        ideation_session_repo,
+        plan_approval_repo,
+        resumer,
+        signal_checker,
+        judge_invoker,
+        Arc::new(RecordingPlanJudgeInvoker::default()),
+        Arc::new(MemoryArtifactRepository::new()),
+        config,
+    )
+}
+
+fn scheduler_with_judge_agent_runs_plan_deps_and_artifacts(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    plan_approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+    resumer: Arc<dyn AutomationRunResumer>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
+    let plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter> =
+        Arc::new(MemoryPlanArtifactApprovalWriter {
+            approval_repo: Arc::clone(&plan_approval_repo),
+            artifact_repo: Arc::clone(&artifact_repo),
+        });
+    scheduler_with_judge_agent_runs_plan_deps_artifacts_and_writer(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        agent_run_repo,
+        ideation_session_repo,
+        plan_approval_repo,
+        plan_approval_writer,
+        resumer,
+        signal_checker,
+        judge_invoker,
+        plan_judge_invoker,
+        artifact_repo,
+        config,
+    )
+}
+
+fn scheduler_with_judge_agent_runs_plan_deps_artifacts_and_writer(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    plan_approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+    plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
+    resumer: Arc<dyn AutomationRunResumer>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
+    let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> =
+        plan_approval_repo.clone();
     AutomationScheduler::new(
         automation_repo,
         run_repo,
@@ -572,13 +916,15 @@ fn scheduler_with_judge_agent_runs_and_plan_deps(
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
         ideation_session_repo,
-        plan_approval_repo,
+        plan_approval_repo_trait,
+        plan_approval_writer,
         Arc::new(RecordingStarter),
         resumer,
         signal_checker,
         judge_invoker,
+        plan_judge_invoker,
         Arc::new(NoopAutomationEventEmitter),
-        Arc::new(MemoryArtifactRepository::new()),
+        artifact_repo,
         Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
@@ -608,6 +954,27 @@ fn valid_stop_verdict(goal_met: bool) -> String {
         "updatedItemStatuses": null,
         "nextRunPrompt": null,
         "nextBaseBranch": null
+    })
+    .to_string()
+}
+
+fn valid_plan_approve_verdict(artifact_id: &str) -> String {
+    json!({
+        "decision": "approve",
+        "reason": "The plan is aligned with the automation goal and current phase.",
+        "confidence": "high",
+        "evaluatedArtifactId": artifact_id
+    })
+    .to_string()
+}
+
+fn valid_plan_revise_verdict(artifact_id: &str, instructions: &str) -> String {
+    json!({
+        "decision": "revise",
+        "reason": "The plan needs a narrower recovery and validation section.",
+        "confidence": "medium",
+        "revisionInstructions": instructions,
+        "evaluatedArtifactId": artifact_id
     })
     .to_string()
 }
@@ -659,6 +1026,56 @@ async fn wait_for_latest_judge_state(
     panic!("timed out waiting for judge state {expected:?}");
 }
 
+async fn wait_for_latest_plan_judge_state(
+    run_repo: &MemoryAutomationRunRepository,
+    automation_id: &AutomationId,
+    expected: AutomationPlanJudgeState,
+) -> AutomationRun {
+    let mut last = None;
+    for _ in 0..100 {
+        let latest = run_repo
+            .latest_for_automation(automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if latest.plan_judge_state == expected {
+            return latest;
+        }
+        last = Some(latest.plan_judge_state);
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "timed out waiting for plan judge state {expected:?}; last observed state: {:?}",
+        last
+    );
+}
+
+async fn wait_for_plan_judge_call_count(
+    plan_judge: &RecordingPlanJudgeInvoker,
+    expected: usize,
+) {
+    for _ in 0..100 {
+        if plan_judge.call_count() == expected {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {expected} plan judge calls");
+}
+
+async fn wait_for_resetting_plan_judge_call_count(
+    plan_judge: &ResettingFailingPlanJudgeInvoker,
+    expected: usize,
+) {
+    for _ in 0..100 {
+        if plan_judge.call_count() == expected {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {expected} resetting plan judge calls");
+}
+
 async fn wait_for_automation_status(
     automation_repo: &MemoryAutomationRepository,
     automation_id: &AutomationId,
@@ -686,6 +1103,11 @@ fn automation_scheduler_config_maps_runtime_values() {
         judge_timeout_secs: 240,
         publish_grace_secs: 90,
         max_run_duration_secs: 7_200,
+        plan_judge_model: crate::domain::agents::standard_harness_map(
+            "claude-plan-model".to_string(),
+            "codex-plan-model".to_string(),
+        ),
+        plan_max_revision_rounds: 4,
     };
 
     let scheduler_config = AutomationSchedulerConfig::from_runtime(&config);
@@ -697,6 +1119,21 @@ fn automation_scheduler_config_maps_runtime_values() {
     assert_eq!(
         scheduler_config.max_run_duration,
         Duration::from_secs(7_200)
+    );
+    assert_eq!(scheduler_config.plan_max_revision_rounds, 4);
+    assert_eq!(
+        scheduler_config
+            .plan_judge_models
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-plan-model")
+    );
+    assert_eq!(
+        scheduler_config
+            .plan_judge_models
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("codex-plan-model")
     );
 }
 
@@ -749,6 +1186,15 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         .await
         .unwrap();
     let registry = Arc::new(AutomationSchedulerRegistry::default());
+    let plan_approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
+    let artifact_repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+    let plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter> =
+        Arc::new(MemoryPlanArtifactApprovalWriter {
+            approval_repo: Arc::clone(&plan_approval_repo),
+            artifact_repo: Arc::clone(&artifact_repo),
+        });
+    let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> =
+        plan_approval_repo.clone();
     let scheduler = AutomationScheduler::new(
         automation_repo,
         run_repo.clone(),
@@ -756,13 +1202,15 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         conversation_repo,
         workspace_repo,
         Arc::new(MemoryIdeationSessionRepository::new()),
-        Arc::new(MemoryPlanArtifactApprovalRepository::new()),
+        plan_approval_repo_trait,
+        plan_approval_writer,
         Arc::new(RecordingStarter),
         Arc::new(RecordingResumer::default()),
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
+        Arc::new(RecordingPlanJudgeInvoker::default()),
         Arc::new(NoopAutomationEventEmitter),
-        Arc::new(MemoryArtifactRepository::new()),
+        artifact_repo,
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );
@@ -1850,7 +2298,7 @@ async fn automation_scheduler_redelivers_plan_approval_after_resume_crash_ignore
         session_id,
         ArtifactId::from_string("plan-artifact-1".to_string()),
         3,
-        "user",
+        PlanApprovalActor::User,
     );
     let mut stale_agent_run =
         agent_run_with_status(conversation_id.clone(), AgentRunStatus::Completed);
@@ -2076,6 +2524,1078 @@ async fn automation_scheduler_recovers_approval_delivery_when_mode_already_edit(
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::Running);
     assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_manual_plan_gate_never_dispatches_plan_judge() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Manual mode plan.", 1)
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 0);
+    assert_eq!(plan_judge.call_count(), 0);
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AwaitingPlanApproval);
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+}
+
+#[tokio::test]
+async fn automation_scheduler_automatic_plan_gate_dispatches_single_flight_with_harness_model_and_approves(
+) {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("codex").await;
+    scenario
+        .seed_plan_artifact(
+            "plan-artifact-1",
+            "Codex-shaped judge should approve this plan.",
+            4,
+        )
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let mut config = AutomationSchedulerConfig::default();
+    config.plan_judge_models.insert(
+        crate::domain::agents::AgentHarnessKind::Claude,
+        "sonnet".to_string(),
+    );
+    config.plan_judge_models.insert(
+        crate::domain::agents::AgentHarnessKind::Codex,
+        "gpt-5.4".to_string(),
+    );
+    let scheduler = scheduler_with_judge_agent_runs_plan_deps_and_artifacts(
+        Arc::clone(&scenario.automation_repo),
+        Arc::clone(&scenario.run_repo),
+        Arc::clone(&scenario.workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        scenario.session_repo.clone(),
+        scenario.approval_repo.clone(),
+        scenario.resumer.clone(),
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        plan_judge.clone(),
+        scenario.artifact_repo.clone(),
+        config,
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    let judging = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        judging.plan_judge_state,
+        AutomationPlanJudgeState::InProgress
+    );
+    assert!(judging.plan_judge_lease_expires_at.is_some());
+    let second_tick = scheduler.tick_once().await.unwrap();
+    assert_eq!(second_tick.judges_started, 0);
+    let judged = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+    assert!(judged.plan_judge_verdict_json.is_none());
+    let calls = plan_judge.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].plan_artifact_id, "plan-artifact-1");
+    assert_eq!(calls[0].plan_judge_model.as_deref(), Some("gpt-5.4"));
+    assert!(!calls[0]
+        .plan_judge_model
+        .as_deref()
+        .unwrap()
+        .contains("sonnet"));
+    let approval = scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.artifact_id.as_str(), "plan-artifact-1");
+    assert_eq!(approval.artifact_version, 4);
+    assert_eq!(approval.approved_by, "judge");
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_uses_claude_model_override_without_codex_leakage() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact(
+            "plan-artifact-1",
+            "Claude-shaped judge should approve this plan.",
+            1,
+        )
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let mut config = AutomationSchedulerConfig::default();
+    config
+        .plan_judge_models
+        .insert(AgentHarnessKind::Claude, "claude-plan-sonnet".to_string());
+    config
+        .plan_judge_models
+        .insert(AgentHarnessKind::Codex, "gpt-5.4".to_string());
+    let scheduler = scheduler_with_judge_agent_runs_plan_deps_and_artifacts(
+        Arc::clone(&scenario.automation_repo),
+        Arc::clone(&scenario.run_repo),
+        Arc::clone(&scenario.workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        scenario.session_repo.clone(),
+        scenario.approval_repo.clone(),
+        scenario.resumer.clone(),
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        plan_judge.clone(),
+        scenario.artifact_repo.clone(),
+        config,
+    );
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    let calls = plan_judge.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].plan_judge_model.as_deref(),
+        Some("claude-plan-sonnet")
+    );
+    assert!(!calls[0]
+        .plan_judge_model
+        .as_deref()
+        .unwrap()
+        .contains("gpt-"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_retries_invalid_json_once_then_applies_verdict() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact(
+            "plan-artifact-1",
+            "Retry should recover from malformed JSON.",
+            1,
+        )
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        "not-json".to_string(),
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    let calls = plan_judge.calls();
+    assert_eq!(calls.len(), 2);
+    assert!(!calls[0].retry_reminder);
+    assert!(calls[1].retry_reminder);
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_revise_sets_pending_instructions_and_baseline() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan needs more detail.", 1)
+        .await;
+    let instructions =
+        "Add the model-resolution falsification, retry behavior, and recovery delivery scenario.";
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_revise_verdict("plan-artifact-1", instructions),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+
+    let judged = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+    assert_eq!(
+        judged.plan_pending_instructions.as_deref(),
+        Some(instructions)
+    );
+    assert!(judged
+        .plan_judge_verdict_json
+        .as_deref()
+        .unwrap()
+        .contains("evaluatedArtifactId"));
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_delivered_plan_revision_is_consumed_and_repeat_then_exhausts() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan needs a revision.", 1)
+        .await;
+    let instructions =
+        "Add explicit recovery coverage before implementing the automation run.";
+    let repeated = " Add explicit recovery coverage before implementing the automation run! ";
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_revise_verdict("plan-artifact-1", instructions),
+        valid_plan_revise_verdict("plan-artifact-1", repeated),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    scheduler.tick_once().await.unwrap();
+    let delivered = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivered.status, AutomationRunStatus::Running);
+    assert_eq!(delivered.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(delivered.plan_pending_instructions.is_none());
+    assert!(delivered.plan_judge_verdict_json.is_some());
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+
+    scenario
+        .run_repo
+        .compare_and_swap_status(
+            &AutomationRunId::from_string("run-1"),
+            AutomationRunStatus::Running,
+            AutomationRunStatus::AwaitingPlanApproval,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 2).await;
+    let automation = wait_for_automation_status(
+        &scenario.automation_repo,
+        &scenario.automation_id,
+        AutomationStatus::Paused,
+    )
+    .await;
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::Failed);
+    assert!(latest.plan_pending_instructions.is_none());
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_repeat_fingerprint_pauses_exhausted_without_overwriting_baseline(
+) {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan still repeats.", 1)
+        .await;
+    let previous_instructions =
+        "Add explicit crash recovery coverage for the plan revision delivery path before continuing.";
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &AutomationRunId::from_string("run-1"),
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::InProgress,
+            Some(valid_plan_revise_verdict(
+                "plan-artifact-1",
+                previous_instructions,
+            )),
+            Some(Utc::now() + chrono::Duration::minutes(1)),
+        )
+        .await
+        .unwrap();
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &AutomationRunId::from_string("run-1"),
+            AutomationPlanJudgeState::InProgress,
+            AutomationPlanJudgeState::None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let baseline = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .plan_judge_verdict_json
+        .unwrap();
+    let repeated = " Add explicit crash recovery coverage for the plan revision delivery path before continuing! ";
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_revise_verdict("plan-artifact-1", repeated),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+
+    let automation = wait_for_automation_status(
+        &scenario.automation_repo,
+        &scenario.automation_id,
+        AutomationStatus::Paused,
+    )
+    .await;
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::Failed);
+    assert_eq!(
+        latest.plan_judge_verdict_json.as_deref(),
+        Some(baseline.as_str())
+    );
+    assert!(latest.plan_pending_instructions.is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_round_exhaustion_pauses_without_dispatch() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .set_plan_revision_round(&run_id, 4)
+        .await
+        .unwrap();
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 1);
+    assert_eq!(plan_judge.call_count(), 0);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AwaitingPlanApproval);
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(latest.plan_pending_instructions.is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_revision_limit_counts_judge_issued_revisions_timeline() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan v1.", 1)
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_revise_verdict(
+            "plan-artifact-1",
+            "Add authentication threat-model coverage before implementation.",
+        ),
+        valid_plan_revise_verdict(
+            "plan-artifact-2",
+            "Document database migration rollback validation before implementation.",
+        ),
+        valid_plan_revise_verdict(
+            "plan-artifact-3",
+            "Specify renderer accessibility checks before implementation.",
+        ),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+    let run_id = AutomationRunId::from_string("run-1");
+
+    for (artifact_id, version, body) in [
+        ("plan-artifact-2", 2, "Plan v2."),
+        ("plan-artifact-3", 3, "Plan v3."),
+        ("plan-artifact-4", 4, "Plan v4."),
+    ] {
+        scheduler.tick_once().await.unwrap();
+        wait_for_latest_plan_judge_state(
+            &scenario.run_repo,
+            &scenario.automation_id,
+            AutomationPlanJudgeState::Done,
+        )
+        .await;
+        scheduler.tick_once().await.unwrap();
+        scenario.seed_plan_artifact(artifact_id, body, version).await;
+        scenario
+            .session_repo
+            .update_plan_artifact_id(&scenario.session_id, Some(artifact_id.to_string()))
+            .await
+            .unwrap();
+        scenario
+            .run_repo
+            .compare_and_swap_status(
+                &run_id,
+                AutomationRunStatus::Running,
+                AutomationRunStatus::AwaitingPlanApproval,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 1);
+    assert_eq!(plan_judge.call_count(), 3);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_revision_round, 4);
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(latest.plan_pending_instructions.is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_artifact_read_error_pauses_failed_without_approval() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "missing-plan-artifact").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+
+    let automation = wait_for_automation_status(
+        &scenario.automation_repo,
+        &scenario.automation_id,
+        AutomationStatus::Paused,
+    )
+    .await;
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AwaitingPlanApproval);
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::Failed);
+    assert!(latest.plan_judge_verdict_json.is_none());
+    assert_eq!(plan_judge.call_count(), 0);
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_stale_plan_judge_failure_after_repark_reset_is_discarded() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Original plan.", 1)
+        .await;
+    scenario
+        .seed_plan_artifact("plan-artifact-2", "Human revised plan.", 2)
+        .await;
+    let stale_judge = Arc::new(ResettingFailingPlanJudgeInvoker {
+        run_repo: scenario.run_repo.clone(),
+        session_repo: scenario.session_repo.clone(),
+        session_id: scenario.session_id.clone(),
+        replacement_artifact_id: ArtifactId::from_string("plan-artifact-2".to_string()),
+        calls: Mutex::new(0),
+    });
+    let scheduler = scenario.scheduler_with_plan_judge(stale_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_resetting_plan_judge_call_count(&stale_judge, 1).await;
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::None,
+    )
+    .await;
+
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+    assert!(automation.paused_reason_code.is_none());
+    let reset = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reset.plan_judge_state, AutomationPlanJudgeState::None);
+
+    let replacement_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-2"),
+    ]));
+    let replacement_scheduler = scenario.scheduler_with_plan_judge(replacement_judge.clone());
+    replacement_scheduler.tick_once().await.unwrap();
+    wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    let calls = replacement_judge.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].plan_artifact_id, "plan-artifact-2");
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+    assert!(automation.paused_reason_code.is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_discarded_when_plan_artifact_changes_before_application() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Original plan.", 1)
+        .await;
+    scenario
+        .seed_plan_artifact("plan-artifact-2", "Revised plan.", 2)
+        .await;
+    let plan_judge = Arc::new(MutatingPlanJudgeInvoker {
+        session_repo: scenario.session_repo.clone(),
+        session_id: scenario.session_id.clone(),
+        replacement_artifact_id: ArtifactId::from_string("plan-artifact-2".to_string()),
+        output: valid_plan_approve_verdict("plan-artifact-1"),
+    });
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+    assert!(latest.plan_judge_verdict_json.is_none());
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_writer_conflict_discards_without_pause_or_approval() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let session_repo: Arc<dyn IdeationSessionRepository> = scenario.session_repo.clone();
+    let resumer: Arc<dyn AutomationRunResumer> = scenario.resumer.clone();
+    let artifact_repo: Arc<dyn ArtifactRepository> = scenario.artifact_repo.clone();
+    let scheduler = scheduler_with_judge_agent_runs_plan_deps_artifacts_and_writer(
+        Arc::clone(&scenario.automation_repo),
+        Arc::clone(&scenario.run_repo),
+        Arc::clone(&scenario.workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        session_repo,
+        scenario.approval_repo.clone(),
+        Arc::new(ConflictingPlanArtifactApprovalWriter),
+        resumer,
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        plan_judge,
+        artifact_repo,
+        AutomationSchedulerConfig::default(),
+    );
+
+    scheduler.tick_once().await.unwrap();
+
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+    assert!(latest.plan_judge_verdict_json.is_none());
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+    assert!(automation.paused_reason_code.is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_approve_after_human_approval_keeps_user_attribution() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let plan_judge = Arc::new(ApprovingPlanJudgeInvoker {
+        approval_repo: scenario.approval_repo.clone(),
+        session_id: scenario.session_id.clone(),
+        artifact_id: ArtifactId::from_string("plan-artifact-1".to_string()),
+        artifact_version: 1,
+        output: valid_plan_approve_verdict("plan-artifact-1"),
+    });
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    assert!(latest.plan_judge_verdict_json.is_none());
+    let approval = scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.artifact_id.as_str(), "plan-artifact-1");
+    assert_eq!(approval.artifact_version, 1);
+    assert_eq!(approval.approved_by, "user");
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_superseded_approve_writes_no_approval() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let plan_judge = Arc::new(SupersedingPlanJudgeInvoker {
+        run_repo: scenario.run_repo.clone(),
+        superseded_state: AutomationPlanJudgeState::Failed,
+        output: valid_plan_approve_verdict("plan-artifact-1"),
+    });
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Failed,
+    )
+    .await;
+
+    assert!(latest.plan_judge_verdict_json.is_none());
+    assert!(latest.plan_pending_instructions.is_none());
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_superseded_revise_writes_no_pending_or_baseline() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let plan_judge = Arc::new(SupersedingPlanJudgeInvoker {
+        run_repo: scenario.run_repo.clone(),
+        superseded_state: AutomationPlanJudgeState::Failed,
+        output: valid_plan_revise_verdict(
+            "plan-artifact-1",
+            "These instructions arrived after the judge cycle was superseded.",
+        ),
+    });
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Failed,
+    )
+    .await;
+
+    assert!(latest.plan_judge_verdict_json.is_none());
+    assert!(latest.plan_pending_instructions.is_none());
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_revise_after_human_approval_discards_revision() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let instructions =
+        "Do not persist this revision because the plan was approved while judgment ran.";
+    let plan_judge = Arc::new(ApprovingPlanJudgeInvoker {
+        approval_repo: scenario.approval_repo.clone(),
+        session_id: scenario.session_id.clone(),
+        artifact_id: ArtifactId::from_string("plan-artifact-1".to_string()),
+        artifact_version: 1,
+        output: valid_plan_revise_verdict("plan-artifact-1", instructions),
+    });
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge);
+
+    scheduler.tick_once().await.unwrap();
+    let latest = wait_for_latest_plan_judge_state(
+        &scenario.run_repo,
+        &scenario.automation_id,
+        AutomationPlanJudgeState::Done,
+    )
+    .await;
+
+    assert!(latest.plan_judge_verdict_json.is_none());
+    assert!(latest.plan_pending_instructions.is_none());
+    let approval = scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approval.approved_by, "user");
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_revision_recovery_rederives_lost_pending_instructions() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let instructions =
+        "Restore the revision instructions if a crash cleared pending delivery before sending.";
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some(valid_plan_revise_verdict("plan-artifact-1", instructions)),
+            None,
+        )
+        .await
+        .unwrap();
+    scenario
+        .run_repo
+        .set_plan_pending_instructions(&run_id, None)
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    scheduler.tick_once().await.unwrap();
+
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AwaitingPlanApproval);
+    assert_eq!(
+        latest.plan_pending_instructions.as_deref(),
+        Some(instructions)
+    );
+
+    let second = scheduler.tick_once().await.unwrap();
+    assert_eq!(second.failed_runs, 0);
+    let resumed = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.status, AutomationRunStatus::Running);
+    assert!(resumed.plan_pending_instructions.is_none());
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+    assert!(scenario.resumer.prompts()[0].1.contains(instructions));
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_recovery_ignores_stored_done_for_stale_artifact() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Current plan body.", 1)
+        .await;
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some(valid_plan_revise_verdict(
+                "plan-artifact-old",
+                "Stale instructions must not apply to the current plan.",
+            )),
+            None,
+        )
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 0);
+    assert_eq!(summary.judge_failures, 0);
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(latest.plan_pending_instructions.is_none());
+    assert!(scenario
+        .approval_repo
+        .get_by_session(&scenario.session_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_recovery_corrupt_done_verdict_fails_closed_once() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some("not-json".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    let first = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(first.judge_failures, 1);
+    assert_eq!(first.paused_automations, 1);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::Failed);
+
+    let second = scheduler.tick_once().await.unwrap();
+    assert_eq!(second.judge_failures, 0);
+    assert_eq!(second.paused_automations, 0);
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_lease_expiry_pauses_and_failed_is_not_redispatched() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    let run_id = AutomationRunId::from_string("run-1");
+    scenario
+        .run_repo
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::InProgress,
+            None,
+            Some(Utc::now() - chrono::Duration::minutes(1)),
+        )
+        .await
+        .unwrap();
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judge_failures, 1);
+    assert_eq!(summary.paused_automations, 1);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::Failed);
+    assert_eq!(plan_judge.call_count(), 0);
+
+    scenario
+        .automation_repo
+        .compare_and_swap_status(
+            &scenario.automation_id,
+            AutomationStatus::Paused,
+            AutomationStatus::Active,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let resumed = scheduler.tick_once().await.unwrap();
+    assert_eq!(resumed.judges_started, 0);
+    assert_eq!(plan_judge.call_count(), 0);
 }
 
 #[tokio::test]

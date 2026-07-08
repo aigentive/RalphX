@@ -21,10 +21,12 @@ use crate::application::automation::provisioning::{
 use crate::application::automation::scheduler::{
     global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
     GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
+    HarnessAutomationPlanJudgeInvoker,
 };
 use crate::application::automation::transition::TauriAutomationEventEmitter;
 use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
+use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::{AppState, TeamService};
 use crate::commands::ExecutionState;
@@ -328,6 +330,7 @@ pub fn spawn_automation_scheduler(
         state.github_service.clone(),
     ));
     let judge_invoker = Arc::new(HarnessAutomationJudgeInvoker::new(state.clone()));
+    let plan_judge_invoker = Arc::new(HarnessAutomationPlanJudgeInvoker::new(state.clone()));
     let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
 
     let scheduler = AutomationScheduler::new(
@@ -338,10 +341,12 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.ideation_session_repo),
         Arc::new(SqlitePlanArtifactApprovalRepository::new(state.db.clone())),
+        Arc::new(DbPlanArtifactApprovalWriter::new(state.db.clone())),
         starter,
         resumer,
         signal_checker,
         judge_invoker,
+        plan_judge_invoker,
         event_emitter,
         Arc::clone(&state.artifact_repo),
         registry,

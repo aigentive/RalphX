@@ -6,8 +6,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
-    judge_is_transition_allowed, AutomationId, AutomationJudgeState, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ProjectId,
+    judge_is_transition_allowed, plan_judge_is_transition_allowed, AutomationId,
+    AutomationJudgeState, AutomationPlanJudgeState, AutomationRunId, AutomationRunStatus,
+    AutomationStatus, ProjectId,
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
 use crate::error::{AppError, AppResult};
@@ -255,6 +256,38 @@ impl AutomationTransitionService {
                 judge_model_id,
                 judge_lease_expires_at,
                 error_detail,
+            )
+            .await?;
+        if changed {
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+        }
+        Ok(changed)
+    }
+
+    pub async fn transition_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        if !plan_judge_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let changed = self
+            .run_repo
+            .compare_and_swap_plan_judge_state(
+                id,
+                from,
+                to,
+                plan_judge_verdict_json,
+                plan_judge_lease_expires_at,
             )
             .await?;
         if changed {

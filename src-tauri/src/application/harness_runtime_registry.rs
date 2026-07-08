@@ -3,7 +3,10 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::{collections::HashMap, time::Instant};
 
 use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
-use crate::domain::agents::{standard_harness_registry, AgentHarnessKind, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{
+    plan_judge_model_for_provider, standard_harness_map, standard_harness_registry,
+    AgentHarnessKind, DEFAULT_AGENT_HARNESS,
+};
 use crate::infrastructure::agents::claude::{
     agent_harness_defaults_config, automations_config, clear_claude_cli_capability_cache,
     execution_defaults_config, external_mcp_config, find_claude_cli, node_utils,
@@ -831,6 +834,26 @@ pub(crate) fn default_automation_publish_grace_secs() -> u64 {
 
 pub(crate) fn default_automation_max_run_duration_secs() -> u64 {
     automations_config().max_run_duration_secs
+}
+
+pub(crate) fn default_automation_plan_judge_models() -> HashMap<AgentHarnessKind, String> {
+    let config = automations_config();
+    standard_harness_map(
+        config
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .cloned()
+            .unwrap_or_else(|| plan_judge_model_for_provider(AgentHarnessKind::Claude).to_string()),
+        config
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .cloned()
+            .unwrap_or_else(|| plan_judge_model_for_provider(AgentHarnessKind::Codex).to_string()),
+    )
+}
+
+pub(crate) fn default_automation_plan_max_revision_rounds() -> u64 {
+    automations_config().plan_max_revision_rounds
 }
 
 pub(crate) fn default_reconciliation_merger_timeout_secs() -> u64 {

@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::domain::entities::{ArtifactId, IdeationSessionId};
-use crate::domain::repositories::{PlanArtifactApproval, PlanArtifactApprovalRepository};
+use crate::domain::repositories::{
+    PlanApprovalActor, PlanArtifactApproval, PlanArtifactApprovalRepository,
+};
 use crate::error::AppResult;
 
 #[derive(Default)]
@@ -25,14 +27,14 @@ impl MemoryPlanArtifactApprovalRepository {
         session_id: IdeationSessionId,
         artifact_id: ArtifactId,
         artifact_version: u32,
-        approved_by: &str,
+        approved_by: PlanApprovalActor,
     ) {
         let approval = PlanArtifactApproval {
             session_id: session_id.clone(),
             artifact_id,
             artifact_version,
             approved_at: Utc::now().to_rfc3339(),
-            approved_by: approved_by.to_string(),
+            approved_by: approved_by.as_str().to_string(),
         };
         self.approvals
             .write()

@@ -373,7 +373,7 @@ pub fn automation_judge_loop_suspected(
         == normalized_prompt_fingerprint(next_prompt)
 }
 
-fn extract_automation_verdict_value(output: &str) -> AppResult<Value> {
+pub(crate) fn extract_automation_verdict_value(output: &str) -> AppResult<Value> {
     let trimmed = output.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         if value.is_object() {
@@ -785,7 +785,7 @@ Rules:
     .to_string()
 }
 
-fn normalized_prompt_fingerprint(value: &str) -> String {
+pub(crate) fn normalized_prompt_fingerprint(value: &str) -> String {
     value
         .split_whitespace()
         .flat_map(|part| {

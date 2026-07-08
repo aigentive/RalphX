@@ -486,6 +486,34 @@ pub fn judge_is_transition_allowed(from: AutomationJudgeState, to: AutomationJud
     )
 }
 
+pub fn plan_judge_is_transition_allowed(
+    from: AutomationPlanJudgeState,
+    to: AutomationPlanJudgeState,
+) -> bool {
+    matches!(
+        (from, to),
+        (
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::InProgress
+        ) | (
+            AutomationPlanJudgeState::InProgress,
+            AutomationPlanJudgeState::Done
+        ) | (
+            AutomationPlanJudgeState::InProgress,
+            AutomationPlanJudgeState::Failed
+        ) | (
+            AutomationPlanJudgeState::Done,
+            AutomationPlanJudgeState::Failed
+        ) | (
+            AutomationPlanJudgeState::Failed,
+            AutomationPlanJudgeState::None
+        ) | (
+            AutomationPlanJudgeState::Done,
+            AutomationPlanJudgeState::None
+        )
+    )
+}
+
 pub fn judge_transition_clears_verdict(
     to: AutomationJudgeState,
     judge_verdict_json: Option<&str>,
