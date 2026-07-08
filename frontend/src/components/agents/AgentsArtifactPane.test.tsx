@@ -1887,6 +1887,38 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("renders the publish tab for blank plan workspaces", () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      }),
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-pr")).not.toBeInTheDocument();
+  });
+
+  it("renders PR and publish tabs for PR-backed plan workspaces", () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+        publicationPrNumber: 648,
+        publicationPrUrl: "https://github.com/mock/project/pull/648",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+  });
+
   it("shows the PR artifact tab for DB-backed workspace pull requests", async () => {
     renderPane(
       "pr",
