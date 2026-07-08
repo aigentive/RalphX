@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -158,12 +159,12 @@ fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
     }
 }
 
-fn normalize_custom_binary_path(path: Option<String>) -> Option<String> {
-    normalize_optional_path(path)
+fn normalize_custom_binary_path(path: Option<String>) -> Result<Option<String>, String> {
+    normalize_optional_provider_path(path)
 }
 
-fn normalize_custom_env_file_path(path: Option<String>) -> Option<String> {
-    normalize_optional_path(path)
+fn normalize_custom_env_file_path(path: Option<String>) -> Result<Option<String>, String> {
+    normalize_optional_provider_path(path)
 }
 
 fn normalize_service_tier(value: Option<String>) -> Option<String> {
@@ -211,15 +212,49 @@ fn validate_codex_fast_mode_selection(
     Ok(())
 }
 
-fn normalize_optional_path(path: Option<String>) -> Option<String> {
-    path.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
+fn normalize_optional_provider_path(path: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = path else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    expand_provider_user_path(trimmed).map(Some)
+}
+
+fn provider_path_home_dir() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
+fn expand_provider_user_path(path: &str) -> Result<String, String> {
+    if path == "~" {
+        return provider_path_home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .ok_or_else(home_expansion_error);
+    }
+    let Some(rest) = path.strip_prefix("~/") else {
+        if path.starts_with('~') {
+            return Err(
+                "Custom provider paths support only ~/ for the user home directory; ~user paths are not supported"
+                    .to_string(),
+            );
         }
-    })
+        return Ok(path.to_string());
+    };
+    let home = provider_path_home_dir().ok_or_else(home_expansion_error)?;
+    Ok(join_home_relative_path(&home, rest))
+}
+
+fn join_home_relative_path(home: &Path, rest: &str) -> String {
+    let mut expanded = home.to_path_buf();
+    expanded.push(rest);
+    expanded.to_string_lossy().into_owned()
+}
+
+fn home_expansion_error() -> String {
+    "Cannot expand custom provider path because the user home directory could not be determined"
+        .to_string()
 }
 
 fn merge_input(
@@ -284,13 +319,13 @@ fn merge_input(
         settings.auto_update_enabled = auto_update_enabled;
     }
     if let Some(custom_binary_path) = input.custom_binary_path {
-        settings.custom_binary_path = normalize_custom_binary_path(custom_binary_path);
+        settings.custom_binary_path = normalize_custom_binary_path(custom_binary_path)?;
     }
     if let Some(custom_binary_enabled) = input.custom_binary_enabled {
         settings.custom_binary_enabled = custom_binary_enabled;
     }
     if let Some(custom_env_file_path) = input.custom_env_file_path {
-        settings.custom_env_file_path = normalize_custom_env_file_path(custom_env_file_path);
+        settings.custom_env_file_path = normalize_custom_env_file_path(custom_env_file_path)?;
     }
     if let Some(custom_env_file_enabled) = input.custom_env_file_enabled {
         settings.custom_env_file_enabled = custom_env_file_enabled;
