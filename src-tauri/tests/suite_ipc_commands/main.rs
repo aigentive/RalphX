@@ -16,6 +16,7 @@ mod common;
 mod task_commands;
 mod api_key_commands;
 mod project_commands;
+mod agent_conversation_start_service;
 mod unified_chat_commands;
 mod task_step_commands;
 mod harness_provider_commands;

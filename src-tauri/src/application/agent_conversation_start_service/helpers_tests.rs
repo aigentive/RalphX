@@ -11,8 +11,8 @@ use super::*;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
 };
 use crate::domain::services::PrSearchResult;
 use crate::tests::mock_github_service::MockGithubService;
@@ -529,6 +529,192 @@ async fn linked_branch_availability_detects_conflicts_and_exempts_current_conver
     .await
     .expect_err("PR-backed linked workspaces reserve the PR head branch");
     assert!(conflict.contains("feature/branch"), "got: {conflict}");
+}
+
+#[test]
+fn linked_setup_failure_marker_is_stable_and_idempotent() {
+    let marked = linked_setup_failure_error(
+        "Selected branch 'feature/demo' is already checked out; choose isolated branch mode",
+    );
+    assert!(marked.contains(LINKED_SETUP_FAILURE_MARKER));
+    assert!(marked.contains("feature/demo"), "got: {marked}");
+    assert_eq!(linked_setup_failure_error(&marked), marked);
+    assert_eq!(
+        linked_setup_failure_error("   "),
+        LINKED_SETUP_FAILURE_MARKER
+    );
+}
+
+#[tokio::test]
+async fn archive_empty_seeded_draft_after_setup_failure_hides_safe_project_draft() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed draft conversation");
+
+    let archived = archive_empty_seeded_draft_after_setup_failure(&state, &conversation)
+        .await
+        .expect("cleanup succeeds");
+
+    assert!(archived);
+    let active = state
+        .chat_conversation_repo
+        .get_by_context(ChatContextType::Project, project.id.as_str())
+        .await
+        .expect("load active project conversations");
+    assert!(
+        active.is_empty(),
+        "archived draft should be hidden from active lists"
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("load archived draft")
+        .expect("draft is archived, not hard-deleted");
+    assert!(stored.archived_at.is_some());
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .expect("load workspace");
+    assert!(workspace.is_none());
+}
+
+#[tokio::test]
+async fn archive_supplied_seeded_draft_after_setup_failure_fails_closed_on_lookup_error() {
+    let state = AppState::new_test();
+    let error = archive_seeded_draft_lookup_after_setup_failure(
+        &state,
+        "project-1",
+        Err("lookup exploded".to_string()),
+    )
+    .await
+    .expect_err("lookup errors must not collapse into no draft");
+
+    assert!(
+        error.contains("lookup exploded"),
+        "error should preserve lookup failure evidence: {error}"
+    );
+}
+
+#[tokio::test]
+async fn archive_supplied_seeded_draft_after_setup_failure_archives_safe_project_draft() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("seed supplied draft conversation");
+
+    let archived = archive_supplied_seeded_draft_after_setup_failure(
+        &state,
+        project.id.as_str(),
+        &conversation.id,
+    )
+    .await
+    .expect("supplied draft cleanup succeeds");
+
+    assert!(archived);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("load supplied draft")
+        .expect("draft is archived, not hard-deleted");
+    assert!(stored.archived_at.is_some());
+}
+
+#[tokio::test]
+async fn archive_seeded_draft_lookup_after_setup_failure_ignores_missing_or_wrong_context() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let missing =
+        archive_seeded_draft_lookup_after_setup_failure(&state, project.id.as_str(), Ok(None))
+            .await
+            .expect("missing supplied draft is a no-op");
+    assert!(!missing);
+
+    let other_project = Project::new("Other".to_string(), "/tmp/other".to_string());
+    let wrong_project = ChatConversation::new_project(other_project.id);
+    let wrong_project = archive_seeded_draft_lookup_after_setup_failure(
+        &state,
+        project.id.as_str(),
+        Ok(Some(wrong_project)),
+    )
+    .await
+    .expect("wrong project draft is ignored");
+    assert!(!wrong_project);
+
+    let mut wrong_context = ChatConversation::new_project(project.id.clone());
+    wrong_context.context_type = ChatContextType::Ideation;
+    wrong_context.context_id = "ideation-session-1".to_string();
+    let wrong_context = archive_seeded_draft_lookup_after_setup_failure(
+        &state,
+        project.id.as_str(),
+        Ok(Some(wrong_context)),
+    )
+    .await
+    .expect("non-project draft is ignored");
+    assert!(!wrong_context);
+}
+
+#[tokio::test]
+async fn archive_empty_seeded_draft_after_setup_failure_preserves_started_or_workspace_rows() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let mut started = ChatConversation::new_project(project.id.clone());
+    started.message_count = 1;
+    let started = state
+        .chat_conversation_repo
+        .create(started)
+        .await
+        .expect("seed started conversation");
+    let archived_started = archive_empty_seeded_draft_after_setup_failure(&state, &started)
+        .await
+        .expect("started cleanup guard succeeds");
+    assert!(!archived_started);
+    let stored_started = state
+        .chat_conversation_repo
+        .get_by_id(&started.id)
+        .await
+        .expect("load started conversation")
+        .expect("started conversation remains");
+    assert!(stored_started.archived_at.is_none());
+
+    let workspace_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("seed workspace conversation");
+    let mut workspace = workspace_for_mode(&project, AgentConversationWorkspaceMode::Edit);
+    workspace.conversation_id = workspace_conversation.id.clone();
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("seed workspace");
+
+    let archived_workspace =
+        archive_empty_seeded_draft_after_setup_failure(&state, &workspace_conversation)
+            .await
+            .expect("workspace cleanup guard succeeds");
+    assert!(!archived_workspace);
+    let stored_workspace = state
+        .chat_conversation_repo
+        .get_by_id(&workspace_conversation.id)
+        .await
+        .expect("load workspace conversation")
+        .expect("workspace conversation remains");
+    assert!(stored_workspace.archived_at.is_none());
 }
 
 fn pr_search_result(

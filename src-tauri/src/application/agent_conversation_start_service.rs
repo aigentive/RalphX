@@ -6,7 +6,8 @@ use tauri::{Emitter, Runtime};
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspaceSetupMode,
+    validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
+    AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
 use crate::application::plan_reference_import::{
@@ -18,8 +19,8 @@ use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, ChatContextType, ChatConversation, ChatConversationId, ProjectId,
-    TeamIntent,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, ChatContextType,
+    ChatConversation, ChatConversationId, ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -29,10 +30,12 @@ mod helpers;
 
 use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
-    apply_ticket_canonical_branch_base_selection, base_selection_allows_ticket_canonical_branch,
-    emit_start_agent_conversation_progress, ensure_linked_branch_workspace_available,
-    ensure_plan_workspace_planning_session_link, first_ticket_start_base_reference,
-    hydrate_linked_branch_source_pull_request, log_start_agent_conversation_phase,
+    apply_ticket_canonical_branch_base_selection, archive_empty_seeded_draft_after_setup_failure,
+    archive_supplied_seeded_draft_after_setup_failure,
+    base_selection_allows_ticket_canonical_branch, emit_start_agent_conversation_progress,
+    ensure_linked_branch_workspace_available, ensure_plan_workspace_planning_session_link,
+    first_ticket_start_base_reference, hydrate_linked_branch_source_pull_request,
+    linked_setup_failure_error, log_start_agent_conversation_phase,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
     trim_optional_input,
@@ -188,6 +191,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             base_ref_kind,
             base_ref.as_deref(),
         )?;
+        validate_review_pr_workspace_source_pull_request(mode, source_pull_request.as_ref())
+            .map_err(|error| error.to_string())?;
         let selected_plan_reference = selected_plan_reference(&input.composer_artifact_references)?;
         let should_create_workspace = agent_mode_should_create_workspace(
             mode,
@@ -250,7 +255,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             }
         }
         if should_create_workspace {
-            ensure_linked_branch_workspace_available(
+            if let Err(error) = ensure_linked_branch_workspace_available(
                 self.deps.state,
                 &project_id,
                 draft_conversation_id.as_ref(),
@@ -258,7 +263,23 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 base_ref.as_deref(),
                 source_pull_request.as_ref(),
             )
-            .await?;
+            .await
+            {
+                if let Some(conversation_id) = draft_conversation_id.as_ref() {
+                    if let Err(archive_error) = archive_supplied_seeded_draft_after_setup_failure(
+                        self.deps.state,
+                        &input.project_id,
+                        conversation_id,
+                    )
+                    .await
+                    {
+                        return Err(linked_setup_failure_error(format!(
+                            "{error}; failed to archive failed draft: {archive_error}",
+                        )));
+                    }
+                }
+                return Err(linked_setup_failure_error(error));
+            }
         }
         source_pull_request = hydrate_linked_branch_source_pull_request(
             self.deps.state,
@@ -351,27 +372,55 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             let pr_automation_defaults =
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
                     .await?;
-            let mut workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
-                &project,
-                &conversation.id,
-                mode,
-                AgentConversationWorkspaceBaseSelection {
-                    kind: base_ref_kind,
-                    branch_mode: base_branch_mode,
-                    base_ref,
-                    display_name: base_display_name,
-                    source_pull_request,
-                },
-                AgentConversationWorkspaceSetupMode::Deferred,
-                pr_automation_defaults,
-                // Automation runs (setup + successors) prefer the advanced
-                // remote-tracking base so successor worktrees build on merged work
-                // (integration-branch model). Non-automation chats keep the local
-                // start-point.
-                conversation.automation_id.is_some(),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+            let mut workspace =
+                match prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+                    &project,
+                    &conversation.id,
+                    mode,
+                    AgentConversationWorkspaceBaseSelection {
+                        kind: base_ref_kind,
+                        branch_mode: base_branch_mode,
+                        base_ref,
+                        display_name: base_display_name,
+                        source_pull_request,
+                    },
+                    AgentConversationWorkspaceSetupMode::Deferred,
+                    pr_automation_defaults,
+                    // Automation runs (setup + successors) prefer the advanced
+                    // remote-tracking base so successor worktrees build on merged work
+                    // (integration-branch model). Non-automation chats keep the local
+                    // start-point.
+                    conversation.automation_id.is_some(),
+                )
+                .await
+                {
+                    Ok(workspace) => workspace,
+                    Err(error) => {
+                        let mut error = error.to_string();
+                        if !should_create_conversation {
+                            if let Err(archive_error) =
+                                archive_empty_seeded_draft_after_setup_failure(
+                                    self.deps.state,
+                                    &conversation,
+                                )
+                                .await
+                            {
+                                error = format!(
+                                    "{error}; failed to archive failed draft: {archive_error}",
+                                );
+                            }
+                        }
+                        return Err(
+                            if base_branch_mode
+                                == Some(AgentConversationWorkspaceBranchMode::Linked)
+                            {
+                                linked_setup_failure_error(error)
+                            } else {
+                                error
+                            },
+                        );
+                    }
+                };
             if let Some(plan_reference) = selected_plan_reference.as_ref() {
                 let import = import_agent_conversation_plan_reference(
                     self.deps.state,

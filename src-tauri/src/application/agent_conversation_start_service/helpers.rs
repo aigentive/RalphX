@@ -14,8 +14,9 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project, ProjectId,
+    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, Project, ProjectId,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -203,9 +204,10 @@ pub(crate) async fn ensure_linked_branch_workspace_available(
         .find_active_by_project_and_branch_name(project_id, branch_name)
         .await
         .map_err(|error| error.to_string())?;
-    if let Some(conflict) = active_workspaces.into_iter().find(|workspace| {
-        current_conversation_id != Some(&workspace.conversation_id)
-    }) {
+    if let Some(conflict) = active_workspaces
+        .into_iter()
+        .find(|workspace| current_conversation_id != Some(&workspace.conversation_id))
+    {
         return Err(format!(
             "Selected branch '{}' is already linked to active conversation {}; choose isolated branch mode or continue in that conversation",
             branch_name, conflict.conversation_id
@@ -213,6 +215,80 @@ pub(crate) async fn ensure_linked_branch_workspace_available(
     }
 
     Ok(())
+}
+
+pub(crate) const LINKED_SETUP_FAILURE_MARKER: &str = "[ralphx:linked_setup_failure]";
+
+pub(crate) fn linked_setup_failure_error(message: impl AsRef<str>) -> String {
+    let message = message.as_ref().trim();
+    if message.contains(LINKED_SETUP_FAILURE_MARKER) {
+        return message.to_string();
+    }
+    if message.is_empty() {
+        LINKED_SETUP_FAILURE_MARKER.to_string()
+    } else {
+        format!("{LINKED_SETUP_FAILURE_MARKER} {message}")
+    }
+}
+
+pub(crate) async fn archive_empty_seeded_draft_after_setup_failure(
+    state: &AppState,
+    conversation: &ChatConversation,
+) -> Result<bool, String> {
+    if conversation.context_type != ChatContextType::Project
+        || conversation.message_count != 0
+        || conversation.archived_at.is_some()
+        || conversation.provider_session_ref().is_some()
+    {
+        return Ok(false);
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if workspace.is_some() {
+        return Ok(false);
+    }
+
+    state
+        .chat_conversation_repo
+        .archive(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub(crate) async fn archive_supplied_seeded_draft_after_setup_failure(
+    state: &AppState,
+    project_id: &str,
+    conversation_id: &ChatConversationId,
+) -> Result<bool, String> {
+    let lookup = state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string());
+
+    archive_seeded_draft_lookup_after_setup_failure(state, project_id, lookup).await
+}
+
+pub(crate) async fn archive_seeded_draft_lookup_after_setup_failure(
+    state: &AppState,
+    project_id: &str,
+    conversation: Result<Option<ChatConversation>, String>,
+) -> Result<bool, String> {
+    let Some(conversation) = conversation? else {
+        return Ok(false);
+    };
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != project_id
+    {
+        return Ok(false);
+    }
+
+    archive_empty_seeded_draft_after_setup_failure(state, &conversation).await
 }
 
 pub(crate) async fn hydrate_linked_branch_source_pull_request(
