@@ -30,6 +30,8 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   useProjectAgentConversationsMock: vi.fn(),
   useAgentSidebarProjectGroupMock: vi.fn(),
   useAgentSidebarPublicationGroupMock: vi.fn(),
+  useAgentSidebarAutomationGroupIndexMock: vi.fn(),
+  useAgentSidebarAutomationGroupMock: vi.fn(),
   useConversationMock: vi.fn(),
   startAgentConversationMock: vi.fn(),
   createAutomationDraftMock: vi.fn(),
@@ -162,6 +164,8 @@ const {
   useProjectAgentConversationsMock,
   useAgentSidebarProjectGroupMock,
   useAgentSidebarPublicationGroupMock,
+  useAgentSidebarAutomationGroupIndexMock,
+  useAgentSidebarAutomationGroupMock,
   useConversationMock,
   startAgentConversationMock,
   createAutomationDraftMock,
@@ -519,11 +523,72 @@ vi.mock("./useAgentSidebarPublicationGroup", () => ({
       "pinned",
       pinnedConversationIds,
     ],
+    automationIndex: (
+      projectIds: string[],
+      archivedOnly: boolean,
+      search = "",
+      publicationStates: string[] = [],
+      pinnedConversationIds: string[] = [],
+      priorityConversationIds: string[] = [],
+      sort = "latest"
+    ) => [
+      "agents",
+      "sidebar-conversations",
+      "automation",
+      "index",
+      "projects",
+      projectIds,
+      "archived",
+      archivedOnly,
+      "search",
+      search.trim().toLowerCase(),
+      "states",
+      publicationStates,
+      "pinned",
+      pinnedConversationIds,
+      "priority",
+      priorityConversationIds,
+      "sort",
+      sort,
+    ],
+    automationGroup: (
+      groupKey: string,
+      projectIds: string[],
+      archivedOnly: boolean,
+      search = "",
+      publicationStates: string[] = [],
+      pinnedConversationIds: string[] = [],
+      priorityConversationIds: string[] = [],
+      sort = "latest"
+    ) => [
+      "agents",
+      "sidebar-conversations",
+      "automation",
+      groupKey,
+      "projects",
+      projectIds,
+      "archived",
+      archivedOnly,
+      "search",
+      search.trim().toLowerCase(),
+      "states",
+      publicationStates,
+      "pinned",
+      pinnedConversationIds,
+      "priority",
+      priorityConversationIds,
+      "sort",
+      sort,
+    ],
   },
   useAgentSidebarProjectGroup: (args: Record<string, unknown>) =>
     useAgentSidebarProjectGroupMock(args),
   useAgentSidebarPublicationGroup: (args: Record<string, unknown>) =>
     useAgentSidebarPublicationGroupMock(args),
+  useAgentSidebarAutomationGroupIndex: (args: Record<string, unknown>) =>
+    useAgentSidebarAutomationGroupIndexMock(args),
+  useAgentSidebarAutomationGroup: (args: Record<string, unknown>) =>
+    useAgentSidebarAutomationGroupMock(args),
   useProjectGroupLatestOrder: () => ({ data: undefined }),
 }));
 
@@ -1135,6 +1200,87 @@ export function mockAgentSidebarData(conversations: AgentConversation[]) {
         }),
       })
   );
+  useAgentSidebarAutomationGroupIndexMock.mockImplementation(
+    ({
+      projectIds = [],
+      archivedOnly = false,
+      search = "",
+      publicationStates = DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
+      pinnedConversationIds = [],
+      priorityConversationIds = [],
+    }: {
+      projectIds?: string[];
+      archivedOnly?: boolean;
+      search?: string;
+      publicationStates?: string[];
+      pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
+    }) => {
+      const filtered = filterSidebarConversations(conversations, {
+        projectIds,
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        priorityConversationIds,
+      });
+      const groups = new Map<string, { key: string; label: string; total: number }>();
+      for (const item of filtered) {
+        const key = item.automationId ?? "__standalone__";
+        const label = item.automationId ?? "Standalone";
+        groups.set(key, {
+          key,
+          label,
+          total: (groups.get(key)?.total ?? 0) + 1,
+        });
+      }
+      return {
+        data: Array.from(groups.values()).map((group) => ({
+          ...group,
+          offset: 0,
+          limit: 1,
+          hasMore: group.total > 1,
+          rows: [],
+        })),
+        isLoading: false,
+        isSuccess: true,
+        isFetching: false,
+        error: null,
+        refetch: vi.fn(),
+      };
+    }
+  );
+  useAgentSidebarAutomationGroupMock.mockImplementation(
+    ({
+      groupKey = "",
+      projectIds = [],
+      archivedOnly = false,
+      search = "",
+      publicationStates = DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
+      pinnedConversationIds = [],
+      priorityConversationIds = [],
+    }: {
+      groupKey?: string;
+      projectIds?: string[];
+      archivedOnly?: boolean;
+      search?: string;
+      publicationStates?: string[];
+      pinnedConversationIds?: string[];
+      priorityConversationIds?: string[];
+    }) =>
+      buildAgentSidebarGroupResult({
+        key: groupKey,
+        label: groupKey === "__standalone__" ? "Standalone" : groupKey,
+        conversations: filterSidebarConversations(conversations, {
+          projectIds,
+          archivedOnly,
+          search,
+          publicationStates,
+          pinnedConversationIds,
+          priorityConversationIds,
+        }).filter((item) => (item.automationId ?? "__standalone__") === groupKey),
+      })
+  );
 }
 
 function filterSidebarConversations(
@@ -1322,6 +1468,8 @@ export function setupAgentsViewTest() {
   useProjectAgentConversationsMock.mockReset();
   useAgentSidebarProjectGroupMock.mockReset();
   useAgentSidebarPublicationGroupMock.mockReset();
+  useAgentSidebarAutomationGroupIndexMock.mockReset();
+  useAgentSidebarAutomationGroupMock.mockReset();
   useProjectsMock.mockReset();
   useHarnessProvidersMock.mockReset();
   useConversationMock.mockReset();
