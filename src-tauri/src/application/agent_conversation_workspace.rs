@@ -65,6 +65,12 @@ impl AgentConversationWorkspaceBaseSelection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentConversationWorkspaceBranchNameHint {
+    pub provider: String,
+    pub ticket_token: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentConversationWorkspaceSetupMode {
     Blocking,
@@ -144,6 +150,38 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     setup_mode: AgentConversationWorkspaceSetupMode,
     pr_automation_defaults: AgentConversationWorkspacePrAutomationDefaults,
     prefer_advanced_origin_base: bool,
+) -> AppResult<AgentConversationWorkspace> {
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+        project,
+        conversation_id,
+        mode,
+        selection,
+        setup_mode,
+        pr_automation_defaults,
+        prefer_advanced_origin_base,
+        None,
+    )
+    .await
+}
+
+/// Prepare an agent conversation workspace.
+///
+/// `prefer_advanced_origin_base` scopes the automation integration-branch model
+/// (see `base-integration-branch-spec.md`): when `true` and the resolved base is
+/// an isolated `LocalBranch`, the successor worktree is cut from the (advanced)
+/// remote-tracking ref `origin/<base>` instead of the stale, permanently
+/// checked-out local automation branch. Non-automation callers pass `false` and
+/// keep the existing local start-point behavior.
+#[allow(clippy::too_many_arguments)]
+pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+    selection: AgentConversationWorkspaceBaseSelection,
+    setup_mode: AgentConversationWorkspaceSetupMode,
+    pr_automation_defaults: AgentConversationWorkspacePrAutomationDefaults,
+    prefer_advanced_origin_base: bool,
+    branch_name_hint: Option<AgentConversationWorkspaceBranchNameHint>,
 ) -> AppResult<AgentConversationWorkspace> {
     let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
@@ -394,7 +432,12 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     let branch_name = if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
         selected_work_ref.clone()
     } else {
-        agent_conversation_branch_name_for_mode(project, conversation_id, mode)
+        agent_conversation_branch_name_for_mode_with_hint(
+            project,
+            conversation_id,
+            mode,
+            branch_name_hint.as_ref(),
+        )
     };
     let workspace_path_started = Instant::now();
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
@@ -607,8 +650,7 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
     }
 
     let base_checkout_ref = base_resolution.effective_checkout_ref()?.to_string();
-    let branch_name =
-        agent_conversation_continuation_branch_name(project, &workspace.conversation_id);
+    let branch_name = agent_conversation_continuation_branch_name(&workspace.branch_name);
 
     let worktree_started = Instant::now();
     ensure_agent_conversation_worktree(
@@ -817,32 +859,141 @@ fn agent_conversation_branch_name_for_mode(
     agent_conversation_branch_name_with_segment(project, conversation_id, segment)
 }
 
+fn agent_conversation_branch_name_for_mode_with_hint(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+    branch_name_hint: Option<&AgentConversationWorkspaceBranchNameHint>,
+) -> String {
+    if mode != AgentConversationWorkspaceMode::Automation {
+        if let Some(segment) = agent_conversation_ticket_branch_segment(branch_name_hint) {
+            return agent_conversation_branch_name_with_segment(project, conversation_id, &segment);
+        }
+    }
+    agent_conversation_branch_name_for_mode(project, conversation_id, mode)
+}
+
+fn agent_conversation_ticket_branch_segment(
+    branch_name_hint: Option<&AgentConversationWorkspaceBranchNameHint>,
+) -> Option<String> {
+    let hint = branch_name_hint?;
+    let provider = slug_branch_component(&hint.provider);
+    if !matches!(provider.as_str(), "jira" | "linear" | "clickup") {
+        return None;
+    }
+    let ticket_token = ticket_branch_token_component(&hint.ticket_token)?;
+    Some(format!("agent-{provider}-{ticket_token}"))
+}
+
 fn agent_conversation_branch_name_with_segment(
     project: &Project,
     conversation_id: &ChatConversationId,
     segment: &str,
 ) -> String {
     let project_slug = slug_branch_component(&project.name);
+    let short_id = agent_conversation_short_id(conversation_id);
+    format!("ralphx/{project_slug}/{segment}-{short_id}")
+}
+
+pub fn is_expected_agent_conversation_branch_name(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    branch_name: &str,
+) -> bool {
+    let canonical_branch = agent_conversation_branch_name(project, conversation_id);
+    if is_branch_or_numeric_continuation(&canonical_branch, branch_name) {
+        return true;
+    }
+
+    let project_slug = slug_branch_component(&project.name);
+    let path_prefix = format!("ralphx/{project_slug}/");
+    let Some(branch_leaf) = branch_name.strip_prefix(&path_prefix) else {
+        return false;
+    };
+    if branch_leaf.contains('/') {
+        return false;
+    }
+
+    let short_id = agent_conversation_short_id(conversation_id);
+    if is_provider_ticket_agent_branch_leaf(branch_leaf, &short_id) {
+        return true;
+    }
+
+    let branch_leaf_without_continuation = strip_numeric_continuation_suffix(branch_leaf);
+    branch_leaf_without_continuation != branch_leaf
+        && is_provider_ticket_agent_branch_leaf(branch_leaf_without_continuation, &short_id)
+}
+
+fn is_provider_ticket_agent_branch_leaf(branch_leaf: &str, short_id: &str) -> bool {
+    let Some(ticket_segment) = branch_leaf.strip_suffix(&format!("-{short_id}")) else {
+        return false;
+    };
+    let Some(ticket_segment) = ticket_segment.strip_prefix("agent-") else {
+        return false;
+    };
+    let Some((provider, ticket_token)) = ticket_segment.split_once('-') else {
+        return false;
+    };
+
+    matches!(provider, "jira" | "linear" | "clickup") && !ticket_token.is_empty()
+}
+
+fn is_branch_or_numeric_continuation(base_branch_name: &str, branch_name: &str) -> bool {
+    if branch_name == base_branch_name {
+        return true;
+    }
+    let continuation_prefix = format!("{base_branch_name}-");
+    branch_name
+        .strip_prefix(&continuation_prefix)
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn strip_numeric_continuation_suffix(branch_leaf: &str) -> &str {
+    branch_leaf
+        .rsplit_once('-')
+        .and_then(|(base, suffix)| {
+            (!suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())).then_some(base)
+        })
+        .unwrap_or(branch_leaf)
+}
+
+fn agent_conversation_short_id(conversation_id: &ChatConversationId) -> String {
     let short_id = conversation_id
         .as_str()
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .take(8)
         .collect::<String>();
-    let short_id = if short_id.is_empty() {
+    if short_id.is_empty() {
         "conversation".to_string()
     } else {
         short_id
-    };
-    format!("ralphx/{project_slug}/{segment}-{short_id}")
+    }
 }
 
-fn agent_conversation_continuation_branch_name(
-    project: &Project,
-    conversation_id: &ChatConversationId,
-) -> String {
-    let base = agent_conversation_branch_name(project, conversation_id);
-    format!("{}-{}", base, Utc::now().timestamp_millis())
+fn ticket_branch_token_component(value: &str) -> Option<String> {
+    let mut token = String::new();
+    let mut last_dash = false;
+
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            token.push(ch);
+            last_dash = false;
+        } else if !last_dash && !token.is_empty() {
+            token.push('-');
+            last_dash = true;
+        }
+    }
+
+    while token.ends_with('-') {
+        token.pop();
+    }
+
+    (!token.is_empty()).then_some(token)
+}
+
+fn agent_conversation_continuation_branch_name(current_branch_name: &str) -> String {
+    format!("{}-{}", current_branch_name, Utc::now().timestamp_millis())
 }
 
 pub fn agent_name_for_workspace_mode(mode: AgentConversationWorkspaceMode) -> &'static str {
@@ -862,6 +1013,21 @@ async fn ensure_agent_conversation_worktree(
     branch_name: &str,
     base_ref: &str,
 ) -> AppResult<()> {
+    let branch_ref_check_started = Instant::now();
+    let branch_name_is_valid = GitService::check_ref_format(repo_path, branch_name).await?;
+    tracing::info!(
+        branch_name,
+        elapsed_ms = branch_ref_check_started.elapsed().as_millis() as u64,
+        branch_name_is_valid,
+        "Agent conversation branch ref format check completed"
+    );
+    if !branch_name_is_valid {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace branch name '{}' is not a valid git ref",
+            branch_name
+        )));
+    }
+
     let exists_started = Instant::now();
     let workspace_exists = workspace_path.exists();
     tracing::info!(
@@ -2484,6 +2650,115 @@ mod tests {
         assert_eq!(
             workspace.base_display_name.as_deref(),
             Some("Current branch (feature/current-work)")
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_agent_conversation_workspace_uses_ticket_branch_name_hint() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Ticket Branch".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
+        let workspace =
+            prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+                &project,
+                &conversation_id,
+                AgentConversationWorkspaceMode::Edit,
+                AgentConversationWorkspaceBaseSelection {
+                    kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                    branch_mode: None,
+                    base_ref: Some("main".to_string()),
+                    display_name: None,
+                    source_pull_request: None,
+                },
+                AgentConversationWorkspaceSetupMode::Deferred,
+                AgentConversationWorkspacePrAutomationDefaults::default(),
+                false,
+                Some(AgentConversationWorkspaceBranchNameHint {
+                    provider: "jira".to_string(),
+                    ticket_token: "PROJ-123".to_string(),
+                }),
+            )
+            .await
+            .expect("workspace should be prepared");
+
+        assert!(
+            workspace
+                .branch_name
+                .starts_with("ralphx/agent-ticket-branch/agent-jira-PROJ-123-11111111"),
+            "unexpected branch name: {}",
+            workspace.branch_name
+        );
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(
+            workspace.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_agent_conversation_workspace_sanitizes_ticket_branch_name_hint() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Unsafe Ticket".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+        let workspace =
+            prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+                &project,
+                &conversation_id,
+                AgentConversationWorkspaceMode::Edit,
+                AgentConversationWorkspaceBaseSelection {
+                    kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                    branch_mode: None,
+                    base_ref: Some("main".to_string()),
+                    display_name: None,
+                    source_pull_request: None,
+                },
+                AgentConversationWorkspaceSetupMode::Deferred,
+                AgentConversationWorkspacePrAutomationDefaults::default(),
+                false,
+                Some(AgentConversationWorkspaceBranchNameHint {
+                    provider: "clickup".to_string(),
+                    ticket_token: "CU/../42.lock".to_string(),
+                }),
+            )
+            .await
+            .expect("workspace should be prepared");
+
+        assert!(
+            workspace
+                .branch_name
+                .starts_with("ralphx/agent-unsafe-ticket/agent-clickup-CU-42-lock-22222222"),
+            "unexpected branch name: {}",
+            workspace.branch_name
+        );
+        assert!(
+            GitService::check_ref_format(&repo_path, &workspace.branch_name)
+                .await
+                .expect("ref format check should run"),
+            "generated ticket branch should be a valid git ref"
         );
     }
 
