@@ -20,7 +20,7 @@ use crate::domain::entities::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::{
-    agent_subprocess_env_path, prepend_resolved_node_bin_to_path, resolve_shell_cli_path,
+    agent_subprocess_env_path, ensure_resolved_node_bin_in_path, resolve_shell_cli_path,
 };
 use crate::utils::path_safety::validate_absolute_non_root_path;
 use crate::utils::truncate_str;
@@ -466,9 +466,7 @@ async fn execute_shell_command(
     event_context: Option<ValidationCommandEventContext>,
 ) -> AppResult<std::process::Output> {
     let mut command = tokio::process::Command::new(resolve_shell_cli_path());
-    crate::infrastructure::login_shell_env::apply_to(&mut command);
-    command.env("PATH", agent_subprocess_env_path());
-    prepend_resolved_node_bin_to_path(command.as_std_mut());
+    configure_validation_shell_command(&mut command);
 
     let mut child = command
         .arg("-c")
@@ -507,6 +505,17 @@ async fn execute_shell_command(
             )))
         }
     }
+}
+
+fn configure_validation_shell_command(command: &mut tokio::process::Command) {
+    crate::infrastructure::login_shell_env::apply_to(command);
+    command.env("PATH", agent_subprocess_env_path());
+    ensure_resolved_node_bin_in_path(command.as_std_mut());
+}
+
+#[cfg(test)]
+pub(crate) fn configure_validation_shell_command_for_test(command: &mut tokio::process::Command) {
+    configure_validation_shell_command(command);
 }
 
 fn reject_disallowed_runner(caller_agent: &Option<String>, policy_enabled: bool) -> AppResult<()> {

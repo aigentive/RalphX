@@ -257,7 +257,7 @@ fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
         "RALPHX_AGENT_SCREENSHOT_DIR",
         crate::utils::runtime_log_paths::agent_screenshot_dir(),
     );
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd);
     // Provider-neutral setsid wrapper — same helper Codex uses. See
     // `crate::infrastructure::agents::spawn_isolation` for rationale.
     crate::infrastructure::agents::spawn_isolation::install_setsid_pre_exec(cmd);
@@ -2310,6 +2310,13 @@ mod tests {
         }
     }
 
+    fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
+        entries
+            .iter()
+            .position(|entry| entry == path.as_ref())
+            .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
+    }
+
     /// build_spawnable_command calls ensure_claude_spawn_allowed() which returns
     /// Err in tests — exercise the function up to that guard.
     #[test]
@@ -2385,6 +2392,14 @@ mod tests {
 
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
+        if let Some(home) = dirs::home_dir() {
+            let cargo_bin = home.join(".cargo").join("bin");
+            let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+            assert!(
+                path_index(&entries, &cargo_bin) < path_index(&entries, "/opt/homebrew/bin"),
+                "user cargo shim should stay before Homebrew in Claude spawn PATH: {path}"
+            );
+        }
 
         let screenshot_dir = command
             .as_std()
@@ -2398,14 +2413,17 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_common_spawn_env_prepends_resolved_node_bin_to_path() {
-        let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
-            .parent()
-            .map(PathBuf::from)
-            .expect("resolved node bin");
+    fn test_apply_common_spawn_env_preserves_user_shims_while_ensuring_node_bin() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
+        let _disable_login_shell =
+            EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
+        let expected_node_bin = PathBuf::from("/tmp/fake-node-bin");
 
         let mut cmd = Command::new("/usr/bin/env");
-        cmd.env("PATH", "/usr/bin:/bin");
         apply_common_spawn_env(&mut cmd);
 
         let envs = cmd
@@ -2420,12 +2438,22 @@ mod tests {
             .expect("PATH env");
         let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
 
-        assert_eq!(path_entries.first(), Some(&expected_node_bin));
+        if let Some(home) = dirs::home_dir() {
+            let cargo_bin = home.join(".cargo").join("bin");
+            assert!(
+                path_index(&path_entries, &cargo_bin)
+                    < path_index(&path_entries, &expected_node_bin),
+                "user cargo shim should stay before inserted Node bin: {path_value:?}"
+            );
+        }
+        assert!(
+            path_index(&path_entries, &expected_node_bin) < path_index(&path_entries, "/usr/bin")
+        );
     }
 
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn register_mcp_server_prepends_resolved_node_for_env_shim() {
+    async fn register_mcp_server_ensures_resolved_node_for_env_shim() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
             .lock()
             .expect("env mutex");
