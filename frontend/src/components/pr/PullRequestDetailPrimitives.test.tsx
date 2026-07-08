@@ -71,6 +71,49 @@ describe("PrMarkdown", () => {
     expect(details).not.toHaveTextContent("<strong>");
   });
 
+  it("decodes summary entities and falls back when the summary has no text", () => {
+    render(
+      <PrMarkdown
+        content={[
+          "<details>",
+          "<summary>Hex &#x41; decimal &#65; invalid &#x110000; &unknown;</summary>",
+          "",
+          "Entity body",
+          "</details>",
+          "",
+          "<details>",
+          "<summary><span></span><!-- hidden --></summary>",
+          "",
+          "Fallback body",
+          "</details>",
+        ].join("\n")}
+      />,
+    );
+
+    const details = screen.getAllByTestId("pr-markdown-details");
+    expect(
+      within(details[0]!).getByText("Hex A decimal A invalid &#x110000; &unknown;"),
+    ).toBeInTheDocument();
+    expect(within(details[1]!).getByText("Details")).toBeInTheDocument();
+  });
+
+  it("keeps unterminated summary markup as text", () => {
+    render(
+      <PrMarkdown
+        content={[
+          "<details>",
+          "<summary>View <unfinished</summary>",
+          "",
+          "Body",
+          "</details>",
+        ].join("\n")}
+      />,
+    );
+
+    const details = screen.getByTestId("pr-markdown-details");
+    expect(within(details).getByText("View <unfinished")).toBeInTheDocument();
+  });
+
   it("does not render unsupported raw HTML as DOM", () => {
     const { container } = render(
       <PrMarkdown content={"Before\n\n<script>alert('x')</script>\n\nAfter"} />,
@@ -139,6 +182,73 @@ describe("PrMarkdown", () => {
     expect(within(details).getByText("Before code")).toBeInTheDocument();
     expect(details).toHaveTextContent("Example snippet");
     expect(within(details).getByText("After code")).toBeInTheDocument();
+  });
+
+  it("renders nested details while ignoring literal tags in body code and comments", () => {
+    render(
+      <PrMarkdown
+        content={[
+          "<details>",
+          "<summary>Outer</summary>",
+          "",
+          "Before nested content",
+          "",
+          "Inline code `<details><summary>Code</summary></details>` stays literal.",
+          "Closed code span `done` <details><summary>Inline nested</summary></details> stays literal.",
+          "",
+          "    <details><summary>Indented</summary></details>",
+          "",
+          "<!-- </details> -->",
+          "",
+          "<details>",
+          "<summary>Inner</summary>",
+          "Inner body",
+          "</details>",
+          "",
+          "After nested content",
+          "</details>",
+        ].join("\n")}
+      />,
+    );
+
+    const details = screen.getAllByTestId("pr-markdown-details");
+    expect(details).toHaveLength(2);
+    expect(within(details[0]!).getByText("Outer")).toBeInTheDocument();
+    expect(within(details[0]!).getByText("Before nested content")).toBeInTheDocument();
+    expect(within(details[0]!).getByText(/Code/)).toBeInTheDocument();
+    expect(within(details[0]!).getByText(/Inline nested/)).toBeInTheDocument();
+    expect(within(details[0]!).getByText(/Indented/)).toBeInTheDocument();
+    expect(within(details[1]!).getByText("Inner")).toBeInTheDocument();
+    expect(within(details[1]!).getByText("Inner body")).toBeInTheDocument();
+    expect(within(details[0]!).getByText("After nested content")).toBeInTheDocument();
+  });
+
+  it("preserves details blocks that cannot be parsed safely", () => {
+    const { container } = render(
+      <PrMarkdown
+        content={[
+          "Before",
+          "",
+          "<details>",
+          "No summary",
+          "</details>",
+          "",
+          "<details>",
+          "<details>",
+          "<summary>Nested before summary</summary>",
+          "</details>",
+          "</details>",
+          "",
+          "After",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.queryByTestId("pr-markdown-details")).not.toBeInTheDocument();
+    expect(container.textContent).toContain("<details>");
+    expect(container.textContent).toContain("No summary");
+    expect(container.textContent).toContain("Nested before summary");
+    expect(container.textContent).toContain("After");
   });
 
   it("preserves malformed details markup as text", () => {
