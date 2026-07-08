@@ -387,6 +387,8 @@ pub struct ReviewSettingsResponse {
     pub require_fix_approval: bool,
     /// Whether eligible registered agent issues auto-create visible follow-up Agent conversations.
     pub auto_create_followup_agent_conversation: bool,
+    /// Whether blocking Workspace Review findings automatically spawn the workspace repair agent.
+    pub autofix_workspace_review_blocking_findings: bool,
     /// Whether task execution agents may run backend-managed validation commands.
     pub run_task_validations: bool,
 }
@@ -402,6 +404,7 @@ pub struct UpdateReviewSettingsInput {
     pub max_fix_attempts: Option<u32>,
     pub max_revision_cycles: Option<u32>,
     pub auto_create_followup_agent_conversation: Option<bool>,
+    pub autofix_workspace_review_blocking_findings: Option<bool>,
     pub run_task_validations: Option<bool>,
 }
 
@@ -418,6 +421,8 @@ impl From<ReviewSettings> for ReviewSettingsResponse {
             ai_review_auto_fix: s.ai_review_auto_fix,
             require_fix_approval: s.require_fix_approval,
             auto_create_followup_agent_conversation: s.auto_create_followup_agent_conversation,
+            autofix_workspace_review_blocking_findings: s
+                .autofix_workspace_review_blocking_findings,
             run_task_validations: s.run_task_validations,
         }
     }
@@ -431,12 +436,14 @@ mod tests {
     fn review_settings_response_includes_task_validation_policy() {
         let settings = ReviewSettings {
             run_task_validations: false,
+            autofix_workspace_review_blocking_findings: false,
             ..ReviewSettings::default()
         };
 
         let response = ReviewSettingsResponse::from(settings);
 
         assert!(!response.run_task_validations);
+        assert!(!response.autofix_workspace_review_blocking_findings);
         assert!(response.ai_review_enabled);
         assert!(response.auto_create_followup_agent_conversation);
     }

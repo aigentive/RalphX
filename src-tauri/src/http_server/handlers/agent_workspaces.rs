@@ -23,7 +23,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewGoalContext,
+    review_gate_publish_blocker, start_agent_workspace_review,
+    start_agent_workspace_review_blocking_fixer, AgentWorkspaceReviewGoalContext,
     AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
@@ -55,6 +56,7 @@ use crate::domain::entities::{
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
 };
+use crate::error::AppError;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct CompleteAgentWorkspaceRepairRequest {
@@ -634,6 +636,19 @@ pub struct StartAgentWorkspaceReviewResponse {
     pub started: bool,
     pub skipped_reason: Option<String>,
     pub was_queued: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StartAgentWorkspaceReviewFixerResponse {
+    pub success: bool,
+    pub target: Option<AgentWorkspaceReviewTargetResponse>,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub goal_context: AgentWorkspaceReviewGoalContext,
+    pub is_current: bool,
+    pub is_outdated: bool,
+    pub should_show_tab: bool,
+    pub started: bool,
+    pub skipped_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1245,6 +1260,15 @@ pub async fn get_agent_workspace_review_context(
     }))
 }
 
+fn workspace_review_action_error(error: AppError) -> JsonError {
+    let status = match &error {
+        AppError::Validation(_) | AppError::Conflict(_) => StatusCode::CONFLICT,
+        AppError::NotFound(_) | AppError::ProjectNotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    json_error(status, error.to_string(), None)
+}
+
 /// POST /api/agent-workspaces/{conversation_id}/workspace-review-runs
 pub async fn start_agent_workspace_review_run(
     State(state): State<HttpServerState>,
@@ -1307,6 +1331,65 @@ pub async fn start_agent_workspace_review_run(
         started: start.started,
         skipped_reason: start.skipped_reason,
         was_queued: start.was_queued,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/workspace-review-fixer-runs
+pub async fn start_agent_workspace_review_fixer_run(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<StartAgentWorkspaceReviewFixerResponse>, JsonError> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let start = start_agent_workspace_review_blocking_fixer(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
+    let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
+    let diff_fingerprint = compact_workspace_review_log_fingerprint(
+        start
+            .context
+            .target
+            .as_ref()
+            .map(|target| target.diff_fingerprint.as_str()),
+    );
+    let skipped_reason = start
+        .skipped_reason
+        .as_deref()
+        .unwrap_or("none")
+        .to_string();
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_fixer_start_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        started = start.started,
+        skipped_reason = %skipped_reason,
+        monitor_status = %start.context.monitor.status,
+        review_fixer_status = %start.context.monitor.review_fixer_status.as_deref().unwrap_or("none"),
+        target_scope = %target_scope,
+        diff_fingerprint = %diff_fingerprint,
+        is_current = start.context.is_current,
+        is_outdated = start.context.is_outdated,
+        has_artifact = start.context.monitor.review_artifact_id.is_some(),
+        "Handled workspace Review fixer start request"
+    );
+
+    Ok(Json(StartAgentWorkspaceReviewFixerResponse {
+        success: true,
+        target: start
+            .context
+            .target
+            .map(AgentWorkspaceReviewTargetResponse::from),
+        monitor: AgentWorkspaceReviewMonitorResponse::from(start.context.monitor),
+        goal_context: start.context.goal_context,
+        is_current: start.context.is_current,
+        is_outdated: start.context.is_outdated,
+        should_show_tab: start.context.should_show_tab,
+        started: start.started,
+        skipped_reason: start.skipped_reason,
     }))
 }
 
@@ -3650,7 +3733,11 @@ async fn resume_initial_auto_publish_after_workspace_review(
                 ))
                 .await
                 .map_err(|repo_error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, repo_error.to_string(), None)
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        repo_error.to_string(),
+                        None,
+                    )
                 })?;
             Ok(())
         }
@@ -8351,7 +8438,8 @@ mod tests {
 
     #[tokio::test]
     async fn blocking_review_is_noop_for_non_automation_conversation() {
-        let fixture = setup_workspace_for_review_completion("block-interactive", false, false).await;
+        let fixture =
+            setup_workspace_for_review_completion("block-interactive", false, false).await;
         let state = test_http_state(Arc::clone(&fixture.app_state));
 
         // No automation linked → the handler must still succeed and not attempt any pause.
