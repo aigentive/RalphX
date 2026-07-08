@@ -4,9 +4,13 @@ import {
   FileText,
   GitPullRequestArrow,
   LayoutGrid,
+  ListPlus,
   Network,
+  Rocket,
   ClipboardList,
   ScrollText,
+  ShieldCheck,
+  Sparkles,
   Ticket,
   Workflow,
   X,
@@ -53,7 +57,6 @@ import type {
   PlanDisplayBodyMode,
   TeamMetadata,
 } from "@/components/Ideation/PlanDisplay";
-import { AcceptedPlanProgressBanner } from "@/components/Ideation/AcceptedSessionBanner";
 import { useChatStore } from "@/stores/chatStore";
 import {
   selectActivePlanId,
@@ -92,6 +95,11 @@ import {
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
+import {
+  PlanLifecycleBanner,
+  type PlanLifecycleAction,
+  type PlanLifecycleState,
+} from "./PlanLifecycleBanner";
 import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
@@ -712,15 +720,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     [visibleImplementationTasks],
   );
   const visibleImplementationTaskCount = implementationTaskCounts.total;
-  const hasAttachedImplementationWork = Boolean(
-    visibleImplementationTaskCount > 0 || hasProposalCreatedTasks,
-  );
-  const hasImplementationAttempt = Boolean(
-    hasAttachedImplementationWork ||
-      (session?.status === "accepted" &&
-        workspace?.linkedPlanBranchId &&
-        !hasForeignActivePlan),
-  );
+  const hasImplementationAttempt = visibleImplementationTaskCount > 0;
   const planArtifactId = shouldLoadIdeationData
     ? (sessionData?.session.planArtifactId ??
       sessionData?.session.inheritedPlanArtifactId ??
@@ -1884,6 +1884,7 @@ function AgentPlanPanel({
     isAssessing: isPlanRecommendationPending,
     canChoose: canImplementDirectly && canCreateProposals,
   });
+  const primaryPlanAction = planComplexityQuery.data?.recommendedAction;
   const isAcceptedPlan = session?.status === "accepted";
   const canRestartImplementation = Boolean(
     isAcceptedPlan && implementationTaskCounts.total > 0 && session?.id,
@@ -2105,6 +2106,141 @@ function AgentPlanPanel({
     workspaceConversationId,
   ]);
 
+  const planLifecycleState = useMemo<PlanLifecycleState | null>(() => {
+    if (!planArtifact) {
+      return null;
+    }
+    if (hasImplementationAttempt) {
+      return "accepted";
+    }
+    if (isPlanApproved) {
+      return "approved";
+    }
+    return "needs_approval";
+  }, [hasImplementationAttempt, isPlanApproved, planArtifact]);
+  const showCreateProposalsLifecycleAction = Boolean(
+    canCreateProposals && linkedProposalsCount === 0,
+  );
+  const planLifecycleActions = useMemo<PlanLifecycleAction[]>(() => {
+    if (!planLifecycleState || planLifecycleState === "accepted") {
+      return [];
+    }
+
+    const actions: PlanLifecycleAction[] = [];
+    const verifyPending =
+      isStartingPlanVerification || verificationInProgress;
+    const verifyAction = canVerifyPlan
+      ? ({
+          key: "verify",
+          label: verifyPending ? "Verifying..." : "Verify Plan",
+          onClick: () => {
+            void handleVerifyPlan();
+          },
+          icon: ShieldCheck,
+          disabled: isPlanRecommendationPending,
+          loading: verifyPending,
+          testId: "plan-lifecycle-verify-button",
+        } satisfies PlanLifecycleAction)
+      : null;
+
+    if (planLifecycleState === "needs_approval") {
+      if (canApprovePlan) {
+        actions.push({
+          key: "approve",
+          label: isApprovingPlan ? "Approving..." : "Approve Plan",
+          onClick: () => {
+            void handleApprovePlan();
+          },
+          icon: Sparkles,
+          loading: isApprovingPlan,
+          primary: true,
+          testId: "plan-lifecycle-approve-button",
+        });
+      }
+      if (verifyAction) {
+        actions.push(verifyAction);
+      }
+      return actions;
+    }
+
+    const createAction: PlanLifecycleAction | null = showCreateProposalsLifecycleAction
+      ? ({
+          key: "create-proposals",
+          label: "Create Proposals",
+          onClick: () => {
+            void handleCreateProposals();
+          },
+          icon: ListPlus,
+          disabled: isPlanRecommendationPending,
+          primary:
+            !isPlanRecommendationPending &&
+            (primaryPlanAction === "create_proposals" ||
+              (!canImplementDirectly && showCreateProposalsLifecycleAction)),
+          testId: "plan-lifecycle-create-proposals-button",
+        } satisfies PlanLifecycleAction)
+      : null;
+    const implementAction: PlanLifecycleAction | null = canImplementDirectly
+      ? ({
+          key: "implement-directly",
+          label: isImplementingPlanDirectly ? "Starting..." : "Implement Directly",
+          onClick: () => {
+            void handleImplementDirectly();
+          },
+          icon: Rocket,
+          disabled: isPlanRecommendationPending,
+          loading: isImplementingPlanDirectly,
+          primary:
+            !isPlanRecommendationPending &&
+            (primaryPlanAction === "implement_directly" ||
+              (canImplementDirectly && !showCreateProposalsLifecycleAction)),
+          testId: "plan-lifecycle-implement-directly-button",
+        } satisfies PlanLifecycleAction)
+      : null;
+    const nextStepActions =
+      primaryPlanAction === "implement_directly"
+        ? [implementAction, createAction]
+        : [createAction, implementAction];
+
+    for (const action of nextStepActions) {
+      if (action) {
+        actions.push(action);
+      }
+    }
+    if (verifyAction) {
+      actions.push(verifyAction);
+    }
+    return actions;
+  }, [
+    canApprovePlan,
+    canImplementDirectly,
+    canVerifyPlan,
+    handleApprovePlan,
+    handleCreateProposals,
+    handleImplementDirectly,
+    handleVerifyPlan,
+    isApprovingPlan,
+    isImplementingPlanDirectly,
+    isPlanRecommendationPending,
+    isStartingPlanVerification,
+    planLifecycleState,
+    primaryPlanAction,
+    showCreateProposalsLifecycleAction,
+    verificationInProgress,
+  ]);
+  const planLifecycleDescription =
+    planLifecycleState === "accepted"
+      ? "Implementation work is attached to this plan."
+      : planLifecycleState === "approved"
+        ? (planActionHint ??
+          "Choose the next step for this approved plan.")
+        : "Approve this plan before creating proposals or implementation work.";
+  const planLifecycleTitle =
+    planLifecycleState === "needs_approval"
+      ? "Plan needs approval"
+      : planLifecycleState === "approved"
+        ? "Plan approved"
+        : "Plan accepted";
+
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
   }
@@ -2127,11 +2263,17 @@ function AgentPlanPanel({
           </Suspense>
         ) : (
           <>
-            {hasImplementationAttempt && (
-              <AcceptedPlanProgressBanner
-                counts={implementationTaskCounts}
-                acceptedAt={session?.convertedAt ?? null}
-                onViewWork={onOpenTasks}
+            {planLifecycleState && (
+              <PlanLifecycleBanner
+                state={planLifecycleState}
+                title={planLifecycleTitle}
+                description={planLifecycleDescription}
+                actions={planLifecycleActions}
+                {...(planLifecycleState === "accepted" && {
+                  counts: implementationTaskCounts,
+                  acceptedAt: session?.convertedAt ?? null,
+                  onViewWork: onOpenTasks,
+                })}
                 {...(canRestartImplementation && {
                   onRestartImplementation: handleRestartImplementation,
                   canRestartImplementation,
@@ -2157,34 +2299,6 @@ function AgentPlanPanel({
                 onExpandedChange={setIsPlanExpanded}
                 chromeless
                 {...(teamMetadata !== undefined && { teamMetadata })}
-                {...(canApprovePlan && {
-                  showApprove: true,
-                  onApprove: handleApprovePlan,
-                  isApproving: isApprovingPlan,
-                })}
-                {...(isOwnedCurrentPlan && { isApproved: isPlanApproved })}
-                {...(canVerifyPlan && {
-                  onVerifyPlan: handleVerifyPlan,
-                  isVerifyingPlan:
-                    isStartingPlanVerification || verificationInProgress,
-                })}
-                {...(canImplementDirectly && {
-                  onImplementDirectly: handleImplementDirectly,
-                  isImplementingDirectly: isImplementingPlanDirectly,
-                })}
-                {...(planComplexityQuery.data && {
-                  primaryPlanAction: planComplexityQuery.data.recommendedAction,
-                })}
-                {...(isPlanRecommendationPending && {
-                  isPlanActionRecommendationPending: true,
-                })}
-                {...(planActionHint && { planActionHint })}
-                {...(canCreateProposals && {
-                  onCreateProposals: handleCreateProposals,
-                })}
-                {...(isPlanningSession && {
-                  createProposalsLabel: "Create Proposals",
-                })}
               />
             </Suspense>
             {planBodyMode === "proposals" &&

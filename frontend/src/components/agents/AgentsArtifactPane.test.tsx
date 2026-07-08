@@ -904,6 +904,15 @@ function approvedPlanArtifact() {
   };
 }
 
+function draftPlanArtifact() {
+  return {
+    ...approvedPlanArtifact(),
+    planApproval: {
+      status: "draft",
+    },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -4411,7 +4420,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(
-      await screen.findByTestId("accepted-session-banner"),
+      await screen.findByTestId("plan-lifecycle-banner"),
     ).toHaveTextContent("1 task");
     expect(screen.getByText("1 in progress")).toBeInTheDocument();
     expect(
@@ -4466,7 +4475,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(
-      await screen.findByTestId("accepted-session-banner"),
+      await screen.findByTestId("plan-lifecycle-banner"),
     ).toHaveTextContent("1 task");
     expect(
       await screen.findByTestId("agents-artifact-tab-tasks"),
@@ -4522,7 +4531,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(
-      await screen.findByTestId("accepted-session-banner"),
+      await screen.findByTestId("plan-lifecycle-banner"),
     ).toHaveTextContent("1 task");
     expect(screen.getByText("1 in progress")).toBeInTheDocument();
     expect(screen.queryByText("1 blocked")).not.toBeInTheDocument();
@@ -4569,11 +4578,12 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(
-      await screen.findByTestId("accepted-session-banner"),
-    ).toBeInTheDocument();
+      await screen.findByTestId("plan-lifecycle-banner"),
+    ).toHaveAttribute("data-lifecycle-state", "approved");
     expect(
       screen.queryByTestId("restart-implementation-button"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
   });
 
   it("hides work UI for stale accepted fields without attached implementation tasks", async () => {
@@ -4939,6 +4949,229 @@ describe("AgentsArtifactPane", () => {
       planTab.querySelector("span[style='background: var(--accent-primary);']"),
     ).not.toBeNull();
     expect(useDependencyGraphMock).toHaveBeenLastCalledWith("");
+  });
+
+  it("shows a warning lifecycle banner for a draft plan with stale accepted fields", async () => {
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "active",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(draftPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const banner = await screen.findByTestId("plan-lifecycle-banner");
+
+    expect(banner).toHaveAttribute("data-lifecycle-state", "needs_approval");
+    expect(
+      banner.style.getPropertyValue("--plan-lifecycle-accent"),
+    ).toBe("var(--status-warning)");
+    expect(within(banner).getByText("Plan needs approval")).toBeInTheDocument();
+    expect(
+      within(banner).getByRole("button", { name: /Approve Plan/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(banner).getByRole("button", { name: /Verify Plan/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+
+    const planDisplay = screen.getByTestId("plan-display-chromeless");
+    expect(
+      within(planDisplay).queryByTestId("plan-approve-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByTestId("plan-verify-button"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows an info lifecycle banner for an approved plan without work", async () => {
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-1",
+      sessionId: "session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "complex",
+      score: 82,
+      recommendedAction: "create_proposals",
+      confidence: 0.88,
+      reasonSummary:
+        "Multiple dependent work items need tracked review checkpoints.",
+      signals: { dependency_count: 4 },
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-04-23T09:31:00Z",
+      updatedAt: "2026-04-23T09:31:00Z",
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const banner = await screen.findByTestId("plan-lifecycle-banner");
+
+    expect(banner).toHaveAttribute("data-lifecycle-state", "approved");
+    expect(
+      banner.style.getPropertyValue("--plan-lifecycle-accent"),
+    ).toBe("var(--status-info)");
+    expect(within(banner).getByText("Plan approved")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(banner).getByText(/Recommended: Create Proposals/i),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(banner).getByRole("button", { name: /Create Proposals/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(banner).getByRole("button", { name: /Implement Directly/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(banner).getByRole("button", { name: /Verify Plan/i }),
+    ).toBeInTheDocument();
+    expect(within(banner).queryByText(/\d+ tasks?/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+
+    const planDisplay = screen.getByTestId("plan-display-chromeless");
+    expect(
+      within(planDisplay).queryByTestId("plan-verify-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses the success lifecycle banner only when accepted work exists", async () => {
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-active",
+          executionPlanId: "exec-current",
+          internalStatus: "executing",
+        }),
+        task({
+          id: "task-done",
+          executionPlanId: "exec-current",
+          internalStatus: "merged",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const banner = await screen.findByTestId("plan-lifecycle-banner");
+
+    expect(banner).toHaveAttribute("data-lifecycle-state", "accepted");
+    expect(
+      banner.style.getPropertyValue("--plan-lifecycle-accent"),
+    ).toBe("var(--status-success)");
+    expect(within(banner).getByText("Plan accepted")).toBeInTheDocument();
+    expect(within(banner).getByText("2 tasks")).toBeInTheDocument();
+    expect(within(banner).getByText("1 in progress")).toBeInTheDocument();
+    expect(within(banner).getByText("1 completed")).toBeInTheDocument();
+    expect(
+      within(banner).getByRole("button", { name: /View Work/i }),
+    ).toBeInTheDocument();
+    expect(within(banner).queryByText("Plan approved")).not.toBeInTheDocument();
+  });
+
+  it("leaves only the Plan proposals toggle in the plan title action row", async () => {
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({}, [
+        taskProposal({
+          id: "proposal-1",
+          title: "Keep proposals in Plan",
+          status: "pending",
+          createdTaskId: null,
+        }),
+      ]),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const banner = await screen.findByTestId("plan-lifecycle-banner");
+    const planDisplay = screen.getByTestId("plan-display-chromeless");
+
+    expect(
+      within(banner).getByRole("button", { name: /Implement Directly/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(banner).getByRole("button", { name: /Verify Plan/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(planDisplay).getByTestId("plan-proposals-toggle"),
+    ).toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByTestId("plan-approve-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByTestId("plan-verify-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(planDisplay).queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows plan complexity guidance while still allowing direct implementation", async () => {
@@ -5482,7 +5715,7 @@ describe("AgentsArtifactPane", () => {
       },
     );
 
-    expect(await screen.findByText("Plan Approved")).toBeInTheDocument();
+    expect(await screen.findByText("Plan approved")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
@@ -5556,7 +5789,7 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    expect(await screen.findByText("Plan Approved")).toBeInTheDocument();
+    expect(await screen.findByText("Plan approved")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Verify Plan/i }),
     ).not.toBeInTheDocument();
