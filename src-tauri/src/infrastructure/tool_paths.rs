@@ -95,6 +95,7 @@ pub(crate) fn agent_subprocess_env_path() -> OsString {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn agent_subprocess_env_path_from_parts(
     existing_path: Option<&OsStr>,
     home_dir: Option<&Path>,

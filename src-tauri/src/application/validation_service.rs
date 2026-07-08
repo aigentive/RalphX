@@ -513,7 +513,7 @@ fn configure_validation_shell_command(command: &mut tokio::process::Command) {
     ensure_resolved_node_bin_in_path(command.as_std_mut());
 }
 
-#[doc(hidden)]
+#[cfg(test)]
 pub(crate) fn configure_validation_shell_command_for_test(command: &mut tokio::process::Command) {
     configure_validation_shell_command(command);
 }
