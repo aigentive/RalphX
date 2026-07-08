@@ -18,6 +18,8 @@ const TICKET_ATTACHMENTS_DIR: &str = "ticket_attachments";
 const CONTENT_FILE_STEM: &str = "content";
 const MAX_ATTACHMENT_FETCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INLINE_TEXT_BYTES: usize = 64 * 1024;
+const UNSAFE_EXTERNAL_LINK_REASON: &str =
+    "Attachment external link was withheld because it appears to contain credentials or bearer access material";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -237,12 +239,13 @@ impl TicketAttachmentService {
 
         let result = match entry.metadata.retrieval_kind {
             TicketAttachmentRetrievalKind::ExternalLink => match entry.external_url.as_deref() {
-                Some(url) if !url.trim().is_empty() => {
-                    TicketAttachmentFetchResult::external_link(
-                        url.to_string(),
+                Some(url) => match safe_agent_external_url(url) {
+                    Ok(url) => TicketAttachmentFetchResult::external_link(
+                        url,
                         Some(entry.metadata.name.clone()),
-                    )
-                }
+                    ),
+                    Err(reason) => TicketAttachmentFetchResult::unsupported(reason),
+                },
                 _ => TicketAttachmentFetchResult::unsupported(
                     "Attachment external link is unavailable".to_string(),
                 ),
@@ -739,6 +742,66 @@ fn normalized_ticket(
 
 fn normalized_provider(provider: &str) -> String {
     provider.trim().to_ascii_lowercase()
+}
+
+fn safe_agent_external_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("Attachment external link is unavailable".to_string());
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err(
+            "Attachment external link was withheld because only HTTP(S) links are supported"
+                .to_string(),
+        );
+    }
+    if url_contains_credentials(&lower) || url_contains_sensitive_material(trimmed) {
+        return Err(UNSAFE_EXTERNAL_LINK_REASON.to_string());
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn url_contains_credentials(lower_url: &str) -> bool {
+    let without_scheme = lower_url
+        .strip_prefix("https://")
+        .or_else(|| lower_url.strip_prefix("http://"))
+        .unwrap_or(lower_url);
+    without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .contains('@')
+}
+
+fn url_contains_sensitive_material(url: &str) -> bool {
+    if crate::utils::secret_redactor::redact(url) != url {
+        return true;
+    }
+
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("bearer%20") || lower.contains("authorization%3a") {
+        return true;
+    }
+
+    lower
+        .split(['?', '#'])
+        .skip(1)
+        .flat_map(|tail| tail.split(['&', ';', '#']))
+        .filter_map(|pair| pair.split_once('=').map(|(key, _)| key.trim()))
+        .any(is_sensitive_url_param)
+}
+
+fn is_sensitive_url_param(key: &str) -> bool {
+    matches!(
+        key,
+        "authorization" | "auth" | "bearer" | "jwt" | "key" | "sig" | "signature"
+    ) || key.contains("token")
+        || key.contains("secret")
+        || key.ends_with("_key")
+        || key.ends_with("apikey")
 }
 
 fn derived_attachment_id(provider: &str, name: &str, index: usize) -> String {

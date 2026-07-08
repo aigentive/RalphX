@@ -301,6 +301,35 @@ async fn fetch_attachment_returns_inline_text_external_link_and_cached_binary_re
 }
 
 #[tokio::test]
+async fn fetch_attachment_withholds_token_bearing_external_links() {
+    let fixture = fixture_service_with_linear_url(
+        "https://linear.app/acme/attachment/linear-a1?access_token=secret-value",
+    )
+    .await;
+    let service = &fixture.service;
+
+    let response = service
+        .fetch_attachment(TicketAttachmentFetchRequest {
+            ticket: ticket("linear", "lin-issue-1", Some("LIN-1"), None),
+            attachment_id: "linear-a1".to_string(),
+        })
+        .await
+        .expect("linear fetch should stay bounded");
+
+    assert_eq!(
+        response.result.status,
+        TicketAttachmentFetchStatus::Unsupported
+    );
+    assert_eq!(response.result.external_link, None);
+    assert_eq!(
+        response.result.unsupported_reason.as_deref(),
+        Some(
+            "Attachment external link was withheld because it appears to contain credentials or bearer access material"
+        )
+    );
+}
+
+#[tokio::test]
 async fn unsupported_provider_returns_clear_reason_without_fetching() {
     let fixture = fixture_service().await;
     let service = &fixture.service;
@@ -320,6 +349,10 @@ async fn unsupported_provider_returns_clear_reason_without_fetching() {
 }
 
 async fn fixture_service() -> ServiceFixture {
+    fixture_service_with_linear_url("https://linear.app/acme/attachment/linear-a1").await
+}
+
+async fn fixture_service_with_linear_url(linear_attachment_url: &str) -> ServiceFixture {
     let fixture = Arc::new(AttachmentFixture {
         jira_content: AtlassianResourceContent {
             kind: AtlassianResourceKind::Jira,
@@ -363,7 +396,7 @@ async fn fixture_service() -> ServiceFixture {
                 id: "linear-a1".to_string(),
                 title: "Design spec".to_string(),
                 subtitle: Some("External link".to_string()),
-                url: "https://linear.app/acme/attachment/linear-a1".to_string(),
+                url: linear_attachment_url.to_string(),
             }],
             labels: Vec::new(),
             project: Some("Platform".to_string()),

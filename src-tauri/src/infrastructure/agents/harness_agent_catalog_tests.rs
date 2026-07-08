@@ -2190,6 +2190,124 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
 }
 
 #[test]
+fn ticket_attachment_tools_are_limited_to_ticket_reference_agent_surfaces() {
+    let root = project_root();
+    let ticket_tools = ["list_ticket_attachments", "fetch_ticket_attachment"];
+    let ticket_aware_agents = [
+        "ralphx-general-explorer",
+        "ralphx-general-worker",
+        "ralphx-chat-task",
+        "ralphx-chat-project",
+        "ralphx-execution-worker",
+        "ralphx-execution-coder",
+        "ralphx-execution-team-lead",
+        "ralphx-execution-team-member",
+    ];
+
+    for agent_name in ticket_aware_agents {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("expected canonical definition for {agent_name}"));
+        for tool in ticket_tools {
+            assert!(
+                definition
+                    .capabilities
+                    .mcp_tools
+                    .iter()
+                    .any(|candidate| candidate == tool),
+                "{agent_name} should expose {tool} through canonical MCP grants"
+            );
+        }
+    }
+
+    for agent_name in [
+        "ralphx-general-explorer",
+        "ralphx-general-worker",
+        "ralphx-chat-task",
+        "ralphx-chat-project",
+        "ralphx-execution-worker",
+        "ralphx-execution-coder",
+    ] {
+        for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+            let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+                .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+            assert!(
+                prompt.contains("list_ticket_attachments")
+                    && prompt.contains("fetch_ticket_attachment")
+                    && prompt.contains("untrusted external context"),
+                "{agent_name} {harness:?} prompt should include the ticket attachment contract"
+            );
+        }
+    }
+
+    let team_lead_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-execution-team-lead",
+        AgentPromptHarness::Claude,
+    )
+    .expect("missing execution team lead prompt");
+    assert!(
+        team_lead_prompt.contains("include in coder prompts")
+            && team_lead_prompt.contains("list_ticket_attachments")
+            && team_lead_prompt.contains("fetch_ticket_attachment"),
+        "execution team lead prompt should pass ticket attachment tools into teammate prompts"
+    );
+
+    let project_chat_claude = load_canonical_claude_metadata(&root, "ralphx-chat-project");
+    let project_chat_codex = load_canonical_codex_metadata(&root, "ralphx-chat-project");
+    for tool in ticket_tools {
+        assert!(
+            project_chat_claude
+                .internal_mcp_tools
+                .iter()
+                .any(|candidate| candidate == tool),
+            "project chat Claude should expose {tool} through the internal sidecar"
+        );
+        assert!(
+            project_chat_codex
+                .internal_mcp_tools
+                .iter()
+                .any(|candidate| candidate == tool),
+            "project chat Codex should expose {tool} through the internal sidecar"
+        );
+        assert!(
+            !project_chat_claude
+                .mcp_tools
+                .iter()
+                .any(|candidate| candidate == tool),
+            "project chat Claude external MCP surface should not expose internal ticket attachment tool {tool}"
+        );
+        assert!(
+            !project_chat_codex
+                .mcp_tools
+                .iter()
+                .any(|candidate| candidate == tool),
+            "project chat Codex external MCP surface should not expose internal ticket attachment tool {tool}"
+        );
+    }
+
+    for agent_name in [
+        "ralphx-execution-reviewer",
+        "ralphx-execution-merger",
+        "ralphx-plan-verifier",
+        "ralphx-ideation",
+        "ralphx-ideation-readonly",
+    ] {
+        let definition = load_canonical_agent_definition(&root, agent_name)
+            .unwrap_or_else(|| panic!("expected canonical definition for {agent_name}"));
+        for tool in ticket_tools {
+            assert!(
+                !definition
+                    .capabilities
+                    .mcp_tools
+                    .iter()
+                    .any(|candidate| candidate == tool),
+                "{agent_name} should not receive ticket attachment grant {tool}"
+            );
+        }
+    }
+}
+
+#[test]
 fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
     let root = project_root();
 
