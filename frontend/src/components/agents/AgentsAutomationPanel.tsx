@@ -246,9 +246,19 @@ function runRowDetail(run: AutomationRun): string {
 /**
  * Compact newest-first list of an automation's runs with their statuses, mirroring the
  * runtime/task list rows in the Agents surface. Replaces the single "Run: N of M" summary
- * line with an actual per-run ledger so failed/succeeded runs are visible at a glance.
+ * line with an actual per-run ledger so failed/succeeded runs are visible at a glance. Each
+ * still-open run (pending/provisioning/running/published) exposes a Cancel action so a run can
+ * be stopped without stopping the whole automation.
  */
-function AutomationRunsList({ runs }: { runs: AutomationRun[] }) {
+function AutomationRunsList({
+  runs,
+  onCancelRun,
+  cancelingRunId,
+}: {
+  runs: AutomationRun[];
+  onCancelRun?: (runId: string) => void;
+  cancelingRunId?: string | null;
+}) {
   if (runs.length === 0) {
     return (
       <p className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -259,41 +269,59 @@ function AutomationRunsList({ runs }: { runs: AutomationRun[] }) {
   const ordered = [...runs].sort((a, b) => b.runIndex - a.runIndex);
   return (
     <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
-      {ordered.map((run) => (
-        <li
-          key={run.id}
-          className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5"
-          style={{ backgroundColor: "var(--bg-hover)" }}
-          data-testid={`agents-automation-run-${run.runIndex}`}
-        >
-          <span
-            className="font-mono text-xs font-semibold tabular-nums"
-            style={{ color: "var(--text-muted)" }}
+      {ordered.map((run) => {
+        const isOpen = OPEN_RUN_STATUSES.has(run.status);
+        const isCanceling = cancelingRunId === run.id;
+        return (
+          <li
+            key={run.id}
+            className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5"
+            style={{ backgroundColor: "var(--bg-hover)" }}
+            data-testid={`agents-automation-run-${run.runIndex}`}
           >
-            #{run.runIndex}
-          </span>
-          <span
-            className="min-w-0 truncate text-xs"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            {runRowDetail(run)}
-          </span>
-          <span
-            className={cn(
-              "inline-flex w-fit shrink-0 items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
-              runStatusToneClass(run.status),
-            )}
-            style={{
-              backgroundColor: "var(--bg-surface)",
-              borderColor: "var(--border-default)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-            }}
-          >
-            {RUN_STATUS_LABELS[run.status]}
-          </span>
-        </li>
-      ))}
+            <span
+              className="font-mono text-xs font-semibold tabular-nums"
+              style={{ color: "var(--text-muted)" }}
+            >
+              #{run.runIndex}
+            </span>
+            <span
+              className="min-w-0 truncate text-xs"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {runRowDetail(run)}
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              <span
+                className={cn(
+                  "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
+                  runStatusToneClass(run.status),
+                )}
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderColor: "var(--border-default)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                }}
+              >
+                {RUN_STATUS_LABELS[run.status]}
+              </span>
+              {isOpen && onCancelRun ? (
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold disabled:opacity-50"
+                  style={{ color: "var(--status-error)" }}
+                  disabled={isCanceling}
+                  onClick={() => onCancelRun(run.id)}
+                  data-testid={`agents-automation-run-${run.runIndex}-cancel`}
+                >
+                  {isCanceling ? "Canceling..." : "Cancel"}
+                </button>
+              ) : null}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -468,6 +496,15 @@ export function AgentsAutomationPanel({
       toast.success("Automation stopped");
     },
     onError: () => toast.error("Failed to stop automation"),
+  });
+  const cancelRunMutation = useMutation({
+    mutationFn: (runId: string) =>
+      automationsApi.cancelRun({ id: automationId, runId }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Run canceled");
+    },
+    onError: () => toast.error("Failed to cancel run"),
   });
   const deleteMutation = useMutation({
     mutationFn: () => automationsApi.delete(automationId),
@@ -757,7 +794,15 @@ export function AgentsAutomationPanel({
       </div>
 
       <DetailSection title="Runs" testId="agents-automation-runs">
-        <AutomationRunsList runs={runs} />
+        <AutomationRunsList
+          runs={runs}
+          onCancelRun={(runId) => cancelRunMutation.mutate(runId)}
+          cancelingRunId={
+            cancelRunMutation.isPending
+              ? (cancelRunMutation.variables ?? null)
+              : null
+          }
+        />
       </DetailSection>
 
       {showAutomationProposalCta && activeAutomationSetupQuestion ? (

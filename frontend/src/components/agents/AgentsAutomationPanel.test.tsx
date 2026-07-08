@@ -12,6 +12,7 @@ const {
   resumeAutomationMock,
   stopAutomationMock,
   deleteAutomationMock,
+  cancelRunMock,
   updateAutomationSetupMock,
   sendAgentMessageMock,
   useAskUserQuestionMock,
@@ -26,6 +27,7 @@ const {
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
+  cancelRunMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   useAskUserQuestionMock: vi.fn(),
@@ -138,6 +140,7 @@ vi.mock("@/api/automations", async (importOriginal) => {
       resume: (...args: unknown[]) => resumeAutomationMock(...args),
       stop: (...args: unknown[]) => stopAutomationMock(...args),
       delete: (...args: unknown[]) => deleteAutomationMock(...args),
+      cancelRun: (...args: unknown[]) => cancelRunMock(...args),
       setupAgent: {
         ...actual.automationsApi.setupAgent,
         updateAutomation: (...args: unknown[]) =>
@@ -261,6 +264,7 @@ describe("AgentsAutomationPanel", () => {
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
     deleteAutomationMock.mockResolvedValue(undefined);
+    cancelRunMock.mockResolvedValue(automationRunFixture({ status: "cancelled" }));
     updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
     sendAgentMessageMock.mockResolvedValue({
       conversationId: "conversation-setup",
@@ -365,6 +369,50 @@ describe("AgentsAutomationPanel", () => {
     expect(within(rows[1]!).getByText("Failed: timeout")).toBeInTheDocument();
     expect(within(rows[2]!).getByText("Merged")).toBeInTheDocument();
     expect(within(rows[2]!).getByText("PR #100")).toBeInTheDocument();
+  });
+
+  it("cancels an open run from the runs list, leaving terminal runs uncancellable", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-2",
+            runIndex: 2,
+            status: "agent_failed",
+            prNumber: null,
+            errorCode: "timeout",
+          }),
+          automationRunFixture({
+            id: "run-4",
+            runIndex: 4,
+            status: "running",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    // Terminal (failed) run has no Cancel action.
+    expect(
+      screen.queryByTestId("agents-automation-run-2-cancel"),
+    ).not.toBeInTheDocument();
+    // Open (running) run can be canceled.
+    const cancelButton = screen.getByTestId("agents-automation-run-4-cancel");
+    fireEvent.click(cancelButton);
+
+    await waitFor(() =>
+      expect(cancelRunMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        runId: "run-4",
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Run canceled"),
+    );
   });
 
   it("shows an empty runs state when no runs exist", () => {
