@@ -139,6 +139,66 @@ async fn cancelled_stream_marks_recovery_task_run_as_system_recovery() {
     );
 }
 
+#[tokio::test]
+async fn cancelled_stream_marks_retrying_recovery_metadata_as_system_recovery() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Retrying;
+    recovery.stop_retrying = false;
+    let mut task = Task::new(project_id, "Retrying recovery cancellation".to_string());
+    task.metadata = Some(
+        recovery
+            .update_task_metadata(None)
+            .expect("recovery metadata"),
+    );
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.expect("create task");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stream cancelled by system recovery")
+    );
+}
+
+#[test]
+fn stopped_retrying_recovery_metadata_does_not_mark_system_recovery_cancellation() {
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    recovery.last_state = ExecutionRecoveryState::Retrying;
+    recovery.stop_retrying = true;
+    let metadata = recovery
+        .update_task_metadata(None)
+        .expect("recovery metadata");
+
+    assert!(!task_metadata_indicates_recovery_cancellation(Some(
+        &metadata
+    )));
+    assert!(!task_metadata_indicates_recovery_cancellation(Some(
+        "not json"
+    )));
+}
+
 #[async_trait]
 impl TaskRepository for StubTaskRepo {
     async fn get_by_id(&self, _id: &TaskId) -> AppResult<Option<Task>> {

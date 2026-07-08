@@ -314,6 +314,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_ready_restart_blocks_when_existing_worktree_is_dirty() {
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+        let project_id = ProjectId::from_string("project-dirty-restart".to_string());
+        let worktree = tempfile::tempdir().expect("temp worktree");
+        let git_init = std::process::Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .arg(worktree.path())
+            .status()
+            .expect("run git init");
+        assert!(git_init.success(), "git init should succeed");
+        std::fs::write(worktree.path().join("dirty.txt"), "dirty").expect("write dirty file");
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+
+        let mut task = Task::new(project_id, "Dirty restart".to_string());
+        task.internal_status = InternalStatus::Failed;
+        task.task_branch = Some("task/dirty-stale".to_string());
+        task.worktree_path = Some(worktree_path.clone());
+        task.merge_commit_sha = Some("baadf00d".to_string());
+        task.metadata = Some(stopped_recovery_metadata(5));
+        let task_id = task.id.clone();
+        task_repo.create(task.clone()).await.unwrap();
+
+        let err = prepare_terminal_task_for_ready_restart(&task_repo, &task_step_repo, &task, None)
+            .await
+            .expect_err("dirty restart should be blocked");
+
+        match err {
+            AppError::Validation(message) => {
+                assert!(message.contains("Cannot restart task"));
+                assert!(message.contains("has uncommitted changes"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+
+        let stored = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert_eq!(stored.task_branch.as_deref(), Some("task/dirty-stale"));
+        assert_eq!(
+            stored.worktree_path.as_deref(),
+            Some(worktree_path.as_str())
+        );
+        assert_eq!(stored.merge_commit_sha.as_deref(), Some("baadf00d"));
+    }
+
+    #[tokio::test]
     async fn non_terminal_ready_restart_preparation_is_noop() {
         let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
         let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
