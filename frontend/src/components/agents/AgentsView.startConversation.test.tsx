@@ -10,12 +10,13 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ReactNode, SetStateAction } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
+import { chatKeys } from "@/hooks/useChat";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -1999,6 +2000,15 @@ describe("AgentsView start conversation", () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
+    let optimisticSelectedConversationId: string | null = null;
+    const setOptimisticSelectedConversationId = vi.fn(
+      (next: SetStateAction<string | null>) => {
+        optimisticSelectedConversationId =
+          typeof next === "function"
+            ? next(optimisticSelectedConversationId)
+            : next;
+      }
+    );
     const { result } = renderHook(
       () =>
         useStartAgentConversation({
@@ -2009,7 +2019,7 @@ describe("AgentsView start conversation", () => {
           setActiveConversation: useChatStore.getState().setActiveConversation,
           setFocusedProject: vi.fn(),
           setOptimisticConversationsById: vi.fn(),
-          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticSelectedConversationId,
           setOptimisticWorkspacesByConversationId: vi.fn(),
           setRuntimeForConversation: vi.fn(),
         }),
@@ -2050,6 +2060,14 @@ describe("AgentsView start conversation", () => {
         }),
       ],
     });
+    expect(
+      queryClient.getQueryData(
+        chatKeys.conversationSummary("conversation-resolved-remap")
+      )
+    ).toEqual(expect.objectContaining({ id: "conversation-resolved-remap" }));
+    expect(optimisticSelectedConversationId).toBe(
+      "conversation-resolved-remap"
+    );
     expect(handleAutoManagedTitle).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: "conversation-resolved-remap",
