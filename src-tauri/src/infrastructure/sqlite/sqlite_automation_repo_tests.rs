@@ -908,6 +908,231 @@ async fn sqlite_run_repo_status_cas_with_agent_phase_started_at_uses_observed_ph
 }
 
 #[tokio::test]
+async fn sqlite_run_repo_clearing_pending_instructions_cas_sets_running_phase() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let mut run = run(
+        "run-pending-plan",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_pending_instructions = Some("Revise the rollout risks.".to_string());
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    assert!(run_repo
+        .compare_and_swap_status_clearing_plan_pending_instructions(
+            &run.id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            AutomationRunStatus::Running,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let running = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(running.status, AutomationRunStatus::Running);
+    assert_eq!(running.plan_pending_instructions, None);
+    assert!(running.agent_phase_started_at.is_some());
+    assert_eq!(running.finished_at, None);
+
+    assert!(!run_repo
+        .compare_and_swap_status_clearing_plan_pending_instructions(
+            &run.id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            AutomationRunStatus::Completed,
+            Some("late".to_string()),
+            Some("stale transition".to_string()),
+        )
+        .await
+        .unwrap());
+
+    let unchanged = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.status, AutomationRunStatus::Running);
+    assert_eq!(unchanged.error_code, None);
+    assert_eq!(unchanged.error_detail, None);
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_publication_metadata_can_clear_and_error_is_published_only() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let run = run(
+        "run-publication",
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    let with_pr = run_repo
+        .update_publication_metadata(
+            &run.id,
+            AutomationRunPublicationMetadata {
+                pr_number: Some(647),
+                pr_url: Some("https://github.com/aigentive/ralphx.app/pull/647".to_string()),
+                pr_title: Some("Automation run".to_string()),
+                pr_head_ref_name: Some("automation/run-647".to_string()),
+                pr_base_ref_name: Some("main".to_string()),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("running run accepts publication metadata");
+    assert_eq!(with_pr.pr_number, Some(647));
+
+    let cleared = run_repo
+        .clear_publication_metadata(&run.id)
+        .await
+        .unwrap()
+        .expect("existing run clears publication metadata");
+    assert_eq!(cleared.pr_number, None);
+    assert_eq!(cleared.pr_url, None);
+    assert_eq!(cleared.pr_title, None);
+    assert_eq!(cleared.pr_head_ref_name, None);
+    assert_eq!(cleared.pr_base_ref_name, None);
+    assert!(run_repo
+        .clear_publication_metadata(&AutomationRunId::from_string("missing-run"))
+        .await
+        .unwrap()
+        .is_none());
+
+    assert!(run_repo
+        .compare_and_swap_status(
+            &run.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::Published,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    let failed_status_check = run_repo
+        .update_published_run_error(
+            &run.id,
+            Some("checks_failed".to_string()),
+            Some("Required status check failed".to_string()),
+        )
+        .await
+        .unwrap()
+        .expect("published run stores merge-blocking error");
+    assert_eq!(
+        failed_status_check.error_code.as_deref(),
+        Some("checks_failed")
+    );
+    assert_eq!(
+        failed_status_check.error_detail.as_deref(),
+        Some("Required status check failed")
+    );
+
+    let cleared_error = run_repo
+        .update_published_run_error(&run.id, None, None)
+        .await
+        .unwrap()
+        .expect("published run clears merge-blocking error");
+    assert_eq!(cleared_error.error_code, None);
+    assert_eq!(cleared_error.error_detail, None);
+    assert!(run_repo
+        .update_published_run_error(
+            &AutomationRunId::from_string("missing-run"),
+            Some("missing".to_string()),
+            None,
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    assert!(run_repo
+        .compare_and_swap_status(
+            &run.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Completed,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    assert!(run_repo
+        .update_published_run_error(&run.id, Some("late".to_string()), None)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_plan_gate_clear_and_missing_setters_are_guarded() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
+    let mut run = run(
+        "run-plan-clear",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_judge_state = AutomationPlanJudgeState::InProgress;
+    run.plan_judge_lease_expires_at = Some(lease_expires_at);
+    run.plan_judge_verdict_json = Some(r#"{"decision":"revise"}"#.to_string());
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    assert!(run_repo.clear_plan_judge_state(&run.id).await.unwrap());
+    let cleared = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(cleared.plan_judge_state, AutomationPlanJudgeState::None);
+    assert_eq!(cleared.plan_judge_lease_expires_at, None);
+    assert_eq!(cleared.plan_judge_verdict_json, None);
+    assert!(!run_repo.clear_plan_judge_state(&run.id).await.unwrap());
+
+    let missing = AutomationRunId::from_string("missing-run");
+    assert!(run_repo
+        .set_plan_pending_instructions(&missing, Some("revise".to_string()))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .set_plan_revision_round(&missing, 9)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .set_plan_last_parked_artifact_id(&missing, Some("artifact-1".to_string()))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .set_plan_reminder_count(&missing, 3)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .set_agent_phase_started_at(&missing, Some(Utc::now()))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn sqlite_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
     let (_db, project_id, automation_repo, run_repo) = setup_repos();
     automation_repo

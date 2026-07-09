@@ -73,6 +73,8 @@ pub mod sqlite_methodology_repo;
 pub mod sqlite_orphan_worktree_cleanup_marker_repo;
 pub mod sqlite_permission_repo;
 pub mod sqlite_plan_artifact_approval_repo;
+#[cfg(test)]
+mod sqlite_plan_artifact_approval_repo_tests;
 pub mod sqlite_plan_branch_repo;
 pub mod sqlite_plan_selection_stats_repo;
 pub mod sqlite_process_repo;
