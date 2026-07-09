@@ -1547,6 +1547,46 @@ describe("chat api", () => {
     });
   });
 
+  it("passes automation sidebar grouping through to the backend input", async () => {
+    mockInvoke.mockResolvedValue({
+      groups: [],
+    });
+
+    const result = await listAgentSidebarConversations({
+      projectIds: ["project-1", "project-2"],
+      includeArchived: true,
+      archivedOnly: true,
+      groupBy: "automation",
+      publicationStates: ["active", "merged"],
+      limitPerGroup: 8,
+      offsets: { "automation-1": 16 },
+      pinnedConversationIds: ["conversation-pinned"],
+      priorityConversationIds: ["conversation-selected"],
+      search: " release ",
+      sort: "za",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "list_agent_sidebar_conversations",
+      {
+        input: {
+          projectIds: ["project-1", "project-2"],
+          includeArchived: true,
+          archivedOnly: true,
+          search: "release",
+          publicationStates: ["active", "merged"],
+          groupBy: "automation",
+          sort: "za",
+          limitPerGroup: 8,
+          offsets: { "automation-1": 16 },
+          pinnedConversationIds: ["conversation-pinned"],
+          priorityConversationIds: ["conversation-selected"],
+        },
+      },
+    );
+    expect(result.groups).toEqual([]);
+  });
+
   it("lists agent conversation workspace publication events", async () => {
     mockInvoke.mockResolvedValue([
       {

@@ -25,7 +25,6 @@ export type AgentArtifactTab =
   | "issues"
   | "plan"
   | "verification"
-  | "proposal"
   | "tasks"
   | "pr"
   | "jira"
@@ -34,7 +33,7 @@ export type AgentArtifactTab =
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
-export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarGroupBy = "project" | "publication" | "automation";
 export type AgentSidebarPublicationState =
   | "active"
   | "draft"
@@ -169,14 +168,18 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
 ];
 const AGENT_SESSION_STORE_VERSION = 7;
 
+type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
+
 export function normalizeAgentArtifactTab(
-  tab: AgentArtifactTab,
+  tab: LegacyAgentArtifactTab,
 ): AgentArtifactTab {
   return tab === "proposal" ? "plan" : tab;
 }
 
 function normalizeAgentArtifactState(
-  artifactState: AgentArtifactState,
+  artifactState: Omit<AgentArtifactState, "activeTab"> & {
+    activeTab: LegacyAgentArtifactTab;
+  },
 ): AgentArtifactState {
   return {
     ...artifactState,

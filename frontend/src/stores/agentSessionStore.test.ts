@@ -117,6 +117,41 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("migrates legacy standalone proposal artifact tabs to Plan", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          artifactByConversationId: {
+            "conversation-1": {
+              isOpen: true,
+              activeTab: "proposal",
+              taskMode: "kanban",
+            },
+            "conversation-2": {
+              isOpen: false,
+              activeTab: "tasks",
+              taskMode: "graph",
+            },
+          },
+        },
+        6,
+      ),
+    ).toMatchObject({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "kanban",
+        },
+        "conversation-2": {
+          isOpen: false,
+          activeTab: "tasks",
+          taskMode: "graph",
+        },
+      },
+    });
+  });
+
   it("migrates older persisted sidebar metadata filters and pin state", () => {
     expect(
       migrateAgentSessionStore(
@@ -333,13 +368,13 @@ describe("agentSessionStore", () => {
         togglePinnedConversation,
       } = useAgentSessionStore.getState();
 
-      setSidebarGroupBy("publication");
+      setSidebarGroupBy("automation");
       setSidebarProjectFilterIds(["project-2"]);
       setSidebarPublicationStateFilters(["merged", "closed"]);
       togglePinnedConversation("conversation-1");
 
       let s = useAgentSessionStore.getState();
-      expect(s.sidebarGroupBy).toBe("publication");
+      expect(s.sidebarGroupBy).toBe("automation");
       expect(s.sidebarProjectFilterIds).toEqual(["project-2"]);
       expect(s.sidebarPublicationStateFilters).toEqual(["merged", "closed"]);
       expect(s.pinnedConversationIds["conversation-1"]).toBe(true);

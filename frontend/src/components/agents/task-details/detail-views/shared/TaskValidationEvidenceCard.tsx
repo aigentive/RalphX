@@ -52,7 +52,29 @@ function humanize(value: string): string {
     .join(" ");
 }
 
-function runPresentation(summary: TaskValidationSummary) {
+function validationCopy(isHistorical: boolean, usingLive: boolean) {
+  if (usingLive) {
+    return {
+      sectionTitle: "Task Validation",
+      runLabel: "Live validation run",
+      subject: "Live task validation",
+    };
+  }
+  if (isHistorical) {
+    return {
+      sectionTitle: "Latest Task Validation",
+      runLabel: "Latest task validation run",
+      subject: "Latest task validation",
+    };
+  }
+  return {
+    sectionTitle: "Task Validation",
+    runLabel: "Latest validation run",
+    subject: "Latest validation run",
+  };
+}
+
+function runPresentation(summary: TaskValidationSummary, subject: string) {
   if (!summary.policy_enabled) {
     return {
       icon: CircleSlash,
@@ -84,7 +106,7 @@ function runPresentation(summary: TaskValidationSummary) {
       label: "Passed",
       variant: "success" as const,
       animated: false,
-      message: "Latest task validation completed successfully.",
+      message: `${subject} completed successfully.`,
     };
   }
   if (status === "running") {
@@ -102,7 +124,7 @@ function runPresentation(summary: TaskValidationSummary) {
       label: "Skipped",
       variant: "warning" as const,
       animated: false,
-      message: "The latest validation run did not execute commands.",
+      message: `${subject} did not execute commands.`,
     };
   }
   if (status === "cancelled") {
@@ -111,7 +133,7 @@ function runPresentation(summary: TaskValidationSummary) {
       label: "Cancelled",
       variant: "warning" as const,
       animated: false,
-      message: "The latest validation run was cancelled.",
+      message: `${subject} was cancelled.`,
     };
   }
   return {
@@ -119,7 +141,7 @@ function runPresentation(summary: TaskValidationSummary) {
     label: status === "error" ? "Error" : "Failed",
     variant: "error" as const,
     animated: false,
-    message: "The latest validation run did not pass.",
+    message: `${subject} did not pass.`,
   };
 }
 
@@ -196,62 +218,17 @@ function hasRunningCommand(summary: TaskValidationSummary | undefined): boolean 
   );
 }
 
-export function TaskValidationSection({
-  taskId,
-  isHistorical = false,
+export function TaskValidationSummaryCard({
+  displaySummary,
+  isHistorical,
+  usingLive,
 }: {
-  taskId: string;
-  isHistorical?: boolean;
+  displaySummary: TaskValidationSummary;
+  isHistorical: boolean;
+  usingLive: boolean;
 }) {
-  const { data, isLoading, isError } = useTaskValidationSummary(taskId);
-  const live = useTaskValidationLiveState(taskId, { enabled: !isHistorical });
-  const displaySummary = useDisplayTaskValidationSummary(data, live);
-  const usingLive = Boolean(
-    live?.latest_run &&
-      displaySummary?.latest_run?.id === live.latest_run.id &&
-      (live.latest_run.status === "running" ||
-        data?.latest_run?.id !== live.latest_run.id),
-  );
-  const now = useValidationClock(hasRunningCommand(displaySummary));
-  const validationSteps = useMemo(
-    () =>
-      displaySummary
-        ? displaySummary.commands.map((command) =>
-            commandToStep(displaySummary.task_id, command, now),
-          )
-        : [],
-    [displaySummary, now],
-  );
-
-  if (isLoading && !displaySummary) {
-    return (
-      <section data-testid="task-validation-section" className="space-y-2">
-        <SectionTitle>Task Validation</SectionTitle>
-        <DetailCard>
-          <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/45">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span>Loading validation evidence</span>
-          </div>
-        </DetailCard>
-      </section>
-    );
-  }
-
-  if (isError || !displaySummary) {
-    return (
-      <section data-testid="task-validation-section" className="space-y-2">
-        <SectionTitle>Task Validation</SectionTitle>
-        <DetailCard>
-          <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/55">
-            <AlertCircle className="h-3.5 w-3.5 text-[var(--status-warning)]" />
-            <span>Validation evidence unavailable</span>
-          </div>
-        </DetailCard>
-      </section>
-    );
-  }
-
-  const presentation = runPresentation(displaySummary);
+  const copy = validationCopy(isHistorical, usingLive);
+  const presentation = runPresentation(displaySummary, copy.subject);
   const completedAt = formatTimestamp(displaySummary.latest_run?.completed_at);
   const startedAt = formatTimestamp(displaySummary.latest_run?.started_at);
   const baseRef = displaySummary.latest_run?.base_ref;
@@ -263,8 +240,8 @@ export function TaskValidationSection({
   const duration = totalDuration > 0 ? formatDuration(totalDuration) : null;
 
   return (
-    <section data-testid="task-validation-section" className="space-y-3">
-      <SectionTitle>Task Validation</SectionTitle>
+    <>
+      <SectionTitle>{copy.sectionTitle}</SectionTitle>
       <DetailCard>
         <div className="space-y-3">
           <div className="flex items-start justify-between gap-3">
@@ -272,7 +249,7 @@ export function TaskValidationSection({
               <TestTube2 className="h-4 w-4 shrink-0 text-text-primary/45" />
               <div className="min-w-0">
                 <div className="text-[0.8125rem] font-medium text-text-primary/80">
-                  {usingLive ? "Live validation run" : "Latest validation run"}
+                  {copy.runLabel}
                 </div>
                 <div className="truncate text-[0.75rem] text-text-primary/45">
                   {head ? `HEAD ${head}` : baseRef ? `Base ${baseRef}` : "Persisted evidence"}
@@ -303,15 +280,98 @@ export function TaskValidationSection({
           </div>
         </div>
       </DetailCard>
+    </>
+  );
+}
 
-      {validationSteps.length > 0 && (
-        <ValidationProgress
-          taskId={taskId}
-          steps={validationSteps}
-          sourceLabel={usingLive ? "live" : null}
-          title="Validation Commands"
-        />
-      )}
+export function TaskValidationCommandList({
+  taskId,
+  validationSteps,
+  usingLive,
+}: {
+  taskId: string;
+  validationSteps: MergeValidationStepEvent[];
+  usingLive: boolean;
+}) {
+  if (validationSteps.length === 0) return null;
+
+  return (
+    <ValidationProgress
+      taskId={taskId}
+      steps={validationSteps}
+      sourceLabel={usingLive ? "live" : null}
+      title="Validation Commands"
+    />
+  );
+}
+
+export function TaskValidationSection({
+  taskId,
+  isHistorical = false,
+}: {
+  taskId: string;
+  isHistorical?: boolean;
+}) {
+  const { data, isLoading, isError } = useTaskValidationSummary(taskId);
+  const live = useTaskValidationLiveState(taskId, { enabled: !isHistorical });
+  const displaySummary = useDisplayTaskValidationSummary(data, live);
+  const usingLive = Boolean(
+    live?.latest_run &&
+      displaySummary?.latest_run?.id === live.latest_run.id &&
+      (live.latest_run.status === "running" ||
+        data?.latest_run?.id !== live.latest_run.id),
+  );
+  const now = useValidationClock(hasRunningCommand(displaySummary));
+  const validationSteps = useMemo(
+    () =>
+      displaySummary
+        ? displaySummary.commands.map((command) =>
+            commandToStep(displaySummary.task_id, command, now),
+          )
+        : [],
+    [displaySummary, now],
+  );
+
+  if (isLoading && !displaySummary) {
+    return (
+      <section data-testid="task-validation-section" className="space-y-2">
+        <SectionTitle>{validationCopy(isHistorical, false).sectionTitle}</SectionTitle>
+        <DetailCard>
+          <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/45">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Loading validation evidence</span>
+          </div>
+        </DetailCard>
+      </section>
+    );
+  }
+
+  if (isError || !displaySummary) {
+    return (
+      <section data-testid="task-validation-section" className="space-y-2">
+        <SectionTitle>{validationCopy(isHistorical, false).sectionTitle}</SectionTitle>
+        <DetailCard>
+          <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/55">
+            <AlertCircle className="h-3.5 w-3.5 text-[var(--status-warning)]" />
+            <span>Validation evidence unavailable</span>
+          </div>
+        </DetailCard>
+      </section>
+    );
+  }
+
+  return (
+    <section data-testid="task-validation-section" className="space-y-3">
+      <TaskValidationSummaryCard
+        displaySummary={displaySummary}
+        isHistorical={isHistorical}
+        usingLive={usingLive}
+      />
+      <TaskValidationCommandList
+        taskId={taskId}
+        validationSteps={validationSteps}
+        usingLive={usingLive}
+      />
     </section>
   );
 }
