@@ -946,6 +946,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         } = repos;
 
         tracing::debug!("send_background start");
+        let conversation_coordination_mode =
+            conversation.as_ref().map(|conversation| conversation.coordination_mode);
         let event_ctx = event_context(&conversation_id, &context_type, &context_id);
         let split_verification_transcript = should_split_verification_transcript(
             context_type,
@@ -1805,6 +1807,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         execution_state.clone(),
                         app_handle.clone(),
                         resolved_project_id.as_deref(),
+                        conversation_coordination_mode,
                         team_mode,
                         cancellation_token.clone(),
                         run_chain_id.as_deref(),
@@ -2014,6 +2017,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 execution_state.clone(),
                                 app_handle.clone(),
                                 resolved_project_id.as_deref(),
+                                conversation_coordination_mode,
                                 team_mode,
                                 cancellation_token.clone(),
                                 run_chain_id.as_deref(),

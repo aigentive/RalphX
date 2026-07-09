@@ -28,6 +28,7 @@ import {
   mockReconcileAgentConversationWorkspacePublication,
   mockStartAgentConversation,
   mockSwitchAgentConversationMode,
+  mockUpdateAgentConversationCoordinationMode,
 } from "@/api-mock/chat";
 import { mockReviewsApi } from "@/api-mock/reviews";
 import { mockIdeationApi } from "@/api-mock/ideation";
@@ -491,6 +492,7 @@ function toSnakeConversation(conversation: ChatConversation) {
     upstream_provider: conversation.upstreamProvider,
     provider_profile: conversation.providerProfile,
     agent_mode: conversation.agentMode,
+    coordination_mode: conversation.coordinationMode,
     title: conversation.title,
     message_count: conversation.messageCount,
     last_message_at: conversation.lastMessageAt,
@@ -1969,6 +1971,7 @@ const commandHandlers: Record<
       upstream_provider: conversation.upstreamProvider,
       provider_profile: conversation.providerProfile,
       agent_mode: conversation.agentMode,
+      coordination_mode: conversation.coordinationMode,
       title: conversation.title,
       message_count: conversation.messageCount,
       last_message_at: conversation.lastMessageAt,
@@ -2011,6 +2014,7 @@ const commandHandlers: Record<
         upstream_provider: conversation.upstreamProvider,
         provider_profile: conversation.providerProfile,
         agent_mode: conversation.agentMode,
+        coordination_mode: conversation.coordinationMode,
         title: conversation.title,
         message_count: conversation.messageCount,
         last_message_at: conversation.lastMessageAt,
@@ -2253,6 +2257,7 @@ const commandHandlers: Record<
       upstream_provider: conversation.upstreamProvider,
       provider_profile: conversation.providerProfile,
       agent_mode: conversation.agentMode,
+      coordination_mode: conversation.coordinationMode,
       title: conversation.title,
       message_count: conversation.messageCount,
       last_message_at: conversation.lastMessageAt,
@@ -2279,6 +2284,7 @@ const commandHandlers: Record<
         upstream_provider: conversation.upstreamProvider,
         provider_profile: conversation.providerProfile,
         agent_mode: conversation.agentMode,
+        coordination_mode: conversation.coordinationMode,
         title: conversation.title,
         message_count: conversation.messageCount,
         last_message_at: conversation.lastMessageAt,
@@ -2345,6 +2351,7 @@ const commandHandlers: Record<
         upstream_provider: conversation.upstreamProvider,
         provider_profile: conversation.providerProfile,
         agent_mode: conversation.agentMode,
+        coordination_mode: conversation.coordinationMode,
         title: conversation.title,
         message_count: conversation.messageCount,
         last_message_at: conversation.lastMessageAt,
@@ -2384,6 +2391,13 @@ const commandHandlers: Record<
           }
         : null,
     };
+  },
+  update_agent_conversation_coordination_mode: async (args) => {
+    const input = args.input as Parameters<
+      typeof mockUpdateAgentConversationCoordinationMode
+    >[0];
+    const conversation = await mockUpdateAgentConversationCoordinationMode(input);
+    return toSnakeConversation(conversation);
   },
   get_agent_conversation_stats: async (args) => {
     const stats = await mockGetConversationStats(args.conversationId as string);

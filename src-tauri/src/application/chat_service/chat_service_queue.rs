@@ -17,7 +17,10 @@ use super::chat_service_types::{
     AgentErrorPayload, AgentMessageCreatedPayload, AgentQueueSentPayload, AgentRunStartedPayload,
 };
 use super::has_meaningful_output;
-use super::{ChatService, SendMessageOptions};
+use super::{
+    coordination_mode_enables_team, team_intent_for_persisted_coordination_mode, ChatService,
+    SendMessageOptions,
+};
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
@@ -27,8 +30,8 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    ChatContextType, ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus,
-    MessageRole, ProjectId, SessionPurpose, TaskId,
+    ChatContextType, ChatConversationId, ChatMessageId, CoordinationMode, IdeationSessionId,
+    InternalStatus, MessageRole, ProjectId, SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
@@ -315,6 +318,7 @@ fn provider_switch_send_options_for_queued_message(
     queued_msg: &QueuedMessage,
     conversation_id: ChatConversationId,
     force_new_provider_session: bool,
+    team_intent: Option<TeamIntent>,
 ) -> SendMessageOptions {
     SendMessageOptions {
         metadata: queued_msg.metadata_override.clone(),
@@ -328,9 +332,17 @@ fn provider_switch_send_options_for_queued_message(
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
+        team_intent,
         force_new_provider_session,
         ..Default::default()
     }
+}
+
+fn effective_queue_team_mode(
+    team_mode: bool,
+    conversation_coordination_mode: Option<CoordinationMode>,
+) -> bool {
+    team_mode || conversation_coordination_mode.is_some_and(coordination_mode_enables_team)
 }
 
 fn queued_target_harness(
@@ -587,6 +599,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     execution_state: Option<Arc<ExecutionState>>,
     app_handle: Option<AppHandle<R>>,
     project_id: Option<&str>,
+    conversation_coordination_mode: Option<CoordinationMode>,
     team_mode: bool,
     cancellation_token: CancellationToken,
     run_chain_id: Option<&str>,
@@ -597,6 +610,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     let mut last_run_id: Option<String> = None;
     let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
     let queue_key = QueueKey::new(context_type, queue_context_id);
+    let queue_team_mode = effective_queue_team_mode(team_mode, conversation_coordination_mode);
+    let queue_team_intent =
+        conversation_coordination_mode.and_then(team_intent_for_persisted_coordination_mode);
 
     // Outer loop: keep processing until queue is stable-empty
     loop {
@@ -831,6 +847,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             &queued_msg,
                             conversation_id.clone(),
                             force_new_provider_session,
+                            queue_team_intent.clone(),
                         ),
                     )
                     .await;
@@ -1482,7 +1499,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         question_state.clone(),
                         cancellation_token.clone(),
                         None, // Queue processing doesn't need team events
-                        effective_team_mode_for_harness(team_mode, harness),
+                        effective_team_mode_for_harness(queue_team_mode, harness),
                         streaming_state_cache.clone(),
                         None, // Queue processing doesn't have registry in scope
                         Some(Arc::clone(agent_run_repo)),
@@ -1884,6 +1901,7 @@ mod tests {
             &message,
             conversation_id.clone(),
             true,
+            Some(TeamIntent::rx_native(None)),
         );
 
         assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"queue"}"#));
@@ -1911,6 +1929,7 @@ mod tests {
             message.composer_artifact_references
         );
         assert_eq!(options.attachment_ids, message.attachment_ids);
+        assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
         assert!(options.force_new_provider_session);
     }
 
@@ -1921,14 +1940,39 @@ mod tests {
         message.harness_override = Some(AgentHarnessKind::Codex);
         message.force_new_provider_session = true;
 
-        let options =
-            provider_switch_send_options_for_queued_message(&message, conversation_id, false);
+        let options = provider_switch_send_options_for_queued_message(
+            &message,
+            conversation_id,
+            false,
+            Some(TeamIntent::rx_native(None)),
+        );
 
         assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
         assert!(
             !options.force_new_provider_session,
             "same-harness queued follow-ups should reuse the freshly started provider run"
         );
+    }
+
+    #[test]
+    fn effective_queue_team_mode_uses_persisted_coordination_mode() {
+        assert!(effective_queue_team_mode(
+            false,
+            Some(CoordinationMode::RxNativeTeam)
+        ));
+        assert!(effective_queue_team_mode(
+            false,
+            Some(CoordinationMode::LegacyClaudeTeam)
+        ));
+        assert!(!effective_queue_team_mode(
+            false,
+            Some(CoordinationMode::Solo)
+        ));
+        assert!(effective_queue_team_mode(
+            true,
+            Some(CoordinationMode::Solo)
+        ));
     }
 
     #[test]
@@ -2009,6 +2053,7 @@ mod tests {
             std::path::Path::new("/definitely/missing/ralphx-test-cli"),
             std::path::Path::new("."),
             std::path::Path::new("."),
+            None,
             None,
             None,
             None,

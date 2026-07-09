@@ -25,11 +25,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
 
-use crate::application::agent_conversation_fork::{
-    fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
-};
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
+};
+use crate::application::agent_conversation_fork::{
+    fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
@@ -105,13 +105,13 @@ use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
-    CoordinationMode, TeamIntent, TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
+    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
+    TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -1676,7 +1676,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_effort: None,
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
-            coordination_mode: CoordinationMode::Solo.to_string(),
+            coordination_mode: c.coordination_mode.to_string(),
             automation_id: c.automation_id.map(|id| id.as_str().to_string()),
             automation_run_id: c.automation_run_id.map(|id| id.as_str().to_string()),
             parent_conversation_id: c.parent_conversation_id,
@@ -2562,6 +2562,34 @@ fn parse_agent_workspace_branch_mode(
         .filter(|value| !value.is_empty())
         .map(str::parse::<AgentConversationWorkspaceBranchMode>)
         .transpose()
+}
+
+fn parse_agent_coordination_mode(mode: &str) -> Result<CoordinationMode, String> {
+    let trimmed = mode.trim();
+    if trimmed.is_empty() {
+        return Err("Coordination mode cannot be empty".to_string());
+    }
+    let mode = trimmed.parse::<CoordinationMode>()?;
+    normalize_new_agent_coordination_mode(mode)
+}
+
+fn normalize_new_agent_coordination_mode(
+    mode: CoordinationMode,
+) -> Result<CoordinationMode, String> {
+    if mode == CoordinationMode::LegacyClaudeTeam {
+        return Err(
+            "Legacy Claude team mode is read-only; use Team mode for new writes".to_string(),
+        );
+    }
+    Ok(mode)
+}
+
+fn coordination_mode_from_team_intent(
+    team_intent: Option<&TeamIntent>,
+) -> Result<CoordinationMode, String> {
+    team_intent
+        .map(|intent| normalize_new_agent_coordination_mode(intent.coordination_mode))
+        .unwrap_or(Ok(CoordinationMode::Solo))
 }
 
 fn trim_optional_input(value: Option<String>) -> Option<String> {
@@ -9809,6 +9837,7 @@ pub struct CreateAgentConversationInput {
     pub context_type: String,
     pub context_id: String,
     pub title: Option<String>,
+    pub team_intent: Option<TeamIntent>,
 }
 
 /// Input for update_agent_conversation_title command
@@ -9817,6 +9846,14 @@ pub struct CreateAgentConversationInput {
 pub struct UpdateAgentConversationTitleInput {
     pub conversation_id: String,
     pub title: String,
+}
+
+/// Input for update_agent_conversation_coordination_mode command
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAgentConversationCoordinationModeInput {
+    pub conversation_id: String,
+    pub coordination_mode: String,
 }
 
 /// Create a new conversation for a context
@@ -9830,6 +9867,7 @@ pub async fn create_agent_conversation(
     };
 
     let context_type = parse_context_type(&input.context_type)?;
+    let coordination_mode = coordination_mode_from_team_intent(input.team_intent.as_ref())?;
 
     let mut conversation = match context_type {
         ChatContextType::Ideation => {
@@ -9854,6 +9892,7 @@ pub async fn create_agent_conversation(
             ChatConversation::new_merge(TaskId::from_string(input.context_id.clone()))
         }
     };
+    conversation.set_coordination_mode(coordination_mode);
 
     if let Some(title) = input
         .title
@@ -9869,6 +9908,48 @@ pub async fn create_agent_conversation(
         .create(conversation)
         .await
         .map_err(|e| e.to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
+}
+
+/// Update an existing Agent conversation's team coordination mode.
+#[tauri::command]
+pub async fn update_agent_conversation_coordination_mode(
+    input: UpdateAgentConversationCoordinationModeInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationResponse, String> {
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let coordination_mode = parse_agent_coordination_mode(&input.coordination_mode)?;
+
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    if conversation.context_type != ChatContextType::Project {
+        return Err("Only project agent conversations can change Team mode".to_string());
+    }
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    if state.running_agent_registry.is_running(&running_key).await {
+        return Err("Cannot change Team mode while the agent is running".to_string());
+    }
+
+    state
+        .chat_conversation_repo
+        .update_coordination_mode(&conversation_id, coordination_mode)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Conversation not found".to_string())?;
     agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
@@ -9931,9 +10012,8 @@ mod tests {
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         create_agent_conversation, emit_agent_conversation_fork_events,
         ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
-        filter_agent_list_visible_conversations,
-        fork_agent_conversation, fork_agent_conversation_response_for_state,
-        fork_terminal_agent_conversation_for_send,
+        filter_agent_list_visible_conversations, fork_agent_conversation,
+        fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
         get_agent_conversation_runtime_index_for_app_state,
         get_agent_conversation_runtime_statuses_for_app_state,
         get_agent_conversation_summary_for_app_state,
@@ -9961,7 +10041,7 @@ mod tests {
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state,
         switch_agent_conversation_mode_for_state_allowing_running,
-        try_acquire_agent_workspace_publish_guard,
+        try_acquire_agent_workspace_publish_guard, update_agent_conversation_coordination_mode,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
         AgentConversationRuntimeIndexGroup, AgentConversationRuntimeIndexKind,
@@ -9976,7 +10056,7 @@ mod tests {
         AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
         CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
         ForkAgentConversationResponse, SwitchAgentConversationModeInput,
-        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+        UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -10007,10 +10087,10 @@ mod tests {
         AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId, AutomationRunId,
         ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
         ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
-        ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-        IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
-        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
-        TaskId,
+        CoordinationMode, ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus,
+        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+        InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+        ProjectId, SessionPurpose, Task, TaskId, TeamIntent,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
@@ -10599,6 +10679,91 @@ mod tests {
             ))))
             .build(mock_context(noop_assets()))
             .expect("mock app should build")
+    }
+
+    #[tokio::test]
+    async fn create_agent_conversation_persists_team_intent_coordination_mode() {
+        let app = build_send_now_command_app(AppState::new_test());
+        let project_id = ProjectId::from_string("project-1".to_string());
+
+        let response = create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: ChatContextType::Project.to_string(),
+                context_id: project_id.as_str().to_string(),
+                title: Some("Team conversation".to_string()),
+                team_intent: Some(TeamIntent::rx_native(None)),
+            },
+            app.state(),
+        )
+        .await
+        .expect("team conversation should be created");
+
+        assert_eq!(response.coordination_mode, "rx_native_team");
+        let stored = app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_id(&ChatConversationId::from_string(response.id))
+            .await
+            .expect("stored conversation should load")
+            .expect("stored conversation should exist");
+        assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+    }
+
+    #[tokio::test]
+    async fn update_agent_conversation_coordination_mode_persists_idle_project_conversation() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id))
+            .await
+            .expect("conversation should be created");
+        let app = build_send_now_command_app(state);
+
+        let response = update_agent_conversation_coordination_mode(
+            UpdateAgentConversationCoordinationModeInput {
+                conversation_id: conversation.id.as_str(),
+                coordination_mode: "rx_native_team".to_string(),
+            },
+            app.state(),
+        )
+        .await
+        .expect("coordination mode should update");
+
+        assert_eq!(response.coordination_mode, "rx_native_team");
+        let stored = app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("stored conversation should load")
+            .expect("stored conversation should exist");
+        assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+    }
+
+    #[tokio::test]
+    async fn update_agent_conversation_coordination_mode_rejects_legacy_writes() {
+        let state = AppState::new_test();
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(ProjectId::from_string(
+                "project-1".to_string(),
+            )))
+            .await
+            .expect("conversation should be created");
+        let app = build_send_now_command_app(state);
+
+        let error = update_agent_conversation_coordination_mode(
+            UpdateAgentConversationCoordinationModeInput {
+                conversation_id: conversation.id.as_str(),
+                coordination_mode: "legacy_claude_team".to_string(),
+            },
+            app.state(),
+        )
+        .await
+        .expect_err("legacy team writes should be rejected");
+
+        assert!(error.contains("Legacy Claude team mode is read-only"));
     }
 
     #[tokio::test]
@@ -14561,7 +14726,12 @@ mod tests {
             .expect("linked plan worktree should resolve");
         git(
             &repo_path,
-            &["merge-base", "--is-ancestor", &main_sha, &plan_branch.branch_name],
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &main_sha,
+                &plan_branch.branch_name,
+            ],
         );
         assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
         assert_eq!(git(&repo_path, &["status", "--short"]), "");
@@ -15356,6 +15526,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_conversation_response_uses_persisted_coordination_mode() {
+        let mut conversation =
+            ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+        conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
+
+        let response = AgentConversationResponse::from(conversation);
+
+        assert_eq!(response.coordination_mode, "rx_native_team");
+    }
+
+    #[test]
     fn agent_conversation_response_keeps_codex_metadata_without_legacy_alias() {
         let mut conversation =
             ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
@@ -16057,6 +16238,7 @@ mod tests {
                 context_type: ChatContextType::Project.to_string(),
                 context_id: project_id.as_str().to_string(),
                 title: Some("Created from command".to_string()),
+                team_intent: None,
             },
             app.state(),
         )
@@ -16629,10 +16811,7 @@ mod tests {
         assert_ne!(persisted.branch_name, "feature/source-pr");
         assert!(persisted.branch_name.contains("/agent-"));
         assert_eq!(persisted.publication_pr_number, None);
-        assert_eq!(
-            persisted.publication_pr_url.as_deref(),
-            None
-        );
+        assert_eq!(persisted.publication_pr_url.as_deref(), None);
         assert_eq!(persisted.publication_pr_status.as_deref(), None);
         assert_eq!(
             persisted

@@ -363,6 +363,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::precompute_agent_conversation_workspace_pr_description,
             commands::unified_chat_commands::close_agent_workspace_pr,
             commands::unified_chat_commands::create_agent_conversation,
+            commands::unified_chat_commands::update_agent_conversation_coordination_mode,
             commands::unified_chat_commands::update_agent_conversation_title,
             commands::unified_chat_commands::archive_agent_conversation,
             commands::unified_chat_commands::restore_agent_conversation,

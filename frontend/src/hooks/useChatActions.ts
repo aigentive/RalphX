@@ -31,6 +31,7 @@ import type {
   ComposerProjectReference,
   SendAgentMessageOptions,
   SendAgentMessageResult,
+  TeamIntent,
 } from "@/api/chat";
 
 // ============================================================================
@@ -60,6 +61,7 @@ interface UseChatActionsProps {
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
+      teamIntent?: TeamIntent | null;
     }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
@@ -130,6 +132,7 @@ export function useChatActions({
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        teamIntent?: TeamIntent | null;
       },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
@@ -172,16 +175,15 @@ export function useChatActions({
                 messageId: message.id,
               };
             }
-            const result = await chatApi.sendAgentMessage(
-              contextType,
-              agentContextId,
-              content,
-              attachmentIds,
-              target,
+            const directSendOptions =
               composerOptions?.projectReferences?.length ||
-                composerOptions?.integrationReferences?.length ||
-                composerOptions?.artifactReferences?.length
+              composerOptions?.integrationReferences?.length ||
+              composerOptions?.artifactReferences?.length ||
+              composerOptions?.teamIntent
                 ? {
+                    ...(composerOptions?.teamIntent
+                      ? { teamIntent: composerOptions.teamIntent }
+                      : {}),
                     ...(composerOptions?.projectReferences?.length
                       ? {
                           composerProjectReferences:
@@ -201,7 +203,14 @@ export function useChatActions({
                         }
                       : {}),
                   }
-                : undefined,
+                : undefined;
+            const result = await chatApi.sendAgentMessage(
+              contextType,
+              agentContextId,
+              content,
+              attachmentIds,
+              target,
+              directSendOptions,
             );
             sentResult = result;
 
@@ -232,6 +241,7 @@ export function useChatActions({
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
+            teamIntent?: TeamIntent | null;
           } = { content };
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
@@ -249,6 +259,9 @@ export function useChatActions({
           if (composerOptions?.artifactReferences?.length) {
             params.composerArtifactReferences =
               composerOptions.artifactReferences;
+          }
+          if (composerOptions?.teamIntent) {
+            params.teamIntent = composerOptions.teamIntent;
           }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;

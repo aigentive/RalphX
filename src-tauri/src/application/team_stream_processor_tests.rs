@@ -63,6 +63,68 @@ async fn test_kill_tx_dropped_fires_kill_rx() {
     assert!(result.unwrap().is_err(), "kill_rx should get RecvError when kill_tx dropped");
 }
 
+#[tokio::test]
+async fn teammate_stream_creates_solo_teammate_conversation() {
+    use std::process::Stdio;
+
+    let app = crate::testing::create_mock_app();
+    let team_tracker = Arc::new(TeamStateTracker::new());
+    team_tracker
+        .create_team("team-a", "project-1", "project")
+        .await
+        .expect("team should be created");
+    team_tracker
+        .add_teammate("team-a", "worker", "#ff6b35", "sonnet", "worker")
+        .await
+        .expect("teammate should be added");
+    let repo = Arc::new(crate::infrastructure::memory::MemoryChatConversationRepository::new());
+    let conversation_repo: Arc<dyn ChatConversationRepository> = repo.clone();
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("cat should spawn");
+    let stdout = child.stdout.take().expect("stdout should be piped");
+    let (exit_tx, exit_rx) = oneshot::channel::<()>();
+    let stream_task = start_teammate_stream::<tauri::test::MockRuntime>(
+        stdout,
+        exit_rx,
+        "team-a".to_string(),
+        "worker".to_string(),
+        "project".to_string(),
+        "project-1".to_string(),
+        app.handle().clone(),
+        team_tracker,
+        None,
+        Some(conversation_repo),
+        None,
+        None,
+        None,
+    );
+
+    let mut created = None;
+    for _ in 0..20 {
+        created = repo
+            .get_active_for_context(ChatContextType::Project, "teammate:team-a:worker")
+            .await
+            .expect("conversation lookup should succeed");
+        if created.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let _ = exit_tx.send(());
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    stream_task.await.expect("stream task should join");
+
+    let conversation = created.expect("teammate conversation should be created");
+    assert_eq!(conversation.context_type, ChatContextType::Project);
+    assert_eq!(conversation.context_id, "teammate:team-a:worker");
+    assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
+}
+
 #[test]
 fn test_message_type_mapping() {
     // Verify TeamMessageSent message_type string → TeamMessageType mapping

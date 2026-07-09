@@ -45,9 +45,11 @@ import { useChatPanelContext } from "@/hooks/useChatPanelContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatApi,
+  type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
   type SendAgentMessageResult,
+  type TeamIntent,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import { api } from "@/lib/tauri";
@@ -255,6 +257,8 @@ export interface IntegratedChatComposerRenderProps {
     options?: {
       projectReferences?: ComposerProjectReference[];
       integrationReferences?: ComposerIntegrationReference[];
+      artifactReferences?: ComposerArtifactReference[];
+      teamIntent?: TeamIntent | null;
     },
   ) => Promise<void>;
   onStop: () => Promise<void>;
@@ -1254,6 +1258,8 @@ export function IntegratedChatPanel({
       options?: {
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
+        artifactReferences?: ComposerArtifactReference[];
+        teamIntent?: TeamIntent | null;
       },
     ) => {
       const attachmentIds = attachments.map((a) => a.id);

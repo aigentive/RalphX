@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use crate::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::entities::{
     AgentConversationWorkspaceMode, AutomationId, ChatContextType, ChatConversation,
-    ChatConversationId, ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    ChatConversationId, ConversationAttributionBackfillState,
+    ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::error::AppResult;
 
@@ -114,6 +115,13 @@ pub trait ChatConversationRepository: Send + Sync {
         &self,
         id: &ChatConversationId,
         mode: Option<AgentConversationWorkspaceMode>,
+    ) -> AppResult<()>;
+
+    /// Update the conversation-level team coordination mode.
+    async fn update_coordination_mode(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
     ) -> AppResult<()>;
 
     /// Compatibility helper for legacy Claude-specific callers.

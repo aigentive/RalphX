@@ -184,6 +184,22 @@ describe("useChatActions", () => {
       expect(mutateAsync).toHaveBeenCalledWith({ content: "hello world", attachmentIds: undefined });
     });
 
+    it("passes Team intent to the send mutation", async () => {
+      const { result, mutateAsync } = setup();
+
+      await act(async () => {
+        await result.current.handleSend("hello Team", undefined, undefined, {
+          teamIntent: { coordinationMode: "rx_native_team" },
+        });
+      });
+
+      expect(mutateAsync).toHaveBeenCalledWith({
+        content: "hello Team",
+        attachmentIds: undefined,
+        teamIntent: { coordinationMode: "rx_native_team" },
+      });
+    });
+
     it("preserves attachment IDs when a send is queued", async () => {
       const { result, mutateAsync } = setup();
       mutateAsync.mockResolvedValue({
@@ -287,6 +303,31 @@ describe("useChatActions", () => {
       );
       expect(mockActions.setSending).toHaveBeenCalledWith("review:task-42", true);
       expect(mockInvalidateQueries).toHaveBeenCalled();
+    });
+
+    it("review mode sends Team intent via direct send options", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review with Team", undefined, undefined, {
+          teamIntent: { coordinationMode: "rx_native_team" },
+        });
+      });
+
+      expect(mutateAsync).not.toHaveBeenCalled();
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "review",
+        "task-42",
+        "review with Team",
+        undefined,
+        undefined,
+        { teamIntent: { coordinationMode: "rx_native_team" } },
+      );
     });
 
     it("review mode sets activeConversation when isNewConversation is true", async () => {
