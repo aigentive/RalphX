@@ -2712,6 +2712,44 @@ describe("AgentsActiveConversationPanel", () => {
     ).toBe("ideation-conversation-1");
   });
 
+  it("does not focus the ideation chat when composer promotion lacks a workspace confirmation", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+    sendAgentMessageMock.mockResolvedValue({
+      conversationId: "ideation-conversation-1",
+      agentRunId: "run-proposals",
+      isNewConversation: true,
+      wasQueued: false,
+      queuedAsPending: false,
+      queuedMessageId: null,
+    });
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: null,
+    });
+    const onFocusIdeationSessionForConversation = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onFocusIdeationSessionForConversation,
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Create Proposals/i }),
+    );
+
+    await waitFor(() => expect(sendAgentMessageMock).toHaveBeenCalled());
+    expect(onFocusIdeationSessionForConversation).not.toHaveBeenCalled();
+  });
+
   it("shows and disables composer plan CTAs while the recommendation check is running", async () => {
     const user = userEvent.setup();
     const assessment = deferred<null>();

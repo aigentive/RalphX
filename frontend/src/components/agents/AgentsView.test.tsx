@@ -10,7 +10,7 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationApi } from "@/api/ideation";
@@ -529,11 +529,13 @@ describe("AgentsView", () => {
       screen.queryByTestId("agents-composer-chat-focus-option-verification"),
     ).not.toBeInTheDocument();
 
-    fireAgentViewEvent("ideation:child_session_created", {
-      sessionId: "verification-child-live",
-      parentSessionId: "session-1",
-      title: "Verification Session",
-      purpose: "verification",
+    await act(async () => {
+      fireAgentViewEvent("ideation:child_session_created", {
+        sessionId: "verification-child-live",
+        parentSessionId: "session-1",
+        title: "Verification Session",
+        purpose: "verification",
+      });
     });
 
     await waitFor(() => {

@@ -89,7 +89,7 @@ export async function activateAgentPlanProposals({
       result.workspace ?? null,
     );
     void invalidateWorkspaceQueries(queryClient, conversationId);
-    workspaceIsIdeation = result.workspace?.mode === "ideation" || !result.workspace;
+    workspaceIsIdeation = result.workspace?.mode === "ideation";
   } else if (ownsSession && workspaceIsIdeation && conversationId) {
     onConversationModeSwitched?.(conversationId, "ideation", workspace);
   }
