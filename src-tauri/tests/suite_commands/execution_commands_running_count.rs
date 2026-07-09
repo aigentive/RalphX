@@ -8,11 +8,11 @@
 use std::sync::Arc;
 
 use ralphx_lib::application::{chat_service::uses_execution_slot, AppState};
-use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::commands::execution_commands::context_matches_running_status_for_gc;
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    ChatContextType, IdeationSession, IdeationSessionStatus, InternalStatus, Project, ProjectId,
-    Task, TaskId, types::IdeationSessionId,
+    types::IdeationSessionId, ChatContextType, IdeationSession, IdeationSessionStatus,
+    InternalStatus, Project, ProjectId, Task, TaskId,
 };
 use ralphx_lib::domain::repositories::{ProjectRepository, TaskRepository};
 use ralphx_lib::domain::services::{RunningAgentKey, RunningAgentRegistry};
@@ -175,7 +175,10 @@ async fn test_running_count_excludes_archived_executing_task_with_registry() {
     let process_count = count_visible_processes(&state).await;
 
     assert_eq!(running_count, 0, "archived task must not count as running");
-    assert_eq!(process_count, 0, "archived task must not appear in running processes");
+    assert_eq!(
+        process_count, 0,
+        "archived task must not appear in running processes"
+    );
 }
 
 // =========================================================================
@@ -267,8 +270,14 @@ async fn test_running_count_matches_process_list_count() {
 #[test]
 fn test_guard_task_execution_only_matches_executing_or_reexecuting() {
     let ctx = ChatContextType::TaskExecution;
-    assert!(context_matches_running_status_for_gc(ctx, InternalStatus::Executing));
-    assert!(context_matches_running_status_for_gc(ctx, InternalStatus::ReExecuting));
+    assert!(context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Executing
+    ));
+    assert!(context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::ReExecuting
+    ));
 
     // Every other status must NOT match
     for status in [
@@ -294,19 +303,43 @@ fn test_guard_task_execution_only_matches_executing_or_reexecuting() {
 #[test]
 fn test_guard_review_only_matches_reviewing() {
     let ctx = ChatContextType::Review;
-    assert!(context_matches_running_status_for_gc(ctx, InternalStatus::Reviewing));
-    assert!(!context_matches_running_status_for_gc(ctx, InternalStatus::PendingReview));
-    assert!(!context_matches_running_status_for_gc(ctx, InternalStatus::Executing));
-    assert!(!context_matches_running_status_for_gc(ctx, InternalStatus::Failed));
+    assert!(context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Reviewing
+    ));
+    assert!(!context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::PendingReview
+    ));
+    assert!(!context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Executing
+    ));
+    assert!(!context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Failed
+    ));
 }
 
 #[test]
 fn test_guard_merge_only_matches_merging() {
     let ctx = ChatContextType::Merge;
-    assert!(context_matches_running_status_for_gc(ctx, InternalStatus::Merging));
-    assert!(!context_matches_running_status_for_gc(ctx, InternalStatus::PendingMerge));
-    assert!(!context_matches_running_status_for_gc(ctx, InternalStatus::Merged));
-    assert!(!context_matches_running_status_for_gc(ctx, InternalStatus::Executing));
+    assert!(context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Merging
+    ));
+    assert!(!context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::PendingMerge
+    ));
+    assert!(!context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Merged
+    ));
+    assert!(!context_matches_running_status_for_gc(
+        ctx,
+        InternalStatus::Executing
+    ));
 }
 
 #[test]
@@ -336,7 +369,10 @@ async fn test_ideation_entry_counted_in_running_count() {
     register_ideation(&*state.running_agent_registry, "session-abc").await;
 
     let count = count_running(&state).await;
-    assert_eq!(count, 0, "Ideation entry must NOT be counted in running_count (execution-only)");
+    assert_eq!(
+        count, 0,
+        "Ideation entry must NOT be counted in running_count (execution-only)"
+    );
 }
 
 #[tokio::test]
@@ -656,7 +692,11 @@ async fn test_gc_prune_clears_interactive_idle_slot() {
     register_ideation(&*state.running_agent_registry, "session-gone").await;
     exec_state.mark_interactive_idle("ideation/session-gone");
 
-    assert_eq!(exec_state.interactive_idle_count(), 1, "Should have 1 idle slot before pruning");
+    assert_eq!(
+        exec_state.interactive_idle_count(),
+        1,
+        "Should have 1 idle slot before pruning"
+    );
 
     // Simulate what prune does: remove from registry AND remove from idle slots
     let entries = state.running_agent_registry.list_all().await;
@@ -792,6 +832,7 @@ fn make_ideation_session(session_id: &str, project_id: &ProjectId) -> IdeationSe
         external_activity_phase: None,
         external_last_read_message_id: None,
         dependencies_acknowledged: false,
+        proposal_generation_progress: Default::default(),
         pending_initial_prompt: None,
         acceptance_status: None,
         verification_confirmation_status: None,
@@ -825,11 +866,7 @@ async fn count_scoped_running(
 
         if matches!(context_type, ChatContextType::Ideation) {
             let session_id = IdeationSessionId::from_string(key.context_id.clone());
-            let session = match app_state
-                .ideation_session_repo
-                .get_by_id(&session_id)
-                .await
-            {
+            let session = match app_state.ideation_session_repo.get_by_id(&session_id).await {
                 Ok(Some(s)) => s,
                 _ => continue,
             };
@@ -912,13 +949,22 @@ async fn test_ideation_active_is_project_scoped() {
     let (rc_a, active_a, idle_a) = count_scoped_running(&state, &exec_state, Some(&pid_a)).await;
     let (rc_b, active_b, idle_b) = count_scoped_running(&state, &exec_state, Some(&pid_b)).await;
 
-    assert_eq!(active_a, 2, "Project A must have 2 active ideation sessions");
+    assert_eq!(
+        active_a, 2,
+        "Project A must have 2 active ideation sessions"
+    );
     assert_eq!(idle_a, 0, "Project A must have 0 idle ideation sessions");
-    assert_eq!(rc_a, 0, "running_count for project A must be 0 (ideation excluded)");
+    assert_eq!(
+        rc_a, 0,
+        "running_count for project A must be 0 (ideation excluded)"
+    );
 
     assert_eq!(active_b, 1, "Project B must have 1 active ideation session");
     assert_eq!(idle_b, 0, "Project B must have 0 idle ideation sessions");
-    assert_eq!(rc_b, 0, "running_count for project B must be 0 (ideation excluded)");
+    assert_eq!(
+        rc_b, 0,
+        "running_count for project B must be 0 (ideation excluded)"
+    );
 }
 
 /// Test: orphaned registry entries (no matching session row) are skipped.
@@ -976,10 +1022,8 @@ async fn test_running_count_equals_project_ideation_plus_project_tasks() {
     register_task_execution(&*state.running_agent_registry, &task_b.id).await;
     register_ideation(&*state.running_agent_registry, "session-a1").await;
 
-    let (rc_a, active_a, _idle_a) =
-        count_scoped_running(&state, &exec_state, Some(&pid_a)).await;
-    let (rc_b, active_b, _idle_b) =
-        count_scoped_running(&state, &exec_state, Some(&pid_b)).await;
+    let (rc_a, active_a, _idle_a) = count_scoped_running(&state, &exec_state, Some(&pid_a)).await;
+    let (rc_b, active_b, _idle_b) = count_scoped_running(&state, &exec_state, Some(&pid_b)).await;
 
     assert_eq!(
         rc_a, 1,

@@ -116,7 +116,7 @@ pub(crate) async fn build_child_session_status_response(
     use crate::domain::services::RunningAgentKey;
     use crate::http_server::types::{
         AgentStateInfo, ChatMessageSummary, ChildSessionStatusResponse, IdeationSessionSummary,
-        VerificationInfo,
+        ProposalGenerationProgressSummary, VerificationInfo,
     };
     use crate::infrastructure::agents::claude::ideation_activity_threshold_secs;
 
@@ -276,6 +276,9 @@ pub(crate) async fn build_child_session_status_response(
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
         last_effective_model: session.last_effective_model.clone(),
+        proposal_generation_progress: ProposalGenerationProgressSummary::from(
+            session.proposal_generation_progress.clone(),
+        ),
     };
 
     Ok(ChildSessionStatusResponse {

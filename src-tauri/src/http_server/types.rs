@@ -12,8 +12,8 @@ use crate::commands::unified_chat_commands::{
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary,
-    TaskProposal, TaskStep,
+    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry,
+    ProposalGenerationProgress, StepProgressSummary, TaskProposal, TaskStep,
 };
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
@@ -69,6 +69,35 @@ pub struct ChildSessionStatusParams {
     pub message_limit: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProposalGenerationProgressSummary {
+    pub status: String,
+    pub phase: Option<String>,
+    pub expected_count: Option<u32>,
+    pub created_count: u32,
+    pub dependency_count: Option<u32>,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+impl From<ProposalGenerationProgress> for ProposalGenerationProgressSummary {
+    fn from(progress: ProposalGenerationProgress) -> Self {
+        Self {
+            status: progress.status.to_string(),
+            phase: progress.phase.map(|phase| phase.to_string()),
+            expected_count: progress.expected_count,
+            created_count: progress.created_count,
+            dependency_count: progress.dependency_count,
+            error: progress.error,
+            started_at: progress.started_at.map(|dt| dt.to_rfc3339()),
+            updated_at: progress.updated_at.map(|dt| dt.to_rfc3339()),
+            completed_at: progress.completed_at.map(|dt| dt.to_rfc3339()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IdeationSessionSummary {
     pub id: String,
@@ -79,6 +108,7 @@ pub struct IdeationSessionSummary {
     pub created_at: String,
     pub updated_at: String,
     pub last_effective_model: Option<String>,
+    pub proposal_generation_progress: ProposalGenerationProgressSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]

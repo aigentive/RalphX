@@ -213,6 +213,7 @@ mod tests {
             external_activity_phase: None,
             external_last_read_message_id: None,
             dependencies_acknowledged: false,
+            proposal_generation_progress: Default::default(),
             pending_initial_prompt: None,
             acceptance_status: None,
             verification_confirmation_status: None,

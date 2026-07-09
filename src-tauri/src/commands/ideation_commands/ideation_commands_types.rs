@@ -4,7 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::entities::{
-    DependencyGraph, IdeationAnalysisBaseRefKind, IdeationSession, TaskProposal,
+    DependencyGraph, IdeationAnalysisBaseRefKind, IdeationSession, ProposalGenerationProgress,
+    TaskProposal,
 };
 
 // Re-export shared ChatMessageResponse
@@ -51,6 +52,36 @@ pub struct CreateSessionInput {
     pub analysis_base_display_name: Option<String>,
 }
 
+/// Durable proposal-generation progress included in ideation session responses.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProposalGenerationProgressResponse {
+    pub status: String,
+    pub phase: Option<String>,
+    pub expected_count: Option<u32>,
+    pub created_count: u32,
+    pub dependency_count: Option<u32>,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+impl From<ProposalGenerationProgress> for ProposalGenerationProgressResponse {
+    fn from(progress: ProposalGenerationProgress) -> Self {
+        Self {
+            status: progress.status.to_string(),
+            phase: progress.phase.map(|phase| phase.to_string()),
+            expected_count: progress.expected_count,
+            created_count: progress.created_count,
+            dependency_count: progress.dependency_count,
+            error: progress.error,
+            started_at: progress.started_at.map(|dt| dt.to_rfc3339()),
+            updated_at: progress.updated_at.map(|dt| dt.to_rfc3339()),
+            completed_at: progress.completed_at.map(|dt| dt.to_rfc3339()),
+        }
+    }
+}
+
 /// Response wrapper for ideation session operations
 #[derive(Debug, Serialize)]
 pub struct IdeationSessionResponse {
@@ -71,6 +102,7 @@ pub struct IdeationSessionResponse {
     pub verification_status: String,
     pub verification_in_progress: bool,
     pub gap_score: Option<i32>,
+    pub proposal_generation_progress: ProposalGenerationProgressResponse,
     pub inherited_plan_artifact_id: Option<String>,
     pub source_project_id: Option<String>,
     pub source_session_id: Option<String>,
@@ -102,6 +134,8 @@ pub struct LatestChildSessionIdResponse {
 impl From<IdeationSession> for IdeationSessionResponse {
     fn from(session: IdeationSession) -> Self {
         let gap_score = session.verification_gap_score.map(|score| score as i32);
+        let proposal_generation_progress =
+            ProposalGenerationProgressResponse::from(session.proposal_generation_progress.clone());
         Self {
             id: session.id.as_str().to_string(),
             project_id: session.project_id.as_str().to_string(),
@@ -122,6 +156,7 @@ impl From<IdeationSession> for IdeationSessionResponse {
             verification_status: session.verification_status.to_string(),
             verification_in_progress: session.verification_in_progress,
             gap_score,
+            proposal_generation_progress,
             inherited_plan_artifact_id: session
                 .inherited_plan_artifact_id
                 .map(|id| id.as_str().to_string()),

@@ -113,6 +113,144 @@ impl IdeationAnalysisState {
     }
 }
 
+/// Durable status for Agent Plan-mode proposal generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalGenerationStatus {
+    Idle,
+    Queued,
+    Running,
+    WaitingForConfirmation,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl Default for ProposalGenerationStatus {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+impl std::fmt::Display for ProposalGenerationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Queued => write!(f, "queued"),
+            Self::Running => write!(f, "running"),
+            Self::WaitingForConfirmation => write!(f, "waiting_for_confirmation"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl FromStr for ProposalGenerationStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "idle" => Ok(Self::Idle),
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "waiting_for_confirmation" => Ok(Self::WaitingForConfirmation),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("unknown proposal generation status: '{s}'")),
+        }
+    }
+}
+
+/// Durable phase for Agent Plan-mode proposal generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalGenerationPhase {
+    Queued,
+    CreatingProposals,
+    AnalyzingDependencies,
+    FinalizingProposals,
+    WaitingForConfirmation,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl std::fmt::Display for ProposalGenerationPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Queued => write!(f, "queued"),
+            Self::CreatingProposals => write!(f, "creating_proposals"),
+            Self::AnalyzingDependencies => write!(f, "analyzing_dependencies"),
+            Self::FinalizingProposals => write!(f, "finalizing_proposals"),
+            Self::WaitingForConfirmation => write!(f, "waiting_for_confirmation"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl FromStr for ProposalGenerationPhase {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "creating_proposals" => Ok(Self::CreatingProposals),
+            "analyzing_dependencies" => Ok(Self::AnalyzingDependencies),
+            "finalizing_proposals" => Ok(Self::FinalizingProposals),
+            "waiting_for_confirmation" => Ok(Self::WaitingForConfirmation),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(format!("unknown proposal generation phase: '{s}'")),
+        }
+    }
+}
+
+/// Persisted proposal-generation progress attached to an ideation session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalGenerationProgress {
+    pub status: ProposalGenerationStatus,
+    pub phase: Option<ProposalGenerationPhase>,
+    pub expected_count: Option<u32>,
+    pub created_count: u32,
+    pub dependency_count: Option<u32>,
+    pub error: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl Default for ProposalGenerationProgress {
+    fn default() -> Self {
+        Self {
+            status: ProposalGenerationStatus::Idle,
+            phase: None,
+            expected_count: None,
+            created_count: 0,
+            dependency_count: None,
+            error: None,
+            started_at: None,
+            updated_at: None,
+            completed_at: None,
+        }
+    }
+}
+
+impl ProposalGenerationProgress {
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self.status,
+            ProposalGenerationStatus::Queued
+                | ProposalGenerationStatus::Running
+                | ProposalGenerationStatus::WaitingForConfirmation
+        )
+    }
+}
+
 /// Origin of an ideation session — distinguishes internally created sessions from externally created ones
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

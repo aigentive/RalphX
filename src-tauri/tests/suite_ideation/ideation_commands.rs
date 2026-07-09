@@ -4,7 +4,8 @@ use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings}
 use ralphx_lib::domain::entities::ideation::VerificationStatus;
 use ralphx_lib::domain::entities::{
     ChatMessage, IdeationSession, IdeationSessionId, IdeationSessionStatus, Priority, Project,
-    ProjectId, ProposalCategory, TaskProposal, TaskProposalId,
+    ProjectId, ProposalCategory, ProposalGenerationPhase, ProposalGenerationProgress,
+    ProposalGenerationStatus, TaskProposal, TaskProposalId,
 };
 use ralphx_lib::domain::ideation::IdeationSettings;
 
@@ -169,16 +170,39 @@ async fn test_delete_ideation_session() {
 #[tokio::test]
 async fn test_session_response_serialization() {
     let project_id = ProjectId::new();
-    let session = IdeationSession::new_with_title(project_id, "Test Session");
+    let mut session = IdeationSession::new_with_title(project_id, "Test Session");
+    session.proposal_generation_progress = ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Running,
+        phase: Some(ProposalGenerationPhase::CreatingProposals),
+        expected_count: Some(3),
+        created_count: 1,
+        dependency_count: Some(0),
+        error: None,
+        started_at: None,
+        updated_at: None,
+        completed_at: None,
+    };
     let response = IdeationSessionResponse::from(session);
 
     assert!(!response.id.is_empty());
     assert_eq!(response.title, Some("Test Session".to_string()));
     assert_eq!(response.status, "active");
+    assert_eq!(response.proposal_generation_progress.status, "running");
+    assert_eq!(
+        response.proposal_generation_progress.phase,
+        Some("creating_proposals".to_string())
+    );
+    assert_eq!(
+        response.proposal_generation_progress.expected_count,
+        Some(3)
+    );
+    assert_eq!(response.proposal_generation_progress.created_count, 1);
 
     // Verify it serializes to JSON
     let json = serde_json::to_string(&response).expect("Failed to serialize response in test");
     assert!(json.contains("\"title\":\"Test Session\""));
+    assert!(json.contains("\"proposal_generation_progress\""));
+    assert!(json.contains("\"status\":\"running\""));
 }
 
 #[tokio::test]

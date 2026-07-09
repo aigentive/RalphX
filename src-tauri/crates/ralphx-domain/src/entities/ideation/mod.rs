@@ -140,6 +140,9 @@ pub struct IdeationSession {
     /// False = finalize_proposals will block if inter-proposal dependencies exist.
     #[serde(default)]
     pub dependencies_acknowledged: bool,
+    /// Durable Agent Plan-mode proposal-generation progress.
+    #[serde(default)]
+    pub proposal_generation_progress: ProposalGenerationProgress,
     /// Initial prompt to auto-launch when capacity becomes available.
     /// Set when spawn_child_orchestration fails due to ideation capacity limits.
     /// Cleared to NULL by the drain service after successful launch.
@@ -206,6 +209,7 @@ pub struct IdeationSessionBuilder {
     external_activity_phase: Option<String>,
     external_last_read_message_id: Option<String>,
     dependencies_acknowledged: Option<bool>,
+    proposal_generation_progress: Option<ProposalGenerationProgress>,
     pending_initial_prompt: Option<String>,
     acceptance_status: Option<AcceptanceStatus>,
     verification_confirmation_status: Option<VerificationConfirmationStatus>,
@@ -428,6 +432,12 @@ impl IdeationSessionBuilder {
         self
     }
 
+    /// Set proposal-generation progress
+    pub fn proposal_generation_progress(mut self, progress: ProposalGenerationProgress) -> Self {
+        self.proposal_generation_progress = Some(progress);
+        self
+    }
+
     /// Set the pending initial prompt for deferred session launch
     pub fn pending_initial_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.pending_initial_prompt = Some(prompt.into());
@@ -503,6 +513,7 @@ impl IdeationSessionBuilder {
             external_activity_phase: self.external_activity_phase,
             external_last_read_message_id: self.external_last_read_message_id,
             dependencies_acknowledged: self.dependencies_acknowledged.unwrap_or(false),
+            proposal_generation_progress: self.proposal_generation_progress.unwrap_or_default(),
             pending_initial_prompt: self.pending_initial_prompt,
             acceptance_status: self.acceptance_status,
             verification_confirmation_status: self.verification_confirmation_status,
@@ -727,6 +738,47 @@ impl IdeationSession {
                 .unwrap_or(None)
                 .map(|v| v != 0)
                 .unwrap_or(false),
+            proposal_generation_progress: ProposalGenerationProgress {
+                status: row
+                    .get::<_, Option<String>>("proposal_generation_status")
+                    .unwrap_or(None)
+                    .as_deref()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_default(),
+                phase: row
+                    .get::<_, Option<String>>("proposal_generation_phase")
+                    .unwrap_or(None)
+                    .as_deref()
+                    .and_then(|s| s.parse().ok()),
+                expected_count: row
+                    .get::<_, Option<i64>>("proposal_generation_expected_count")
+                    .unwrap_or(None)
+                    .map(|v| v as u32),
+                created_count: row
+                    .get::<_, Option<i64>>("proposal_generation_created_count")
+                    .unwrap_or(None)
+                    .map(|v| v as u32)
+                    .unwrap_or(0),
+                dependency_count: row
+                    .get::<_, Option<i64>>("proposal_generation_dependency_count")
+                    .unwrap_or(None)
+                    .map(|v| v as u32),
+                error: row
+                    .get::<_, Option<String>>("proposal_generation_error")
+                    .unwrap_or(None),
+                started_at: row
+                    .get::<_, Option<String>>("proposal_generation_started_at")
+                    .unwrap_or(None)
+                    .map(Self::parse_datetime),
+                updated_at: row
+                    .get::<_, Option<String>>("proposal_generation_updated_at")
+                    .unwrap_or(None)
+                    .map(Self::parse_datetime),
+                completed_at: row
+                    .get::<_, Option<String>>("proposal_generation_completed_at")
+                    .unwrap_or(None)
+                    .map(Self::parse_datetime),
+            },
             pending_initial_prompt: row
                 .get::<_, Option<String>>("pending_initial_prompt")
                 .unwrap_or(None),

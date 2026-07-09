@@ -1,7 +1,9 @@
+use chrono::TimeZone;
 use ralphx_lib::domain::entities::ideation::{SessionOrigin, SessionPurpose};
 use ralphx_lib::domain::entities::{
     ArtifactId, IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
-    IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId, VerificationGap,
+    IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId, ProposalGenerationPhase,
+    ProposalGenerationProgress, ProposalGenerationStatus, VerificationGap,
     VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
 };
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
@@ -120,6 +122,75 @@ async fn test_get_by_id_returns_none_for_nonexistent() {
 
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_proposal_generation_progress_round_trips() {
+    let db = setup_test_db();
+    let project_id = ProjectId::new();
+    create_test_project(&db, &project_id, "Test Project", "/test/path");
+
+    let repo = SqliteIdeationSessionRepository::new(db.new_connection());
+    let session = create_test_session(&project_id, Some("Progress Session"));
+    repo.create(session.clone()).await.unwrap();
+
+    let started_at = chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 0, 0).unwrap();
+    let updated_at = chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 5, 0).unwrap();
+    let progress = ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Running,
+        phase: Some(ProposalGenerationPhase::AnalyzingDependencies),
+        expected_count: Some(5),
+        created_count: 3,
+        dependency_count: Some(2),
+        error: Some("waiting on dependency map".to_string()),
+        started_at: Some(started_at),
+        updated_at: Some(updated_at),
+        completed_at: None,
+    };
+
+    repo.update_proposal_generation_progress(session.id.as_str(), progress.clone())
+        .await
+        .unwrap();
+
+    let found = repo.get_by_id(&session.id).await.unwrap().unwrap();
+    assert_eq!(found.proposal_generation_progress, progress);
+}
+
+#[tokio::test]
+async fn test_reset_acceptance_cycle_fields_resets_proposal_generation_progress() {
+    let db = setup_test_db();
+    let project_id = ProjectId::new();
+    create_test_project(&db, &project_id, "Test Project", "/test/path");
+
+    let repo = SqliteIdeationSessionRepository::new(db.new_connection());
+    let session = create_test_session(&project_id, Some("Reset Progress"));
+    repo.create(session.clone()).await.unwrap();
+    repo.update_proposal_generation_progress(
+        session.id.as_str(),
+        ProposalGenerationProgress {
+            status: ProposalGenerationStatus::Failed,
+            phase: Some(ProposalGenerationPhase::Failed),
+            expected_count: Some(4),
+            created_count: 2,
+            dependency_count: Some(1),
+            error: Some("validation failed".to_string()),
+            started_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 0, 0).unwrap()),
+            updated_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 1, 0).unwrap()),
+            completed_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 2, 0).unwrap()),
+        },
+    )
+    .await
+    .unwrap();
+
+    repo.reset_acceptance_cycle_fields(session.id.as_str())
+        .await
+        .unwrap();
+
+    let found = repo.get_by_id(&session.id).await.unwrap().unwrap();
+    assert_eq!(
+        found.proposal_generation_progress,
+        ProposalGenerationProgress::default()
+    );
 }
 
 #[tokio::test]

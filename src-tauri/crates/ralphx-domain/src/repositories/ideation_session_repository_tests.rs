@@ -380,6 +380,18 @@ impl IdeationSessionRepository for MockIdeationSessionRepository {
         Ok(())
     }
 
+    async fn update_proposal_generation_progress(
+        &self,
+        _session_id: &str,
+        _progress: crate::domain::entities::ProposalGenerationProgress,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn reset_proposal_generation_progress(&self, _session_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn reset_acceptance_cycle_fields(&self, _session_id: &str) -> AppResult<()> {
         Ok(())
     }
@@ -511,6 +523,7 @@ fn create_test_session(project_id: &ProjectId) -> IdeationSession {
         external_activity_phase: None,
         external_last_read_message_id: None,
         dependencies_acknowledged: false,
+        proposal_generation_progress: Default::default(),
         pending_initial_prompt: None,
         acceptance_status: None,
         verification_confirmation_status: None,

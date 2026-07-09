@@ -880,6 +880,18 @@ impl IdeationSessionRepository for MockIdeationRepo {
         unimplemented!()
     }
 
+    async fn update_proposal_generation_progress(
+        &self,
+        _session_id: &str,
+        _progress: ProposalGenerationProgress,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn reset_proposal_generation_progress(&self, _session_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn reset_acceptance_cycle_fields(&self, _session_id: &str) -> AppResult<()> {
         Ok(())
     }

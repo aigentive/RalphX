@@ -9,7 +9,8 @@ use rusqlite::Connection;
 
 use crate::domain::entities::{
     AcceptanceStatus, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    SessionPurpose, VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
+    ProposalGenerationProgress, SessionPurpose, VerificationConfirmationStatus,
+    VerificationRunSnapshot, VerificationStatus,
 };
 use crate::error::AppResult;
 
@@ -397,6 +398,16 @@ pub trait IdeationSessionRepository: Send + Sync {
     /// Sets `dependencies_acknowledged = true` and updates `updated_at`.
     async fn set_dependencies_acknowledged(&self, session_id: &str) -> AppResult<()>;
 
+    /// Persist proposal-generation progress for a session and update `updated_at`.
+    async fn update_proposal_generation_progress(
+        &self,
+        session_id: &str,
+        progress: ProposalGenerationProgress,
+    ) -> AppResult<()>;
+
+    /// Reset proposal-generation progress to the idle/default state and update `updated_at`.
+    async fn reset_proposal_generation_progress(&self, session_id: &str) -> AppResult<()>;
+
     /// Reset all acceptance-cycle fields so the session can be re-accepted cleanly.
     ///
     /// Sets:
@@ -405,6 +416,7 @@ pub trait IdeationSessionRepository: Send + Sync {
     /// - `auto_accept_status = NULL`
     /// - `auto_accept_started_at = NULL`
     /// - `cross_project_checked = 0`
+    /// - proposal-generation progress = idle/default
     ///
     /// Called by `SessionReopenService` before resetting status to Active.
     async fn reset_acceptance_cycle_fields(&self, session_id: &str) -> AppResult<()>;

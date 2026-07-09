@@ -11,7 +11,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::application::harness_runtime_registry::default_verification_max_rounds;
 use crate::domain::entities::{
     AcceptanceStatus, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    SessionPurpose, VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
+    ProposalGenerationProgress, SessionPurpose, VerificationConfirmationStatus,
+    VerificationRunSnapshot, VerificationStatus,
 };
 use crate::domain::repositories::ideation_session_repository::{
     IdeationSessionWithProgress, SessionGroupCounts, SessionProgress,
@@ -38,7 +39,11 @@ const SESSION_COLUMNS: &str = "id, project_id, title, title_source, status, plan
     cross_project_checked, plan_version_last_read, origin, \
     expected_proposal_count, auto_accept_status, auto_accept_started_at, \
     api_key_id, idempotency_key, external_activity_phase, external_last_read_message_id, \
-    dependencies_acknowledged, pending_initial_prompt, source_task_id, source_context_type, \
+    dependencies_acknowledged, proposal_generation_status, proposal_generation_phase, \
+    proposal_generation_expected_count, proposal_generation_created_count, \
+    proposal_generation_dependency_count, proposal_generation_error, \
+    proposal_generation_started_at, proposal_generation_updated_at, \
+    proposal_generation_completed_at, pending_initial_prompt, source_task_id, source_context_type, \
     source_context_id, spawn_reason, blocker_fingerprint, acceptance_status, \
     verification_confirmation_status, analysis_base_ref_kind, analysis_base_ref, \
     analysis_base_display_name, analysis_workspace_kind, analysis_workspace_path, \
@@ -143,10 +148,13 @@ impl SqliteIdeationSessionRepository {
               source_project_id, source_session_id, session_purpose, session_flow, \
               cross_project_checked, origin, api_key_id, idempotency_key, \
               external_activity_phase, external_last_read_message_id, dependencies_acknowledged, \
+              proposal_generation_status, proposal_generation_phase, proposal_generation_expected_count, \
+              proposal_generation_created_count, proposal_generation_dependency_count, proposal_generation_error, \
+              proposal_generation_started_at, proposal_generation_updated_at, proposal_generation_completed_at, \
               pending_initial_prompt, source_task_id, source_context_type, source_context_id, spawn_reason, blocker_fingerprint, \
               analysis_base_ref_kind, analysis_base_ref, analysis_base_display_name, analysis_workspace_kind, \
               analysis_workspace_path, analysis_base_commit, analysis_base_locked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)",
             rusqlite::params![
                 session.id.as_str(),
                 session.project_id.as_str(),
@@ -182,6 +190,33 @@ impl SqliteIdeationSessionRepository {
                 session.external_activity_phase.as_deref(),
                 session.external_last_read_message_id.as_deref(),
                 session.dependencies_acknowledged as i32,
+                session.proposal_generation_progress.status.to_string(),
+                session
+                    .proposal_generation_progress
+                    .phase
+                    .map(|phase| phase.to_string()),
+                session
+                    .proposal_generation_progress
+                    .expected_count
+                    .map(|count| count as i64),
+                session.proposal_generation_progress.created_count as i64,
+                session
+                    .proposal_generation_progress
+                    .dependency_count
+                    .map(|count| count as i64),
+                session.proposal_generation_progress.error.as_deref(),
+                session
+                    .proposal_generation_progress
+                    .started_at
+                    .map(|dt| dt.to_rfc3339()),
+                session
+                    .proposal_generation_progress
+                    .updated_at
+                    .map(|dt| dt.to_rfc3339()),
+                session
+                    .proposal_generation_progress
+                    .completed_at
+                    .map(|dt| dt.to_rfc3339()),
                 session.pending_initial_prompt.as_deref(),
                 session.source_task_id.as_ref().map(|id| id.as_str()),
                 session.source_context_type.as_deref(),
@@ -756,9 +791,9 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                     Some(purpose) => conn.query_row(&sql, params![parent_id, purpose], |row| {
                         row.get::<_, String>(0)
                     })?,
-                    None => conn.query_row(&sql, params![parent_id], |row| {
-                        row.get::<_, String>(0)
-                    })?,
+                    None => {
+                        conn.query_row(&sql, params![parent_id], |row| row.get::<_, String>(0))?
+                    }
                 };
                 Ok(IdeationSessionId::from_string(id))
             })
@@ -2022,6 +2057,61 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
             .await
     }
 
+    async fn update_proposal_generation_progress(
+        &self,
+        session_id: &str,
+        progress: ProposalGenerationProgress,
+    ) -> AppResult<()> {
+        let session_id = session_id.to_string();
+        let status = progress.status.to_string();
+        let phase = progress.phase.map(|phase| phase.to_string());
+        let expected_count = progress.expected_count.map(|count| count as i64);
+        let created_count = progress.created_count as i64;
+        let dependency_count = progress.dependency_count.map(|count| count as i64);
+        let error = progress.error;
+        let started_at = progress.started_at.map(|dt| dt.to_rfc3339());
+        let progress_updated_at = progress.updated_at.map(|dt| dt.to_rfc3339());
+        let completed_at = progress.completed_at.map(|dt| dt.to_rfc3339());
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                conn.execute(
+                    "UPDATE ideation_sessions \
+                     SET proposal_generation_status = ?1, \
+                         proposal_generation_phase = ?2, \
+                         proposal_generation_expected_count = ?3, \
+                         proposal_generation_created_count = ?4, \
+                         proposal_generation_dependency_count = ?5, \
+                         proposal_generation_error = ?6, \
+                         proposal_generation_started_at = ?7, \
+                         proposal_generation_updated_at = ?8, \
+                         proposal_generation_completed_at = ?9, \
+                         updated_at = ?10 \
+                     WHERE id = ?11",
+                    rusqlite::params![
+                        status,
+                        phase,
+                        expected_count,
+                        created_count,
+                        dependency_count,
+                        error,
+                        started_at,
+                        progress_updated_at,
+                        completed_at,
+                        now,
+                        session_id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn reset_proposal_generation_progress(&self, session_id: &str) -> AppResult<()> {
+        self.update_proposal_generation_progress(session_id, ProposalGenerationProgress::default())
+            .await
+    }
+
     async fn reset_acceptance_cycle_fields(&self, session_id: &str) -> AppResult<()> {
         let session_id = session_id.to_string();
         self.db
@@ -2034,6 +2124,15 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                          auto_accept_status = NULL, \
                          auto_accept_started_at = NULL, \
                          cross_project_checked = 0, \
+                         proposal_generation_status = 'idle', \
+                         proposal_generation_phase = NULL, \
+                         proposal_generation_expected_count = NULL, \
+                         proposal_generation_created_count = 0, \
+                         proposal_generation_dependency_count = NULL, \
+                         proposal_generation_error = NULL, \
+                         proposal_generation_started_at = NULL, \
+                         proposal_generation_updated_at = NULL, \
+                         proposal_generation_completed_at = NULL, \
                          updated_at = ?1 \
                      WHERE id = ?2",
                     rusqlite::params![now, session_id],

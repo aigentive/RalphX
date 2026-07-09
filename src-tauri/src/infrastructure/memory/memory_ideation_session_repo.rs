@@ -10,7 +10,8 @@ use rusqlite::Connection;
 
 use crate::domain::entities::{
     AcceptanceStatus, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    SessionOrigin, VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
+    ProposalGenerationProgress, SessionOrigin, VerificationConfirmationStatus,
+    VerificationRunSnapshot, VerificationStatus,
 };
 use crate::domain::repositories::ideation_session_repository::{
     IdeationSessionWithProgress, SessionGroupCounts,
@@ -815,6 +816,24 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
         Ok(())
     }
 
+    async fn update_proposal_generation_progress(
+        &self,
+        session_id: &str,
+        progress: ProposalGenerationProgress,
+    ) -> AppResult<()> {
+        let mut sessions = self.sessions.write().unwrap();
+        if let Some(session) = sessions.values_mut().find(|s| s.id.as_str() == session_id) {
+            session.proposal_generation_progress = progress;
+            session.updated_at = chrono::Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn reset_proposal_generation_progress(&self, session_id: &str) -> AppResult<()> {
+        self.update_proposal_generation_progress(session_id, ProposalGenerationProgress::default())
+            .await
+    }
+
     async fn reset_acceptance_cycle_fields(&self, session_id: &str) -> AppResult<()> {
         let mut sessions = self.sessions.write().unwrap();
         if let Some(session) = sessions.values_mut().find(|s| s.id.as_str() == session_id) {
@@ -823,6 +842,7 @@ impl IdeationSessionRepository for MemoryIdeationSessionRepository {
             session.auto_accept_status = None;
             session.auto_accept_started_at = None;
             session.cross_project_checked = false;
+            session.proposal_generation_progress = ProposalGenerationProgress::default();
         }
         Ok(())
     }

@@ -2580,6 +2580,142 @@ fn verification_status_serde_snake_case() {
     assert_eq!(back, VerificationStatus::NeedsRevision);
 }
 
+// ===== ProposalGenerationProgress Tests =====
+
+#[test]
+fn proposal_generation_status_display_roundtrip() {
+    let cases = [
+        (ProposalGenerationStatus::Idle, "idle"),
+        (ProposalGenerationStatus::Queued, "queued"),
+        (ProposalGenerationStatus::Running, "running"),
+        (
+            ProposalGenerationStatus::WaitingForConfirmation,
+            "waiting_for_confirmation",
+        ),
+        (ProposalGenerationStatus::Completed, "completed"),
+        (ProposalGenerationStatus::Failed, "failed"),
+        (ProposalGenerationStatus::Cancelled, "cancelled"),
+    ];
+
+    for (status, expected) in cases {
+        assert_eq!(status.to_string(), expected);
+        let parsed: ProposalGenerationStatus = expected.parse().expect("status parses");
+        assert_eq!(parsed, status);
+    }
+}
+
+#[test]
+fn proposal_generation_phase_display_roundtrip() {
+    let cases = [
+        (ProposalGenerationPhase::Queued, "queued"),
+        (
+            ProposalGenerationPhase::CreatingProposals,
+            "creating_proposals",
+        ),
+        (
+            ProposalGenerationPhase::AnalyzingDependencies,
+            "analyzing_dependencies",
+        ),
+        (
+            ProposalGenerationPhase::FinalizingProposals,
+            "finalizing_proposals",
+        ),
+        (
+            ProposalGenerationPhase::WaitingForConfirmation,
+            "waiting_for_confirmation",
+        ),
+        (ProposalGenerationPhase::Completed, "completed"),
+        (ProposalGenerationPhase::Failed, "failed"),
+        (ProposalGenerationPhase::Cancelled, "cancelled"),
+    ];
+
+    for (phase, expected) in cases {
+        assert_eq!(phase.to_string(), expected);
+        let parsed: ProposalGenerationPhase = expected.parse().expect("phase parses");
+        assert_eq!(parsed, phase);
+    }
+}
+
+#[test]
+fn proposal_generation_progress_default_is_idle() {
+    let progress = ProposalGenerationProgress::default();
+
+    assert_eq!(progress.status, ProposalGenerationStatus::Idle);
+    assert_eq!(progress.phase, None);
+    assert_eq!(progress.expected_count, None);
+    assert_eq!(progress.created_count, 0);
+    assert_eq!(progress.dependency_count, None);
+    assert_eq!(progress.error, None);
+    assert_eq!(progress.started_at, None);
+    assert_eq!(progress.updated_at, None);
+    assert_eq!(progress.completed_at, None);
+    assert!(!progress.is_active());
+}
+
+#[test]
+fn proposal_generation_progress_active_states_exclude_terminal_states() {
+    assert!(ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Queued,
+        phase: Some(ProposalGenerationPhase::Queued),
+        ..ProposalGenerationProgress::default()
+    }
+    .is_active());
+    assert!(ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Running,
+        phase: Some(ProposalGenerationPhase::CreatingProposals),
+        ..ProposalGenerationProgress::default()
+    }
+    .is_active());
+    assert!(ProposalGenerationProgress {
+        status: ProposalGenerationStatus::WaitingForConfirmation,
+        phase: Some(ProposalGenerationPhase::WaitingForConfirmation),
+        ..ProposalGenerationProgress::default()
+    }
+    .is_active());
+    assert!(!ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Completed,
+        phase: Some(ProposalGenerationPhase::Completed),
+        ..ProposalGenerationProgress::default()
+    }
+    .is_active());
+}
+
+#[test]
+fn proposal_generation_progress_serializes_snake_case() {
+    let started_at = chrono::Utc::now();
+    let progress = ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Running,
+        phase: Some(ProposalGenerationPhase::AnalyzingDependencies),
+        expected_count: Some(5),
+        created_count: 3,
+        dependency_count: Some(2),
+        error: None,
+        started_at: Some(started_at),
+        updated_at: Some(started_at),
+        completed_at: None,
+    };
+
+    let value = serde_json::to_value(progress).unwrap();
+
+    assert_eq!(value["status"], "running");
+    assert_eq!(value["phase"], "analyzing_dependencies");
+    assert_eq!(value["expected_count"], 5);
+    assert_eq!(value["created_count"], 3);
+    assert_eq!(value["dependency_count"], 2);
+}
+
+#[test]
+fn ideation_session_builder_defaults_proposal_generation_progress_to_idle() {
+    let session = IdeationSession::builder()
+        .project_id(ProjectId::from_string("project-1".to_string()))
+        .build();
+
+    assert_eq!(
+        session.proposal_generation_progress,
+        ProposalGenerationProgress::default()
+    );
+}
+
 // ===== Verification Snapshot Tests =====
 
 #[test]

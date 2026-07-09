@@ -147,6 +147,7 @@ fn make_active_session() -> IdeationSession {
         external_activity_phase: None,
         external_last_read_message_id: None,
         dependencies_acknowledged: false,
+        proposal_generation_progress: Default::default(),
         pending_initial_prompt: None,
         acceptance_status: None,
         verification_confirmation_status: None,
@@ -3304,7 +3305,10 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
     assert_eq!(approved.id, created.id);
     assert_eq!(approved.version, created.version);
     assert_eq!(approved.plan_approval_status.as_deref(), Some("approved"));
-    assert_eq!(approved.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(
+        approved.plan_approved_artifact_id.as_deref(),
+        Some(created.id.as_str())
+    );
     assert_eq!(approved.plan_approved_version, Some(created.version));
     assert!(
         approved.plan_approved_at.is_some(),
@@ -3317,7 +3321,10 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
         .0
         .expect("planning session should have a plan");
     assert_eq!(current.plan_approval_status.as_deref(), Some("approved"));
-    assert_eq!(current.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(
+        current.plan_approved_artifact_id.as_deref(),
+        Some(created.id.as_str())
+    );
     assert_eq!(current.plan_approved_version, Some(created.version));
 }
 
@@ -3369,8 +3376,7 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
             score: 84,
             recommended_action: "create_proposals".to_string(),
             confidence: 0.91,
-            reason_summary: "Multiple dependent work items need tracked checkpoints."
-                .to_string(),
+            reason_summary: "Multiple dependent work items need tracked checkpoints.".to_string(),
             signals: Some(serde_json::json!({
                 "dependent_work_items": 4,
                 "cross_layer_scope": true
@@ -3393,14 +3399,12 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
         "ralphx-utility-plan-complexity"
     );
 
-    let fetched = get_plan_complexity_assessment(
-        State(state.clone()),
-        Path(session_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_plan_complexity_assessment should succeed")
-    .0
-    .expect("assessment should be persisted for the current plan");
+    let fetched =
+        get_plan_complexity_assessment(State(state.clone()), Path(session_id.as_str().to_string()))
+            .await
+            .expect("get_plan_complexity_assessment should succeed")
+            .0
+            .expect("assessment should be persisted for the current plan");
     assert_eq!(fetched.id, submitted.assessment.id);
     assert_eq!(
         fetched.signals["dependent_work_items"],
@@ -3558,10 +3562,7 @@ async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
     )
     .await;
 
-    assert!(
-        result.is_err(),
-        "approving a stale artifact id should fail"
-    );
+    assert!(result.is_err(), "approving a stale artifact id should fail");
     let err = result.unwrap_err();
     assert_eq!(err.status, StatusCode::CONFLICT);
     let msg = err.message.expect("409 should include message body");

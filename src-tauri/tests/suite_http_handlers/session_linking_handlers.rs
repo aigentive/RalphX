@@ -57,6 +57,7 @@ fn make_session(team_mode: Option<&str>) -> IdeationSession {
         external_activity_phase: None,
         external_last_read_message_id: None,
         dependencies_acknowledged: false,
+        proposal_generation_progress: Default::default(),
         pending_initial_prompt: None,
         acceptance_status: None,
         verification_confirmation_status: None,
@@ -155,6 +156,7 @@ mod verification_init_tests {
             external_activity_phase: None,
             external_last_read_message_id: None,
             dependencies_acknowledged: false,
+            proposal_generation_progress: Default::default(),
             pending_initial_prompt: None,
             acceptance_status: None,
             verification_confirmation_status: None,
@@ -212,12 +214,14 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid))
             .await
             .unwrap();
-        assert_eq!(gen, Some(1), "First verification trigger should return generation 1");
+        assert_eq!(
+            gen,
+            Some(1),
+            "First verification trigger should return generation 1"
+        );
 
         let updated_parent = state
             .app_state
@@ -303,12 +307,14 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid2)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid2))
             .await
             .unwrap();
-        assert_eq!(gen, Some(2), "Re-verification trigger should return generation 2");
+        assert_eq!(
+            gen,
+            Some(2),
+            "Re-verification trigger should return generation 2"
+        );
 
         let updated_parent = state
             .app_state
@@ -344,7 +350,11 @@ mod verification_init_tests {
         // child agent (keeping the new generation) or roll it back if spawn fails.
         let req = make_verification_request(&parent_id);
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Re-verification should succeed, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Re-verification should succeed, got: {:?}",
+            result.err()
+        );
         let response = result.unwrap().0;
         assert_eq!(
             response.orchestration_triggered,
@@ -377,9 +387,7 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid))
             .await
             .unwrap();
         assert_eq!(gen, Some(1), "Trigger should return generation 1");
@@ -387,7 +395,10 @@ mod verification_init_tests {
         // With in_progress=true, any handler call should get 409
         let req2 = make_verification_request(&parent_id);
         let result2 = create_child_session(State(state.clone()), Json(req2)).await;
-        assert!(result2.is_err(), "Call with in_progress=true should fail with 409");
+        assert!(
+            result2.is_err(),
+            "Call with in_progress=true should fail with 409"
+        );
         let err = result2.unwrap_err();
         assert_eq!(
             err.0,
@@ -413,7 +424,10 @@ mod verification_init_tests {
 
         let req = make_verification_request(&parent_id);
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_err(), "Should fail with 400 when no plan artifact");
+        assert!(
+            result.is_err(),
+            "Should fail with 400 when no plan artifact"
+        );
         let err = result.unwrap_err();
         assert_eq!(
             err.0,
@@ -441,9 +455,7 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid))
             .await
             .unwrap();
         assert_eq!(gen, Some(1), "Trigger should return generation 1");
@@ -466,9 +478,7 @@ mod verification_init_tests {
         state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::reset_auto_verify_sync(conn, &pid2)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::reset_auto_verify_sync(conn, &pid2))
             .await
             .unwrap();
 
@@ -525,7 +535,11 @@ mod verification_init_tests {
         // Handler should succeed (child session is created) regardless of agent spawn outcome.
         // In test environments without a real Claude CLI, the agent spawn will fail and the
         // handler rolls back verification_generation to None.
-        assert!(result.is_ok(), "Handler should succeed, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         let child_id = IdeationSessionId::from_string(response.session_id.clone());
@@ -548,9 +562,7 @@ mod verification_init_tests {
         }
 
         // If a message was stored, it must contain the verification metadata augmentation
-        let user_msg = messages
-            .iter()
-            .find(|m| m.role == MessageRole::User);
+        let user_msg = messages.iter().find(|m| m.role == MessageRole::User);
         if let Some(msg) = user_msg {
             let content = &msg.content;
             assert!(
@@ -710,11 +722,14 @@ mod verification_init_tests {
             .into_iter()
             .filter(|session| {
                 session.source_task_id.as_ref().map(|id| id.as_str()) == Some("task-789")
-                    && session.blocker_fingerprint.as_deref()
-                        == Some("ood:task-789:112233445566")
+                    && session.blocker_fingerprint.as_deref() == Some("ood:task-789:112233445566")
             })
             .collect();
-        assert_eq!(matching.len(), 1, "same blocker should not create duplicates");
+        assert_eq!(
+            matching.len(),
+            1,
+            "same blocker should not create duplicates"
+        );
     }
 
     #[tokio::test]
@@ -840,8 +855,7 @@ mod verification_init_tests {
 
         assert_eq!(child.status, IdeationSessionStatus::Active);
         assert_eq!(
-            child.pending_initial_prompt,
-            response.pending_initial_prompt,
+            child.pending_initial_prompt, response.pending_initial_prompt,
             "verification child pending prompt should persist for drain and hydration"
         );
 
@@ -894,7 +908,11 @@ mod verification_init_tests {
         };
 
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Handler should succeed even when spawn fails, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed even when spawn fails, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         assert!(
@@ -958,7 +976,11 @@ mod verification_init_tests {
         };
 
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Handler should succeed even when spawn fails, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed even when spawn fails, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         assert!(
@@ -1019,7 +1041,11 @@ mod verification_init_tests {
         };
 
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Handler should succeed even when spawn fails, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed even when spawn fails, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         assert!(
@@ -1089,9 +1115,7 @@ mod verification_init_tests {
             return;
         }
 
-        let user_msg = messages
-            .iter()
-            .find(|m| m.role == MessageRole::User);
+        let user_msg = messages.iter().find(|m| m.role == MessageRole::User);
         if let Some(msg) = user_msg {
             let content = &msg.content;
             assert!(
@@ -1160,7 +1184,10 @@ fn test_synthesize_verification_prompt_description_present_returns_none() {
         &Some("user description".to_string()),
         "parent-abc",
     );
-    assert_eq!(result, None, "Should return None when description is present");
+    assert_eq!(
+        result, None,
+        "Should return None when description is present"
+    );
 }
 
 #[test]
@@ -1172,7 +1199,10 @@ fn test_synthesize_verification_prompt_non_verification_purpose_returns_none() {
         &None,
         "parent-abc",
     );
-    assert_eq!(result, None, "Should return None for non-verification purpose");
+    assert_eq!(
+        result, None,
+        "Should return None for non-verification purpose"
+    );
 }
 
 #[test]

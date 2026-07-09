@@ -1,8 +1,10 @@
 use super::*;
 use crate::domain::entities::{
-    ArtifactId, SessionPurpose, VerificationGap, VerificationRoundSnapshot,
-    VerificationRunSnapshot, VerificationStatus,
+    ArtifactId, ProposalGenerationPhase, ProposalGenerationProgress, ProposalGenerationStatus,
+    SessionPurpose, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
+    VerificationStatus,
 };
+use chrono::TimeZone;
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -27,6 +29,69 @@ async fn test_get_by_project() {
 
     let sessions = repo.get_by_project(&project_id).await.unwrap();
     assert_eq!(sessions.len(), 1);
+}
+
+#[tokio::test]
+async fn test_update_proposal_generation_progress_round_trips() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+    let session = IdeationSession::new(project_id);
+    let session_id = session.id.clone();
+    repo.create(session).await.unwrap();
+
+    let progress = ProposalGenerationProgress {
+        status: ProposalGenerationStatus::Running,
+        phase: Some(ProposalGenerationPhase::CreatingProposals),
+        expected_count: Some(3),
+        created_count: 1,
+        dependency_count: None,
+        error: None,
+        started_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 0, 0).unwrap()),
+        updated_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 1, 0).unwrap()),
+        completed_at: None,
+    };
+
+    repo.update_proposal_generation_progress(session_id.as_str(), progress.clone())
+        .await
+        .unwrap();
+
+    let updated = repo.get_by_id(&session_id).await.unwrap().unwrap();
+    assert_eq!(updated.proposal_generation_progress, progress);
+}
+
+#[tokio::test]
+async fn test_reset_acceptance_cycle_fields_resets_proposal_generation_progress() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+    let session = IdeationSession::new(project_id);
+    let session_id = session.id.clone();
+    repo.create(session).await.unwrap();
+    repo.update_proposal_generation_progress(
+        session_id.as_str(),
+        ProposalGenerationProgress {
+            status: ProposalGenerationStatus::Failed,
+            phase: Some(ProposalGenerationPhase::Failed),
+            expected_count: Some(2),
+            created_count: 1,
+            dependency_count: Some(1),
+            error: Some("failed".to_string()),
+            started_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 0, 0).unwrap()),
+            updated_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 1, 0).unwrap()),
+            completed_at: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 9, 12, 2, 0).unwrap()),
+        },
+    )
+    .await
+    .unwrap();
+
+    repo.reset_acceptance_cycle_fields(session_id.as_str())
+        .await
+        .unwrap();
+
+    let updated = repo.get_by_id(&session_id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.proposal_generation_progress,
+        ProposalGenerationProgress::default()
+    );
 }
 
 #[tokio::test]
