@@ -37,6 +37,7 @@ import { verificationApi } from "@/api/verification";
 import {
   chatApi,
   type AgentConversationPlanSeedResult,
+  type AgentConversationWorkspaceMode,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type AgentConversationRuntimeStatus,
@@ -127,8 +128,8 @@ import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-  PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
+import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import {
@@ -445,6 +446,15 @@ interface AgentsArtifactPaneProps {
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   onOpenAutomation?: (automationId: string) => void;
+  onConversationModeSwitched?: (
+    conversationId: string,
+    mode: AgentConversationWorkspaceMode,
+    workspace: AgentConversationWorkspace | null
+  ) => void;
+  onFocusIdeationSessionForConversation?: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
   onFocusAutomationRun?: (
     automationId: string,
     runId: string,
@@ -477,6 +487,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   publishFocusRequest = null,
   taskFocusRequest = null,
   onOpenAutomation,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
@@ -1456,6 +1468,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
           publishFocusRequest={publishFocusRequest}
+          onConversationModeSwitched={onConversationModeSwitched}
+          onFocusIdeationSessionForConversation={
+            onFocusIdeationSessionForConversation
+          }
           onFocusVerificationSession={onFocusVerificationSession}
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
@@ -1516,6 +1532,16 @@ type ArtifactContentProps = {
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  onConversationModeSwitched:
+    | ((
+        conversationId: string,
+        mode: AgentConversationWorkspaceMode,
+        workspace: AgentConversationWorkspace | null
+      ) => void)
+    | undefined;
+  onFocusIdeationSessionForConversation:
+    | ((conversationId: string, sessionId: string) => void)
+    | undefined;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onDisplayedVerificationStatusChange: (
@@ -1577,6 +1603,8 @@ function ArtifactContent({
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onFocusVerificationSession: _onFocusVerificationSession,
   onDisplayedVerificationStatusChange,
   onFocusTaskRuntime,
@@ -1754,6 +1782,10 @@ function ArtifactContent({
         onPlanUpdated={onPlanUpdated}
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
+        onConversationModeSwitched={onConversationModeSwitched}
+        onFocusIdeationSessionForConversation={
+          onFocusIdeationSessionForConversation
+        }
         onOpenVerification={onOpenVerification}
         onOpenTasks={onOpenTasks}
       />
@@ -1823,6 +1855,8 @@ function AgentPlanPanel({
   onPlanUpdated,
   verificationState,
   verificationInProgress,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onOpenVerification,
   onOpenTasks,
 }: {
@@ -1840,6 +1874,16 @@ function AgentPlanPanel({
   onPlanUpdated: (updatedPlan: Artifact) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
+  onConversationModeSwitched:
+    | ((
+        conversationId: string,
+        mode: AgentConversationWorkspaceMode,
+        workspace: AgentConversationWorkspace | null
+      ) => void)
+    | undefined;
+  onFocusIdeationSessionForConversation:
+    | ((conversationId: string, sessionId: string) => void)
+    | undefined;
   onOpenVerification: () => void;
   onOpenTasks: () => void;
 }) {
@@ -1925,36 +1969,27 @@ function AgentPlanPanel({
   const handleCreateProposals = useCallback(async () => {
     if (!session) return;
     try {
-      const shouldPromoteWorkspace =
-        session.sessionFlow === "planning" &&
-        workspace?.mode !== "ideation" &&
-        workspace?.linkedIdeationSessionId === session.id &&
-        Boolean(workspace.conversationId);
-
-      if (shouldPromoteWorkspace && workspace?.conversationId) {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: workspace.conversationId,
-          mode: "ideation",
-        });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(workspace.conversationId),
-            result.workspace,
-          );
-        }
-        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
-      }
-
-      await chatApi.sendAgentMessage(
-        "ideation",
-        session.id,
-        PLAN_TO_PROPOSALS_REQUEST,
-      );
+      await activateAgentPlanProposals({
+        sessionId: session.id,
+        workspace,
+        queryClient,
+        canPromoteWorkspace: session.sessionFlow === "planning",
+        ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+        ...(onFocusIdeationSessionForConversation
+          ? { onFocusIdeationSessionForConversation }
+          : {}),
+      });
     } catch (err) {
       console.error("Failed to create proposals:", err);
       toast.error("Failed to request proposal creation");
     }
-  }, [queryClient, session, workspace]);
+  }, [
+    onConversationModeSwitched,
+    onFocusIdeationSessionForConversation,
+    queryClient,
+    session,
+    workspace,
+  ]);
 
   const isPlanningSession = session?.sessionFlow === "planning";
   const isOwnedCurrentPlan = Boolean(

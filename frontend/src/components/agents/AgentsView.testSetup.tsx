@@ -1023,67 +1023,90 @@ vi.mock("./AgentsArtifactPane", () => {
   artifactPaneModuleLoadedMock();
   return {
     AgentsArtifactPane: ({
-    conversation,
-    activeTab,
-    focusedIdeationSessionId,
-    publishFocusRequest,
-    onClose,
-    onFocusVerificationSession,
-    onOpenAutomation,
-    onPublishWorkspace,
-  }: {
-    conversation: AgentConversation | null;
-    activeTab?: string;
-    focusedIdeationSessionId?: string | null;
-    publishFocusRequest?: { filePath: string; mode: string } | null;
-    onClose?: () => void;
-    onFocusVerificationSession?: (parentSessionId: string, childSessionId: string) => void;
-    onOpenAutomation?: (automationId: string) => void;
-    onPublishWorkspace?: (conversationId: string) => Promise<void>;
-  }) => (
-    <div
-      data-testid="agents-artifact-pane"
-      data-active-tab={activeTab ?? ""}
-      data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
-      data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
-      data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
-      data-automation-id={conversation?.automationId ?? ""}
-    >
-      {onClose ? (
-        <button type="button" data-testid="agents-artifact-pane-close" onClick={onClose}>
-          Close
-        </button>
-      ) : null}
-      {onFocusVerificationSession ? (
-        <button
-          type="button"
-          data-testid="mock-focus-verification-session"
-          onClick={() =>
-            onFocusVerificationSession("session-parent", "verification-child")
-          }
-        >
-          Focus verification
-        </button>
-      ) : null}
-      {conversation && onPublishWorkspace ? (
-        <button
-          type="button"
-          data-testid="agents-publish-confirm"
-          onClick={() => void onPublishWorkspace(conversation.id)}
-        >
-          Publish
-        </button>
-      ) : null}
-      {conversation?.automationId && onOpenAutomation ? (
-        <button
-          type="button"
-          data-testid="mock-open-automation"
-          onClick={() => onOpenAutomation(conversation.automationId ?? "")}
-        >
-          Open automation
-        </button>
-      ) : null}
-    </div>
+      conversation,
+      activeTab,
+      focusedIdeationSessionId,
+      publishFocusRequest,
+      onClose,
+      onFocusIdeationSessionForConversation,
+      onFocusVerificationSession,
+      onOpenAutomation,
+      onPublishWorkspace,
+    }: {
+      conversation: AgentConversation | null;
+      activeTab?: string;
+      focusedIdeationSessionId?: string | null;
+      publishFocusRequest?: { filePath: string; mode: string } | null;
+      onClose?: () => void;
+      onFocusIdeationSessionForConversation?: (
+        conversationId: string,
+        sessionId: string
+      ) => void;
+      onFocusVerificationSession?: (
+        parentSessionId: string,
+        childSessionId: string
+      ) => void;
+      onOpenAutomation?: (automationId: string) => void;
+      onPublishWorkspace?: (conversationId: string) => Promise<void>;
+    }) => (
+      <div
+        data-testid="agents-artifact-pane"
+        data-active-tab={activeTab ?? ""}
+        data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+        data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
+        data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+        data-automation-id={conversation?.automationId ?? ""}
+      >
+        {onClose ? (
+          <button
+            type="button"
+            data-testid="agents-artifact-pane-close"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        ) : null}
+        {onFocusIdeationSessionForConversation ? (
+          <button
+            type="button"
+            data-testid="mock-focus-stale-proposals-session"
+            onClick={() =>
+              onFocusIdeationSessionForConversation("conversation-1", "session-1")
+            }
+          >
+            Focus stale proposal session
+          </button>
+        ) : null}
+        {onFocusVerificationSession ? (
+          <button
+            type="button"
+            data-testid="mock-focus-verification-session"
+            onClick={() =>
+              onFocusVerificationSession("session-parent", "verification-child")
+            }
+          >
+            Focus verification
+          </button>
+        ) : null}
+        {conversation && onPublishWorkspace ? (
+          <button
+            type="button"
+            data-testid="agents-publish-confirm"
+            onClick={() => void onPublishWorkspace(conversation.id)}
+          >
+            Publish
+          </button>
+        ) : null}
+        {conversation?.automationId && onOpenAutomation ? (
+          <button
+            type="button"
+            data-testid="mock-open-automation"
+            onClick={() => onOpenAutomation(conversation.automationId ?? "")}
+          >
+            Open automation
+          </button>
+        ) : null}
+      </div>
   ),
   };
 });

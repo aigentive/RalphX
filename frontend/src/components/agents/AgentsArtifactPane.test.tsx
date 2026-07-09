@@ -1115,6 +1115,7 @@ describe("AgentsArtifactPane", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue(defaultReviewSettings);
+    useChatStore.setState({ activeConversationIds: {} });
     getWorkspaceChangesMock.mockResolvedValue([
       {
         path: "frontend/src/App.tsx",
@@ -4528,6 +4529,9 @@ describe("AgentsArtifactPane", () => {
       },
     });
 
+    const onConversationModeSwitched = vi.fn();
+    const onFocusIdeationSessionForConversation = vi.fn();
+
     renderPane(
       "plan",
       workspace({
@@ -4537,6 +4541,10 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
+      {
+        onConversationModeSwitched,
+        onFocusIdeationSessionForConversation,
+      },
     );
 
     const planContent = await screen.findByTestId(
@@ -4565,6 +4573,21 @@ describe("AgentsArtifactPane", () => {
         "session-1",
         expect.stringContaining("Proceed to proposals"),
       ),
+    );
+    expect(onConversationModeSwitched).toHaveBeenCalledWith(
+      "conversation-1",
+      "ideation",
+      expect.objectContaining({
+        linkedIdeationSessionId: "session-1",
+        mode: "ideation",
+      }),
+    );
+    expect(onFocusIdeationSessionForConversation).toHaveBeenCalledWith(
+      "conversation-1",
+      "session-1",
+    );
+    expect(useChatStore.getState().activeConversationIds["session:session-1"]).toBe(
+      "ideation-conversation-1",
     );
     expect(sendAgentMessageMock.mock.invocationCallOrder[0]!).toBeGreaterThan(
       switchAgentConversationModeMock.mock.invocationCallOrder[0]!,

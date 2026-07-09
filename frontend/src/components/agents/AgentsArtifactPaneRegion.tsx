@@ -62,12 +62,24 @@ interface AgentsArtifactPaneRegionProps {
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
   taskFocusRequest: AgentTaskArtifactFocusRequest | null;
+  onConversationModeSwitched: (
+    conversationId: string,
+    mode: AgentConversationWorkspace["mode"],
+    workspace: AgentConversationWorkspace | null
+  ) => void;
+  onFocusIdeationSessionForConversation: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
+  onFocusVerificationSession: (
+    parentSessionId: string,
+    childSessionId: string
+  ) => void;
   onFocusAutomationRun: (
     automationId: string,
     runId: string,
     conversationId: string,
   ) => void;
-  onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusTaskRuntime: (
     taskId: string,
@@ -100,6 +112,8 @@ export function AgentsArtifactPaneRegion({
   isPublishingWorkspace,
   publishFocusRequest,
   taskFocusRequest,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
@@ -169,6 +183,10 @@ export function AgentsArtifactPaneRegion({
                     isPublishingWorkspace={isPublishingWorkspace}
                     publishFocusRequest={publishFocusRequest}
                     taskFocusRequest={taskFocusRequest}
+                    onConversationModeSwitched={onConversationModeSwitched}
+                    onFocusIdeationSessionForConversation={
+                      onFocusIdeationSessionForConversation
+                    }
                     onFocusAutomationRun={onFocusAutomationRun}
                     onFocusVerificationSession={onFocusVerificationSession}
                     onFocusWorkspaceReview={onFocusWorkspaceReview}

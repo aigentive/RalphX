@@ -37,12 +37,24 @@ interface AgentsConversationSideRegionsProps {
   taskArtifactFocusRequest: AgentTaskArtifactFocusRequest | null;
   terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
+  onConversationModeSwitched: (
+    conversationId: string,
+    mode: AgentConversationWorkspace["mode"],
+    workspace: AgentConversationWorkspace | null
+  ) => void;
+  onFocusIdeationSessionForConversation: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
+  onFocusVerificationSession: (
+    parentSessionId: string,
+    childSessionId: string
+  ) => void;
   onFocusAutomationRun: (
     automationId: string,
     runId: string,
     conversationId: string,
   ) => void;
-  onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusTaskRuntime: (
     taskId: string,
@@ -78,6 +90,8 @@ export function AgentsConversationSideRegions({
   taskArtifactFocusRequest,
   terminalArchivedReason,
   terminalUnavailableReason,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
@@ -117,6 +131,10 @@ export function AgentsConversationSideRegions({
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
           publishFocusRequest={publishFocusRequest}
           taskFocusRequest={taskArtifactFocusRequest}
+          onConversationModeSwitched={onConversationModeSwitched}
+          onFocusIdeationSessionForConversation={
+            onFocusIdeationSessionForConversation
+          }
           onFocusVerificationSession={onFocusVerificationSession}
           onFocusWorkspaceReview={onFocusWorkspaceReview}
           onFocusTaskRuntime={onFocusTaskRuntime}

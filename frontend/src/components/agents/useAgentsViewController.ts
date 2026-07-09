@@ -229,11 +229,11 @@ export function useAgentsViewController({
   const { data: projects = [], isLoading: isLoadingProjects } = useProjects();
   const { registry: modelRegistry } = useAgentModels();
   const {
-    clearAgentConversationSelection,
+    clearAgentConversationSelection: clearStoredAgentConversationSelection,
     focusedProjectId,
     lastRuntimeByProjectId,
     runtimeByConversationId,
-    selectConversation,
+    selectConversation: selectStoredConversation,
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
@@ -243,6 +243,18 @@ export function useAgentsViewController({
   } = useAgentsSessionBindings({
     setOptimisticSelectedConversationId,
   });
+  const selectedConversationIdRef = useRef<string | null>(null);
+  const selectConversation = useCallback(
+    (projectId: string, conversationId: string) => {
+      selectedConversationIdRef.current = conversationId;
+      selectStoredConversation(projectId, conversationId);
+    },
+    [selectStoredConversation],
+  );
+  const clearAgentConversationSelection = useCallback(() => {
+    selectedConversationIdRef.current = null;
+    clearStoredAgentConversationSelection();
+  }, [clearStoredAgentConversationSelection]);
   const {
     setTerminalChatDockElement,
     setTerminalPanelDockElement,
@@ -269,6 +281,9 @@ export function useAgentsViewController({
     storedSelectedConversationId,
   });
   const automationRunFocusSeededConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
   useEffect(() => {
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
@@ -304,6 +319,15 @@ export function useAgentsViewController({
         : { type: "ideation", sessionId },
     );
   }, []);
+  const handleFocusIdeationSessionForConversation = useCallback(
+    (conversationId: string, sessionId: string) => {
+      if (selectedConversationIdRef.current !== conversationId) {
+        return;
+      }
+      handleFocusIdeationSession(sessionId);
+    },
+    [handleFocusIdeationSession],
+  );
   const handleFocusVerificationSession = useCallback(
     (parentSessionId: string, childSessionId: string) => {
       const nextFocus: Extract<AgentsChatFocus, { type: "verification" }> = {
@@ -1400,6 +1424,8 @@ export function useAgentsViewController({
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusIdeationSessionForConversation:
+        handleFocusIdeationSessionForConversation,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
@@ -1461,8 +1487,11 @@ export function useAgentsViewController({
       taskArtifactFocusRequest,
       terminalArchivedReason,
       terminalUnavailableReason,
+      onConversationModeSwitched: handleConversationModeSwitched,
       onFocusAutomationRun: handleFocusAutomationRun,
       onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusIdeationSessionForConversation:
+        handleFocusIdeationSessionForConversation,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusTaskRuntime: handleFocusTaskRuntime,
       ...(onOpenAutomation ? { onOpenAutomation } : {}),
