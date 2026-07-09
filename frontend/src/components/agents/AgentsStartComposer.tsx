@@ -15,6 +15,7 @@ import type {
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  TeamIntent,
 } from "@/api/chat";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
@@ -88,6 +89,7 @@ interface AgentsStartComposerSubmitInput {
   base: AgentConversationBaseSelection | null;
   files: File[];
   codexFastMode?: boolean | null;
+  teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerProjectReferences?: ComposerProjectReference[] | undefined;
   composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -204,6 +206,7 @@ export function AgentsStartComposer({
     normalizeRuntimeSelection(defaultRuntime).effort
   );
   const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
+  const [teamEnabled, setTeamEnabled] = useState(false);
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
   const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
     BranchBaseOption[]
@@ -945,6 +948,9 @@ export function AgentsStartComposer({
           ),
         }
       : null;
+    const teamIntent = teamEnabled
+      ? ({ coordinationMode: "rx_native_team" } satisfies TeamIntent)
+      : null;
     await submitStartInput({
       projectId,
       content: message.trim(),
@@ -953,6 +959,7 @@ export function AgentsStartComposer({
       base,
       files: attachments.map((attachment) => attachment.file),
       codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
+      ...(teamIntent ? { teamIntent } : {}),
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
         : {}),
@@ -1093,6 +1100,14 @@ export function AgentsStartComposer({
               },
               options: AGENT_MODE_OPTIONS,
               testId: "agents-start-mode",
+            }}
+            team={{
+              enabled: teamEnabled,
+              onEnabledChange: (enabled) => {
+                clearStartError();
+                setTeamEnabled(enabled);
+              },
+              testId: "agents-start-team",
             }}
             project={{
               value: projectId,

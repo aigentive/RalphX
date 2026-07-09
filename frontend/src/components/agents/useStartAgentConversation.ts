@@ -13,6 +13,7 @@ import {
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
+  type TeamIntent,
 } from "@/api/chat";
 import { automationsApi } from "@/api/automations";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
@@ -142,6 +143,7 @@ export function useStartAgentConversation({
       base,
       files,
       codexFastMode,
+      teamIntent,
       composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
@@ -153,6 +155,7 @@ export function useStartAgentConversation({
       base: AgentConversationBaseSelection | null;
       files: File[];
       codexFastMode?: boolean | null;
+      teamIntent?: TeamIntent | null;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
@@ -271,6 +274,8 @@ export function useStartAgentConversation({
         integrationReferences: composerIntegrationReferences,
         artifactReferences: composerArtifactReferences,
       });
+      const optimisticCoordinationMode =
+        teamIntent?.coordinationMode ?? "solo";
       const initialConversation: ChatConversation = {
         id: createOptimisticConversationId(),
         contextType: "project",
@@ -278,7 +283,7 @@ export function useStartAgentConversation({
         claudeSessionId: null,
         providerSessionId: null,
         providerHarness: normalizedRuntime.provider,
-        coordinationMode: "solo",
+        coordinationMode: optimisticCoordinationMode,
         upstreamProvider: null,
         providerProfile: null,
         agentMode: mode,
@@ -342,6 +347,7 @@ export function useStartAgentConversation({
           ? {
               ...resultConversationSeed,
               agentMode: mode,
+              coordinationMode: optimisticCoordinationMode,
             }
           : automationDraft
             ? {
@@ -357,7 +363,7 @@ export function useStartAgentConversation({
                 automationId: automationDraft.automation.id,
                 automationRunId: null,
                 parentConversationId: null,
-                coordinationMode: "solo",
+                coordinationMode: optimisticCoordinationMode,
                 title: automationDraft.automation.name,
                 messageCount: 1,
                 lastMessageAt: now,
@@ -430,6 +436,7 @@ export function useStartAgentConversation({
               }
             : {}),
           mode,
+          ...(teamIntent ? { teamIntent } : {}),
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
             : {}),
@@ -543,6 +550,7 @@ export function useStartAgentConversation({
               mode,
               base,
               codexFastMode,
+              teamIntent,
               composerArtifactReferences,
               composerIntegrationReferences,
               composerProjectReferences,

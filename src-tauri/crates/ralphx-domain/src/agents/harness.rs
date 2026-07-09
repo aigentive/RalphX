@@ -84,7 +84,7 @@ pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
     match harness {
         AgentHarnessKind::Claude => HarnessBehavior {
             team: HarnessTeamCapabilities {
-                rx_native_team: false,
+                rx_native_team: true,
                 legacy_native_team_tools: true,
                 interactive_delivery: true,
                 resume_delivery: true,
@@ -97,7 +97,7 @@ pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
         },
         AgentHarnessKind::Codex => HarnessBehavior {
             team: HarnessTeamCapabilities {
-                rx_native_team: false,
+                rx_native_team: true,
                 legacy_native_team_tools: false,
                 interactive_delivery: false,
                 resume_delivery: true,

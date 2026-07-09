@@ -40,6 +40,7 @@ describe("agentStartErrors", () => {
           branchMode: "linked",
         },
         codexFastMode: true,
+        teamIntent: { coordinationMode: "rx_native_team" },
         composerArtifactReferences: [
           {
             kind: "plan",
@@ -73,6 +74,7 @@ describe("agentStartErrors", () => {
         branchMode: "linked",
       },
       codexFastMode: true,
+      teamIntent: { coordinationMode: "rx_native_team" },
       composerArtifactReferences: [
         {
           kind: "plan",

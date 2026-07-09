@@ -1,6 +1,8 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-use crate::domain::entities::{AttributionBackfillStatus, IdeationSessionId, ProjectId};
+use crate::domain::entities::{
+    AttributionBackfillStatus, CoordinationMode, IdeationSessionId, ProjectId,
+};
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -187,6 +189,21 @@ async fn test_update_provider_origin() {
     let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
     assert_eq!(retrieved.upstream_provider.as_deref(), Some("z_ai"));
     assert_eq!(retrieved.provider_profile.as_deref(), Some("z_ai"));
+}
+
+#[tokio::test]
+async fn test_update_coordination_mode() {
+    let repo = MemoryChatConversationRepository::new();
+    let conv = ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    let id = conv.id;
+
+    repo.create(conv).await.unwrap();
+    repo.update_coordination_mode(&id, CoordinationMode::RxNativeTeam)
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
+    assert_eq!(retrieved.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
 #[tokio::test]
