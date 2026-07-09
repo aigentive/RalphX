@@ -547,3 +547,30 @@ pub fn is_open_automation_run(
             | AutomationJudgeState::Failed
     ))
 }
+
+pub fn is_signal_terminal_automation_run(status: AutomationRunStatus) -> bool {
+    matches!(
+        status,
+        AutomationRunStatus::Merged
+            | AutomationRunStatus::PrClosed
+            | AutomationRunStatus::AgentFailed
+            | AutomationRunStatus::Completed
+    )
+}
+
+pub fn latest_run_holds_goal_authority(run: &AutomationRun) -> bool {
+    matches!(
+        run.status,
+        AutomationRunStatus::Pending
+            | AutomationRunStatus::Provisioning
+            | AutomationRunStatus::Running
+            | AutomationRunStatus::AwaitingPlanApproval
+            | AutomationRunStatus::Published
+    ) || (is_signal_terminal_automation_run(run.status)
+        && matches!(
+            run.judge_state,
+            AutomationJudgeState::None
+                | AutomationJudgeState::InProgress
+                | AutomationJudgeState::Done
+        ))
+}

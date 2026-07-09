@@ -1,10 +1,60 @@
+use super::automation::latest_run_holds_goal_authority;
 use super::{
     automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
     judge_is_transition_allowed, judge_transition_clears_verdict, plan_judge_is_transition_allowed,
     AutomationContextRefKind, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
-    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRunId,
-    AutomationRunStatus, AutomationStatus,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, AutomationRunStatus, AutomationStatus,
 };
+use chrono::Utc;
+
+fn run_with_status(
+    status: AutomationRunStatus,
+    judge_state: AutomationJudgeState,
+) -> AutomationRun {
+    let now = Utc::now();
+    AutomationRun {
+        id: AutomationRunId::from_string("run-1"),
+        automation_id: AutomationId::from_string("automation-1"),
+        run_index: 1,
+        status,
+        judge_state,
+        judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
+        conversation_id: None,
+        run_prompt: "Run prompt".to_string(),
+        prompt_author: AutomationPromptAuthor::SetupAgent,
+        base_ref_kind: "local_branch".to_string(),
+        base_ref_used: "main".to_string(),
+        base_from_run_id: None,
+        branch_name: None,
+        pr_number: None,
+        pr_url: None,
+        pr_title: None,
+        pr_head_ref_name: None,
+        pr_base_ref_name: None,
+        pr_merged_at: None,
+        merge_commit_sha: None,
+        diff_stats_json: None,
+        agent_summary: None,
+        judge_verdict_json: None,
+        judge_model_id: None,
+        error_code: None,
+        error_detail: None,
+        signal_check_failures: 0,
+        started_at: None,
+        finished_at: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
 
 #[test]
 fn automation_newtypes_display_and_default_to_generated_uuid() {
@@ -304,6 +354,49 @@ fn open_run_predicate_keeps_unjudged_signal_terminal_runs_open() {
         assert!(
             !is_open_automation_run(Cancelled, judge_state),
             "cancelled runs are terminal for every judge state"
+        );
+    }
+}
+
+#[test]
+fn goal_authority_predicate_is_independent_from_open_run_predicate() {
+    use AutomationJudgeState::*;
+    use AutomationRunStatus::*;
+
+    for status in [
+        Pending,
+        Provisioning,
+        Running,
+        AwaitingPlanApproval,
+        Published,
+    ] {
+        for judge_state in [None, InProgress, Done, Failed, Skipped] {
+            assert!(
+                latest_run_holds_goal_authority(&run_with_status(status, judge_state)),
+                "{status:?}/{judge_state:?} should hold goal authority while run is in flight"
+            );
+        }
+    }
+
+    for status in [Merged, PrClosed, AgentFailed, Completed] {
+        for judge_state in [None, InProgress, Done] {
+            assert!(
+                latest_run_holds_goal_authority(&run_with_status(status, judge_state)),
+                "{status:?}/{judge_state:?} should hold goal authority until judge fully settles"
+            );
+        }
+        for judge_state in [Failed, Skipped] {
+            assert!(
+                !latest_run_holds_goal_authority(&run_with_status(status, judge_state)),
+                "{status:?}/{judge_state:?} should not hold goal authority after failed/skipped judge"
+            );
+        }
+    }
+
+    for judge_state in [None, InProgress, Done, Failed, Skipped] {
+        assert!(
+            !latest_run_holds_goal_authority(&run_with_status(Cancelled, judge_state)),
+            "cancelled runs never hold goal authority"
         );
     }
 }

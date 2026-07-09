@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
@@ -354,6 +355,7 @@ async fn memory_run_repo_enforces_open_run_single_flight() {
             &AutomationRunId::from_string("run-1"),
             AutomationJudgeState::None,
             AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Dispatch,
             None,
             None,
             None,
@@ -457,6 +459,7 @@ async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
             &failed.id,
             AutomationJudgeState::Failed,
             AutomationJudgeState::InProgress,
+            AutomationJudgeTransitionGuard::Dispatch,
             None,
             None,
             Some(lease_expires_at),
@@ -470,6 +473,54 @@ async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     assert_eq!(updated.judge_verdict_json, None);
     assert_eq!(updated.error_detail, None);
     assert_eq!(updated.judge_lease_expires_at, Some(lease_expires_at));
+
+    let stale_lease = lease_expires_at + chrono::Duration::minutes(1);
+    assert!(!repo
+        .compare_and_swap_judge_state(
+            &failed.id,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Settle(stale_lease),
+            Some(r#"{"decision":"stop"}"#.to_string()),
+            Some("haiku".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    let still_in_progress = repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(
+        still_in_progress.judge_state,
+        AutomationJudgeState::InProgress
+    );
+    assert_eq!(still_in_progress.judge_verdict_json, None);
+    assert_eq!(still_in_progress.judge_model_id, None);
+    assert_eq!(
+        still_in_progress.judge_lease_expires_at,
+        Some(lease_expires_at)
+    );
+
+    assert!(repo
+        .compare_and_swap_judge_state(
+            &failed.id,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Settle(lease_expires_at),
+            Some(r#"{"decision":"stop"}"#.to_string()),
+            Some("haiku".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    let completed = repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(completed.judge_state, AutomationJudgeState::Done);
+    assert_eq!(
+        completed.judge_verdict_json.as_deref(),
+        Some(r#"{"decision":"stop"}"#)
+    );
+    assert_eq!(completed.judge_model_id.as_deref(), Some("haiku"));
+    assert_eq!(completed.judge_lease_expires_at, None);
 }
 
 #[tokio::test]

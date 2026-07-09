@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::application::automation::judge::{
     append_automation_judge_retry_instruction, build_automation_judge_prompt,
@@ -1204,6 +1205,7 @@ impl AutomationJudgeTask {
         automation: Automation,
         runs: Vec<AutomationRun>,
         run: AutomationRun,
+        judge_lease_expires_at: DateTime<Utc>,
     ) -> AppResult<AutomationJudgeTaskOutcome> {
         let parsed = match self
             .invoke_and_parse_judge(&automation, &runs, &run, false)
@@ -1216,8 +1218,13 @@ impl AutomationJudgeTask {
             {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    self.mark_judge_failed(&automation, &run, error.detail())
-                        .await?;
+                    self.mark_judge_failed(
+                        &automation,
+                        &run,
+                        judge_lease_expires_at,
+                        error.detail(),
+                    )
+                    .await?;
                     return Ok(AutomationJudgeTaskOutcome {
                         judge_failed: true,
                         ..AutomationJudgeTaskOutcome::default()
@@ -1225,7 +1232,7 @@ impl AutomationJudgeTask {
                 }
             },
             Err(error) => {
-                self.mark_judge_failed(&automation, &run, error.detail())
+                self.mark_judge_failed(&automation, &run, judge_lease_expires_at, error.detail())
                     .await?;
                 return Ok(AutomationJudgeTaskOutcome {
                     judge_failed: true,
@@ -1239,6 +1246,7 @@ impl AutomationJudgeTask {
             .complete_judge_verdict(CompleteAutomationJudgeInput {
                 automation,
                 previous_run: run,
+                judge_lease_expires_at,
                 verdict: parsed.verdict,
                 verdict_json: parsed.verdict_json,
                 judge_model_id: parsed.model_id,
@@ -1295,6 +1303,7 @@ impl AutomationJudgeTask {
         &self,
         automation: &Automation,
         run: &AutomationRun,
+        judge_lease_expires_at: DateTime<Utc>,
         detail: String,
     ) -> AppResult<bool> {
         if !self
@@ -1303,6 +1312,7 @@ impl AutomationJudgeTask {
                 &run.id,
                 AutomationJudgeState::InProgress,
                 AutomationJudgeState::Failed,
+                AutomationJudgeTransitionGuard::Settle(judge_lease_expires_at),
                 None,
                 None,
                 None,
@@ -2669,15 +2679,18 @@ impl AutomationScheduler {
         match run.judge_state {
             AutomationJudgeState::None | AutomationJudgeState::Failed => {
                 let from = run.judge_state;
+                let judge_lease_expires_at =
+                    automation_judge_lease_expires_at(self.config.judge_timeout);
                 if self
                     .transition_service
                     .transition_judge_state(
                         &run.id,
                         from,
                         AutomationJudgeState::InProgress,
+                        AutomationJudgeTransitionGuard::Dispatch,
                         None,
                         None,
-                        Some(automation_judge_lease_expires_at(self.config.judge_timeout)),
+                        Some(judge_lease_expires_at),
                         None,
                     )
                     .await?
@@ -2691,6 +2704,7 @@ impl AutomationScheduler {
                         automation.clone(),
                         runs.to_vec(),
                         run.clone(),
+                        judge_lease_expires_at,
                     );
                 }
             }
@@ -2701,13 +2715,16 @@ impl AutomationScheduler {
             AutomationJudgeState::InProgress
                 if judge_has_exceeded(run, self.config.judge_timeout) =>
             {
-                self.mark_judge_failed(
-                    automation,
-                    run,
-                    "Automation judge exceeded judge_timeout_secs".to_string(),
-                    summary,
-                )
-                .await?;
+                if let Some(judge_lease_expires_at) = run.judge_lease_expires_at {
+                    self.mark_judge_failed(
+                        automation,
+                        run,
+                        judge_lease_expires_at,
+                        "Automation judge exceeded judge_timeout_secs".to_string(),
+                        summary,
+                    )
+                    .await?;
+                }
             }
             AutomationJudgeState::InProgress | AutomationJudgeState::Skipped => {}
         }
@@ -2718,6 +2735,7 @@ impl AutomationScheduler {
         &self,
         automation: &Automation,
         run: &AutomationRun,
+        judge_lease_expires_at: DateTime<Utc>,
         detail: String,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
@@ -2727,6 +2745,7 @@ impl AutomationScheduler {
                 &run.id,
                 AutomationJudgeState::InProgress,
                 AutomationJudgeState::Failed,
+                AutomationJudgeTransitionGuard::Settle(judge_lease_expires_at),
                 None,
                 None,
                 None,
@@ -3241,6 +3260,7 @@ pub(crate) fn spawn_automation_judge_task(
     automation: Automation,
     runs: Vec<AutomationRun>,
     run: AutomationRun,
+    judge_lease_expires_at: DateTime<Utc>,
 ) {
     let task = AutomationJudgeTask {
         service,
@@ -3251,7 +3271,10 @@ pub(crate) fn spawn_automation_judge_task(
     tauri::async_runtime::spawn(async move {
         let automation_id = automation.id.clone();
         let run_id = run.id.clone();
-        match task.run_for_terminal_run(automation, runs, run).await {
+        match task
+            .run_for_terminal_run(automation, runs, run, judge_lease_expires_at)
+            .await
+        {
             Ok(outcome) => {
                 tracing::info!(
                     automation_id = %automation_id,

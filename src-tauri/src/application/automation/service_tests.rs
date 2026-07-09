@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use ralphx_domain::entities::is_open_automation_run;
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde_json::{json, Value};
 
 use crate::application::automation::judge::{
@@ -14,9 +15,10 @@ use crate::application::automation::plan_gate::{
 };
 use crate::application::automation::service::{
     run_status_blocks_trigger_run_now, run_status_is_cancellable, ApplyAutomationJudgeVerdictInput,
-    AutomationRunNowAction, AutomationService, CreateAutomationDraftInput,
-    CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput, UpdateAutomationConfigInput,
-    UpdateAutomationSettingsInput, AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE,
+    AutomationJudgeApplyNoopReason, AutomationRunNowAction, AutomationService,
+    CompleteAutomationJudgeInput, CreateAutomationDraftInput, CreateAutomationRunInput,
+    CreateMergedBaseSuccessorRunInput, UpdateAutomationConfigInput, UpdateAutomationSettingsInput,
+    AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
@@ -341,7 +343,10 @@ fn automation_run(
         merge_commit_sha: None,
         diff_stats_json: None,
         agent_summary: None,
-        judge_verdict_json: None,
+        judge_verdict_json: (judge_state == AutomationJudgeState::Done).then(|| {
+            r#"{"decision":"stop","goalMet":false,"reason":"stored fixture verdict","confidence":1,"goalProgress":null,"updatedItemStatuses":null,"nextRunPrompt":null,"nextBaseBranch":null}"#
+                .to_string()
+        }),
         judge_model_id: None,
         error_code: None,
         error_detail: None,
@@ -750,6 +755,7 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         _id: &AutomationRunId,
         _from: AutomationJudgeState,
         _to: AutomationJudgeState,
+        _guard: AutomationJudgeTransitionGuard,
         _judge_verdict_json: Option<String>,
         _judge_model_id: Option<String>,
         _judge_lease_expires_at: Option<chrono::DateTime<Utc>>,
@@ -3052,7 +3058,172 @@ async fn service_judge_stop_goal_met_leaves_exactly_verdict_goal_status() {
 }
 
 #[tokio::test]
-async fn service_judge_status_update_fails_closed_when_goal_items_changed() {
+async fn service_judge_verdict_noops_when_latest_run_changed_before_effects() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    let latest = automation_run(
+        "run-2",
+        &active.id,
+        2,
+        AutomationRunStatus::Pending,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    run_repo.create_run(latest).await.unwrap();
+    let mut verdict = stop_verdict(true, "Goal is complete");
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::Done,
+    }]);
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.noop_reason,
+        Some(AutomationJudgeApplyNoopReason::NotCurrent)
+    );
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Active);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_verdict_noops_when_automation_paused_before_effects() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    automation_repo
+        .compare_and_swap_status(
+            &active.id,
+            AutomationStatus::Active,
+            AutomationStatus::Paused,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut verdict = stop_verdict(true, "Goal is complete");
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::Done,
+    }]);
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.noop_reason,
+        Some(AutomationJudgeApplyNoopReason::NotCurrent)
+    );
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Paused);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_complete_judge_verdict_noops_when_dispatch_lease_is_stale() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(3);
+    let stale_lease = lease_expires_at + chrono::Duration::minutes(1);
+    let mut previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::InProgress,
+    );
+    previous.judge_lease_expires_at = Some(lease_expires_at);
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut verdict = stop_verdict(true, "Goal is complete");
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::Done,
+    }]);
+    let verdict_json = serde_json::to_string(&verdict).unwrap();
+
+    let outcome = service
+        .complete_judge_verdict(CompleteAutomationJudgeInput {
+            automation: active.clone(),
+            previous_run: previous.clone(),
+            judge_lease_expires_at: stale_lease,
+            verdict,
+            verdict_json,
+            judge_model_id: Some("judge-model".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.noop_reason,
+        Some(AutomationJudgeApplyNoopReason::NotCurrent)
+    );
+    let stored_run = run_repo.get_by_id(&previous.id).await.unwrap().unwrap();
+    assert_eq!(stored_run.judge_state, AutomationJudgeState::InProgress);
+    assert_eq!(stored_run.judge_verdict_json, None);
+    assert_eq!(stored_run.judge_model_id, None);
+    assert_eq!(stored_run.judge_lease_expires_at, Some(lease_expires_at));
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Active);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_status_update_recomputes_goal_cas_base_after_refetch() {
     let (service, automation_repo, run_repo) =
         service_with_emitter(Arc::new(NoopAutomationEventEmitter));
     let stale = automation("automation-1", AutomationStatus::Active);
@@ -3086,21 +3257,24 @@ async fn service_judge_status_update_fails_closed_when_goal_items_changed() {
         status: AutomationGoalItemStatus::Done,
     }]);
 
-    let error = service
+    let outcome = service
         .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
             automation: stale.clone(),
             previous_run: previous,
             verdict,
         })
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(error, AppError::Conflict(_)));
+    assert_eq!(
+        outcome.terminal_automation_status,
+        Some(AutomationStatus::Paused)
+    );
     let stored = automation_repo.get_by_id(&stale.id).await.unwrap().unwrap();
-    assert_eq!(stored.status, AutomationStatus::Active);
+    assert_eq!(stored.status, AutomationStatus::Paused);
     assert_eq!(
         item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
-        "pending"
+        "done"
     );
     assert_eq!(
         item_status(stored.goal_items_json.as_deref().unwrap(), "phase-2"),

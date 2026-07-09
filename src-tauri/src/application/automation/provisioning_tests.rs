@@ -705,6 +705,104 @@ async fn provision_goal_item_sync_self_reverts_when_run_closed_after_mark() {
 }
 
 #[tokio::test]
+async fn provision_goal_item_sync_self_reverts_when_judge_failed_loses_goal_authority() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Race target","status":"pending"},{"id":"item-2","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut failed = run(automation.id.clone());
+    failed.status = AutomationRunStatus::AgentFailed;
+    failed.judge_state = AutomationJudgeState::Failed;
+    run_repo.create_run(failed.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    provisioner
+        .sync_current_goal_item_started(&automation.id, &failed.id)
+        .await;
+
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-1").as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        automation_updated_events(&event_emitter.events(), &automation.id).len(),
+        2,
+        "judge-failed terminal run should be followed by a self-revert update"
+    );
+}
+
+#[tokio::test]
+async fn provision_goal_item_sync_keeps_completed_judge_settled_goal_authority() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Race target","status":"pending"},{"id":"item-2","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut completed = run(automation.id.clone());
+    completed.status = AutomationRunStatus::Completed;
+    completed.judge_state = AutomationJudgeState::Done;
+    run_repo.create_run(completed.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    provisioner
+        .sync_current_goal_item_started(&automation.id, &completed.id)
+        .await;
+
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-1").as_deref(),
+        Some("in_progress")
+    );
+    assert_eq!(
+        automation_updated_events(&event_emitter.events(), &automation.id).len(),
+        1,
+        "goal-authoritative terminal run should keep the started item update"
+    );
+}
+
+#[tokio::test]
 async fn provision_first_run_does_not_rewrite_when_all_goal_items_are_terminal() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());

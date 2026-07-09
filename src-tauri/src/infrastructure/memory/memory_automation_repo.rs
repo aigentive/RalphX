@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::domain::entities::{
     is_open_automation_run, judge_transition_clears_verdict, Automation, AutomationId,
@@ -677,6 +678,7 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,
@@ -688,6 +690,11 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         };
         if run.judge_state != from {
             return Ok(false);
+        }
+        if let AutomationJudgeTransitionGuard::Settle(expected_lease) = guard {
+            if run.judge_lease_expires_at != Some(expected_lease) {
+                return Ok(false);
+            }
         }
         let clear_judge_verdict =
             judge_transition_clears_verdict(to, judge_verdict_json.as_deref());

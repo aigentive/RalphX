@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -268,6 +269,7 @@ impl AutomationTransitionService {
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,
@@ -279,6 +281,17 @@ impl AutomationTransitionService {
                 to: to.as_str().to_string(),
             });
         }
+        if from == AutomationJudgeState::InProgress
+            && matches!(
+                to,
+                AutomationJudgeState::Done | AutomationJudgeState::Failed
+            )
+            && !matches!(guard, AutomationJudgeTransitionGuard::Settle(_))
+        {
+            return Err(AppError::Validation(
+                "judge settle transitions require the dispatch lease".to_string(),
+            ));
+        }
 
         let changed = self
             .run_repo
@@ -286,6 +299,7 @@ impl AutomationTransitionService {
                 id,
                 from,
                 to,
+                guard,
                 judge_verdict_json,
                 judge_model_id,
                 judge_lease_expires_at,

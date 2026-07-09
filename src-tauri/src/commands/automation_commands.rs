@@ -1,8 +1,14 @@
 use std::sync::Arc;
 
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde::Deserialize;
 use tauri::State;
 
+use crate::application::agent_conversation_workspace::{
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
+    AgentConversationWorkspaceSetupMode,
+};
 use crate::application::automation::api::{
     automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
     AutomationResponse, AutomationRunResponse, AutomationScheduleResponse,
@@ -21,17 +27,13 @@ use crate::application::automation::service::{
 use crate::application::automation::transition::{
     AutomationTransitionService, NoopAutomationEventEmitter,
 };
-use crate::application::agent_conversation_workspace::{
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
-    AgentConversationWorkspaceSetupMode,
-};
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
     AutomationJudgeState, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId,
     ChatConversation, IdeationAnalysisBaseRefKind, ProjectId,
 };
+use crate::infrastructure::agents::claude::automations_config;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,16 +335,18 @@ pub(crate) async fn trigger_automation_run_now_for_state(
         } => {
             let automation = *automation;
             let run = *run;
-            let config = AutomationSchedulerConfig::default();
+            let config = AutomationSchedulerConfig::from_runtime(automations_config());
+            let judge_lease_expires_at = automation_judge_lease_expires_at(config.judge_timeout);
             let transition_service = automation_transition_service(state);
             let changed = transition_service
                 .transition_judge_state(
                     &run.id,
                     run.judge_state,
                     AutomationJudgeState::InProgress,
+                    AutomationJudgeTransitionGuard::Dispatch,
                     None,
                     None,
-                    Some(automation_judge_lease_expires_at(config.judge_timeout)),
+                    Some(judge_lease_expires_at),
                     None,
                 )
                 .await?;
@@ -360,6 +364,7 @@ pub(crate) async fn trigger_automation_run_now_for_state(
                 automation,
                 runs,
                 run,
+                judge_lease_expires_at,
             );
             Ok(AutomationScheduleOutcome {
                 scheduled: true,

@@ -16,6 +16,12 @@ pub struct AutomationRunPublicationMetadata {
     pub pr_base_ref_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationJudgeTransitionGuard {
+    Dispatch,
+    Settle(DateTime<Utc>),
+}
+
 #[async_trait]
 pub trait AutomationRunRepository: Send + Sync {
     async fn create_run(&self, run: AutomationRun) -> AppResult<AutomationRun>;
@@ -128,6 +134,7 @@ pub trait AutomationRunRepository: Send + Sync {
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,

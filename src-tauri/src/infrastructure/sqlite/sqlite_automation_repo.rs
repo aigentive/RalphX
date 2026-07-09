@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use tokio::sync::Mutex;
 
@@ -1035,12 +1036,17 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool> {
         let id = id.as_str().to_string();
+        let expected_lease = match guard {
+            AutomationJudgeTransitionGuard::Dispatch => None,
+            AutomationJudgeTransitionGuard::Settle(lease) => Some(lease.to_rfc3339()),
+        };
         let clear_judge_verdict = i64::from(judge_transition_clears_verdict(
             to,
             judge_verdict_json.as_deref(),
@@ -1064,7 +1070,9 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                          END,
                          error_detail = ?7,
                          updated_at = ?8
-                     WHERE id = ?9 AND judge_state = ?10",
+                     WHERE id = ?9
+                       AND judge_state = ?10
+                       AND (?11 IS NULL OR judge_lease_expires_at = ?11)",
                     params![
                         to.as_str(),
                         clear_judge_verdict,
@@ -1076,6 +1084,7 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         Utc::now().to_rfc3339(),
                         id,
                         from.as_str(),
+                        expected_lease,
                     ],
                 )?;
                 Ok(affected == 1)

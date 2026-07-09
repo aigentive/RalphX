@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
@@ -231,6 +232,7 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
             &run.id,
             AutomationJudgeState::None,
             AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Dispatch,
             None,
             None,
             None,
@@ -246,13 +248,28 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
             &run.id,
             AutomationJudgeState::None,
             AutomationJudgeState::InProgress,
+            AutomationJudgeTransitionGuard::Dispatch,
             None,
             None,
-            None,
+            Some(Utc::now()),
             None,
         )
         .await
         .unwrap());
+    let settle_without_token = service
+        .transition_judge_state(
+            &run.id,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Dispatch,
+            Some(r#"{"decision":"stop"}"#.to_string()),
+            Some("judge-model".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(settle_without_token, AppError::Validation(_)));
     assert_eq!(
         emitter.events(),
         vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]

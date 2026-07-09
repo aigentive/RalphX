@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use ralphx_domain::entities::automation::latest_run_holds_goal_authority;
 
 use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
@@ -16,9 +17,8 @@ use crate::application::automation::transition::{
 };
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
-    is_open_automation_run, AgentConversationWorkspaceMode, Automation, AutomationId,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, ChatConversation,
-    ChatConversationId,
+    AgentConversationWorkspaceMode, Automation, AutomationId, AutomationPromptAuthor,
+    AutomationRun, AutomationRunId, AutomationRunStatus, ChatConversation, ChatConversationId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, AutomationRepository,
@@ -469,7 +469,7 @@ impl AutomationRunProvisioner {
         expected_goal_items_json: String,
     ) {
         let should_revert = match self.run_repo.get_by_id(run_id).await {
-            Ok(Some(run)) => !is_open_automation_run(run.status, run.judge_state),
+            Ok(Some(run)) => !latest_run_holds_goal_authority(&run),
             Ok(None) => true,
             Err(error) => {
                 tracing::warn!(
