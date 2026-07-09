@@ -47,6 +47,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { extractErrorMessage } from "@/lib/errors";
 import { useUiStore } from "@/stores/uiStore";
 import type { SettingsSectionId } from "@/components/settings/settings-registry";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
@@ -121,6 +122,11 @@ const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
   "pushed",
   "published",
 ]);
+
+type PrSupervisionResultOverride = {
+  sourceWorkspaceUpdatedAt: string | null;
+  workspace: AgentConversationWorkspace;
+};
 
 function PublishSwitchInfoTooltip({
   label,
@@ -226,6 +232,8 @@ export function AgentPublishPanel({
     conversationId: string;
     startedAtMs: number;
   } | null>(null);
+  const [prSupervisionResultOverride, setPrSupervisionResultOverride] =
+    useState<PrSupervisionResultOverride | null>(null);
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
   const autoRefreshFromBaseKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
@@ -462,7 +470,7 @@ export function AgentPublishPanel({
   });
   const prSupervisionMutation = useMutation<
     AgentConversationWorkspace,
-    Error,
+    unknown,
     { autoFixEnabled: boolean; autoMergeDesired: boolean }
   >({
     mutationFn: (input) =>
@@ -476,16 +484,48 @@ export function AgentPublishPanel({
         agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
         updatedWorkspace,
       );
-      void queryClient.invalidateQueries({
-        queryKey: agentWorkspaceKeys.publicationEvents(updatedWorkspace.conversationId),
+      setPrSupervisionResultOverride({
+        sourceWorkspaceUpdatedAt: workspace?.updatedAt ?? null,
+        workspace: updatedWorkspace,
       });
+      void invalidateWorkspaceQueries(
+        queryClient,
+        updatedWorkspace.conversationId,
+      );
     },
     onError: (error) => {
       toast.error(
-        error instanceof Error ? error.message : "Unable to update PR supervision",
+        extractErrorMessage(error, "Unable to update PR supervision"),
       );
     },
   });
+  useEffect(() => {
+    if (!prSupervisionResultOverride) {
+      return;
+    }
+    if (
+      !workspace ||
+      workspace.conversationId !==
+        prSupervisionResultOverride.workspace.conversationId
+    ) {
+      setPrSupervisionResultOverride(null);
+      return;
+    }
+
+    const updatedWorkspace = prSupervisionResultOverride.workspace;
+    const workspaceMatchesResult =
+      workspace.prAutofixEnabled === updatedWorkspace.prAutofixEnabled &&
+      workspace.prAutoMergeDesired === updatedWorkspace.prAutoMergeDesired &&
+      workspace.prSupervisionStatus === updatedWorkspace.prSupervisionStatus;
+    const workspaceRefreshedAfterMutation =
+      prSupervisionResultOverride.sourceWorkspaceUpdatedAt !== null &&
+      workspace.updatedAt !==
+        prSupervisionResultOverride.sourceWorkspaceUpdatedAt;
+
+    if (workspaceMatchesResult || workspaceRefreshedAfterMutation) {
+      setPrSupervisionResultOverride(null);
+    }
+  }, [prSupervisionResultOverride, workspace]);
   const changesError = reviewQuery.error;
   const changes = reviewQuery.data?.changes ?? [];
   const commits = useMemo<DiffViewerCommit[]>(
@@ -617,6 +657,11 @@ export function AgentPublishPanel({
   const pendingPrSupervision = prSupervisionMutation.isPending
     ? prSupervisionMutation.variables
     : null;
+  const settledPrSupervisionWorkspace =
+    prSupervisionResultOverride?.workspace.conversationId ===
+    workspace.conversationId
+      ? prSupervisionResultOverride.workspace
+      : null;
   const isAutoPublishSaving = autoPublishMutation.isPending;
   const isPrSupervisionSaving = prSupervisionMutation.isPending;
   const isAutomationPreferenceSaving =
@@ -625,11 +670,23 @@ export function AgentPublishPanel({
     ? autoPublishEnabled
     : storedAutoPublishEnabled;
   const prAutofixEnabled =
-    pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
+    pendingPrSupervision?.autoFixEnabled ??
+    settledPrSupervisionWorkspace?.prAutofixEnabled ??
+    workspace.prAutofixEnabled ??
+    false;
   const prAutoMergeDesired =
-    pendingPrSupervision?.autoMergeDesired ?? workspace.prAutoMergeDesired ?? false;
-  const prAutoMergeCurrent = workspace.prAutoMergeCurrent ?? null;
-  const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
+    pendingPrSupervision?.autoMergeDesired ??
+    settledPrSupervisionWorkspace?.prAutoMergeDesired ??
+    workspace.prAutoMergeDesired ??
+    false;
+  const prAutoMergeCurrent =
+    settledPrSupervisionWorkspace?.prAutoMergeCurrent ??
+    workspace.prAutoMergeCurrent ??
+    null;
+  const prSupervisionStatus =
+    settledPrSupervisionWorkspace?.prSupervisionStatus ??
+    workspace.prSupervisionStatus ??
+    null;
   const prConflictSummary = getAgentWorkspacePrConflictSummary(workspace);
   const hasPrConflict = prConflictSummary !== null;
   const workspaceReviewRequired =
