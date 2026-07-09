@@ -17,6 +17,7 @@ use crate::domain::entities::{
     SessionPurpose, VerificationStatus,
 };
 use crate::domain::services::{build_blank_verification_snapshot, QueuedMessage};
+use crate::error::AppError;
 
 #[derive(Clone, Copy, Default)]
 enum VerificationSendBehavior {
@@ -324,6 +325,118 @@ async fn repair_blank_orphaned_verification_generation_clears_archived_child_sna
 }
 
 #[tokio::test]
+async fn repair_blank_orphaned_verification_generation_ignores_non_stuck_states() {
+    let state = AppState::new_test();
+    let parent = IdeationSession::builder()
+        .project_id(ProjectId::from_string("project-1".to_string()))
+        .verification_generation(7)
+        .build();
+    state
+        .ideation_session_repo
+        .create(parent.clone())
+        .await
+        .unwrap();
+
+    assert!(
+        !repair_blank_orphaned_verification_generation(&state, &parent)
+            .await
+            .unwrap(),
+        "sessions that are not marked in-progress should not be repaired"
+    );
+
+    let mut in_progress_parent = IdeationSession::builder()
+        .project_id(ProjectId::from_string("project-1".to_string()))
+        .verification_generation(7)
+        .build();
+    in_progress_parent.verification_in_progress = true;
+    state
+        .ideation_session_repo
+        .create(in_progress_parent.clone())
+        .await
+        .unwrap();
+    let active_child = build_child_session(
+        in_progress_parent.id.clone(),
+        &in_progress_parent,
+        ChildSessionDraftInput {
+            title: Some("Verifier".to_string()),
+            inherit_context: true,
+            team_mode: None,
+            team_config_json: None,
+            source_task_id: None,
+            source_context_type: None,
+            source_context_id: None,
+            spawn_reason: None,
+            blocker_fingerprint: None,
+            purpose: SessionPurpose::Verification,
+            is_external_trigger: false,
+        },
+    );
+    state
+        .ideation_session_repo
+        .create(active_child)
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .save_verification_run_snapshot(
+            &in_progress_parent.id,
+            &build_blank_verification_snapshot(7, VerificationStatus::Reviewing, true),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !repair_blank_orphaned_verification_generation(&state, &in_progress_parent)
+            .await
+            .unwrap(),
+        "active verification children should block orphan repair"
+    );
+}
+
+#[tokio::test]
+async fn load_verification_child_state_reports_active_verification_child() {
+    let state = AppState::new_test();
+    let parent = IdeationSession::builder()
+        .project_id(ProjectId::from_string("project-1".to_string()))
+        .build();
+    let parent_id = parent.id.clone();
+    state
+        .ideation_session_repo
+        .create(parent.clone())
+        .await
+        .unwrap();
+    let child = build_child_session(
+        parent_id.clone(),
+        &parent,
+        ChildSessionDraftInput {
+            title: Some("Verifier".to_string()),
+            inherit_context: true,
+            team_mode: None,
+            team_config_json: None,
+            source_task_id: None,
+            source_context_type: None,
+            source_context_id: None,
+            spawn_reason: None,
+            blocker_fingerprint: None,
+            purpose: SessionPurpose::Verification,
+            is_external_trigger: false,
+        },
+    );
+    let child_id = child.id.clone();
+    state.ideation_session_repo.create(child).await.unwrap();
+
+    let child_state = load_verification_child_state(&state.ideation_session_repo, &parent_id)
+        .await
+        .unwrap();
+
+    assert!(child_state.has_active_child);
+    assert_eq!(
+        child_state.latest_child.map(|child| child.id),
+        Some(child_id)
+    );
+}
+
+#[tokio::test]
 async fn spawn_verification_child_session_persists_prompt_when_capacity_deferred() {
     let state = AppState::new_test();
     let parent = IdeationSession::builder()
@@ -366,6 +479,146 @@ async fn spawn_verification_child_session_persists_prompt_when_capacity_deferred
     assert!(messages[0].contains("DISABLED_SPECIALISTS: security, qa"));
     let options = captured.sent_options().await;
     assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
+}
+
+#[tokio::test]
+async fn spawn_verification_agent_reports_spawned_when_child_launches() {
+    let state = AppState::new_sqlite_test();
+    let parent = IdeationSession::builder()
+        .project_id(ProjectId::from_string("project-1".to_string()))
+        .build();
+    let parent_id = parent.id.clone();
+    state.ideation_session_repo.create(parent).await.unwrap();
+    let generation = trigger_auto_verify_generation(&state, &parent_id)
+        .await
+        .unwrap()
+        .expect("generation should start");
+    let chat_service = RecordingVerificationChatService::default();
+    let captured = chat_service.clone();
+
+    let outcome = spawn_verification_agent(
+        &state,
+        &parent_id,
+        generation,
+        Some(AgentHarnessKind::Codex),
+        &[],
+        |_| chat_service,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        VerificationAgentSpawnOutcome {
+            spawned: true,
+            failure_detail: None,
+        }
+    );
+    let parent = state
+        .ideation_session_repo
+        .get_by_id(&parent_id)
+        .await
+        .unwrap()
+        .expect("parent session");
+    assert_eq!(parent.verification_status, VerificationStatus::Reviewing);
+    assert!(parent.verification_in_progress);
+    let messages = captured.sent_messages().await;
+    assert!(messages[0].contains(parent_id.as_str()));
+    assert!(messages[0].contains(&format!("generation: {generation}")));
+    assert_eq!(
+        captured.sent_options().await[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+}
+
+#[tokio::test]
+async fn spawn_verification_agent_resets_auto_verify_when_launch_is_deferred() {
+    let state = AppState::new_sqlite_test();
+    let parent = IdeationSession::builder()
+        .project_id(ProjectId::from_string("project-1".to_string()))
+        .build();
+    let parent_id = parent.id.clone();
+    state.ideation_session_repo.create(parent).await.unwrap();
+    let generation = trigger_auto_verify_generation(&state, &parent_id)
+        .await
+        .unwrap()
+        .expect("generation should start");
+    let chat_service = RecordingVerificationChatService::queued();
+    let captured = chat_service.clone();
+
+    let outcome = spawn_verification_agent(
+        &state,
+        &parent_id,
+        generation,
+        Some(AgentHarnessKind::Codex),
+        &["security".to_string()],
+        |_| chat_service,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        VerificationAgentSpawnOutcome {
+            spawned: false,
+            failure_detail: Some("verification agent launch was deferred by capacity".to_string()),
+        }
+    );
+    let parent = state
+        .ideation_session_repo
+        .get_by_id(&parent_id)
+        .await
+        .unwrap()
+        .expect("parent session");
+    assert_eq!(parent.verification_status, VerificationStatus::Unverified);
+    assert!(!parent.verification_in_progress);
+    assert_eq!(parent.verification_generation, generation);
+    let snapshot = state
+        .ideation_session_repo
+        .get_verification_run_snapshot(&parent_id, generation)
+        .await
+        .unwrap()
+        .expect("reset snapshot");
+    assert_eq!(snapshot.status, VerificationStatus::Unverified);
+    assert!(!snapshot.in_progress);
+    assert_eq!(
+        captured.sent_options().await[0].harness_override,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert!(
+        captured.sent_messages().await[0].contains("DISABLED_SPECIALISTS: security"),
+        "deferred launch should preserve disabled specialists in the queued prompt"
+    );
+}
+
+#[tokio::test]
+async fn spawn_verification_agent_reports_spawn_error_for_missing_parent() {
+    let state = AppState::new_sqlite_test();
+    let missing_parent_id = IdeationSessionId::from_string("missing-parent".to_string());
+
+    let outcome = spawn_verification_agent(&state, &missing_parent_id, 3, None, &[], |_| {
+        RecordingVerificationChatService::default()
+    })
+    .await;
+
+    assert!(!outcome.spawned);
+    assert!(
+        outcome
+            .failure_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("Parent session missing-parent not found")),
+        "missing parent should be reported as a spawn failure: {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn trigger_auto_verify_generation_fails_closed_for_missing_session() {
+    let state = AppState::new_sqlite_test();
+    let missing_parent_id = IdeationSessionId::from_string("missing-parent".to_string());
+
+    let error = trigger_auto_verify_generation(&state, &missing_parent_id)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::NotFound(message) if message.contains("missing-parent")));
 }
 
 #[tokio::test]

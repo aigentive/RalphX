@@ -112,39 +112,54 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
     }
 }
 
-fn collect_rs_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            collect_rs_files(&path, files);
-            continue;
-        }
-        if path.extension().is_some_and(|extension| extension == "rs") {
-            files.push(path);
-        }
-    }
-}
-
 #[test]
 fn production_automation_transition_services_use_shared_event_emitter_factory() {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let api_path = manifest_dir.join("src/application/automation/api.rs");
-    let mut source_files = Vec::new();
-    collect_rs_files(&manifest_dir.join("src"), &mut source_files);
-    let offenders: Vec<_> = source_files
+    const API_SOURCE: &str = include_str!("api.rs");
+    const PRODUCTION_SOURCES: &[(&str, &str)] = &[
+        (
+            "src/application/automation/delete.rs",
+            include_str!("delete.rs"),
+        ),
+        (
+            "src/application/automation/judge.rs",
+            include_str!("judge.rs"),
+        ),
+        (
+            "src/application/automation/plan_gate.rs",
+            include_str!("plan_gate.rs"),
+        ),
+        (
+            "src/application/automation/plan_judge.rs",
+            include_str!("plan_judge.rs"),
+        ),
+        (
+            "src/application/automation/provisioning.rs",
+            include_str!("provisioning.rs"),
+        ),
+        (
+            "src/application/automation/review_gate.rs",
+            include_str!("review_gate.rs"),
+        ),
+        (
+            "src/application/automation/scheduler.rs",
+            include_str!("scheduler.rs"),
+        ),
+        (
+            "src/application/automation/service.rs",
+            include_str!("service.rs"),
+        ),
+        (
+            "src/commands/automation_commands.rs",
+            include_str!("../../commands/automation_commands.rs"),
+        ),
+    ];
+
+    let offenders: Vec<_> = PRODUCTION_SOURCES
         .iter()
-        .filter(|path| !path.ends_with("transition.rs"))
-        .filter(|path| {
-            !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with("_tests.rs"))
-        })
-        .filter(|path| **path != api_path)
-        .filter(|path| {
-            std::fs::read_to_string(path)
-                .unwrap()
+        .filter_map(|(path, source)| {
+            source
                 .contains("NoopAutomationEventEmitter")
+                .then_some(*path)
         })
         .collect();
 
@@ -153,12 +168,38 @@ fn production_automation_transition_services_use_shared_event_emitter_factory() 
         "NoopAutomationEventEmitter construction must stay in the API fallback; offenders: {offenders:?}"
     );
     assert_eq!(
-        std::fs::read_to_string(api_path)
-            .unwrap()
+        API_SOURCE
             .matches("Arc::new(NoopAutomationEventEmitter)")
             .count(),
         1,
         "automation API should own the single Noop event-emitter fallback"
+    );
+}
+
+#[test]
+fn automation_event_names_are_stable_for_ui_subscriptions() {
+    assert_eq!(
+        (AutomationEvent::AutomationUpdated {
+            automation_id: AutomationId::from_string("automation-1")
+        })
+        .event_name(),
+        "automation:updated"
+    );
+    assert_eq!(
+        (AutomationEvent::AutomationRunUpdated {
+            automation_id: AutomationId::from_string("automation-1"),
+            run_id: AutomationRunId::from_string("run-1")
+        })
+        .event_name(),
+        "automation:run:updated"
+    );
+    assert_eq!(
+        (AutomationEvent::AutomationDeleted {
+            automation_id: AutomationId::from_string("automation-1"),
+            project_id: ProjectId::from_string("project-1".to_string())
+        })
+        .event_name(),
+        "automation:deleted"
     );
 }
 
@@ -329,6 +370,87 @@ async fn transition_service_emits_after_successful_merge_metadata_cas() {
 }
 
 #[tokio::test]
+async fn transition_service_records_explicit_agent_phase_start_time() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let run = run(
+        "run-1",
+        AutomationRunStatus::Provisioning,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let agent_phase_started_at = Utc::now();
+
+    assert!(service
+        .transition_run_status_with_agent_phase_started_at(
+            &run.id,
+            AutomationRunStatus::Provisioning,
+            AutomationRunStatus::Running,
+            agent_phase_started_at,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Running);
+    assert_eq!(stored.agent_phase_started_at, Some(agent_phase_started_at));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn transition_service_clears_plan_pending_instructions_on_retry_start() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let mut run = run(
+        "run-1",
+        AutomationRunStatus::Pending,
+        AutomationJudgeState::None,
+    );
+    run.plan_pending_instructions = Some("Revise the plan before retrying".to_string());
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    assert!(service
+        .transition_run_status_clearing_plan_pending_instructions(
+            &run.id,
+            AutomationRunStatus::Pending,
+            AutomationRunStatus::Provisioning,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Provisioning);
+    assert!(stored.plan_pending_instructions.is_none());
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
 async fn transition_service_validates_judge_lifecycle_before_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(
@@ -387,6 +509,48 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
         .await
         .unwrap_err();
     assert!(matches!(settle_without_token, AppError::Validation(_)));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn transition_service_emits_after_successful_plan_judge_state_cas() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let run = run(
+        "run-1",
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let lease_expires_at = Utc::now();
+
+    assert!(service
+        .transition_plan_judge_state(
+            &run.id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::InProgress,
+            None,
+            Some(lease_expires_at),
+        )
+        .await
+        .unwrap());
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.plan_judge_state,
+        AutomationPlanJudgeState::InProgress
+    );
+    assert_eq!(stored.plan_judge_lease_expires_at, Some(lease_expires_at));
     assert_eq!(
         emitter.events(),
         vec![AutomationEvent::AutomationRunUpdated {
