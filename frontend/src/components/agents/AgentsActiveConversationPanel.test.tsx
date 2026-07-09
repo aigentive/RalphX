@@ -2851,6 +2851,9 @@ describe("AgentsActiveConversationPanel", () => {
       "ideation",
       "planning-session-1",
       expect.stringContaining("Proceed to proposals"),
+      undefined,
+      undefined,
+      { operationIntent: "create_plan_proposals" },
     );
     expect(onConversationModeSwitched).toHaveBeenCalledWith(
       "conversation-1",

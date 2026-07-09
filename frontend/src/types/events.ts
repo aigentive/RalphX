@@ -9,6 +9,10 @@ import { z } from "zod";
 import { InternalStatusSchema } from "./status";
 import { TaskSchema } from "./task";
 import type { ConversationProviderMetadata } from "./chat-conversation";
+import {
+  ProposalGenerationPhaseSchema,
+  ProposalGenerationStatusSchema,
+} from "./ideation";
 
 // ============================================================================
 // Agent Message Events (high frequency)
@@ -278,6 +282,26 @@ export const ProposalsReorderedEventSchema = z.object({
 });
 
 export type ProposalsReorderedEvent = z.infer<typeof ProposalsReorderedEventSchema>;
+
+export const ProposalGenerationProgressEventSchema = z.object({
+  session_id: z.string(),
+  project_id: z.string().nullable().optional(),
+  progress: z.object({
+    status: ProposalGenerationStatusSchema,
+    phase: ProposalGenerationPhaseSchema.nullable(),
+    expected_count: z.number().int().nonnegative().nullable(),
+    created_count: z.number().int().nonnegative(),
+    dependency_count: z.number().int().nonnegative().nullable(),
+    error: z.string().nullable(),
+    started_at: z.string().nullable(),
+    updated_at: z.string().nullable(),
+    completed_at: z.string().nullable(),
+  }),
+});
+
+export type ProposalGenerationProgressEvent = z.infer<
+  typeof ProposalGenerationProgressEventSchema
+>;
 
 // ============================================================================
 // Plan Artifact Events

@@ -102,6 +102,9 @@ export async function activateAgentPlanProposals({
     "ideation",
     sessionId,
     PLAN_TO_PROPOSALS_REQUEST,
+    undefined,
+    undefined,
+    { operationIntent: "create_plan_proposals" },
   );
   pinIdeationConversation(queryClient, sessionId, sendResult.conversationId);
   return sendResult;

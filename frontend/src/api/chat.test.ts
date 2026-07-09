@@ -2577,6 +2577,34 @@ describe("chat api", () => {
     });
   });
 
+  it("sends unified agent message with create-plan-proposals operation intent", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage(
+      "ideation",
+      "planning-session-1",
+      "Proceed to proposals",
+      undefined,
+      undefined,
+      {
+        operationIntent: "create_plan_proposals",
+      },
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "ideation",
+        contextId: "planning-session-1",
+        content: "Proceed to proposals",
+        operationIntent: "create_plan_proposals",
+      },
+    });
+  });
+
   it("sends unified agent message with native team target fields", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",

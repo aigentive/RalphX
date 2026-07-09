@@ -201,6 +201,86 @@ describe("useIdeationEvents — ideation:session_accepted", () => {
   });
 });
 
+describe("useIdeationEvents — proposal_generation:progress_updated", () => {
+  beforeEach(() => {
+    subscriptions.clear();
+    mockInvalidateQueries.mockClear();
+    ideationStoreMocks.updateSession.mockClear();
+  });
+
+  it("hydrates session progress and invalidates session/proposal/dependency caches", () => {
+    renderHook(() => useIdeationEvents());
+
+    act(() => {
+      fireEvent("proposal_generation:progress_updated", {
+        session_id: "sess-123",
+        project_id: "proj-456",
+        progress: {
+          status: "running",
+          phase: "analyzing_dependencies",
+          expected_count: 5,
+          created_count: 5,
+          dependency_count: 4,
+          error: null,
+          started_at: "2026-01-01T00:01:00Z",
+          updated_at: "2026-01-01T00:03:00Z",
+          completed_at: null,
+        },
+      });
+    });
+
+    expect(ideationStoreMocks.updateSession).toHaveBeenCalledWith("sess-123", {
+      proposalGenerationProgress: {
+        status: "running",
+        phase: "analyzing_dependencies",
+        expectedCount: 5,
+        createdCount: 5,
+        dependencyCount: 4,
+        error: null,
+        startedAt: "2026-01-01T00:01:00Z",
+        updatedAt: "2026-01-01T00:03:00Z",
+        completedAt: null,
+      },
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["sessions"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["sessions", "detail", "sess-123", "with-data"],
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["proposals", "list", "sess-123"],
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["dependency-graphs"],
+    });
+  });
+
+  it("rejects malformed progress payloads without invalidating caches", () => {
+    renderHook(() => useIdeationEvents());
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    act(() => {
+      fireEvent("proposal_generation:progress_updated", {
+        session_id: "sess-123",
+        progress: {
+          status: "running",
+          phase: "unknown_phase",
+          created_count: 1,
+        },
+      });
+    });
+
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid proposal_generation:progress_updated event:"),
+      expect.any(String),
+    );
+    expect(ideationStoreMocks.updateSession).not.toHaveBeenCalled();
+    expect(mockInvalidateQueries).not.toHaveBeenCalled();
+
+    consoleError.mockRestore();
+  });
+});
+
 // ============================================================================
 // Tests — parent synthetic status during verification child session
 // ============================================================================

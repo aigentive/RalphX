@@ -17,6 +17,8 @@ import {
   latestVerificationChildSessionData,
   latestVerificationChildSessionIdQueryKey,
 } from "@/components/agents/agentChatFocus";
+import { transformProposalGenerationProgress } from "@/api/ideation.transforms";
+import { ProposalGenerationProgressEventSchema } from "@/types/events";
 import { ideationKeys } from "./useIdeation";
 import { dependencyKeys } from "./useDependencyGraph";
 import { taskKeys } from "./useTasks";
@@ -252,6 +254,39 @@ export function useIdeationEvents() {
         queryClient.invalidateQueries({ queryKey: proposalKeys.list(sessionId) });
         queryClient.invalidateQueries({ queryKey: ["plan-branch"] });
       })
+    );
+
+    unsubscribes.push(
+      bus.subscribe<unknown>("proposal_generation:progress_updated", (payload) => {
+        logger.debug(
+          "[IdeationEvents] Received proposal_generation:progress_updated:",
+          payload,
+        );
+        const parsed = ProposalGenerationProgressEventSchema.safeParse(payload);
+
+        if (!parsed.success) {
+          console.error(
+            "Invalid proposal_generation:progress_updated event:",
+            parsed.error.message,
+          );
+          return;
+        }
+
+        const { session_id: sessionId, progress } = parsed.data;
+        updateSession(sessionId, {
+          proposalGenerationProgress: transformProposalGenerationProgress(progress),
+        });
+        queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() });
+        queryClient.invalidateQueries({
+          queryKey: ideationKeys.sessionWithData(sessionId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: proposalKeys.list(sessionId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: dependencyKeys.graphs(),
+        });
+      }),
     );
 
     // Listen for child session created (follow-up delegation)

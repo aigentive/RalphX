@@ -1,7 +1,23 @@
 // Zod schemas for ideation API responses (snake_case from Rust backend)
 
 import { z } from "zod";
-import { VerificationGapSchema } from "../types/ideation";
+import {
+  ProposalGenerationPhaseSchema,
+  ProposalGenerationStatusSchema,
+  VerificationGapSchema,
+} from "../types/ideation";
+
+export const ProposalGenerationProgressResponseSchema = z.object({
+  status: ProposalGenerationStatusSchema,
+  phase: ProposalGenerationPhaseSchema.nullable(),
+  expected_count: z.number().int().nonnegative().nullable(),
+  created_count: z.number().int().nonnegative(),
+  dependency_count: z.number().int().nonnegative().nullable(),
+  error: z.string().nullable(),
+  started_at: z.string().nullable(),
+  updated_at: z.string().nullable(),
+  completed_at: z.string().nullable(),
+});
 
 /**
  * Ideation session response schema (snake_case from Rust)
@@ -48,6 +64,8 @@ export const IdeationSessionResponseSchema = z.object({
   analysis_base_commit: z.string().nullable().optional(),
   analysis_base_locked_at: z.string().nullable().optional(),
   last_effective_model: z.string().nullable().optional(),
+  proposal_generation_progress: ProposalGenerationProgressResponseSchema
+    .nullish(),
 });
 
 export const SessionProgressResponseSchema = z.object({

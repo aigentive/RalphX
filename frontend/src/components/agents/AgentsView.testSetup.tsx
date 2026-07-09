@@ -1423,6 +1423,17 @@ export function mockSessionWithData(
     sessionPurpose: "general" as const,
     sessionFlow: "ideation" as const,
     acceptanceStatus: null,
+    proposalGenerationProgress: {
+      status: "idle",
+      phase: null,
+      expectedCount: null,
+      createdCount: 0,
+      dependencyCount: null,
+      error: null,
+      startedAt: null,
+      updatedAt: null,
+      completedAt: null,
+    },
     ...overrides,
   };
   vi.mocked(ideationApi.sessions.get).mockResolvedValue(session);

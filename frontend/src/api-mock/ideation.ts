@@ -19,6 +19,7 @@ import type {
   ParentSessionContextResponse,
   CreateChildSessionInput,
 } from "@/api/ideation.types";
+import { DEFAULT_PROPOSAL_GENERATION_PROGRESS } from "@/types/ideation";
 import type { IdeationSettings } from "@/types/ideation-config";
 import { generateTestUuid } from "@/test/mock-data";
 
@@ -55,6 +56,7 @@ function ensureMockData(): void {
     sessionPurpose: "general",
     sessionFlow: "ideation",
     acceptanceStatus: null,
+    proposalGenerationProgress: { ...DEFAULT_PROPOSAL_GENERATION_PROGRESS },
   };
   mockSessions.set(session.id, session);
 
@@ -127,6 +129,7 @@ export const mockIdeationApi = {
         sessionPurpose: "general",
         sessionFlow: "ideation",
         acceptanceStatus: null,
+        proposalGenerationProgress: { ...DEFAULT_PROPOSAL_GENERATION_PROGRESS },
       };
       mockSessions.set(session.id, session);
       return session;
@@ -217,6 +220,7 @@ export const mockIdeationApi = {
         sessionPurpose: "general",
         sessionFlow: "ideation",
         acceptanceStatus: null,
+        proposalGenerationProgress: { ...DEFAULT_PROPOSAL_GENERATION_PROGRESS },
       };
       mockSessions.set(childSession.id, childSession);
 

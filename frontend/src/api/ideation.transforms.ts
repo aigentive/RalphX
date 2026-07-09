@@ -1,6 +1,7 @@
 // Transform functions for converting snake_case API responses to camelCase frontend types
 
 import { z } from "zod";
+import { DEFAULT_PROPOSAL_GENERATION_PROGRESS } from "../types/ideation";
 import type {
   IdeationSettings,
   IdeationSettingsResponse,
@@ -12,6 +13,7 @@ import type {
   Priority,
   Complexity,
   ProposalStatus,
+  ProposalGenerationProgress,
 } from "../types/ideation";
 import type {
   IdeationSessionResponse,
@@ -37,7 +39,32 @@ import {
   CreateChildSessionResponseSchema,
   ParentSessionContextResponseSchema,
   SessionListResponseSchema,
+  ProposalGenerationProgressResponseSchema,
 } from "./ideation.schemas";
+
+type RawProposalGenerationProgress = z.infer<
+  typeof ProposalGenerationProgressResponseSchema
+>;
+
+export function transformProposalGenerationProgress(
+  raw: RawProposalGenerationProgress | null | undefined
+): ProposalGenerationProgress {
+  if (!raw) {
+    return { ...DEFAULT_PROPOSAL_GENERATION_PROGRESS };
+  }
+
+  return {
+    status: raw.status,
+    phase: raw.phase,
+    expectedCount: raw.expected_count,
+    createdCount: raw.created_count,
+    dependencyCount: raw.dependency_count,
+    error: raw.error,
+    startedAt: raw.started_at,
+    updatedAt: raw.updated_at,
+    completedAt: raw.completed_at,
+  };
+}
 
 export function transformSession(raw: z.infer<typeof IdeationSessionResponseSchema>): IdeationSessionResponse {
   return {
@@ -82,6 +109,9 @@ export function transformSession(raw: z.infer<typeof IdeationSessionResponseSche
     analysisBaseCommit: raw.analysis_base_commit ?? null,
     analysisBaseLockedAt: raw.analysis_base_locked_at ?? null,
     lastEffectiveModel: raw.last_effective_model ?? null,
+    proposalGenerationProgress: transformProposalGenerationProgress(
+      raw.proposal_generation_progress,
+    ),
   };
 }
 

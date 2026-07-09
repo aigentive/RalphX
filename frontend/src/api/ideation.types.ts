@@ -8,6 +8,7 @@ import type {
   VerificationGap,
   RoundSummary,
   VerificationRoundDetail,
+  ProposalGenerationProgress,
 } from "../types/ideation";
 
 export interface IdeationSessionResponse {
@@ -47,6 +48,7 @@ export interface IdeationSessionResponse {
   analysisBaseCommit?: string | null;
   analysisBaseLockedAt?: string | null;
   lastEffectiveModel?: string | null;
+  proposalGenerationProgress: ProposalGenerationProgress;
 }
 
 export interface LatestChildSessionIdResponse {

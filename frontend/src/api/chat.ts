@@ -1708,6 +1708,8 @@ export interface TeamIntent {
   strategy?: TeamIntentStrategy | null;
 }
 
+export type AgentOperationIntent = "create_plan_proposals";
+
 export type TeamMessageTargetKind = "coordinator" | "member" | "broadcast";
 
 export interface TeamMessageTarget {
@@ -1724,6 +1726,7 @@ export interface SendAgentMessageOptions {
   logicalEffort?: string | null;
   codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
+  operationIntent?: AgentOperationIntent | null;
   teamIntent?: TeamIntent | null;
   teamMessageTarget?: TeamMessageTarget | null;
   composerProjectReferences?: ComposerProjectReference[];
@@ -3729,6 +3732,9 @@ export async function sendAgentMessage(
           ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
+        ...(options?.operationIntent
+          ? { operationIntent: options.operationIntent }
+          : {}),
         ...(options?.teamIntent ? { teamIntent: options.teamIntent } : {}),
         ...(options?.teamMessageTarget
           ? { teamMessageTarget: options.teamMessageTarget }

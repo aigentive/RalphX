@@ -57,3 +57,113 @@ describe("transformSession — lastEffectiveModel", () => {
     expect(result.lastEffectiveModel).toBeNull();
   });
 });
+
+describe("transformSession — proposalGenerationProgress", () => {
+  it("defaults legacy sessions without progress payload to idle progress", () => {
+    const result = transformSession({ ...baseRaw });
+
+    expect(result.proposalGenerationProgress).toEqual({
+      status: "idle",
+      phase: null,
+      expectedCount: null,
+      createdCount: 0,
+      dependencyCount: null,
+      error: null,
+      startedAt: null,
+      updatedAt: null,
+      completedAt: null,
+    });
+  });
+
+  it("maps active proposal-generation progress from snake_case response fields", () => {
+    const result = transformSession({
+      ...baseRaw,
+      proposal_generation_progress: {
+        status: "running",
+        phase: "creating_proposals",
+        expected_count: 5,
+        created_count: 2,
+        dependency_count: null,
+        error: null,
+        started_at: "2026-01-01T00:01:00Z",
+        updated_at: "2026-01-01T00:02:00Z",
+        completed_at: null,
+      },
+    });
+
+    expect(result.proposalGenerationProgress).toEqual({
+      status: "running",
+      phase: "creating_proposals",
+      expectedCount: 5,
+      createdCount: 2,
+      dependencyCount: null,
+      error: null,
+      startedAt: "2026-01-01T00:01:00Z",
+      updatedAt: "2026-01-01T00:02:00Z",
+      completedAt: null,
+    });
+  });
+
+  it("accepts each terminal and active progress status", () => {
+    const statuses = [
+      "idle",
+      "queued",
+      "running",
+      "waiting_for_confirmation",
+      "completed",
+      "failed",
+      "cancelled",
+    ] as const;
+
+    for (const status of statuses) {
+      expect(() =>
+        transformSession({
+          ...baseRaw,
+          proposal_generation_progress: {
+            status,
+            phase: null,
+            expected_count: null,
+            created_count: 0,
+            dependency_count: null,
+            error: null,
+            started_at: null,
+            updated_at: null,
+            completed_at: null,
+          },
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("accepts each active and terminal progress phase", () => {
+    const phases = [
+      "queued",
+      "creating_proposals",
+      "analyzing_dependencies",
+      "finalizing_proposals",
+      "waiting_for_confirmation",
+      "completed",
+      "failed",
+      "cancelled",
+    ] as const;
+
+    for (const phase of phases) {
+      expect(() =>
+        transformSession({
+          ...baseRaw,
+          proposal_generation_progress: {
+            status: phase === "queued" ? "queued" : "running",
+            phase,
+            expected_count: null,
+            created_count: 0,
+            dependency_count: null,
+            error: null,
+            started_at: null,
+            updated_at: null,
+            completed_at: null,
+          },
+        }),
+      ).not.toThrow();
+    }
+  });
+});

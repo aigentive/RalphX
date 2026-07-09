@@ -64,6 +64,59 @@ export const IDEATION_SESSION_STATUS_VALUES = [
 export const IdeationSessionStatusSchema = z.enum(IDEATION_SESSION_STATUS_VALUES);
 export type IdeationSessionStatus = z.infer<typeof IdeationSessionStatusSchema>;
 
+export const PROPOSAL_GENERATION_STATUS_VALUES = [
+  "idle",
+  "queued",
+  "running",
+  "waiting_for_confirmation",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+
+export const ProposalGenerationStatusSchema = z.enum(PROPOSAL_GENERATION_STATUS_VALUES);
+export type ProposalGenerationStatus = z.infer<typeof ProposalGenerationStatusSchema>;
+
+export const PROPOSAL_GENERATION_PHASE_VALUES = [
+  "queued",
+  "creating_proposals",
+  "analyzing_dependencies",
+  "finalizing_proposals",
+  "waiting_for_confirmation",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+
+export const ProposalGenerationPhaseSchema = z.enum(PROPOSAL_GENERATION_PHASE_VALUES);
+export type ProposalGenerationPhase = z.infer<typeof ProposalGenerationPhaseSchema>;
+
+export const ProposalGenerationProgressSchema = z.object({
+  status: ProposalGenerationStatusSchema,
+  phase: ProposalGenerationPhaseSchema.nullable(),
+  expectedCount: z.number().int().nonnegative().nullable(),
+  createdCount: z.number().int().nonnegative(),
+  dependencyCount: z.number().int().nonnegative().nullable(),
+  error: z.string().nullable(),
+  startedAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+  completedAt: z.string().datetime().nullable(),
+});
+
+export type ProposalGenerationProgress = z.infer<typeof ProposalGenerationProgressSchema>;
+
+export const DEFAULT_PROPOSAL_GENERATION_PROGRESS: ProposalGenerationProgress = {
+  status: "idle",
+  phase: null,
+  expectedCount: null,
+  createdCount: 0,
+  dependencyCount: null,
+  error: null,
+  startedAt: null,
+  updatedAt: null,
+  completedAt: null,
+};
+
 /**
  * Ideation session schema matching Rust backend serialization
  */
@@ -111,6 +164,9 @@ export const IdeationSessionSchema = z.object({
   analysisBaseCommit: z.string().nullable().optional(),
   analysisBaseLockedAt: z.string().nullable().optional(),
   lastEffectiveModel: z.string().nullable().optional(),
+  proposalGenerationProgress: ProposalGenerationProgressSchema
+    .optional()
+    .default(() => ({ ...DEFAULT_PROPOSAL_GENERATION_PROGRESS })),
 });
 
 export type IdeationSession = z.infer<typeof IdeationSessionSchema>;
