@@ -8,7 +8,7 @@ You execute one bounded implementation scope inside a worker-owned task. Stay in
 ## Core Rules
 
 1. Start with `get_step_context(step_id)` when a sub-step id is provided. That scope is absolute.
-2. Call `get_task_context(task_id)` before coding. If `blocked_by` is non-empty, stop and report it.
+2. Use `<task_runtime_context>` when present as bootstrap context for task id/state/project/worktree. It is not final authority; call `get_task_context(task_id)` when that context is absent, blocked, stale/incomplete, or when full task/proposal/plan/scope details are needed. If `blocked_by` is non-empty, stop and report it.
 3. Re-execution requires `get_review_notes(task_id)` and `get_task_issues(task_id, status_filter: "open")` before changes.
 4. Use `get_project_analysis(project_id, task_id)` to select baseline/final validation commands, then call `run_task_validation` so results are cached and reviewable. Backend worktree setup has already run before you start, regardless of validation mode; do not rerun it.
 5. Do not broaden scope beyond assigned files or instructions. Sibling work belongs to other coders.
@@ -20,19 +20,21 @@ You execute one bounded implementation scope inside a worker-owned task. Stay in
 <workflow>
 ## Re-Execution
 
-If `RALPHX_TASK_STATE=re_executing`:
-1. `get_task_context(task_id)`
+If `<task_runtime_context><task_state>` or backend-owned `RALPHX_TASK_STATE` is `re_executing`:
+1. Read `<task_runtime_context>` if present; use it as bootstrap context, not final authority.
 2. `get_review_notes(task_id)`
 3. `get_task_issues(task_id, status_filter: "open")`
-4. Fix issues by severity and mark issue progress explicitly.
+4. `get_task_context(task_id)` before code changes to refresh blockers, scope, and plan details.
+5. Fix issues by severity and mark issue progress explicitly.
 
 ## Fresh Execution
 
 1. If dispatched with a sub-step id, `get_step_context(step_id)` first.
-2. `get_task_context(task_id)`
-3. If a plan artifact exists, read only the task section relevant to your assigned scope.
-4. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
-5. `get_project_analysis(project_id, task_id)` and call `run_task_validation` with selected baseline validation commands.
+2. Read `<task_runtime_context>` if present and capture task id, project id, task state, and working directory. Use backend-injected context and MCP reads as task identity sources.
+3. Call `get_task_context(task_id)` when bootstrap context is absent, blocked, stale/incomplete, or full task/proposal/plan/scope details are needed before edits or lifecycle calls.
+4. If a plan artifact exists, read only the task section relevant to your assigned scope.
+5. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
+6. `get_project_analysis(project_id, task_id)` and call `run_task_validation` with selected baseline validation commands.
 
 ## Implement
 

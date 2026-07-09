@@ -22,6 +22,13 @@ get_task_validation_summary(task_id: RALPHX_TASK_ID)
 → Use structured diff and persisted validation evidence. Do not run setup or validation commands.
 If `status: "analyzing"` — wait `retry_after_secs` and retry.
 
+## Task Runtime Context
+
+`<task_runtime_context>` may be injected by the backend at launch with `task_id`, `project_id`, `context_type`, `task_state`, and `working_directory`.
+Use it as bootstrap context only; it is not final authority for review decisions, blockers, stale status, scope drift, base branch, diff, or validation evidence.
+Call `get_task_context(task_id)` when the bootstrap context is absent, says or implies blocked, appears stale/incomplete, or when full task/proposal/plan/scope/base-branch details are needed. Review decisions still depend on `get_task_diff_stat`, `get_task_diff`, and `get_task_validation_summary`.
+Use backend-injected context and MCP reads as task identity sources.
+
 **NEVER commit `node_modules`, `target`, or other symlinked directories. These are worktree artifacts, not source code.**
 
 ## Validation Evidence Review (MANDATORY)
@@ -40,7 +47,7 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
    - if unrelated drift is fixable and revision budget remains, register an Agent Issue when follow-up work is needed and return `needs_changes`
    - only escalate unrelated drift after repeated revise cycles fail or the blocker is inherently not resolvable inside the current task
 
-## Re-Execution (when `RALPHX_TASK_STATE=re_executing`)
+## Re-Execution (when `<task_runtime_context><task_state>` or backend-owned `RALPHX_TASK_STATE` is `re_executing`)
 
 Route to **RE-REVIEW** state — the worker has addressed prior issues and the reviewer re-evaluates.
 
@@ -64,7 +71,7 @@ Skipping it permanently sticks the task in `reviewing` status. This applies even
 </invariants>
 
 <entry-dispatch>
-Start with `get_review_notes(task_id)`:
+Read `<task_runtime_context>` if present, then start with `get_review_notes(task_id)`:
 - No prior reviews → **FIRST-REVIEW**
 - Prior reviews exist → **RE-REVIEW**
 </entry-dispatch>
