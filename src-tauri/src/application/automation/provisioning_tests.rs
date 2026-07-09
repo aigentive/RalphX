@@ -112,6 +112,7 @@ fn run(automation_id: AutomationId) -> AutomationRun {
 #[derive(Clone)]
 struct RecordingStarter {
     requests: Arc<Mutex<Vec<AutomationRunStartRequest>>>,
+    invoked_at: Arc<Mutex<Vec<chrono::DateTime<chrono::Utc>>>>,
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
 }
 
@@ -119,12 +120,17 @@ impl RecordingStarter {
     fn new(workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>) -> Self {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
+            invoked_at: Arc::new(Mutex::new(Vec::new())),
             workspace_repo,
         }
     }
 
     fn requests(&self) -> Vec<AutomationRunStartRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn invoked_at(&self) -> Vec<chrono::DateTime<chrono::Utc>> {
+        self.invoked_at.lock().unwrap().clone()
     }
 }
 
@@ -134,6 +140,7 @@ impl AutomationRunStarter for RecordingStarter {
         &self,
         request: AutomationRunStartRequest,
     ) -> AppResult<AutomationRunStartOutcome> {
+        self.invoked_at.lock().unwrap().push(chrono::Utc::now());
         self.requests.lock().unwrap().push(request.clone());
         let workspace_mode = request
             .run_mode
@@ -510,6 +517,45 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     assert_eq!(latest.id, started.id);
     assert_eq!(latest.status, AutomationRunStatus::Running);
     assert_eq!(latest.run_prompt, "Build the first PR");
+}
+
+#[tokio::test]
+async fn provision_first_run_phase_basis_never_postdates_agent_spawn() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let automation = automation("automation-1");
+    automation_repo.create(automation.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo,
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter.clone()),
+        Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_first_run(&automation)
+        .await
+        .unwrap()
+        .expect("first run should be provisioned");
+
+    // The freshness guard requires agent_run.started_at >= agent_phase_started_at.
+    // The spawned agent's run row is created inside the starter, so the phase
+    // basis MUST be captured before the starter runs; otherwise the first plan
+    // turn always reads as stale and the run can never park at the plan gate.
+    let spawn_time = starter.invoked_at()[0];
+    let phase_basis = started
+        .agent_phase_started_at
+        .expect("entering Running must stamp agent_phase_started_at");
+    assert!(
+        phase_basis <= spawn_time,
+        "agent_phase_started_at ({phase_basis}) must not postdate the agent spawn ({spawn_time})"
+    );
 }
 
 #[tokio::test]

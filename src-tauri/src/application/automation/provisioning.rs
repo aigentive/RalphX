@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 
 use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
@@ -306,6 +307,11 @@ impl AutomationRunProvisioner {
             run,
             conversation.id.clone(),
         );
+        // Capture the phase basis BEFORE the agent spawns: the spawned agent
+        // run's started_at must never predate agent_phase_started_at, or the
+        // current-phase freshness guard treats the first turn as stale and the
+        // run can never park at the plan gate.
+        let agent_phase_basis = Utc::now();
         let outcome = self.starter.start_run(request).await?;
         self.workspace_repo
             .update_auto_publish_initial_pr_preference(&conversation.id, true)
@@ -314,14 +320,25 @@ impl AutomationRunProvisioner {
             .update_start_metadata(&run.id, &conversation.id, outcome.branch_name)
             .await?
             .ok_or_else(|| automation_run_not_found(&run.id))?;
-        self.transition_run_or_conflict(
-            &run.id,
-            AutomationRunStatus::Provisioning,
-            AutomationRunStatus::Running,
-            None,
-            None,
-        )
-        .await?;
+        let changed = self
+            .transition_service
+            .transition_run_status_with_agent_phase_started_at(
+                &run.id,
+                AutomationRunStatus::Provisioning,
+                AutomationRunStatus::Running,
+                agent_phase_basis,
+                None,
+                None,
+            )
+            .await?;
+        if !changed {
+            return Err(AppError::Conflict(format!(
+                "automation run {} status changed before transition {} -> {}",
+                run.id.as_str(),
+                AutomationRunStatus::Provisioning.as_str(),
+                AutomationRunStatus::Running.as_str()
+            )));
+        }
         self.run_repo
             .get_by_id(&run.id)
             .await?
