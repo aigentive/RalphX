@@ -8,8 +8,18 @@ Automations run a project-scoped goal as a sequence of ordinary agent conversati
 - Completion signal: `pr_merged` for `edit` mode runs.
 - Run mode: `edit` is the only finalizable mode for `pr_merged` v1 automations. `plan` and `ideation` remain schema-reserved until a non-PR completion signal is designed. (The plan gate below is a conversation-mode *phase* inside an `edit` run, not an automation run mode.)
 - Single flight: one open automation run at a time, enforced by the run-state machine and repository constraints.
-- Conversations: automation-owned setup and run conversations keep project context and are hidden from the normal Agents list. Direct automation links can still open them for audit.
+- Conversations: automation-owned setup and run conversations keep project context and are hidden from the normal project/publication Agents lists. They surface in the sidebar only when grouped by Automation; direct automation links can still open them for audit.
 - Visibility: the Automations page is on by default after P7, with runtime flag overrides still available through `ui.feature_flags.automations_page` and `RALPHX_UI_AUTOMATIONS_PAGE`.
+
+## Run View Contract
+
+Automation run presentation is state-only on the wire and selector-owned in the frontend. Detail pages, compact automation panels, and focused run conversations all use the same run view rules for open state, cancellability, stage copy, PR copy, composer locking, and phase chips.
+
+- Run detail responses include `plan_phase`, `plan_artifact_id`, `plan_approved_by`, `plan_approved_artifact_version`, and `plan_approved_at`. Approval-match and plan-phase fields are scoped to the open run; `plan_artifact_id` remains available for any run linked to a Planning session so terminal run plans stay auditable.
+- Run conversations open through the setup conversation with an `automation_run` focus overlay. Opening a run never selects a separate sidebar row, and terminalization does not downgrade the visible run audit view.
+- Run conversation tabs are policy-driven: Automation is always present, Plan is visible but disabled until the run has a plan artifact, PR appears only when the run has PR metadata, and Publish plus integration tabs are hidden for run surfaces.
+- Parked `awaiting_plan_approval` runs keep the composer editable for plan revisions. Other runs are read-only while the latest run still holds goal authority; fully settled audit conversations may accept chat turns without re-entering the automation lifecycle.
+- Run update events carry the owning automation id and refresh only that automation detail. Automation-level events refresh lists, the detail record, and the Automation sidebar grouping.
 
 ## Run Plan Gate
 
