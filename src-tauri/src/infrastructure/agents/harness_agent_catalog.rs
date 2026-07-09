@@ -877,10 +877,11 @@ pub fn try_load_canonical_claude_metadata_for_profile(
         .clone()
         .overlay_onto(legacy.clone());
     if merged != legacy {
+        // Log only the validated agent name; metadata structs can carry
+        // credential-adjacent config (e.g. bearer-token env var names) and
+        // must not be dumped into persistent logs.
         tracing::debug!(
-            agent = %canonical_agent_name(agent_name),
-            canonical_claude_metadata = ?definition.harnesses.claude,
-            legacy_claude_metadata = ?legacy,
+            agent = %trusted_canonical_agent_name(agent_name).unwrap_or("<invalid-agent-name>"),
             "Canonical agent metadata overrides or augments Claude harness metadata"
         );
     }
@@ -944,10 +945,12 @@ pub fn try_load_canonical_codex_metadata_for_profile(
                         )
                     })?;
                 if fallback != definition.harnesses.codex {
+                    // Log only the validated agent name; metadata structs can
+                    // carry credential-adjacent config (e.g. bearer-token env
+                    // var names) and must not be dumped into persistent logs.
                     tracing::debug!(
-                        agent = %canonical_agent_name(agent_name),
-                        canonical_codex_metadata = ?definition.harnesses.codex,
-                        harness_codex_metadata = ?fallback,
+                        agent = %trusted_canonical_agent_name(agent_name)
+                            .unwrap_or("<invalid-agent-name>"),
                         "Canonical agent metadata overrides divergent Codex harness metadata"
                     );
                 }
