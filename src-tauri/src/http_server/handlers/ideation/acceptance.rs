@@ -11,6 +11,9 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
+use crate::application::proposal_generation_progress::{
+    write_proposal_generation_progress, ProposalGenerationProgressTransition,
+};
 use crate::application::spawn_ready_task_scheduler_if_needed;
 use crate::domain::entities::{AcceptanceStatus, IdeationSessionId};
 use crate::http_server::helpers::apply_proposals_core_for_session;
@@ -55,12 +58,31 @@ pub async fn accept_finalize(
     }
 
     // Apply proposals (same as finalize_proposals_impl does normally)
-    let result = apply_proposals_core_for_session(&state.app_state, &req.session_id)
-        .await
-        .map_err(|e| {
+    let result = match apply_proposals_core_for_session(&state.app_state, &req.session_id).await {
+        Ok(result) => result,
+        Err(e) => {
+            let _ = write_proposal_generation_progress(
+                &state.app_state,
+                &session_id,
+                ProposalGenerationProgressTransition::Failed {
+                    error: e.to_string(),
+                },
+            )
+            .await;
             error!("Failed to apply proposals after acceptance: {}", e);
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        })?;
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    };
+    write_proposal_generation_progress(
+        &state.app_state,
+        &session_id,
+        ProposalGenerationProgressTransition::Completed,
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to write accepted proposal progress: {}", e);
+        json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
 
     spawn_ready_task_scheduler_if_needed(
         &state.app_state,
@@ -101,6 +123,18 @@ pub async fn reject_finalize(
             "Session is not in pending_acceptance state",
         ));
     }
+    write_proposal_generation_progress(
+        &state.app_state,
+        &session_id,
+        ProposalGenerationProgressTransition::Cancelled {
+            error: Some("Proposal finalization rejected".to_string()),
+        },
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to write rejected proposal progress: {}", e);
+        json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
 
     Ok(Json(AcceptanceActionResponse {
         status: "rejected".to_string(),

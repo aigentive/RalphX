@@ -72,6 +72,9 @@ pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_reference_import;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
+pub mod proposal_generation_progress;
+#[cfg(test)]
+mod proposal_generation_progress_tests;
 pub mod pr_startup_recovery;
 pub mod priority_service;
 pub mod project_pr_template;

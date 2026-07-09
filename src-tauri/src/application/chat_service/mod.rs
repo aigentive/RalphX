@@ -47,6 +47,9 @@ use crate::application::integration_reference_expansion::{
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
+use crate::application::proposal_generation_progress::{
+    write_active_proposal_generation_progress_for_context, ProposalGenerationProgressTransition,
+};
 use crate::application::question_state::QuestionState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
@@ -91,7 +94,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 
 /// Prefix used when formatting agent errors into chat messages.
@@ -2459,6 +2462,32 @@ impl<R: Runtime> AppChatService<R> {
                 stderr: Some(redacted_error),
             },
         );
+    }
+
+    async fn mark_active_proposal_generation_cancelled_for_stop(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: Option<&str>,
+    ) {
+        let Some(app_state) = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<crate::application::AppState>())
+        else {
+            return;
+        };
+        let conversation_id = conversation_id.map(ChatConversationId::from_string);
+        let _ = write_active_proposal_generation_progress_for_context(
+            &app_state,
+            context_type,
+            context_id,
+            conversation_id.as_ref(),
+            ProposalGenerationProgressTransition::Cancelled {
+                error: Some("Proposal generation stopped by user".to_string()),
+            },
+        )
+        .await;
     }
 
     /// Resolve the project's working directory from a context.
@@ -5937,6 +5966,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     Some(&info.agent_run_id),
                 )
                 .await;
+                self.mark_active_proposal_generation_cancelled_for_stop(
+                    context_type,
+                    context_id,
+                    Some(&info.conversation_id),
+                )
+                .await;
 
                 // Also emit run_completed so frontend knows agent is no longer running
                 self.emit_event(
@@ -5959,6 +5994,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .reconcile_stopped_workspace_review_child(context_type, context_id, None)
                     .await;
                 if let Some(reconciled) = reconciled {
+                    self.mark_active_proposal_generation_cancelled_for_stop(
+                        context_type,
+                        context_id,
+                        None,
+                    )
+                    .await;
                     self.emit_event(
                         "agent:stopped",
                         serde_json::json!({

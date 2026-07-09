@@ -20,6 +20,9 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
+use crate::application::proposal_generation_progress::{
+    write_active_proposal_generation_progress_for_context, ProposalGenerationProgressTransition,
+};
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
@@ -1963,6 +1966,22 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 .await;
 
                 if !recovery_spawned {
+                    if let Some(app_state) = app_handle
+                        .as_ref()
+                        .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                    {
+                        let _ = write_active_proposal_generation_progress_for_context(
+                            &app_state,
+                            context_type,
+                            &context_id,
+                            Some(&conversation_id),
+                            ProposalGenerationProgressTransition::Failed {
+                                error: error_string.clone(),
+                            },
+                        )
+                        .await;
+                    }
+
                     let queued_resume_in_place = message_queue
                         .get_queued(context_type, &runtime_context_id)
                         .iter()

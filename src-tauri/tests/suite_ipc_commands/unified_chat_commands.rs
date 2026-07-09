@@ -1626,9 +1626,9 @@ mod ipc_contract {
         get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
         publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
-        switch_agent_conversation_mode_for_state, AgentWorkspaceSourcePullRequestInput,
-        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
-        StartAgentConversationInput, SwitchAgentConversationModeInput,
+        switch_agent_conversation_mode_for_state, AgentMessageOperationIntent,
+        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput, QueueAgentMessageInput,
+        SendAgentMessageInput, StartAgentConversationInput, SwitchAgentConversationModeInput,
         UpdateAgentConversationTitleInput,
     };
     use ralphx_lib::commands::ExecutionState;
@@ -2335,6 +2335,17 @@ mod ipc_contract {
         assert_eq!(input.context_type, "ideation");
         assert_eq!(input.context_id, "session-456");
         assert_eq!(input.target, Some("orchestrator".to_string()));
+    }
+
+    #[test]
+    fn send_agent_message_input_deserializes_operation_intent() {
+        let json = r#"{"contextType":"project","contextId":"project-123","content":"Create proposals","operationIntent":"create_plan_proposals"}"#;
+        let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            input.operation_intent,
+            Some(AgentMessageOperationIntent::CreatePlanProposals)
+        );
     }
 
     #[test]

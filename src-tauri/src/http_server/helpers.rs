@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::application::git_service::GitService;
+use crate::application::proposal_generation_progress::{
+    write_proposal_generation_progress, ProposalGenerationProgressTransition,
+};
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::commands::ideation_commands::{
     apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse,
@@ -17,6 +20,7 @@ use crate::domain::entities::{
     ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId,
     ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
+use crate::domain::ideation::IdeationSettings;
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::{
     check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,
@@ -200,6 +204,61 @@ pub fn emit_dependency_added(state: &AppState, proposal_id: &str, depends_on_id:
     );
 }
 
+async fn mark_proposal_generation_failed(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+    error: String,
+) {
+    if let Err(progress_error) = write_proposal_generation_progress(
+        state,
+        session_id,
+        ProposalGenerationProgressTransition::Failed { error },
+    )
+    .await
+    {
+        tracing::warn!(
+            session_id = %session_id.as_str(),
+            %progress_error,
+            "Failed to write proposal generation failure progress"
+        );
+    }
+}
+
+async fn mark_proposal_generation_failed_for_proposal(
+    state: &AppState,
+    proposal_id: &TaskProposalId,
+    error: String,
+) {
+    match state.task_proposal_repo.get_by_id(proposal_id).await {
+        Ok(Some(proposal)) => {
+            mark_proposal_generation_failed(state, &proposal.session_id, error).await;
+        }
+        Ok(None) => {}
+        Err(repo_error) => {
+            tracing::warn!(
+                proposal_id = %proposal_id.as_str(),
+                %repo_error,
+                "Failed to resolve proposal session for proposal generation failure progress"
+            );
+        }
+    }
+}
+
+async fn get_ideation_settings_for_acceptance_gate(
+    state: &AppState,
+) -> AppResult<IdeationSettings> {
+    state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .map_err(|e| {
+            AppError::Database(format!(
+                "Failed to fetch ideation settings for acceptance gate: {}",
+                e
+            ))
+        })
+}
+
 // ============================================================================
 // Proposal Implementation Functions
 // ============================================================================
@@ -219,14 +278,19 @@ pub async fn create_proposal_impl(
     session_id: IdeationSessionId,
     options: CreateProposalOptions,
 ) -> AppResult<(TaskProposal, Vec<String>, bool)> {
-    validate_affected_paths_json(options.affected_paths.as_ref())?;
+    if let Err(error) = validate_affected_paths_json(options.affected_paths.as_ref()) {
+        mark_proposal_generation_failed(state, &session_id, error.to_string()).await;
+        return Err(error);
+    }
     let expected_proposal_count = options.expected_proposal_count;
+    let session_id_for_tx = session_id.clone();
 
     // Single lock: all checks + INSERT in one transaction (TOCTOU prevention).
     // Events emitted after db.run_transaction() returns (acceptable crash-consistency gap).
-    let (proposal, new_count) = state
+    let transaction_result = state
         .db
         .run_transaction(move |conn| {
+            let session_id = session_id_for_tx;
             // Check session exists and is active
             let session = SessionRepo::get_by_id_sync(conn, session_id.as_str())?
                 .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
@@ -329,7 +393,7 @@ pub async fn create_proposal_impl(
 
             // Build proposal with auto-linked plan artifact
             let mut proposal = TaskProposal::new(
-                session_id,
+                session_id.clone(),
                 options.title,
                 options.category,
                 options.suggested_priority,
@@ -353,7 +417,14 @@ pub async fn create_proposal_impl(
             let new_count = SessionRepo::count_active_by_session_sync(conn, created.session_id.as_str())?;
             Ok((created, new_count))
         })
-        .await?;
+        .await;
+    let (proposal, new_count) = match transaction_result {
+        Ok(result) => result,
+        Err(error) => {
+            mark_proposal_generation_failed(state, &session_id, error.to_string()).await;
+            return Err(error);
+        }
+    };
 
     // Emit event after transaction (acceptable crash-consistency gap)
     let response = TaskProposalResponse::from(proposal.clone());
@@ -362,6 +433,15 @@ pub async fn create_proposal_impl(
         "proposal:created",
         serde_json::json!({ "proposal": response }),
     );
+
+    write_proposal_generation_progress(
+        state,
+        &proposal.session_id,
+        ProposalGenerationProgressTransition::CreatingProposals {
+            expected_count: expected_proposal_count,
+        },
+    )
+    .await?;
 
     // Process depends_on deps in separate db.run() calls (AD5: deadlock avoidance)
     // Each dep: validate session membership + cycle check + insert + emit
@@ -463,6 +543,12 @@ pub async fn create_proposal_impl(
                 e
             );
         }
+        write_proposal_generation_progress(
+            state,
+            &proposal.session_id,
+            ProposalGenerationProgressTransition::AnalyzingDependencies,
+        )
+        .await?;
     }
 
     // Signal to the caller whether the session is ready to finalize (expected count reached).
@@ -492,18 +578,25 @@ pub async fn update_proposal_impl(
     proposal_id: &TaskProposalId,
     options: UpdateProposalOptions,
 ) -> AppResult<(TaskProposal, Vec<String>)> {
+    let should_write_progress = matches!(options.source, UpdateSource::Api);
     if let Some(raw) = options
         .affected_paths
         .as_ref()
         .and_then(|value| value.as_ref())
     {
-        validate_affected_paths_json(Some(raw))?;
+        if let Err(error) = validate_affected_paths_json(Some(raw)) {
+            if should_write_progress {
+                mark_proposal_generation_failed_for_proposal(state, proposal_id, error.to_string())
+                    .await;
+            }
+            return Err(error);
+        }
     }
     let pid = proposal_id.as_str().to_string();
 
     // Single lock: fetch + validate + UPDATE in one transaction.
     // Events emitted after db.run_transaction() returns (acceptable crash-consistency gap).
-    let updated = state
+    let update_result = state
         .db
         .run_transaction(move |conn| {
             // Fetch proposal
@@ -624,7 +717,17 @@ pub async fn update_proposal_impl(
 
             ProposalRepo::update_sync(conn, &proposal)
         })
-        .await?;
+        .await;
+    let updated = match update_result {
+        Ok(updated) => updated,
+        Err(error) => {
+            if should_write_progress {
+                mark_proposal_generation_failed_for_proposal(state, proposal_id, error.to_string())
+                    .await;
+            }
+            return Err(error);
+        }
+    };
 
     // Emit event after transaction (acceptable crash-consistency gap)
     let response = TaskProposalResponse::from(updated.clone());
@@ -821,6 +924,17 @@ pub async fn update_proposal_impl(
         }
     }
 
+    if should_write_progress {
+        let transition = if had_dep_changes {
+            ProposalGenerationProgressTransition::AnalyzingDependencies
+        } else {
+            ProposalGenerationProgressTransition::CreatingProposals {
+                expected_count: None,
+            }
+        };
+        write_proposal_generation_progress(state, &updated.session_id, transition).await?;
+    }
+
     Ok((updated, dep_errors))
 }
 
@@ -945,18 +1059,39 @@ pub async fn finalize_proposals_impl(
         )));
     }
 
+    write_proposal_generation_progress(
+        state,
+        &session_id_typed,
+        ProposalGenerationProgressTransition::FinalizingProposals,
+    )
+    .await?;
+
     // Fetch project to get working_directory for local/foreign classification
-    let project = state
-        .project_repo
-        .get_by_id(&session.project_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Project {} not found", session.project_id)))?;
+    let project = match state.project_repo.get_by_id(&session.project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            let error = AppError::NotFound(format!("Project {} not found", session.project_id));
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
+        }
+        Err(error) => {
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
+        }
+    };
 
     // Fetch active (non-archived) proposals
-    let all_proposals = state
+    let all_proposals = match state
         .task_proposal_repo
         .get_by_session(&session_id_typed)
-        .await?;
+        .await
+    {
+        Ok(proposals) => proposals,
+        Err(error) => {
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
+        }
+    };
     let active_proposals: Vec<_> = all_proposals
         .into_iter()
         .filter(|p| p.archived_at.is_none())
@@ -989,18 +1124,22 @@ pub async fn finalize_proposals_impl(
     // Validate count matches expected_proposal_count against TOTAL (local + foreign)
     if let Some(expected) = session.expected_proposal_count {
         if count_total != expected {
-            return Err(AppError::Validation(format!(
+            let error = AppError::Validation(format!(
                 "Proposal count mismatch: session expects {}, found {} ({} local + {} foreign)",
                 expected, count_total, count_local, count_foreign
-            )));
+            ));
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
         }
     }
 
     if !proposals_missing_scope.is_empty() {
-        return Err(AppError::Validation(format!(
+        let error = AppError::Validation(format!(
             "Cannot finalize proposals until every implementation-scoped local proposal declares coarse affected_paths. Missing scope for: {}. Update the proposal(s) with repo-relative file paths or directory prefixes, then retry finalize. Pure research/design proposals may omit affected_paths when no credible repo-change scope exists.",
             proposals_missing_scope.join(", ")
-        )));
+        ));
+        mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+        return Err(error);
     }
 
     // ─── Acceptance Gate ───────────────────────────────────────────────────────
@@ -1008,26 +1147,36 @@ pub async fn finalize_proposals_impl(
     // may change whether require_accept_for_finalize applies for this session.
     // Fail-safe-closed: return error on settings fetch failure to prevent silent bypass.
     {
-        let ideation_settings = state
-            .ideation_settings_repo
-            .get_settings()
-            .await
-            .map_err(|e| {
-                AppError::Database(format!(
-                    "Failed to fetch ideation settings for acceptance gate: {}",
-                    e
-                ))
-            })?;
+        let ideation_settings = match get_ideation_settings_for_acceptance_gate(state).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+                return Err(error);
+            }
+        };
         let effective_policy = resolve_effective_gate_policy(&ideation_settings, session.origin);
         if let Err(e) = check_verification_gate(&session, &effective_policy) {
-            return Err(AppError::Validation(e.to_string()));
+            let error = AppError::Validation(e.to_string());
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
         }
         if effective_policy.require_accept_for_finalize {
             // Set acceptance_status to Pending (CAS: only if currently None)
-            state
+            if let Err(error) = state
                 .ideation_session_repo
                 .update_acceptance_status(&session_id_typed, None, Some(AcceptanceStatus::Pending))
-                .await?;
+                .await
+            {
+                mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+                return Err(error);
+            }
+
+            write_proposal_generation_progress(
+                state,
+                &session_id_typed,
+                ProposalGenerationProgressTransition::WaitingForConfirmation,
+            )
+            .await?;
 
             crate::http_server::emit_app_event(
                 state,
@@ -1060,10 +1209,20 @@ pub async fn finalize_proposals_impl(
     // Short-circuit if no local proposals — all have been migrated to foreign projects
     if count_local == 0 {
         // All proposals are foreign (migrated) — transition session to Accepted
-        state
+        if let Err(error) = state
             .ideation_session_repo
             .update_status(&session_id_typed, IdeationSessionStatus::Accepted)
-            .await?;
+            .await
+        {
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
+        }
+        write_proposal_generation_progress(
+            state,
+            &session_id_typed,
+            ProposalGenerationProgressTransition::Completed,
+        )
+        .await?;
         return Ok(crate::http_server::types::FinalizeProposalsResponse {
             created_task_ids: vec![],
             dependencies_created: 0,
@@ -1096,7 +1255,19 @@ pub async fn finalize_proposals_impl(
         base_branch_override: None,
     };
 
-    let result = apply_proposals_core(state, input).await?;
+    let result = match apply_proposals_core(state, input).await {
+        Ok(result) => result,
+        Err(error) => {
+            mark_proposal_generation_failed(state, &session_id_typed, error.to_string()).await;
+            return Err(error);
+        }
+    };
+    write_proposal_generation_progress(
+        state,
+        &session_id_typed,
+        ProposalGenerationProgressTransition::Completed,
+    )
+    .await?;
 
     let session_status = if result.session_converted {
         "accepted".to_string()

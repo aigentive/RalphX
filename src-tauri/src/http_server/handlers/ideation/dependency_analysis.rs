@@ -7,6 +7,9 @@ use axum::{
 };
 use tracing::error;
 
+use crate::application::proposal_generation_progress::{
+    write_proposal_generation_progress, ProposalGenerationProgressTransition,
+};
 use crate::domain::entities::{IdeationSessionId, TaskProposalId};
 use crate::http_server::types::{AnalyzeDependenciesResponse, HttpServerState};
 
@@ -156,6 +159,20 @@ pub async fn analyze_session_dependencies(
             e
         );
     }
+    write_proposal_generation_progress(
+        &state.app_state,
+        &session_id,
+        ProposalGenerationProgressTransition::AnalyzingDependencies,
+    )
+    .await
+    .map_err(|e| {
+        error!(
+            "Failed to write dependency-analysis progress for session {}: {}",
+            session_id.as_str(),
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(AnalyzeDependenciesResponse {
         nodes: response_nodes,

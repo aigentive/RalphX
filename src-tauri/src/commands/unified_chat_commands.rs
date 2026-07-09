@@ -87,6 +87,9 @@ use crate::application::git_service::{
     GitService,
 };
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
+use crate::application::proposal_generation_progress::{
+    write_proposal_generation_progress, ProposalGenerationProgressTransition,
+};
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits,
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
@@ -164,6 +167,8 @@ pub struct SendAgentMessageInput {
     /// Optional provider harness selected for this send. Existing conversations switch
     /// provider by starting a fresh provider-native session when the harness changes.
     pub provider_harness: Option<String>,
+    /// Optional structured operation intent for backend-owned lifecycle side effects.
+    pub operation_intent: Option<AgentMessageOperationIntent>,
     /// Optional explicit model override for the spawned agent.
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
@@ -193,6 +198,12 @@ pub struct SendAgentMessageInput {
     /// When set to a teammate name, the message is routed to that teammate's stdin
     /// instead of the lead's. "lead" or None routes to the lead (default behavior).
     pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageOperationIntent {
+    CreatePlanProposals,
 }
 
 fn hidden_user_message_metadata() -> String {
@@ -632,6 +643,109 @@ pub(crate) async fn ensure_plan_workspace_planning_session_link_for_send(
         .await
         .map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+async fn resolve_create_plan_proposals_session_id(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id_override: Option<&ChatConversationId>,
+) -> Result<IdeationSessionId, String> {
+    if context_type == ChatContextType::Ideation {
+        return Ok(IdeationSessionId::from_string(context_id));
+    }
+
+    if context_type != ChatContextType::Project {
+        return Err(
+            "Create Proposals operation intent is only valid for Agent Plan or ideation contexts"
+                .to_string(),
+        );
+    }
+
+    let conversation_id = conversation_id_override.ok_or_else(|| {
+        "Create Proposals operation intent requires an existing Agent Plan conversation".to_string()
+    })?;
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Agent conversation workspace not found for {}",
+                conversation_id.as_str()
+            )
+        })?;
+
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return Err(
+            "Create Proposals operation intent requires an Agent Plan workspace".to_string(),
+        );
+    }
+
+    let session_id = workspace.linked_ideation_session_id.ok_or_else(|| {
+        "Agent Plan workspace is not linked to a planning ideation session".to_string()
+    })?;
+    let session = state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Planning ideation session not found: {}", session_id))?;
+    if session.session_flow != IdeationSessionFlow::Planning {
+        return Err(format!(
+            "Linked ideation session {} is not a planning session",
+            session_id
+        ));
+    }
+
+    Ok(session_id)
+}
+
+async fn seed_agent_message_operation_intent_progress(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id_override: Option<&ChatConversationId>,
+    operation_intent: Option<AgentMessageOperationIntent>,
+) -> Result<Option<IdeationSessionId>, String> {
+    match operation_intent {
+        Some(AgentMessageOperationIntent::CreatePlanProposals) => {
+            let session_id = resolve_create_plan_proposals_session_id(
+                state,
+                context_type,
+                context_id,
+                conversation_id_override,
+            )
+            .await?;
+            write_proposal_generation_progress(
+                state,
+                &session_id,
+                ProposalGenerationProgressTransition::Queued {
+                    expected_count: None,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(Some(session_id))
+        }
+        None => Ok(None),
+    }
+}
+
+async fn mark_seeded_operation_intent_failed(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+    error: &str,
+) {
+    let _ = write_proposal_generation_progress(
+        state,
+        session_id,
+        ProposalGenerationProgressTransition::Failed {
+            error: error.to_string(),
+        },
+    )
+    .await;
 }
 
 fn plan_branch_base_ref(plan_branch: &PlanBranch, project: &Project) -> String {
@@ -3452,6 +3566,7 @@ pub async fn send_agent_message(
         "[SEND_MSG] send_agent_message command invoked"
     );
     let context_type = parse_context_type(&input.context_type)?;
+    let operation_intent = input.operation_intent;
     let harness_override = input
         .provider_harness
         .as_deref()
@@ -3626,8 +3741,16 @@ pub async fn send_agent_message(
         }
     }
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
+    let seeded_operation_session_id = seed_agent_message_operation_intent_progress(
+        state.inner(),
+        context_type,
+        &input.context_id,
+        conversation_id_override.as_ref(),
+        operation_intent,
+    )
+    .await?;
 
-    let mut response = service
+    let send_result = service
         .send_message(
             context_type,
             &input.context_id,
@@ -3650,9 +3773,18 @@ pub async fn send_agent_message(
                 ..Default::default()
             },
         )
-        .await
-        .map(SendAgentMessageResponse::from)
-        .map_err(|e| e.to_string())?;
+        .await;
+    let mut response = match send_result {
+        Ok(result) => SendAgentMessageResponse::from(result),
+        Err(error) => {
+            let error_message = error.to_string();
+            if let Some(session_id) = seeded_operation_session_id.as_ref() {
+                mark_seeded_operation_intent_failed(state.inner(), session_id, &error_message)
+                    .await;
+            }
+            return Err(error_message);
+        }
+    };
     if auto_forked_terminal_conversation {
         response.is_new_conversation = true;
     }
@@ -10053,6 +10185,7 @@ mod tests {
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
         schedule_pr_supervision_recovery_for_conversation_id,
+        seed_agent_message_operation_intent_progress,
         send_agent_workspace_publish_repair_message_for_target,
         send_queued_agent_message_now_for_state,
         set_agent_conversation_workspace_auto_publish_for_state,
@@ -10069,13 +10202,14 @@ mod tests {
         AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
         AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
-        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
-        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
-        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
-        AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
-        CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
-        ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
+        AgentMessageOperationIntent, AgentTimelineItemResponse,
+        AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
+        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
+        AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
+        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
+        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput,
+        DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
+        ModeSwitchInitiator, SwitchAgentConversationModeInput,
         UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
@@ -10110,8 +10244,8 @@ mod tests {
         CoordinationMode, ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus,
         IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
         InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-        ProjectId, SessionPurpose, Task, TaskId, TeamIntent,
-        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        ProjectId, ProposalGenerationPhase, ProposalGenerationStatus, SessionPurpose, Task, TaskId,
+        TeamIntent, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -17175,6 +17309,33 @@ mod tests {
             Some(plan_workspace.worktree_path.as_str())
         );
         assert!(plan_workspace.linked_plan_branch_id.is_none());
+
+        let seeded_session_id = seed_agent_message_operation_intent_progress(
+            &state,
+            ChatContextType::Project,
+            plan_workspace.project_id.as_str(),
+            Some(&conversation_id),
+            Some(AgentMessageOperationIntent::CreatePlanProposals),
+        )
+        .await
+        .expect("structured create proposals intent should seed progress")
+        .expect("create proposals intent should resolve linked planning session");
+        assert_eq!(seeded_session_id, session_id);
+        let session = state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .expect("planning session lookup succeeds")
+            .expect("planning session should exist");
+        assert_eq!(
+            session.proposal_generation_progress.status,
+            ProposalGenerationStatus::Queued
+        );
+        assert_eq!(
+            session.proposal_generation_progress.phase,
+            Some(ProposalGenerationPhase::Queued)
+        );
+        assert_eq!(session.proposal_generation_progress.created_count, 0);
 
         let edit_response = switch_agent_conversation_mode_for_state(
             SwitchAgentConversationModeInput {
