@@ -18,7 +18,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { StateTransition } from "@/api/tasks";
 import type { InternalStatus } from "@/types/task";
+import type {
+  TaskHistoryState,
+  TaskRuntimeHistoryContextType,
+} from "@/types/task-history";
 import { isTerminalStatus } from "@/types/status";
 import {
   STATUS_TOKEN_REFS,
@@ -82,14 +87,13 @@ function resolveTimelineTint(color: TimelineStatusKey, alpha: number): string {
   return statusTint(color, alpha);
 }
 
-interface TimelineEntry {
+type StageAttemptFamily = "execution" | "review" | "merge";
+
+interface TimelineEntry extends TaskHistoryState {
   status: InternalStatus;
   timestamp: string;
   isCurrent: boolean;
-  /** Conversation ID from the state transition metadata (for states that spawn conversations) */
-  conversationId?: string | undefined;
-  /** Agent run ID from the state transition metadata */
-  agentRunId?: string | undefined;
+  label: string;
 }
 
 function formatRelativeTime(dateString: string): string {
@@ -121,6 +125,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
   const glowInnerRef = resolveTimelineTint(config.color, 30);
   const glowOuterRef = resolveTimelineTint(config.color, 20);
   const dotGlowRef = resolveTimelineTint(config.color, 40);
+  const transcriptLabel = entry.hasConversation ? "Chat" : "No chat";
 
   return (
     <Tooltip delayDuration={200}>
@@ -132,6 +137,10 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
           data-status={entry.status}
           data-current={entry.isCurrent}
           data-selected={isSelected}
+          data-attempt-index={entry.attemptIndex}
+          data-context-type={entry.contextType}
+          data-has-conversation={entry.hasConversation}
+          aria-label={`${entry.label}${entry.hasConversation ? ", transcript available" : ", no transcript recorded"}`}
           className="group relative flex items-center gap-2 px-3 py-1.5 rounded-full transition-all duration-200"
           style={{
             backgroundColor: isActive ? bgRef : "transparent",
@@ -167,7 +176,18 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
               color: isActive ? colorRef : withAlpha("var(--text-primary)", 45),
             }}
           >
-            {config.label}
+            {entry.label}
+          </span>
+
+          <span
+            className="text-[0.5625rem] font-semibold uppercase"
+            style={{
+              color: entry.hasConversation
+                ? withAlpha(colorRef, 78)
+                : withAlpha("var(--text-primary)", 30),
+            }}
+          >
+            {transcriptLabel}
           </span>
         </button>
       </TooltipTrigger>
@@ -189,7 +209,9 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
             className="w-1.5 h-1.5 rounded-full"
             style={{ backgroundColor: colorRef }}
           />
+          <span>{entry.label}</span>
           <span>{formatRelativeTime(entry.timestamp)}</span>
+          <span>{entry.hasConversation ? "Transcript available" : "No transcript recorded"}</span>
           {entry.isCurrent && (
             <span
               className="px-1.5 py-0.5 rounded text-[0.5625rem] font-bold uppercase"
@@ -232,18 +254,251 @@ function TimelineConnector({ isActive, color }: TimelineConnectorProps) {
 export interface StateTimelineNavProps {
   taskId: string;
   currentStatus: InternalStatus;
-  onStateSelect: (state: {
-    status: InternalStatus;
-    timestamp: string;
-    conversationId?: string | undefined;
-    agentRunId?: string | undefined;
-  } | null) => void;
-  selectedState?: {
-    status: InternalStatus;
-    timestamp: string;
-    conversationId?: string | undefined;
-    agentRunId?: string | undefined;
-  } | null;
+  onStateSelect: (state: TaskHistoryState | null) => void;
+  selectedState?: TaskHistoryState | null;
+}
+
+const TRANSIENT_STATUSES = new Set<InternalStatus>([
+  "ready",
+  "pending_review",
+  "pending_merge",
+]);
+
+const INTERMEDIATE_RETRY_STATUSES = new Set<InternalStatus>([
+  "merge_incomplete",
+  "merge_conflict",
+  "revision_needed",
+  "qa_failed",
+  "blocked",
+  "paused",
+]);
+
+const EXECUTION_CONTEXT_STATUSES = new Set<InternalStatus>([
+  "executing",
+  "re_executing",
+  "qa_refining",
+  "qa_testing",
+  "qa_passed",
+  "qa_failed",
+]);
+
+const REVIEW_CONTEXT_STATUSES = new Set<InternalStatus>([
+  "pending_review",
+  "reviewing",
+  "review_passed",
+  "revision_needed",
+  "approved",
+  "escalated",
+]);
+
+const MERGE_CONTEXT_STATUSES = new Set<InternalStatus>([
+  "pending_merge",
+  "merging",
+  "waiting_on_pr",
+  "merge_incomplete",
+  "merge_conflict",
+  "merged",
+]);
+
+function deriveContextType(
+  status: InternalStatus,
+  explicitContextType?: TaskRuntimeHistoryContextType
+): TaskRuntimeHistoryContextType | undefined {
+  if (explicitContextType) {
+    return explicitContextType;
+  }
+  if (EXECUTION_CONTEXT_STATUSES.has(status)) {
+    return "task_execution";
+  }
+  if (REVIEW_CONTEXT_STATUSES.has(status)) {
+    return "review";
+  }
+  if (MERGE_CONTEXT_STATUSES.has(status)) {
+    return "merge";
+  }
+  return undefined;
+}
+
+function getAttemptFamily(status: InternalStatus): StageAttemptFamily | null {
+  if (
+    status === "executing" ||
+    status === "re_executing" ||
+    status === "qa_refining" ||
+    status === "qa_testing" ||
+    status === "qa_passed" ||
+    status === "qa_failed"
+  ) {
+    return "execution";
+  }
+  if (status === "reviewing") {
+    return "review";
+  }
+  if (
+    status === "merging" ||
+    status === "waiting_on_pr" ||
+    status === "merge_incomplete" ||
+    status === "merge_conflict" ||
+    status === "merged"
+  ) {
+    return "merge";
+  }
+  return null;
+}
+
+function isAttemptStartStatus(status: InternalStatus): boolean {
+  return (
+    status === "executing" ||
+    status === "re_executing" ||
+    status === "reviewing" ||
+    status === "merging"
+  );
+}
+
+function formatAttemptLabel(
+  family: StageAttemptFamily | null,
+  attemptIndex: number | undefined,
+  fallbackLabel: string
+): string {
+  if (!family || attemptIndex === undefined) {
+    return fallbackLabel;
+  }
+  const familyLabel =
+    family === "execution" ? "Execution" : family === "review" ? "Review" : "Merge";
+  return `${familyLabel} attempt ${attemptIndex}`;
+}
+
+function shouldShowTransition(
+  status: InternalStatus,
+  currentStatus: InternalStatus
+): boolean {
+  if (TRANSIENT_STATUSES.has(status) && status !== currentStatus) {
+    return false;
+  }
+  return !(
+    isTerminalStatus(currentStatus) &&
+    INTERMEDIATE_RETRY_STATUSES.has(status) &&
+    status !== currentStatus
+  );
+}
+
+function buildTimelineEntries(
+  transitions: StateTransition[] | undefined,
+  currentStatus: InternalStatus
+): TimelineEntry[] {
+  if (!transitions || transitions.length === 0) {
+    if (TRANSIENT_STATUSES.has(currentStatus)) {
+      return [];
+    }
+    const contextType = deriveContextType(currentStatus);
+    const family = getAttemptFamily(currentStatus);
+    const attemptIndex = family ? 1 : undefined;
+    const timestamp = new Date().toISOString();
+    return [
+      {
+        status: currentStatus,
+        timestamp,
+        isCurrent: true,
+        label: formatAttemptLabel(
+          family,
+          attemptIndex,
+          STATUS_CONFIG[currentStatus].label
+        ),
+        contextType,
+        transitionId: `${currentStatus}-${timestamp}`,
+        attemptIndex,
+        hasConversation: false,
+      },
+    ];
+  }
+
+  const attemptCounts: Record<StageAttemptFamily, number> = {
+    execution: 0,
+    review: 0,
+    merge: 0,
+  };
+  let activeAttemptFamily: StageAttemptFamily | null = null;
+
+  const entries: TimelineEntry[] = [];
+  for (const transition of transitions) {
+    if (!shouldShowTransition(transition.toStatus, currentStatus)) {
+      continue;
+    }
+
+    const family = getAttemptFamily(transition.toStatus);
+    if (family) {
+      if (
+        activeAttemptFamily !== family ||
+        isAttemptStartStatus(transition.toStatus) ||
+        attemptCounts[family] === 0
+      ) {
+        attemptCounts[family] += 1;
+      }
+      activeAttemptFamily = family;
+    } else {
+      activeAttemptFamily = null;
+    }
+
+    const attemptIndex = family ? attemptCounts[family] : undefined;
+    const contextType = deriveContextType(transition.toStatus, transition.contextType);
+    const transitionId =
+      transition.transitionId ?? `${transition.toStatus}-${transition.timestamp}`;
+    const hasConversation = Boolean(transition.conversationId);
+    const fallbackLabel = STATUS_CONFIG[transition.toStatus].label;
+
+    entries.push({
+      status: transition.toStatus,
+      timestamp: transition.timestamp,
+      isCurrent: false,
+      label: formatAttemptLabel(family, attemptIndex, fallbackLabel),
+      ...(transition.conversationId !== undefined && {
+        conversationId: transition.conversationId,
+      }),
+      ...(transition.agentRunId !== undefined && { agentRunId: transition.agentRunId }),
+      ...(contextType !== undefined && { contextType }),
+      transitionId,
+      ...(attemptIndex !== undefined && { attemptIndex }),
+      hasConversation,
+    });
+  }
+
+  let currentIndex = -1;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.status === currentStatus) {
+      currentIndex = index;
+      break;
+    }
+  }
+
+  if (currentIndex === -1 && !TRANSIENT_STATUSES.has(currentStatus)) {
+    const timestamp = new Date().toISOString();
+    const contextType = deriveContextType(currentStatus);
+    const family = getAttemptFamily(currentStatus);
+    const attemptIndex = family ? (attemptCounts[family] || 0) + 1 : undefined;
+    entries.push({
+      status: currentStatus,
+      timestamp,
+      isCurrent: true,
+      label: formatAttemptLabel(
+        family,
+        attemptIndex,
+        STATUS_CONFIG[currentStatus].label
+      ),
+      ...(contextType !== undefined && { contextType }),
+      transitionId: `${currentStatus}-${timestamp}`,
+      ...(attemptIndex !== undefined && { attemptIndex }),
+      hasConversation: false,
+    });
+  } else if (currentIndex >= 0) {
+    const currentEntry = entries[currentIndex];
+    if (currentEntry) {
+      entries[currentIndex] = {
+        ...currentEntry,
+        isCurrent: true,
+      };
+    }
+  }
+
+  return entries;
 }
 
 export function StateTimelineNav({
@@ -254,89 +509,8 @@ export function StateTimelineNav({
 }: StateTimelineNavProps) {
   const { data: transitions, isLoading, error } = useTaskStateTransitions(taskId);
 
-  // Derive unique timeline entries from transitions (latest cycle per status)
   const timelineEntries = useMemo((): TimelineEntry[] => {
-    // Transient states to skip in the timeline
-    // - ready: brief transition between draft and executing
-    // - pending_review: brief wait for AI reviewer
-    // - pending_merge: brief programmatic merge attempt (1-3s)
-    const transientStatuses: InternalStatus[] = [
-      "ready",
-      "pending_review",
-      "pending_merge",
-    ];
-
-    // Intermediate retry/failure states that add noise once a task reaches
-    // a terminal status (merged, failed, cancelled, stopped, approved).
-    // These are still shown when they ARE the current status.
-    const intermediateRetryStatuses: InternalStatus[] = [
-      "merge_incomplete",
-      "merge_conflict",
-      "revision_needed",
-      "qa_failed",
-      "blocked",
-      "paused",
-    ];
-
-    if (!transitions || transitions.length === 0) {
-      // Don't show timeline for transient states with no history
-      if (transientStatuses.includes(currentStatus)) {
-        return [];
-      }
-      return [
-        {
-          status: currentStatus,
-          timestamp: new Date().toISOString(),
-          isCurrent: true,
-        },
-      ];
-    }
-
-    const entries: TimelineEntry[] = [];
-    const seenStatuses = new Set<InternalStatus>();
-
-    // Walk from newest to oldest so we keep the latest occurrence of each status.
-    for (const transition of [...transitions].reverse()) {
-      // Skip transient states - they're brief transitions not worth showing
-      // (but keep current status visible)
-      if (transientStatuses.includes(transition.toStatus) && transition.toStatus !== currentStatus) {
-        continue;
-      }
-      // Skip intermediate retry/failure states once the task has reached a
-      // terminal status — they add noise to the timeline. Still show them
-      // when they ARE the current status (task is currently in that state).
-      if (
-        isTerminalStatus(currentStatus) &&
-        intermediateRetryStatuses.includes(transition.toStatus) &&
-        transition.toStatus !== currentStatus
-      ) {
-        continue;
-      }
-      if (seenStatuses.has(transition.toStatus)) {
-        continue;
-      }
-      seenStatuses.add(transition.toStatus);
-
-      entries.push({
-        status: transition.toStatus,
-        timestamp: transition.timestamp,
-        isCurrent: transition.toStatus === currentStatus,
-        conversationId: transition.conversationId,
-        agentRunId: transition.agentRunId,
-      });
-    }
-
-    entries.reverse();
-
-    const lastEntry = entries[entries.length - 1];
-    if (lastEntry && lastEntry.status !== currentStatus) {
-      const existingEntry = entries.find((e) => e.status === currentStatus);
-      if (existingEntry) {
-        existingEntry.isCurrent = true;
-      }
-    }
-
-    return entries;
+    return buildTimelineEntries(transitions, currentStatus);
   }, [transitions, currentStatus]);
 
   // Handle badge click
@@ -347,8 +521,16 @@ export function StateTimelineNav({
       onStateSelect({
         status: entry.status,
         timestamp: entry.timestamp,
-        conversationId: entry.conversationId,
-        agentRunId: entry.agentRunId,
+        ...(entry.conversationId !== undefined && {
+          conversationId: entry.conversationId,
+        }),
+        ...(entry.agentRunId !== undefined && { agentRunId: entry.agentRunId }),
+        ...(entry.contextType !== undefined && { contextType: entry.contextType }),
+        ...(entry.transitionId !== undefined && { transitionId: entry.transitionId }),
+        ...(entry.attemptIndex !== undefined && { attemptIndex: entry.attemptIndex }),
+        ...(entry.hasConversation !== undefined && {
+          hasConversation: entry.hasConversation,
+        }),
       });
     }
   };
@@ -389,8 +571,10 @@ export function StateTimelineNav({
   const selectedIndex = selectedState
     ? timelineEntries.findIndex(
         (e) =>
-          e.status === selectedState.status &&
-          e.timestamp === selectedState.timestamp
+          (selectedState.transitionId &&
+            e.transitionId === selectedState.transitionId) ||
+          (e.status === selectedState.status &&
+            e.timestamp === selectedState.timestamp)
       )
     : -1;
 

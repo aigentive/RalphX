@@ -22,6 +22,7 @@ import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -63,6 +64,10 @@ interface AgentsArtifactPaneRegionProps {
   taskFocusRequest: AgentTaskArtifactFocusRequest | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   onTaskArtifactSelectionChange: (taskId: string | null) => void;
   onClose: () => void;
   terminalArchivedReason: string | null;
@@ -92,6 +97,7 @@ export function AgentsArtifactPaneRegion({
   taskFocusRequest,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
+  onFocusTaskRuntime,
   onTaskArtifactSelectionChange,
   onClose,
   terminalArchivedReason,
@@ -159,6 +165,7 @@ export function AgentsArtifactPaneRegion({
                     taskFocusRequest={taskFocusRequest}
                     onFocusVerificationSession={onFocusVerificationSession}
                     onFocusWorkspaceReview={onFocusWorkspaceReview}
+                    onFocusTaskRuntime={onFocusTaskRuntime}
                     onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
                     onClose={onClose}
                   />
