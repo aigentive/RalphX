@@ -15,6 +15,8 @@ use crate::domain::entities::{
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
+const STANDALONE_AUTOMATION_GROUP_KEY: &str = "__standalone__";
+const STANDALONE_AUTOMATION_GROUP_LABEL: &str = "Standalone";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +64,7 @@ pub struct AgentSidebarConversationRowResponse {
 enum SidebarGroupBy {
     Project,
     Publication,
+    Automation,
 }
 
 impl SidebarGroupBy {
@@ -69,6 +72,7 @@ impl SidebarGroupBy {
         match value.map(str::trim).filter(|value| !value.is_empty()) {
             None | Some("project") => Ok(Self::Project),
             Some("publication") | Some("publication_state") => Ok(Self::Publication),
+            Some("automation") => Ok(Self::Automation),
             Some(value) => Err(format!("invalid sidebar group_by: {value}")),
         }
     }
@@ -160,6 +164,7 @@ impl SidebarPublicationState {
 
 struct SidebarConversationRow {
     project_id: String,
+    automation_id: Option<String>,
     sort_at: DateTime<Utc>,
     is_pinned: bool,
     is_priority: bool,
@@ -207,6 +212,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             .collect();
 
     let mut project_labels: Vec<(String, String)> = Vec::new();
+    let mut automation_labels: HashMap<String, String> = HashMap::new();
     let mut rows = Vec::new();
 
     for project_id_string in project_ids {
@@ -222,6 +228,20 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             .unwrap_or_else(|| project_id_string.clone());
         let default_ref_label = default_ref_label(project.as_ref());
         project_labels.push((project_id_string.clone(), project_label));
+
+        if group_by == SidebarGroupBy::Automation {
+            let automations = state
+                .automation_repo
+                .list_by_project(&project_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            for automation in automations {
+                automation_labels.insert(
+                    automation.id.as_str().to_string(),
+                    automation_label_from_name(automation.id.as_str(), &automation.name),
+                );
+            }
+        }
 
         let workspaces = state
             .agent_conversation_workspace_repo
@@ -277,9 +297,14 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             let sort_at = conversation.created_at;
             let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
             let is_priority = priority_conversation_ids.contains(&conversation.id.as_str());
+            let automation_id = conversation
+                .automation_id
+                .as_ref()
+                .map(|automation_id| automation_id.as_str().to_string());
             let conversation = agent_conversation_response_for_state(state, conversation).await?;
             rows.push(SidebarConversationRow {
                 project_id: project_id_string.clone(),
+                automation_id,
                 sort_at,
                 is_pinned,
                 is_priority,
@@ -304,6 +329,9 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     let groups = match group_by {
         SidebarGroupBy::Publication => publication_groups(rows, selected_states, limit, &offsets),
         SidebarGroupBy::Project => project_groups(rows, project_labels, row_sort, limit, &offsets),
+        SidebarGroupBy::Automation => {
+            automation_groups(rows, automation_labels, row_sort, limit, &offsets)
+        }
     };
 
     Ok(AgentSidebarConversationGroupsResponse { groups })
@@ -555,6 +583,83 @@ fn project_groups(
         .collect()
 }
 
+fn automation_groups(
+    rows: Vec<SidebarConversationRow>,
+    automation_labels: HashMap<String, String>,
+    sort: SidebarRowSort,
+    limit: u32,
+    offsets: &HashMap<String, u32>,
+) -> Vec<AgentSidebarConversationGroupResponse> {
+    let mut rows_by_group: HashMap<String, Vec<SidebarConversationRow>> = HashMap::new();
+    for row in rows {
+        let key = row
+            .automation_id
+            .clone()
+            .unwrap_or_else(|| STANDALONE_AUTOMATION_GROUP_KEY.to_string());
+        rows_by_group.entry(key).or_default().push(row);
+    }
+
+    let mut groups: Vec<(String, String, DateTime<Utc>, Vec<SidebarConversationRow>)> =
+        rows_by_group
+            .into_iter()
+            .filter_map(|(key, rows)| {
+                let latest = rows.iter().map(|row| row.sort_at).max()?;
+                let label = automation_label_for_group(&key, &automation_labels);
+                Some((key, label, latest, rows))
+            })
+            .collect();
+
+    groups.sort_by(|left, right| match sort {
+        SidebarRowSort::Latest => right
+            .2
+            .cmp(&left.2)
+            .then_with(|| left.1.to_lowercase().cmp(&right.1.to_lowercase()))
+            .then_with(|| left.0.cmp(&right.0)),
+        SidebarRowSort::Az => left
+            .1
+            .to_lowercase()
+            .cmp(&right.1.to_lowercase())
+            .then_with(|| left.0.cmp(&right.0)),
+        SidebarRowSort::Za => right
+            .1
+            .to_lowercase()
+            .cmp(&left.1.to_lowercase())
+            .then_with(|| left.0.cmp(&right.0)),
+    });
+
+    groups
+        .into_iter()
+        .map(|(key, label, _, rows)| {
+            let offset = offsets.get(&key).copied().unwrap_or(0);
+            build_group(key, label, rows, offset, limit)
+        })
+        .collect()
+}
+
+fn automation_label_for_group(key: &str, automation_labels: &HashMap<String, String>) -> String {
+    if key == STANDALONE_AUTOMATION_GROUP_KEY {
+        return STANDALONE_AUTOMATION_GROUP_LABEL.to_string();
+    }
+
+    automation_labels
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| fallback_automation_label(key))
+}
+
+fn automation_label_from_name(id: &str, name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        fallback_automation_label(id)
+    } else {
+        name.to_string()
+    }
+}
+
+fn fallback_automation_label(id: &str) -> String {
+    format!("Automation {id}")
+}
+
 fn build_group(
     key: String,
     label: String,
@@ -717,8 +822,9 @@ fn supervision_publication_label(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AutomationId,
-        AutomationRunId, ChatConversation, IdeationAnalysisBaseRefKind, Project,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Automation,
+        AutomationId, AutomationRunId, AutomationStatus, ChatConversation,
+        IdeationAnalysisBaseRefKind, Project,
     };
 
     fn sidebar_input(project_id: &ProjectId) -> AgentSidebarConversationsInput {
@@ -743,6 +849,44 @@ mod tests {
         state.project_repo.create(project).await.unwrap()
     }
 
+    async fn create_automation(
+        state: &AppState,
+        project_id: &ProjectId,
+        id: &str,
+        name: &str,
+    ) -> Automation {
+        let now = Utc::now();
+        let automation = Automation {
+            id: AutomationId::from_string(id),
+            project_id: project_id.clone(),
+            name: name.to_string(),
+            status: AutomationStatus::Active,
+            paused_reason_code: None,
+            paused_reason_detail: None,
+            goal_prompt: "Keep improving the project".to_string(),
+            setup_conversation_id: None,
+            provider_harness: "claude".to_string(),
+            model_id: "sonnet".to_string(),
+            logical_effort: None,
+            run_mode: "edit".to_string(),
+            base_ref_kind: "project_default".to_string(),
+            base_ref: String::new(),
+            base_display_name: None,
+            base_source_pull_request_json: None,
+            goal_items_json: None,
+            chain_mode: "merged_base".to_string(),
+            completion_signal: "pr_merged".to_string(),
+            max_runs: 25,
+            max_consecutive_failures: 3,
+            first_run_prompt: Some("Run the next slice".to_string()),
+            setup_analysis_summary: None,
+            spec_artifact_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        state.automation_repo.create(automation).await.unwrap()
+    }
+
     async fn create_conversation(
         state: &AppState,
         project_id: &ProjectId,
@@ -753,6 +897,27 @@ mod tests {
         conversation.title = Some(title.to_string());
         conversation.created_at = created_at;
         conversation.updated_at = created_at;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap()
+    }
+
+    async fn create_automation_conversation(
+        state: &AppState,
+        project_id: &ProjectId,
+        title: &str,
+        created_at: DateTime<Utc>,
+        automation_id: AutomationId,
+        automation_run_id: Option<AutomationRunId>,
+    ) -> ChatConversation {
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.title = Some(title.to_string());
+        conversation.created_at = created_at;
+        conversation.updated_at = created_at;
+        conversation.automation_id = Some(automation_id);
+        conversation.automation_run_id = automation_run_id;
         state
             .chat_conversation_repo
             .create(conversation)
@@ -818,6 +983,18 @@ mod tests {
             .create_or_update(workspace)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn sidebar_group_by_parse_accepts_automation_and_rejects_unknown_modes() {
+        assert_eq!(
+            SidebarGroupBy::parse(Some("automation")).unwrap(),
+            SidebarGroupBy::Automation
+        );
+        assert_eq!(
+            SidebarGroupBy::parse(Some("definitely-not-valid")).unwrap_err(),
+            "invalid sidebar group_by: definitely-not-valid"
+        );
     }
 
     #[tokio::test]
@@ -1015,6 +1192,163 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(conversation_ids.contains(&setup.id.as_str().to_string()));
         assert!(!conversation_ids.contains(&run.id.as_str().to_string()));
+    }
+
+    #[tokio::test]
+    async fn automation_grouping_returns_named_and_standalone_groups_without_run_conversations() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let automation = create_automation(
+            &state,
+            &project.id,
+            "automation-setup-owner",
+            "Release Train",
+        )
+        .await;
+
+        let setup = create_automation_conversation(
+            &state,
+            &project.id,
+            "Automation setup",
+            now,
+            automation.id.clone(),
+            None,
+        )
+        .await;
+
+        let standalone = create_conversation(
+            &state,
+            &project.id,
+            "Standalone task",
+            now - chrono::Duration::minutes(5),
+        )
+        .await;
+
+        let run = create_automation_conversation(
+            &state,
+            &project.id,
+            "Automation run",
+            now + chrono::Duration::minutes(5),
+            automation.id.clone(),
+            Some(AutomationRunId::from_string("run-1")),
+        )
+        .await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("automation".to_string());
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .expect("automation grouping should load");
+
+        assert_eq!(response.groups.len(), 2);
+        assert_eq!(response.groups[0].key, automation.id.as_str());
+        assert_eq!(response.groups[0].label, "Release Train");
+        assert_eq!(response.groups[0].total, 1);
+        assert_eq!(
+            response.groups[0].rows[0].conversation.id,
+            setup.id.as_str()
+        );
+        assert_eq!(response.groups[1].key, "__standalone__");
+        assert_eq!(response.groups[1].label, "Standalone");
+        assert_eq!(response.groups[1].total, 1);
+        assert_eq!(
+            response.groups[1].rows[0].conversation.id,
+            standalone.id.as_str()
+        );
+        let visible_ids = response
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| row.conversation.id.clone())
+            .collect::<Vec<_>>();
+        assert!(!visible_ids.contains(&run.id.as_str().to_string()));
+    }
+
+    #[tokio::test]
+    async fn automation_grouping_sorts_by_fallback_label_and_paginates_visible_rows() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let fallback =
+            create_automation(&state, &project.id, "automation-fallback-id", "   ").await;
+        create_automation(&state, &project.id, "automation-zed", "Zed Automation").await;
+
+        let _alpha = create_automation_conversation(
+            &state,
+            &project.id,
+            "Alpha visible",
+            now - chrono::Duration::minutes(2),
+            fallback.id.clone(),
+            None,
+        )
+        .await;
+
+        let beta = create_automation_conversation(
+            &state,
+            &project.id,
+            "Beta visible",
+            now - chrono::Duration::minutes(1),
+            fallback.id.clone(),
+            None,
+        )
+        .await;
+
+        let merged = create_automation_conversation(
+            &state,
+            &project.id,
+            "Merged hidden",
+            now,
+            fallback.id.clone(),
+            None,
+        )
+        .await;
+        create_workspace(
+            &state,
+            &merged,
+            &project.id,
+            Some(55),
+            Some("merged"),
+            Some("published"),
+        )
+        .await;
+
+        let zed = create_automation_conversation(
+            &state,
+            &project.id,
+            "Zed visible",
+            now,
+            AutomationId::from_string("automation-zed"),
+            None,
+        )
+        .await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("automation".to_string());
+        input.sort = Some("az".to_string());
+        input.publication_states = Some(vec!["active".to_string()]);
+        input.limit_per_group = Some(1);
+        input.offsets = Some(HashMap::from([("automation-fallback-id".to_string(), 1)]));
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .expect("automation grouping should load");
+
+        assert_eq!(response.groups.len(), 2);
+        assert_eq!(response.groups[0].key, "automation-fallback-id");
+        assert_eq!(
+            response.groups[0].label,
+            "Automation automation-fallback-id"
+        );
+        assert_eq!(response.groups[0].total, 2);
+        assert_eq!(response.groups[0].offset, 1);
+        assert!(!response.groups[0].has_more);
+        assert_eq!(response.groups[0].rows[0].conversation.id, beta.id.as_str());
+        assert_eq!(response.groups[1].key, "automation-zed");
+        assert_eq!(response.groups[1].label, "Zed Automation");
+        assert_eq!(response.groups[1].total, 1);
+        assert_eq!(response.groups[1].rows[0].conversation.id, zed.id.as_str());
     }
 
     #[tokio::test]

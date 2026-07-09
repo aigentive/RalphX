@@ -1809,6 +1809,39 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("does not pin task runtime chat to the selected workspace conversation", () => {
+    renderPanel({
+      selectedConversationId: "stale-task-conversation",
+      chatFocus: {
+        type: "task_runtime",
+        taskId: "task-42",
+        contextType: "task_execution",
+      },
+      chatFocusOptions: [
+        {
+          type: "workspace",
+          label: "Workspace",
+          description: "Show the workspace agent chat",
+        },
+        {
+          type: "task_runtime",
+          label: "Task",
+          description: "Show the task agent chat",
+          tone: "accent",
+        },
+      ],
+    });
+
+    const panel = screen.getByTestId("integrated-chat-panel");
+    expect(panel).toHaveAttribute("data-conversation-id", "");
+    expect(panel).toHaveAttribute("data-send-conversation-id", "");
+    expect(panel).toHaveAttribute(
+      "data-store-context-key",
+      "task_execution:task-42",
+    );
+    expect(panel).toHaveAttribute("data-agent-process-context-id", "task-42");
+  });
+
   it("keeps nonfocused workspace Review runtime query rows out of workspace composer chrome", async () => {
     const onFocusWorkspaceReview = vi.fn();
     const workspaceItem = workspaceRuntimeStatus().items[0]!;
