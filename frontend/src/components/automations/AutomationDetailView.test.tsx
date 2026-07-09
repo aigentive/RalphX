@@ -18,6 +18,7 @@ const {
   deleteAutomationMock,
   useArtifactMock,
   listConversationTasksMock,
+  openExternalUrlMock,
   toastSuccessMock,
   toastErrorMock,
   toastInfoMock,
@@ -32,6 +33,7 @@ const {
   deleteAutomationMock: vi.fn(),
   useArtifactMock: vi.fn(),
   listConversationTasksMock: vi.fn(),
+  openExternalUrlMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
@@ -53,6 +55,10 @@ vi.mock("sonner", () => ({
     error: toastErrorMock,
     info: toastInfoMock,
   },
+}));
+
+vi.mock("@/lib/open-external", () => ({
+  openExternalUrl: (...args: unknown[]) => openExternalUrlMock(...args),
 }));
 
 vi.mock("@/api/automations", () => ({
@@ -228,6 +234,7 @@ describe("AutomationDetailView", () => {
       isError: false,
     });
     listConversationTasksMock.mockReset().mockResolvedValue([]);
+    openExternalUrlMock.mockReset().mockResolvedValue(undefined);
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
@@ -287,6 +294,120 @@ describe("AutomationDetailView", () => {
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
     expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();
+  });
+
+  it("renders a copyable concrete branch in the config grid", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const originalClipboard = (navigator as unknown as { clipboard?: unknown }).clipboard;
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+      writable: true,
+    });
+
+    renderDetail({
+      automation: automation({
+        baseDisplayName: "Automation workspace",
+        baseRef: "ralphx/automation-workspace/automation-1",
+      }),
+      runs: [],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByText("Branch")).toBeInTheDocument();
+    expect(screen.getAllByText("Automation workspace").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("automation-branch-value")).toHaveTextContent(
+      "ralphx/automation-workspace/automation-1",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copy branch" }));
+
+    expect(writeText).toHaveBeenCalledWith(
+      "ralphx/automation-workspace/automation-1",
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Branch copied");
+    if (originalClipboard !== undefined) {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("opens run pull requests through the external opener seam", async () => {
+    const user = userEvent.setup();
+    renderDetail({
+      automation: automation(),
+      runs: [
+        run({
+          id: "run-pr",
+          prNumber: 612,
+          prUrl: "https://github.com/aigentive/ralphx.app/pull/612",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByTestId("automation-run-run-pr-pr-link")).toHaveTextContent(
+      "PR #612",
+    );
+    expect(
+      screen.getByTestId("automation-run-run-pr-pr-field-link"),
+    ).toHaveAccessibleName("Open PR #612 in browser");
+
+    await user.click(screen.getByTestId("automation-run-run-pr-pr-link"));
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/612",
+    );
+  });
+
+  it("renders a URL-only run pull request link", async () => {
+    const user = userEvent.setup();
+    renderDetail({
+      automation: automation(),
+      runs: [
+        run({
+          id: "run-pr-url-only",
+          prNumber: null,
+          prUrl: "https://github.com/aigentive/ralphx.app/pull/preview",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(
+      screen.getByTestId("automation-run-run-pr-url-only-pr-link"),
+    ).toHaveTextContent("PR");
+    expect(
+      screen.getByTestId("automation-run-run-pr-url-only-pr-field-link"),
+    ).toHaveAccessibleName("Open PR in browser");
+    expect(screen.queryByText("Not published")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("automation-run-run-pr-url-only-pr-link"));
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/preview",
+    );
+  });
+
+  it("does not render an external PR link when a run is unpublished", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [run({ id: "run-unpublished", prNumber: null, prUrl: null })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(
+      screen.queryByRole("button", { name: /Open PR #/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Not published")).toBeInTheDocument();
   });
 
   it("expands the latest and open runs by default and collapses older terminal runs", async () => {
@@ -485,6 +606,72 @@ describe("AutomationDetailView", () => {
     );
     expect(
       within(specCard).queryByTestId("automation-spec-markdown"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the current phase chip on open timeline runs only", async () => {
+    renderDetail({
+      automation: automation({
+        goalItemsJson: JSON.stringify([
+          { id: "item-1", title: "Finish the live telemetry plumbing", status: "in_progress" },
+          { id: "item-2", title: "Polish docs", status: "pending" },
+        ]),
+      }),
+      runs: [
+        run({
+          id: "run-open",
+          runIndex: 2,
+          status: "running",
+          judgeState: "none",
+          finishedAt: null,
+        }),
+        run({
+          id: "run-terminal",
+          runIndex: 1,
+          status: "merged",
+          judgeState: "done",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const openRun = screen.getByTestId("automation-run-run-open");
+    expect(
+      within(openRun).getByTestId("automation-run-run-open-phase"),
+    ).toHaveTextContent("Finish the live telemetry plumbing");
+
+    const terminalRun = screen.getByTestId("automation-run-run-terminal");
+    expect(
+      within(terminalRun).queryByTestId("automation-run-run-terminal-phase"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show a timeline phase chip when no goal item is in progress", async () => {
+    renderDetail({
+      automation: automation({
+        goalItemsJson: JSON.stringify([
+          { id: "item-1", title: "Pending work", status: "pending" },
+        ]),
+      }),
+      runs: [
+        run({
+          id: "run-open",
+          status: "running",
+          judgeState: "none",
+          finishedAt: null,
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(
+      within(screen.getByTestId("automation-run-run-open")).queryByTestId(
+        "automation-run-run-open-phase",
+      ),
     ).not.toBeInTheDocument();
   });
 

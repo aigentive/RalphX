@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
+  Copy,
   ExternalLink,
   GitPullRequest,
   MoreHorizontal,
@@ -35,9 +36,14 @@ import {
 import {
   AUTOMATION_PHASES_LABEL,
   AUTOMATION_STATUS_LABELS,
+  findInProgressAutomationGoalItem,
   parseAutomationGoalItems,
+  type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
+import { OPEN_AUTOMATION_RUN_STATUS_SET } from "@/components/automations/automationRunStatusSets";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationRunPhaseChip } from "@/components/automations/AutomationRunPhaseChip";
+import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { Button, type ButtonProps } from "@/components/ui/button";
@@ -302,8 +308,12 @@ function KeyValueList({ items }: { items: Array<[string, ReactNode]> }) {
           <dt className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
             {label}
           </dt>
-          <dd className="mt-1 truncate text-sm" style={{ color: "var(--text-secondary)" }}>
-            {value}
+          <dd className="mt-1 min-w-0 text-sm" style={{ color: "var(--text-secondary)" }}>
+            {typeof value === "string" || typeof value === "number" ? (
+              <span className="block truncate">{value}</span>
+            ) : (
+              value
+            )}
           </dd>
         </div>
       ))}
@@ -359,6 +369,57 @@ function ExpandableText({
         </Button>
       )}
     </div>
+  );
+}
+
+function BranchConfigValue({ automation }: { automation: Automation }) {
+  const branchRef = automation.baseRef.trim();
+  if (!branchRef) {
+    return <span className="block truncate">Not recorded</span>;
+  }
+  const displayName = automation.baseDisplayName?.trim();
+  const showDisplayName = Boolean(displayName && displayName !== branchRef);
+  const copyBranch = async () => {
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(branchRef);
+      toast.success("Branch copied");
+    } catch {
+      toast.error("Failed to copy branch");
+    }
+  };
+
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
+      <span className="min-w-0 truncate">
+        {showDisplayName ? (
+          <span className="mr-1" style={{ color: "var(--text-muted)" }}>
+            {displayName}
+          </span>
+        ) : null}
+        <code className="font-mono text-[0.8125rem]" data-testid="automation-branch-value">
+          {branchRef}
+        </code>
+      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Copy branch"
+            className="h-6 w-6 shrink-0"
+            onClick={() => void copyBranch()}
+            data-testid="automation-branch-copy"
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Copy branch</TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -496,18 +557,23 @@ const RunTimelineItem = memo(function RunTimelineItem({
   projectId,
   defaultExpanded,
   liveStageLabel,
+  activeGoalItem,
   onOpenRunConversation,
 }: {
   run: AutomationRun;
   projectId: string | null;
   defaultExpanded: boolean;
   liveStageLabel: string | null;
+  activeGoalItem: AutomationGoalItem | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
   const failureReason = describeRunFailure(run);
   const runOpen = isOpenAutomationRun(run);
+  const phaseItem = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status)
+    ? activeGoalItem
+    : null;
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       onOpenRunConversation?.(projectId, run.conversationId);
@@ -553,6 +619,12 @@ const RunTimelineItem = memo(function RunTimelineItem({
                 testId={`automation-run-${run.id}-live`}
               />
             )}
+            {phaseItem ? (
+              <AutomationRunPhaseChip
+                item={phaseItem}
+                testId={`automation-run-${run.id}-phase`}
+              />
+            ) : null}
           </span>
           <span className="flex shrink-0 items-center gap-2">
             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -565,6 +637,15 @@ const RunTimelineItem = memo(function RunTimelineItem({
             )}
           </span>
         </button>
+
+        {run.prUrl ? (
+          <div className="mt-2">
+            <AutomationRunPrLink
+              run={run}
+              testId={`automation-run-${run.id}-pr-link`}
+            />
+          </div>
+        ) : null}
 
         {expanded && (
           <div data-testid={`automation-run-${run.id}-body`}>
@@ -617,15 +698,11 @@ const RunTimelineItem = memo(function RunTimelineItem({
               PR
             </div>
             {run.prUrl ? (
-              <a
-                href={run.prUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-flex items-center gap-1 text-sm text-[var(--accent-primary)]"
-              >
-                PR #{run.prNumber ?? "?"}
-                <ExternalLink className="h-3 w-3" aria-hidden="true" />
-              </a>
+              <AutomationRunPrLink
+                run={run}
+                className="mt-1"
+                testId={`automation-run-${run.id}-pr-field-link`}
+              />
             ) : (
               <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
                 {run.prNumber ? `PR #${run.prNumber}` : "Not published"}
@@ -795,6 +872,11 @@ export function AutomationDetailView({
     },
     onError: () => toast.error("Failed to delete automation"),
   });
+  const goalItemsJson = detail.data?.automation.goalItemsJson ?? null;
+  const activeGoalItem = useMemo(
+    () => findInProgressAutomationGoalItem(goalItemsJson),
+    [goalItemsJson],
+  );
 
   if (!afterPaint || detail.isLoading) {
     return <DetailLoading onBack={onBack} />;
@@ -1072,6 +1154,7 @@ export function AutomationDetailView({
                     ),
                   ],
                   ["Base", formatBase(automation)],
+                  ["Branch", <BranchConfigValue automation={automation} />],
                   ["Chain mode", automation.chainMode],
                   ["Completion signal", automation.completionSignal],
                   ["Max runs", `${runs.length} / ${automation.maxRuns}`],
@@ -1116,6 +1199,7 @@ export function AutomationDetailView({
                         ? describeAutomationStage(automation, run)
                         : null
                     }
+                    activeGoalItem={activeGoalItem}
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                   />
                 ))}

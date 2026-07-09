@@ -19,6 +19,7 @@ const {
   useAskUserQuestionMock,
   submitAutomationSetupAnswerMock,
   useArtifactMock,
+  openExternalUrlMock,
   toastSuccessMock,
   toastErrorMock,
 } = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ const {
   useAskUserQuestionMock: vi.fn(),
   submitAutomationSetupAnswerMock: vi.fn(),
   useArtifactMock: vi.fn(),
+  openExternalUrlMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
 }));
@@ -48,6 +50,10 @@ vi.mock("sonner", () => ({
     success: toastSuccessMock,
     error: toastErrorMock,
   },
+}));
+
+vi.mock("@/lib/open-external", () => ({
+  openExternalUrl: (...args: unknown[]) => openExternalUrlMock(...args),
 }));
 
 vi.mock("@/components/agents/agentDeferredFrame", () => ({
@@ -319,6 +325,7 @@ describe("AgentsAutomationPanel", () => {
       isLoading: false,
       isError: false,
     });
+    openExternalUrlMock.mockReset().mockResolvedValue(undefined);
   });
 
   it("shows automation summary controls and opens the automation detail", () => {
@@ -366,12 +373,14 @@ describe("AgentsAutomationPanel", () => {
             runIndex: 1,
             status: "merged",
             prNumber: 100,
+            prUrl: "https://github.com/aigentive/ralphx.app/pull/100",
           }),
           automationRunFixture({
             id: "run-2",
             runIndex: 2,
             status: "agent_failed",
             prNumber: null,
+            prUrl: null,
             errorCode: "timeout",
           }),
           automationRunFixture({
@@ -379,6 +388,7 @@ describe("AgentsAutomationPanel", () => {
             runIndex: 3,
             status: "running",
             prNumber: null,
+            prUrl: null,
           }),
         ],
       }),
@@ -399,7 +409,123 @@ describe("AgentsAutomationPanel", () => {
     expect(within(rows[1]!).getByText("Agent failed")).toBeInTheDocument();
     expect(within(rows[1]!).getByText("Failed: timeout")).toBeInTheDocument();
     expect(within(rows[2]!).getByText("Merged")).toBeInTheDocument();
-    expect(within(rows[2]!).getByText("PR #100")).toBeInTheDocument();
+    const prLink = within(rows[2]!).getByRole("button", {
+      name: "Open PR #100 in browser",
+    });
+    expect(prLink).toHaveTextContent("PR #100");
+    expect(within(rows[0]!).queryByRole("button", { name: /Open PR #/ })).not.toBeInTheDocument();
+    expect(within(rows[1]!).queryByRole("button", { name: /Open PR #/ })).not.toBeInTheDocument();
+
+    fireEvent.click(prLink);
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/100",
+    );
+  });
+
+  it("renders URL-only run pull request links", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-url-only",
+            runIndex: 1,
+            prNumber: null,
+            prUrl: "https://github.com/aigentive/ralphx.app/pull/preview",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const prLink = screen.getByRole("button", {
+      name: "Open PR in browser",
+    });
+    expect(prLink).toHaveTextContent("PR");
+
+    fireEvent.click(prLink);
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/preview",
+    );
+  });
+
+  it("shows the current phase chip on open run rows only", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          goalItemsJson: JSON.stringify([
+            {
+              id: "phase-1",
+              title: "Finish the scheduler handoff",
+              status: "in_progress",
+            },
+            { id: "phase-2", title: "Document rollout", status: "pending" },
+          ]),
+        }),
+        runs: [
+          automationRunFixture({
+            id: "run-open",
+            runIndex: 4,
+            status: "running",
+            prNumber: null,
+          }),
+          automationRunFixture({
+            id: "run-terminal",
+            runIndex: 3,
+            status: "merged",
+            prNumber: 103,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const openRun = screen.getByTestId("agents-automation-run-4");
+    expect(
+      within(openRun).getByTestId("agents-automation-run-4-phase"),
+    ).toHaveTextContent("Finish the scheduler handoff");
+
+    const terminalRun = screen.getByTestId("agents-automation-run-3");
+    expect(
+      within(terminalRun).queryByTestId("agents-automation-run-3-phase"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show a run-row phase chip when no goal item is in progress", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          goalItemsJson: JSON.stringify([
+            { id: "phase-1", title: "Pending work", status: "pending" },
+          ]),
+        }),
+        runs: [
+          automationRunFixture({
+            id: "run-open",
+            runIndex: 4,
+            status: "running",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      within(screen.getByTestId("agents-automation-run-4")).queryByTestId(
+        "agents-automation-run-4-phase",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("surfaces automatic merge enable warnings on published run rows", () => {

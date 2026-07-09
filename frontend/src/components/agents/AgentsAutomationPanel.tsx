@@ -45,9 +45,13 @@ import { OPEN_AUTOMATION_RUN_STATUS_SET } from "@/components/automations/automat
 import {
   AUTOMATION_PHASES_LABEL,
   AUTOMATION_STATUS_LABELS,
+  findInProgressAutomationGoalItemFromItems,
   parseAutomationGoalItems,
+  type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationRunPhaseChip } from "@/components/automations/AutomationRunPhaseChip";
+import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import {
   evictDeletedAutomation,
@@ -484,12 +488,14 @@ function AutomationPlanGateSettings({
 function AutomationRunsList({
   automationId,
   runs,
+  activeGoalItem,
   onCancelRun,
   cancelingRunId,
   onFocusAutomationRun,
 }: {
   automationId: string;
   runs: AutomationRun[];
+  activeGoalItem: AutomationGoalItem | null;
   onCancelRun?: (runId: string) => void;
   cancelingRunId?: string | null;
   onFocusAutomationRun?: (
@@ -510,6 +516,7 @@ function AutomationRunsList({
     <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
       {ordered.map((run) => {
         const isOpen = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status);
+        const phaseItem = isOpen ? activeGoalItem : null;
         const isCanceling = cancelingRunId === run.id;
         const conversationId = run.conversationId;
         const canOpenPlanGate =
@@ -553,6 +560,13 @@ function AutomationRunsList({
               >
                 {runRowDetail(run)}
               </span>
+              {phaseItem ? (
+                <AutomationRunPhaseChip
+                  item={phaseItem}
+                  className="mt-1"
+                  testId={`agents-automation-run-${run.runIndex}-phase`}
+                />
+              ) : null}
               {warning ? (
                 <span
                   className="mt-0.5 block truncate text-[0.6875rem]"
@@ -564,6 +578,12 @@ function AutomationRunsList({
               ) : null}
             </span>
             <span className="flex shrink-0 items-center gap-2">
+              {run.prUrl ? (
+                <AutomationRunPrLink
+                  run={run}
+                  testId={`agents-automation-run-${run.runIndex}-pr-link`}
+                />
+              ) : null}
               {canOpenPlanGate && conversationId ? (
                 <TooltipProvider delayDuration={150}>
                   <Tooltip>
@@ -1041,6 +1061,7 @@ export function AgentsAutomationPanel({
   const displayName = automationDisplayName(automation, conversationTitle);
   const run = latestRun(runs);
   const goalItems = parseAutomationGoalItems(automation.goalItemsJson);
+  const activeGoalItem = findInProgressAutomationGoalItemFromItems(goalItems);
   const stage = describeAutomationStage(automation, run);
   const failureReason = describeRunFailure(run);
   const showPausedReason =
@@ -1136,6 +1157,7 @@ export function AgentsAutomationPanel({
         <AutomationRunsList
           automationId={automation.id}
           runs={runs}
+          activeGoalItem={activeGoalItem}
           onCancelRun={(runId) => cancelRunMutation.mutate(runId)}
           cancelingRunId={
             cancelRunMutation.isPending
