@@ -1722,8 +1722,9 @@ describe("AgentsArtifactPane", () => {
     expect(
       await screen.findByTestId("agents-automation-panel-loading"),
     ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+    await waitFor(
+      () => expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+      deferredHydrationTimeout,
     );
   });
 
@@ -4308,6 +4309,60 @@ describe("AgentsArtifactPane", () => {
         screen.queryByTestId("proposal-detail-sheet"),
       ).not.toBeInTheDocument(),
     );
+    expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
+  });
+
+  it("opens linked proposal cards from the active Plan tab without a standalone Proposals tab", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({}, [
+        taskProposal({
+          id: "proposal-1",
+          title: "Gate embedded proposal access",
+          description: "Show proposals inside the Plan tab.",
+          acceptanceCriteria: ["Proposal content stays embedded in Plan"],
+          status: "pending",
+          createdTaskId: null,
+        }),
+      ]),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByTestId("agents-artifact-tab-plan"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
+
+    const planDisplay = await screen.findByTestId("plan-display-chromeless");
+    const proposalsToggle = within(planDisplay).getByRole("button", {
+      name: /1 Proposal/i,
+    });
+
+    expect(
+      screen.queryByText("Gate embedded proposal access"),
+    ).not.toBeInTheDocument();
+
+    await user.click(proposalsToggle);
+
+    expect(
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("Gate embedded proposal access"),
+    ).toBeInTheDocument();
     expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
   });
 
