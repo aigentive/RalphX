@@ -262,12 +262,45 @@ impl ValidationRunRepository for SqliteValidationRunRepository {
         &self,
         task_id: &TaskId,
     ) -> AppResult<Option<ValidationRunWithResults>> {
+        self.latest_run_with_results_for_task_filtered(task_id, false)
+            .await
+    }
+
+    async fn latest_non_baseline_run_with_results_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        self.latest_run_with_results_for_task_filtered(task_id, true)
+            .await
+    }
+}
+
+impl SqliteValidationRunRepository {
+    async fn latest_run_with_results_for_task_filtered(
+        &self,
+        task_id: &TaskId,
+        exclude_baseline: bool,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
         let task_id = task_id.as_str().to_string();
         self.db
             .run(move |conn| {
-                let sql =
-                    format!("{SELECT_RUN} WHERE task_id = ?1 ORDER BY started_at DESC LIMIT 1");
-                let run = match conn.query_row(&sql, [task_id.as_str()], Self::row_to_run) {
+                let sql = if exclude_baseline {
+                    format!(
+                        "{SELECT_RUN} WHERE task_id = ?1 AND purpose <> ?2 ORDER BY started_at DESC LIMIT 1"
+                    )
+                } else {
+                    format!("{SELECT_RUN} WHERE task_id = ?1 ORDER BY started_at DESC LIMIT 1")
+                };
+                let run = if exclude_baseline {
+                    conn.query_row(
+                        &sql,
+                        rusqlite::params![task_id.as_str(), ValidationPurpose::Baseline.as_str()],
+                        Self::row_to_run,
+                    )
+                } else {
+                    conn.query_row(&sql, [task_id.as_str()], Self::row_to_run)
+                };
+                let run = match run {
                     Ok(run) => run,
                     Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
                     Err(e) => return Err(AppError::Database(e.to_string())),

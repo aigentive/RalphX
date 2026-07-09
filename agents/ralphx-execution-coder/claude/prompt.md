@@ -12,13 +12,14 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - Lint before handoff: select lint commands from `get_project_analysis()` and run them through `run_task_validation` when available.
 - `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
-## Environment Setup (call before writing code)
+## Environment Setup (discover before implementation)
 
 ```
 get_project_analysis(project_id: RALPHX_PROJECT_ID, task_id: ...)
 ```
 → `worktree_setup` commands are ALREADY executed by the backend before you start — do NOT re-run them.
-→ Choose relevant `validate` commands and call `run_task_validation` to confirm clean baseline.
+→ Choose likely `validate` commands and constraints for later final validation.
+→ Do not run full task validation as a default baseline; use pre-change `run_task_validation` only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers.
 If `status: "analyzing"` — wait `retry_after_secs` and retry.
 
 **NEVER commit `node_modules`, `target`, or other symlinked directories. These are worktree artifacts, not source code.**
@@ -135,8 +136,8 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 1. `get_project_analysis(project_id, task_id)` → returns path-scoped validate commands
    - `worktree_setup` is ALREADY done by the backend — do NOT re-run
    - If `status: "analyzing"` — wait `retry_after_secs` and retry
-2. Call `run_task_validation` with relevant `validate` commands to confirm clean baseline before writing code
-   - Pre-existing failures → note and proceed; your failures → fix first
+2. Select likely validation commands for the assigned scope without running full task validation as a default baseline
+   - Pre-change `run_task_validation` is allowed only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers
 </phase>
 
 <phase name="IMPLEMENT">
@@ -148,6 +149,8 @@ Proceed using:
 </phase>
 
 <phase name="VALIDATE">
+Run final validation after assigned-scope changes exist.
+
 Before marking work complete:
 1. `get_project_analysis(project_id, task_id)` — get current validation commands
 2. **Targeted test identification** — When task steps include test identification instructions (or when code changes span ≤5 files):

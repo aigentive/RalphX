@@ -123,8 +123,8 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 6. **Early exit**: If ALL steps are already completed or skipped, output a brief summary
    (e.g. "All N steps already completed/skipped from previous execution. No further work needed.") and stop.
    Do NOT call any additional tools or proceed to further phases.
-7. Call `get_project_analysis(project_id, task_id)` → choose relevant `validate` commands and call `run_task_validation` (worktree_setup is ALREADY done by the backend — do NOT re-run)
-   - All validate commands must pass before writing code (pre-existing failures: note and proceed)
+7. Call `get_project_analysis(project_id, task_id)` → choose likely `validate` commands and constraints for later wave/final validation (worktree_setup is ALREADY done by the backend — do NOT re-run)
+   - Do not run full task validation as a default baseline before implementation; use pre-change `run_task_validation` only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers
    - NEVER commit `node_modules`, `target`, or other symlinked directories — these are worktree artifacts
 8. If a pre-existing failure outside your task scope blocks progress, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. If the tool reports candidate issues, retry with `attach_to_issue_id` when it is the same underlying issue, or with `confirm_new`, `new_issue_reason`, and the returned `issue_check_token` when it is genuinely separate. Then stop or fail the current step according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not edit unrelated files to make the current task green.
 </phase>
@@ -162,6 +162,8 @@ Do not use legacy Claude subagent or background-agent patterns for coder dispatc
 </phase>
 
 <phase name="VALIDATE">
+Run final validation after task-scoped changes exist.
+
 Before marking work complete:
 1. `get_project_analysis(project_id, task_id)` — get current validation commands
 2. **Targeted test identification** — When task steps include test identification instructions (or when code changes span ≤5 files even without explicit instructions):

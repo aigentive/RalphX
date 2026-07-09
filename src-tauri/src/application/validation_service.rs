@@ -89,6 +89,10 @@ pub struct ValidationRunSummary {
     pub base_ref: Option<String>,
     pub started_at: String,
     pub completed_at: Option<String>,
+    pub current_for_head: bool,
+    pub current_for_execution_episode: bool,
+    pub review_evidence_eligible: bool,
+    pub ineligible_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +115,14 @@ pub struct ValidationCommandSummary {
     pub stdout_log_path: Option<String>,
     pub stderr_log_path: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct ValidationEvidenceClassification {
+    current_for_head: bool,
+    current_for_execution_episode: bool,
+    review_evidence_eligible: bool,
+    ineligible_reason: Option<&'static str>,
 }
 
 pub struct TaskValidationService;
@@ -224,7 +236,12 @@ impl TaskValidationService {
             task_id: task.id.as_str().to_string(),
             project_id: task.project_id.as_str().to_string(),
             policy_enabled: settings.run_task_validations,
-            latest_run: Some(ValidationRunSummary::from(&completed_run)),
+            latest_run: Some(ValidationRunSummary::from_run_with_evidence(
+                &completed_run,
+                current_head_sha.as_deref(),
+                status_episode_entered_at,
+                &summaries,
+            )),
             commands: summaries,
             legacy_validation_cache: legacy_validation_cache(
                 &task,
@@ -268,14 +285,20 @@ impl TaskValidationService {
             .await?;
 
         let (latest_run, commands) = match latest {
-            Some(with_results) => (
-                Some(ValidationRunSummary::from(&with_results.run)),
-                with_results
+            Some(with_results) => {
+                let commands = with_results
                     .commands
                     .iter()
                     .map(ValidationCommandSummary::from)
-                    .collect(),
-            ),
+                    .collect::<Vec<_>>();
+                let latest_run = Some(ValidationRunSummary::from_run_with_evidence(
+                    &with_results.run,
+                    current_head_sha.as_deref(),
+                    status_episode_entered_at,
+                    &commands,
+                ));
+                (latest_run, commands)
+            }
             None => (None, Vec::new()),
         };
 
@@ -768,6 +791,60 @@ fn legacy_validation_cache(
     })
 }
 
+fn classify_validation_evidence(
+    run: &ValidationRun,
+    current_head_sha: Option<&str>,
+    episode_entered_at: Option<DateTime<Utc>>,
+    commands: &[ValidationCommandSummary],
+) -> ValidationEvidenceClassification {
+    let current_for_head = current_head_sha
+        .zip(run.head_sha.as_deref())
+        .map(|(current, captured)| current == captured)
+        .unwrap_or(false);
+    let current_for_execution_episode = match (
+        run.status_episode_entered_at.as_ref(),
+        episode_entered_at.as_ref(),
+    ) {
+        (Some(captured), Some(current)) => captured >= current,
+        _ => false,
+    };
+    let has_test_commands = commands
+        .iter()
+        .any(|command| command.category == ValidationCommandCategory::Test.as_str());
+    let commands_successful = !commands.is_empty()
+        && commands
+            .iter()
+            .all(|command| validation_command_status_success_like(&command.status));
+
+    let ineligible_reason = if run.purpose == ValidationPurpose::Baseline {
+        Some("baseline_only")
+    } else if !current_for_head {
+        Some("stale_head")
+    } else if !current_for_execution_episode {
+        Some("stale_episode")
+    } else if run.status != ValidationRunStatus::Passed || !commands_successful {
+        Some("failed")
+    } else if !has_test_commands {
+        Some("no_test_commands")
+    } else {
+        None
+    };
+
+    ValidationEvidenceClassification {
+        current_for_head,
+        current_for_execution_episode,
+        review_evidence_eligible: ineligible_reason.is_none(),
+        ineligible_reason,
+    }
+}
+
+fn validation_command_status_success_like(status: &str) -> bool {
+    matches!(
+        ValidationCommandStatus::parse(status),
+        ValidationCommandStatus::Passed | ValidationCommandStatus::Cached
+    )
+}
+
 fn write_command_logs(
     task_id: &str,
     run_id: &str,
@@ -812,8 +889,15 @@ fn write_command_log(
     }
 }
 
-impl From<&ValidationRun> for ValidationRunSummary {
-    fn from(run: &ValidationRun) -> Self {
+impl ValidationRunSummary {
+    fn from_run_with_evidence(
+        run: &ValidationRun,
+        current_head_sha: Option<&str>,
+        episode_entered_at: Option<DateTime<Utc>>,
+        commands: &[ValidationCommandSummary],
+    ) -> Self {
+        let classification =
+            classify_validation_evidence(run, current_head_sha, episode_entered_at, commands);
         Self {
             id: run.id.clone(),
             purpose: run.purpose.as_str().to_string(),
@@ -830,7 +914,17 @@ impl From<&ValidationRun> for ValidationRunSummary {
             base_ref: run.base_ref.clone(),
             started_at: run.started_at.to_rfc3339(),
             completed_at: run.completed_at.map(|dt| dt.to_rfc3339()),
+            current_for_head: classification.current_for_head,
+            current_for_execution_episode: classification.current_for_execution_episode,
+            review_evidence_eligible: classification.review_evidence_eligible,
+            ineligible_reason: classification.ineligible_reason.map(str::to_string),
         }
+    }
+}
+
+impl From<&ValidationRun> for ValidationRunSummary {
+    fn from(run: &ValidationRun) -> Self {
+        Self::from_run_with_evidence(run, None, None, &[])
     }
 }
 
@@ -906,6 +1000,202 @@ mod tests {
                 source: None,
             }],
         }
+    }
+
+    fn validation_run_fixture(
+        purpose: ValidationPurpose,
+        status: ValidationRunStatus,
+        head_sha: Option<&str>,
+        episode_entered_at: Option<DateTime<Utc>>,
+    ) -> ValidationRun {
+        let project = Project::new(
+            "Evidence project".to_string(),
+            "/tmp/evidence-project".to_string(),
+        );
+        let task = Task::new(project.id.clone(), "Evidence task".to_string());
+        ValidationRun {
+            id: "run-evidence".to_string(),
+            task_id: task.id,
+            project_id: project.id,
+            purpose,
+            context_type: ValidationContextType::Execution,
+            requested_by_agent: Some("ralphx-execution-worker".to_string()),
+            status,
+            mode: ValidationRunMode::Force,
+            policy_enabled: true,
+            head_sha: head_sha.map(ToString::to_string),
+            base_ref: Some("main".to_string()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: episode_entered_at,
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+        }
+    }
+
+    fn command_summary(category: &str, status: &str) -> ValidationCommandSummary {
+        ValidationCommandSummary {
+            id: "command-evidence".to_string(),
+            command_source: "agent_selected".to_string(),
+            command_ref: None,
+            command: "cargo test validation".to_string(),
+            cwd: "/tmp/evidence-project".to_string(),
+            label: None,
+            category: category.to_string(),
+            reason: None,
+            related_files: Vec::new(),
+            cache_decision: "ran".to_string(),
+            status: status.to_string(),
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            created_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn validation_run_summary_marks_baseline_passed_evidence_non_eligible() {
+        let episode = Utc::now();
+        let run = validation_run_fixture(
+            ValidationPurpose::Baseline,
+            ValidationRunStatus::Passed,
+            Some("abcdef1234567890"),
+            Some(episode),
+        );
+        let commands = vec![command_summary("test", "passed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("abcdef1234567890"),
+            Some(episode),
+            &commands,
+        );
+
+        assert!(summary.current_for_head);
+        assert!(summary.current_for_execution_episode);
+        assert!(!summary.review_evidence_eligible);
+        assert_eq!(summary.ineligible_reason.as_deref(), Some("baseline_only"));
+    }
+
+    #[test]
+    fn validation_run_summary_marks_current_final_test_evidence_eligible() {
+        let episode = Utc::now();
+        let run = validation_run_fixture(
+            ValidationPurpose::Final,
+            ValidationRunStatus::Passed,
+            Some("abcdef1234567890"),
+            Some(episode),
+        );
+        let commands = vec![command_summary("test", "passed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("abcdef1234567890"),
+            Some(episode),
+            &commands,
+        );
+
+        assert!(summary.current_for_head);
+        assert!(summary.current_for_execution_episode);
+        assert!(summary.review_evidence_eligible);
+        assert!(summary.ineligible_reason.is_none());
+    }
+
+    #[test]
+    fn validation_run_summary_marks_stale_head_ineligible() {
+        let episode = Utc::now();
+        let run = validation_run_fixture(
+            ValidationPurpose::Final,
+            ValidationRunStatus::Passed,
+            Some("oldhead123456789"),
+            Some(episode),
+        );
+        let commands = vec![command_summary("test", "passed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("newhead123456789"),
+            Some(episode),
+            &commands,
+        );
+
+        assert!(!summary.current_for_head);
+        assert!(!summary.review_evidence_eligible);
+        assert_eq!(summary.ineligible_reason.as_deref(), Some("stale_head"));
+    }
+
+    #[test]
+    fn validation_run_summary_marks_stale_episode_ineligible() {
+        let previous_episode = Utc::now();
+        let current_episode = previous_episode + chrono::Duration::seconds(1);
+        let run = validation_run_fixture(
+            ValidationPurpose::Final,
+            ValidationRunStatus::Passed,
+            Some("abcdef1234567890"),
+            Some(previous_episode),
+        );
+        let commands = vec![command_summary("test", "passed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("abcdef1234567890"),
+            Some(current_episode),
+            &commands,
+        );
+
+        assert!(summary.current_for_head);
+        assert!(!summary.current_for_execution_episode);
+        assert!(!summary.review_evidence_eligible);
+        assert_eq!(summary.ineligible_reason.as_deref(), Some("stale_episode"));
+    }
+
+    #[test]
+    fn validation_run_summary_marks_failed_command_ineligible() {
+        let episode = Utc::now();
+        let run = validation_run_fixture(
+            ValidationPurpose::Final,
+            ValidationRunStatus::Failed,
+            Some("abcdef1234567890"),
+            Some(episode),
+        );
+        let commands = vec![command_summary("test", "failed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("abcdef1234567890"),
+            Some(episode),
+            &commands,
+        );
+
+        assert!(!summary.review_evidence_eligible);
+        assert_eq!(summary.ineligible_reason.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn validation_run_summary_marks_no_test_commands_ineligible() {
+        let episode = Utc::now();
+        let run = validation_run_fixture(
+            ValidationPurpose::Final,
+            ValidationRunStatus::Passed,
+            Some("abcdef1234567890"),
+            Some(episode),
+        );
+        let commands = vec![command_summary("lint", "passed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("abcdef1234567890"),
+            Some(episode),
+            &commands,
+        );
+
+        assert!(!summary.review_evidence_eligible);
+        assert_eq!(
+            summary.ineligible_reason.as_deref(),
+            Some("no_test_commands")
+        );
     }
 
     fn event_payload_run() -> (ValidationRun, Task) {

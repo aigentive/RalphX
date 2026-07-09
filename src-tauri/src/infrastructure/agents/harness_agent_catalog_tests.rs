@@ -2628,6 +2628,66 @@ fn codex_execution_prompts_avoid_claude_only_team_and_task_syntax() {
     }
 }
 
+#[test]
+fn execution_prompts_do_not_require_default_baseline_validation() {
+    let root = project_root();
+    let prompt_surfaces = [
+        ("ralphx-execution-worker", AgentPromptHarness::Claude),
+        ("ralphx-execution-worker", AgentPromptHarness::Codex),
+        ("ralphx-execution-coder", AgentPromptHarness::Claude),
+        ("ralphx-execution-coder", AgentPromptHarness::Codex),
+        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
+    ];
+    let forbidden_normal_flow_phrases = [
+        "baseline/final validation commands",
+        "selected baseline validation commands",
+        "confirm clean baseline",
+        "confirm a clean baseline",
+        "establish clean baseline",
+        "All validate commands must pass before writing code",
+        "all validate commands must pass before writing code",
+    ];
+
+    for (agent_name, harness) in prompt_surfaces {
+        let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+            .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+        for forbidden in forbidden_normal_flow_phrases {
+            assert!(
+                !prompt.contains(forbidden),
+                "{agent_name} {harness:?} prompt must not require default baseline validation with `{forbidden}`"
+            );
+        }
+        assert!(
+            prompt.contains("get_project_analysis"),
+            "{agent_name} {harness:?} prompt should still load validation commands"
+        );
+        assert!(
+            prompt.contains("run_task_validation"),
+            "{agent_name} {harness:?} prompt should still use backend-managed validation"
+        );
+        assert!(
+            prompt.contains("final validation"),
+            "{agent_name} {harness:?} prompt should still require final validation"
+        );
+    }
+}
+
+#[test]
+fn task_execution_agent_rule_documents_post_change_validation_policy() {
+    let root = project_root();
+    let rule_doc = fs::read_to_string(root.join(".claude/rules/task-execution-agents.md"))
+        .expect("read task execution agent rule");
+
+    assert!(
+        rule_doc.contains("Execution agents do not run full baseline task validation by default"),
+        "task execution rule should state the default post-change validation policy"
+    );
+    assert!(
+        rule_doc.contains("explicit diagnostic"),
+        "task execution rule should preserve explicit diagnostic baseline use"
+    );
+}
+
 #[cfg(unix)]
 fn symlink_dir(source: impl AsRef<std::path::Path>, target: impl AsRef<std::path::Path>) {
     std::os::unix::fs::symlink(source, target).expect("create directory symlink");
