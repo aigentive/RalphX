@@ -112,6 +112,31 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
     }
 }
 
+#[test]
+fn production_automation_transition_services_use_shared_event_emitter_factory() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let commands =
+        std::fs::read_to_string(manifest_dir.join("src/commands/automation_commands.rs")).unwrap();
+    let delete =
+        std::fs::read_to_string(manifest_dir.join("src/application/automation/delete.rs")).unwrap();
+    let api =
+        std::fs::read_to_string(manifest_dir.join("src/application/automation/api.rs")).unwrap();
+
+    assert!(
+        !commands.contains("NoopAutomationEventEmitter"),
+        "automation commands must use the shared transition-service factory"
+    );
+    assert!(
+        !delete.contains("NoopAutomationEventEmitter"),
+        "automation delete must use the shared transition-service factory"
+    );
+    assert_eq!(
+        api.matches("Arc::new(NoopAutomationEventEmitter)").count(),
+        1,
+        "automation API should own the single Noop event-emitter fallback"
+    );
+}
+
 #[tokio::test]
 async fn transition_service_emits_after_successful_automation_status_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());

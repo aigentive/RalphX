@@ -740,6 +740,52 @@ impl AutomationService {
         Ok(cancelled)
     }
 
+    pub async fn terminalize_blocked_run(
+        &self,
+        automation_id: &AutomationId,
+        run: &AutomationRun,
+        error_code: &str,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        if run.automation_id != *automation_id {
+            return Err(AppError::Validation(
+                "automation run is not owned by the requested automation".to_string(),
+            ));
+        }
+        let changed = if matches!(
+            run.status,
+            AutomationRunStatus::Running | AutomationRunStatus::Provisioning
+        ) {
+            self.transition_service
+                .transition_run_status(
+                    &run.id,
+                    run.status,
+                    AutomationRunStatus::AgentFailed,
+                    Some(error_code.to_string()),
+                    error_detail,
+                )
+                .await?
+        } else {
+            false
+        };
+        if !changed
+            && matches!(
+                run.status,
+                AutomationRunStatus::Running | AutomationRunStatus::Provisioning
+            )
+        {
+            tracing::warn!(
+                automation_id = %automation_id,
+                run_id = %run.id,
+                from_status = run.status.as_str(),
+                "Discarded workspace-review-blocked run terminalization because run status changed"
+            );
+        }
+        self.sync_goal_items_for_closed_run_without_successor(automation_id)
+            .await;
+        Ok(changed)
+    }
+
     async fn disarm_cancelled_run_auto_merge(&self, run: &AutomationRun) {
         let Some(workspace_repo) = self.workspace_repo.as_ref() else {
             return;

@@ -10,9 +10,9 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceSetupMode,
 };
 use crate::application::automation::api::{
-    automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
-    AutomationResponse, AutomationRunResponse, AutomationScheduleResponse,
-    CreateAutomationDraftResponse,
+    automation_detail_response_for_state, automation_service_for_state,
+    automation_transition_service_for_state, AutomationDetailResponse, AutomationResponse,
+    AutomationRunResponse, AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
 use crate::application::automation::delete::delete_automation_with_archive;
 use crate::application::automation::scheduler::{
@@ -24,9 +24,7 @@ use crate::application::automation::service::{
     CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
-use crate::application::automation::transition::{
-    AutomationTransitionService, NoopAutomationEventEmitter,
-};
+use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
@@ -351,6 +349,12 @@ pub(crate) async fn trigger_automation_run_now_for_state(
                 )
                 .await?;
             if !changed {
+                tracing::warn!(
+                    automation_id = %id,
+                    run_id = %run.id,
+                    from_judge_state = run.judge_state.as_str(),
+                    "Discarded Run Now judge start because judge state changed"
+                );
                 return Ok(AutomationScheduleOutcome {
                     scheduled: false,
                     reason: Some("run in flight".to_string()),
@@ -418,11 +422,7 @@ pub(crate) fn automation_service(state: &AppState) -> AutomationService {
 }
 
 fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
-    AutomationTransitionService::new(
-        state.automation_repo.clone(),
-        state.automation_run_repo.clone(),
-        Arc::new(NoopAutomationEventEmitter),
-    )
+    automation_transition_service_for_state(state)
 }
 
 pub(crate) fn parse_automation_id(value: &str) -> Result<AutomationId, String> {

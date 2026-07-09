@@ -1,14 +1,12 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::Utc;
 
 use crate::application::agent_conversation_archive::archive_agent_conversation_for_state;
-use crate::application::automation::api::automation_service_for_state;
-use crate::application::automation::transition::{
-    AutomationEventEmitter, AutomationTransitionService, NoopAutomationEventEmitter,
-    TauriAutomationEventEmitter,
+use crate::application::automation::api::{
+    automation_service_for_state, automation_transition_service_for_state,
 };
+use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::AppState;
 use crate::domain::entities::{
     ArtifactId, AutomationId, AutomationJudgeState, AutomationStatus, ChatConversation,
@@ -302,13 +300,5 @@ async fn cleanup_automation_remote_base_branch(
 }
 
 fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
-    let event_emitter: Arc<dyn AutomationEventEmitter> = match state.app_handle.as_ref() {
-        Some(app_handle) => Arc::new(TauriAutomationEventEmitter::new(app_handle.clone())),
-        None => Arc::new(NoopAutomationEventEmitter),
-    };
-    AutomationTransitionService::new(
-        state.automation_repo.clone(),
-        state.automation_run_repo.clone(),
-        event_emitter,
-    )
+    automation_transition_service_for_state(state)
 }

@@ -587,15 +587,25 @@ struct AutomationJudgeTaskOutcome {
     judge_failed: bool,
     successor_created: bool,
     terminal_automation_status: Option<AutomationStatus>,
+    discard_reason: Option<String>,
 }
 
 impl AutomationJudgeTaskOutcome {
     fn from_apply_outcome(outcome: AutomationJudgeApplyOutcome) -> Self {
+        let AutomationJudgeApplyOutcome {
+            successor_run,
+            terminal_automation_status,
+            noop_reason,
+            reason,
+        } = outcome;
+        let discard_reason =
+            noop_reason.map(|reason_kind| reason.unwrap_or_else(|| format!("{reason_kind:?}")));
         Self {
             judge_succeeded: true,
             judge_failed: false,
-            successor_created: outcome.successor_run.is_some(),
-            terminal_automation_status: outcome.terminal_automation_status,
+            successor_created: successor_run.is_some(),
+            terminal_automation_status,
+            discard_reason,
         }
     }
 }
@@ -2664,6 +2674,14 @@ impl AutomationScheduler {
             .await?
         {
             summary.failed_runs += 1;
+        } else {
+            tracing::warn!(
+                run_id = %run.id,
+                from_status = run.status.as_str(),
+                error_code = code,
+                error_detail = detail,
+                "Discarded automation run failure because run status changed"
+            );
         }
         Ok(())
     }
@@ -2704,6 +2722,13 @@ impl AutomationScheduler {
                         runs.to_vec(),
                         run.clone(),
                         judge_lease_expires_at,
+                    );
+                } else {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        run_id = %run.id,
+                        from_judge_state = from.as_str(),
+                        "Discarded automation judge start because judge state changed"
                     );
                 }
             }
@@ -2769,6 +2794,13 @@ impl AutomationScheduler {
                     .sync_goal_items_for_closed_run_without_successor(&automation.id)
                     .await;
             }
+        } else {
+            tracing::warn!(
+                automation_id = %automation.id,
+                run_id = %run.id,
+                lease_expires_at = %judge_lease_expires_at.to_rfc3339(),
+                "Discarded automation judge failure because judge state or lease changed"
+            );
         }
         Ok(())
     }
@@ -2877,17 +2909,28 @@ impl AutomationScheduler {
             .service
             .apply_stored_judge_verdict(&automation.id, &run.id)
             .await?;
-        self.record_judge_apply_outcome(outcome, summary);
+        self.record_judge_apply_outcome(automation, run, outcome, summary);
         Ok(())
     }
 
     fn record_judge_apply_outcome(
         &self,
+        automation: &Automation,
+        run: &AutomationRun,
         outcome: crate::application::automation::service::AutomationJudgeApplyOutcome,
         summary: &mut AutomationSchedulerTickSummary,
     ) {
         if outcome.successor_run.is_some() {
             summary.successor_runs += 1;
+        }
+        if let Some(noop_reason) = outcome.noop_reason {
+            tracing::warn!(
+                automation_id = %automation.id,
+                run_id = %run.id,
+                noop_reason = ?noop_reason,
+                reason = ?outcome.reason,
+                "Discarded stored automation judge verdict"
+            );
         }
         match outcome.terminal_automation_status {
             Some(AutomationStatus::Paused) => summary.paused_automations += 1,
@@ -3096,6 +3139,13 @@ impl AutomationScheduler {
                     .await?
                 {
                     summary.merged_runs += 1;
+                } else {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        run_id = %run.id,
+                        pr_number,
+                        "Discarded automation merged transition because run status changed"
+                    );
                 }
             }
             Ok(PrStatus::Closed) => {
@@ -3120,6 +3170,13 @@ impl AutomationScheduler {
                     .await?
                 {
                     summary.closed_runs += 1;
+                } else {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        run_id = %run.id,
+                        pr_number,
+                        "Discarded automation PR-closed transition because run status changed"
+                    );
                 }
             }
             Err(error) => {
@@ -3268,6 +3325,7 @@ pub(crate) fn spawn_automation_judge_task(
                     judge_failed = outcome.judge_failed,
                     successor_created = outcome.successor_created,
                     terminal_status = ?outcome.terminal_automation_status,
+                    discard_reason = ?outcome.discard_reason,
                     "Automation judge task completed"
                 );
             }

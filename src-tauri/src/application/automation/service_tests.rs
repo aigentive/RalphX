@@ -1999,6 +1999,73 @@ async fn service_excludes_workspace_review_blocked_run_from_failure_guardrail() 
 }
 
 #[tokio::test]
+async fn service_terminalizes_review_blocked_run_with_event_and_goal_sync() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.goal_items_json =
+        Some(json!([{ "id": "phase-1", "title": "Run 1", "status": "in_progress" }]).to_string());
+    automation_repo.create(active.clone()).await.unwrap();
+    let running = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(running.clone()).await.unwrap();
+
+    let changed = service
+        .terminalize_blocked_run(
+            &active.id,
+            &running,
+            "workspace_review_blocked",
+            Some("Review blocked publication".to_string()),
+        )
+        .await
+        .unwrap();
+
+    assert!(changed);
+    let stored_run = run_repo.get_by_id(&running.id).await.unwrap().unwrap();
+    assert_eq!(stored_run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        stored_run.error_code.as_deref(),
+        Some("workspace_review_blocked")
+    );
+    let stored_automation = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(
+            stored_automation.goal_items_json.as_deref().unwrap(),
+            "phase-1",
+        ),
+        "pending"
+    );
+    let events = emitter.events();
+    assert!(events.contains(&AutomationEvent::AutomationRunUpdated {
+        run_id: running.id.clone()
+    }));
+    assert!(events.contains(&AutomationEvent::AutomationUpdated {
+        automation_id: active.id.clone()
+    }));
+
+    let already_terminal = run_repo.get_by_id(&running.id).await.unwrap().unwrap();
+    let changed_again = service
+        .terminalize_blocked_run(
+            &active.id,
+            &already_terminal,
+            "workspace_review_blocked",
+            Some("Review blocked publication".to_string()),
+        )
+        .await
+        .unwrap();
+    assert!(!changed_again);
+}
+
+#[tokio::test]
 async fn service_cancel_run_and_stop_use_run_transition_service() {
     let emitter = Arc::new(RecordingEmitter::default());
     let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());

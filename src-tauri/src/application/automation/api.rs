@@ -6,7 +6,8 @@ use crate::application::automation::service::{
     AutomationDetail, AutomationScheduleOutcome, AutomationService,
 };
 use crate::application::automation::transition::{
-    AutomationEventEmitter, NoopAutomationEventEmitter, TauriAutomationEventEmitter,
+    AutomationEventEmitter, AutomationTransitionService, NoopAutomationEventEmitter,
+    TauriAutomationEventEmitter,
 };
 use crate::application::AppState;
 use crate::domain::entities::{AgentRun, Automation, AutomationRun};
@@ -110,11 +111,15 @@ pub struct AutomationScheduleResponse {
     pub reason: Option<String>,
 }
 
-pub fn automation_service_for_state(state: &AppState) -> AutomationService {
-    let event_emitter: Arc<dyn AutomationEventEmitter> = match state.app_handle.as_ref() {
+pub fn automation_event_emitter_for_state(state: &AppState) -> Arc<dyn AutomationEventEmitter> {
+    match state.app_handle.as_ref() {
         Some(app_handle) => Arc::new(TauriAutomationEventEmitter::new(app_handle.clone())),
         None => Arc::new(NoopAutomationEventEmitter),
-    };
+    }
+}
+
+pub fn automation_service_for_state(state: &AppState) -> AutomationService {
+    let event_emitter = automation_event_emitter_for_state(state);
     AutomationService::new(
         state.automation_repo.clone(),
         state.automation_run_repo.clone(),
@@ -124,6 +129,14 @@ pub fn automation_service_for_state(state: &AppState) -> AutomationService {
     .with_pr_auto_merge_controls(
         state.agent_conversation_workspace_repo.clone(),
         state.github_service.clone(),
+    )
+}
+
+pub fn automation_transition_service_for_state(state: &AppState) -> AutomationTransitionService {
+    AutomationTransitionService::new(
+        state.automation_repo.clone(),
+        state.automation_run_repo.clone(),
+        automation_event_emitter_for_state(state),
     )
 }
 

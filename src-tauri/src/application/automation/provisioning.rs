@@ -516,7 +516,13 @@ impl AutomationRunProvisioner {
                     automation_id: automation_id.clone(),
                 });
             }
-            Ok(None) => {}
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    "Skipped reverting automation goal item progress after run closed because goal items changed"
+                );
+            }
             Err(error) => {
                 tracing::warn!(
                     automation_id = %automation_id,
