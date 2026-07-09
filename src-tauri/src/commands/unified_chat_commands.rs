@@ -4233,40 +4233,38 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                     .map_err(|e| e.to_string())?;
             }
         }
-    } else if workspace.pr_auto_merge_current == Some(true) {
-        match github.disable_pr_auto_merge(working_dir, pr_number).await {
-            Ok(()) => {
-                state
-                    .agent_conversation_workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        Some(false),
-                        Some("monitoring"),
-                        Some("GitHub auto-merge is disabled for this PR."),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = conversation_id.as_str(),
-                    pr_number,
-                    error = %error,
-                    "Agent workspace PR supervision deferred GitHub auto-merge disable"
-                );
-                state
-                    .agent_conversation_workspace_repo
-                    .update_pr_auto_merge_state(
-                        conversation_id,
-                        Some(true),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be disabled yet: {error}"
-                        )),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
+    } else {
+        let mut desired_workspace = workspace.clone();
+        desired_workspace.pr_auto_merge_desired = false;
+        desired_workspace.pr_auto_merge_method = auto_merge_method.to_string();
+
+        if let Err(error) = sync_agent_workspace_auto_merge_preference_for_workspace(
+            Arc::clone(github),
+            working_dir,
+            pr_number,
+            &desired_workspace,
+            Arc::clone(&state.agent_conversation_workspace_repo),
+        )
+        .await
+        {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_number,
+                error = %error,
+                "Agent workspace PR supervision deferred GitHub auto-merge disable"
+            );
+            state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    Some(true),
+                    Some("waiting"),
+                    Some(&format!(
+                        "GitHub auto-merge could not be disabled yet: {error}"
+                    )),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -10016,7 +10014,7 @@ mod tests {
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::review::ReviewSettings;
-    use crate::domain::services::github_service::PrHealth;
+    use crate::domain::services::github_service::{PrAutoMergeRequest, PrHealth};
     use crate::domain::services::{
         GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrMergeStateStatus,
         PrMergeableState, PrStatus as GithubPrStatus, PrSyncState, RunningAgentKey,
@@ -11587,6 +11585,7 @@ mod tests {
     async fn pr_supervision_disable_uses_linked_plan_pr_without_ensuring_locked_plan_worktree() {
         let mut state = AppState::new_test();
         let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(command_test_pr_health(true)));
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
         state.github_service = Some(github_trait);
 
@@ -11695,6 +11694,7 @@ mod tests {
         assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
 
         let github_state = github.state();
+        assert_eq!(github_state.fetch_pr_health_calls, 1);
         assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
         assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(630));
         assert_eq!(
@@ -11880,6 +11880,7 @@ mod tests {
     async fn pr_supervision_disable_turns_off_existing_auto_merge() {
         let mut state = AppState::new_test();
         let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(command_test_pr_health(true)));
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
         state.github_service = Some(github_trait);
 
@@ -11916,7 +11917,7 @@ mod tests {
         assert_eq!(response.pr_auto_merge_current, Some(false));
         assert_eq!(
             response.pr_supervision_status.as_deref(),
-            Some("monitoring")
+            Some("disabled")
         );
         assert!(response
             .pr_supervision_summary
@@ -11926,8 +11927,73 @@ mod tests {
 
         {
             let github_state = github.state();
+            assert_eq!(github_state.fetch_pr_health_calls, 1);
             assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
             assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(252));
+        }
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "pr_supervision"
+                && event.status == "disabled"
+                && event.summary == "RalphX PR supervision is disabled."
+        }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_disable_treats_absent_remote_auto_merge_as_idempotent() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(command_test_pr_health(false)));
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(253);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_desired = true;
+        workspace.pr_auto_merge_current = Some(true);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let response = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: false,
+                auto_merge_desired: false,
+                auto_merge_method: None,
+            },
+            &state,
+        )
+        .await
+        .expect("PR supervision should disable idempotently when GitHub auto-merge is absent");
+
+        assert!(!response.pr_autofix_enabled);
+        assert!(!response.pr_auto_merge_desired);
+        assert_eq!(response.pr_auto_merge_current, Some(false));
+        assert_eq!(response.pr_supervision_status.as_deref(), Some("disabled"));
+
+        let persisted = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert!(!persisted.pr_auto_merge_desired);
+        assert_eq!(persisted.pr_auto_merge_current, Some(false));
+
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.fetch_pr_health_calls, 1);
+            assert_eq!(github_state.disable_pr_auto_merge_calls, 0);
         }
 
         let events = state
@@ -11946,6 +12012,7 @@ mod tests {
     async fn pr_supervision_disable_records_waiting_when_auto_merge_disable_fails() {
         let mut state = AppState::new_test();
         let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(command_test_pr_health(true)));
         github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
             "GitHub auto-merge cannot be disabled yet".to_string(),
         )));
@@ -11988,6 +12055,7 @@ mod tests {
 
         {
             let github_state = github.state();
+            assert_eq!(github_state.fetch_pr_health_calls, 1);
             assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
         }
 
@@ -12335,6 +12403,32 @@ mod tests {
             "ralphx/test/agent-command".to_string(),
             "/tmp/agent-command-workspace".to_string(),
         )
+    }
+
+    fn command_test_pr_health(auto_merge_active: bool) -> PrHealth {
+        PrHealth {
+            sync_state: PrSyncState {
+                status: GithubPrStatus::Open,
+                merge_state_status: None,
+                mergeable: None,
+                is_draft: false,
+                head_ref_name: "feature".to_string(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: None,
+                base_ref_oid: None,
+            },
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: if auto_merge_active {
+                Some(PrAutoMergeRequest {
+                    enabled_by: Some("github-user".to_string()),
+                    merge_method: Some("squash".to_string()),
+                })
+            } else {
+                None
+            },
+        }
     }
 
     fn command_publish_target() -> AgentConversationWorkspacePublishTarget {
