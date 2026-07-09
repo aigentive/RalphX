@@ -106,6 +106,8 @@ import {
   PUBLICATION_STATE_OPTIONS,
 } from "./agentSidebarMetadata";
 import {
+  useAgentSidebarAutomationGroup,
+  useAgentSidebarAutomationGroupIndex,
   useAgentSidebarProjectGroup,
   useAgentSidebarPublicationGroup,
   useProjectGroupLatestOrder,
@@ -872,7 +874,7 @@ export function AgentsSidebar({
   );
   const selectedPriorityConversationIds = useMemo(() => {
     const ids = new Set<string>();
-    if (sidebarGroupBy === "publication" && selectedConversationId) {
+    if (sidebarGroupBy !== "project" && selectedConversationId) {
       ids.add(selectedConversationId);
     }
     if (
@@ -1170,6 +1172,26 @@ export function AgentsSidebar({
             onTogglePinnedConversation={togglePinnedConversation}
             showArchived={showArchived}
           />
+        ) : sidebarGroupBy === "automation" ? (
+          <AutomationGroups
+            projects={orderedProjects}
+            isSidebarVisible={isVisible}
+            pinnedConversationIdList={pinnedConversationIdList}
+            priorityConversationIds={selectedPriorityConversationIds}
+            pinnedConversationIds={pinnedConversationIds}
+            rowSort={projectSort}
+            selectedConversationId={selectedConversationId}
+            searchQuery={normalizedSearch}
+            selectedPublicationStates={selectedPublicationStates}
+            onArchiveConversation={onArchiveConversation}
+            onAutoRenameConversation={onAutoRenameConversation}
+            onRenameConversation={onRenameConversation}
+            onRestoreConversation={onRestoreConversation}
+            onForkConversation={handleForkConversation}
+            onSelectConversation={handleSelectVisibleConversation}
+            onTogglePinnedConversation={togglePinnedConversation}
+            showArchived={showArchived}
+          />
         ) : (
           orderedProjects.map((project) => (
             <ProjectSessionGroup
@@ -1266,7 +1288,12 @@ function AgentsSidebarToolbar({
   totalArchivedCount,
   onShowArchivedChange,
 }: AgentsSidebarToolbarProps) {
-  const sortTarget = sidebarGroupBy === "project" ? "projects" : "conversations";
+  const sortTarget =
+    sidebarGroupBy === "project"
+      ? "projects"
+      : sidebarGroupBy === "automation"
+        ? "automations"
+        : "conversations";
   const ensureScopedProjectSelection = () => {
     if (selectedProjectFilterSet.size > 0) {
       return;
@@ -1310,6 +1337,10 @@ function AgentsSidebarToolbar({
     afterSidebarControlPaint(() => setProjectSort(nextSort));
   };
 
+  const handleGroupChange = (groupBy: AgentSidebarGroupBy) => {
+    afterSidebarControlPaint(() => setSidebarGroupBy(groupBy));
+  };
+
   return (
     <div
       className="mb-2 flex h-8 shrink-0 items-center gap-1 px-3"
@@ -1320,6 +1351,72 @@ function AgentsSidebarToolbar({
         backgroundColor: "var(--bg-surface)",
       }}
     >
+      <Popover modal={false}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            data-testid="agents-group-trigger"
+            aria-label={`Group conversations: ${
+              sidebarGroupBy === "project"
+                ? "Project"
+                : sidebarGroupBy === "automation"
+                  ? "Automations"
+                  : "Publication state"
+            }`}
+            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent bg-transparent px-2 text-[0.7188rem] font-medium text-[var(--text-muted)] transition-colors duration-[120ms] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+          >
+            <span>Group</span>
+            <Folder className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className="w-56 px-1.5 py-2.5"
+          data-testid="agents-group-popover"
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            boxShadow: "var(--shadow-sm)",
+          }}
+        >
+          <div className="space-y-1 text-xs">
+            <FilterSectionLabel>Group by</FilterSectionLabel>
+            <div className="grid gap-1" role="radiogroup" aria-label="Group by">
+              {(
+                [
+                  ["project", "Project"],
+                  ["publication", "Publication state"],
+                  ["automation", "Automations"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={sidebarGroupBy === value}
+                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
+                  onClick={() => handleGroupChange(value)}
+                  style={{
+                    backgroundColor:
+                      sidebarGroupBy === value
+                        ? "var(--accent-muted)"
+                        : "transparent",
+                    color:
+                      sidebarGroupBy === value
+                        ? "var(--text-primary)"
+                        : "var(--text-muted)",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+
       <Popover modal={false}>
         <PopoverTrigger asChild>
           <button
@@ -1364,54 +1461,6 @@ function AgentsSidebarToolbar({
                   </span>
                 }
               />
-            </div>
-
-            <div className="space-y-1.5" data-testid="agents-filter-group-by">
-              <FilterSectionLabel>Group by</FilterSectionLabel>
-              <div
-                className="grid grid-cols-2 gap-1"
-                role="radiogroup"
-                aria-label="Group by"
-              >
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={sidebarGroupBy === "project"}
-                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
-                  onClick={() => setSidebarGroupBy("project")}
-                  style={{
-                    backgroundColor:
-                      sidebarGroupBy === "project"
-                        ? "var(--accent-muted)"
-                        : "transparent",
-                    color:
-                      sidebarGroupBy === "project"
-                        ? "var(--text-primary)"
-                        : "var(--text-muted)",
-                  }}
-                >
-                  Project
-                </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={sidebarGroupBy === "publication"}
-                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
-                  onClick={() => setSidebarGroupBy("publication")}
-                  style={{
-                    backgroundColor:
-                      sidebarGroupBy === "publication"
-                        ? "var(--accent-muted)"
-                        : "transparent",
-                    color:
-                      sidebarGroupBy === "publication"
-                        ? "var(--text-primary)"
-                        : "var(--text-muted)",
-                  }}
-                >
-                  Publication state
-                </button>
-              </div>
             </div>
 
             <FilterCollapsibleSection
@@ -1612,6 +1661,334 @@ function FilterCollapsibleSection({
   );
 }
 
+interface AgentSidebarConversationRowsPanelProps {
+  rows: AgentSidebarConversationRow[];
+  fetchNextPage: () => Promise<unknown>;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  isLoading: boolean;
+  expanded: boolean;
+  isSidebarVisible: boolean;
+  projectById: Map<string, Project>;
+  pinnedConversationIds: Record<string, true>;
+  scrollKey: string;
+  selectedConversationId: string | null;
+  showProjectNameInMeta: boolean;
+  testId: string;
+  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
+  onArchiveConversation: (conversation: AgentConversation) => void;
+  onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onTogglePinnedConversation: (conversationId: string) => void;
+}
+
+function AgentSidebarConversationRowsPanel({
+  rows,
+  fetchNextPage,
+  hasNextPage,
+  isFetchingNextPage,
+  isLoading,
+  expanded,
+  isSidebarVisible,
+  projectById,
+  pinnedConversationIds,
+  scrollKey,
+  selectedConversationId,
+  showProjectNameInMeta,
+  testId,
+  onArchiveConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onSelectConversation,
+  onTogglePinnedConversation,
+}: AgentSidebarConversationRowsPanelProps) {
+  const activeConversationIds = useChatStore((s) => s.activeConversationIds);
+  const agentStatuses = useChatStore((s) => s.agentStatus);
+  const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
+  const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [renameDialogConversation, setRenameDialogConversation] =
+    useState<AgentConversation | null>(null);
+  const [renameDraftTitle, setRenameDraftTitle] = useState("");
+  const [autoRenameDialogConversationId, setAutoRenameDialogConversationId] =
+    useState<string | null>(null);
+  const [archiveDialogConversation, setArchiveDialogConversation] =
+    useState<AgentConversation | null>(null);
+  const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
+  const [visibleEffectRows, setVisibleEffectRows] = useState<
+    AgentSidebarConversationRow[]
+  >([]);
+
+  const visibleEffectConversations = useMemo(
+    () => visibleEffectRows.map((row) => toProjectAgentConversation(row.conversation)),
+    [visibleEffectRows]
+  );
+  useAgentSidebarRunningStates(visibleEffectConversations, isSidebarVisible && expanded);
+  const publicationCurrentStates = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of visibleEffectRows) {
+      map.set(row.conversation.id, row.publicationState);
+    }
+    return map;
+  }, [visibleEffectRows]);
+  useAgentSidebarPublicationPolling(
+    visibleEffectConversations,
+    isSidebarVisible && expanded,
+    publicationCurrentStates
+  );
+
+  const openRenameDialog = useCallback((conversation: AgentConversation) => {
+    setRenameDraftTitle(conversation.title || "Untitled agent");
+    setRenameDialogConversation(conversation);
+  }, []);
+
+  const handleRenameSubmit = useCallback(async () => {
+    if (!renameDialogConversation) return;
+    const trimmed = renameDraftTitle.trim();
+    if (!trimmed) return;
+    await onRenameConversation(renameDialogConversation.id, trimmed);
+    setRenameDialogConversation(null);
+  }, [onRenameConversation, renameDialogConversation, renameDraftTitle]);
+
+  const handleAutoRenameSubmit = useCallback(async () => {
+    if (!renameDialogConversation) return;
+    setAutoRenameDialogConversationId(renameDialogConversation.id);
+    try {
+      await onAutoRenameConversation(renameDialogConversation);
+      setRenameDialogConversation(null);
+    } catch {
+      // The owning action reports the failure and the dialog stays open.
+    } finally {
+      setAutoRenameDialogConversationId(null);
+    }
+  }, [onAutoRenameConversation, renameDialogConversation]);
+
+  const handleVisibleRowsChange = useCallback((nextRows: AgentSidebarConversationRow[]) => {
+    setVisibleEffectRows((currentRows) =>
+      areAgentSidebarRowsSameByConversationId(currentRows, nextRows)
+        ? currentRows
+        : nextRows
+    );
+  }, []);
+
+  const getRowKey = useCallback(
+    (row: AgentSidebarConversationRow) => row.conversation.id,
+    []
+  );
+
+  const renderRow = useCallback(
+    (row: AgentSidebarConversationRow) => {
+      const conversation = toProjectAgentConversation(row.conversation);
+      const project = projectById.get(conversation.projectId);
+      const rowKey = getAgentConversationStoreKey(conversation);
+      const activeConversationId = activeConversationIds[rowKey] ?? null;
+      const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const runtimeLabel = agentActivityLabels[rowKey] ?? null;
+      const isSelected = selectedConversationId === conversation.id;
+      const isActiveRuntime = activeConversationId === conversation.id;
+      const isPinned = Boolean(pinnedConversationIds[conversation.id]);
+      const runtimeState = getSessionRuntimeState(
+        conversation,
+        isActiveRuntime,
+        agentStatus
+      );
+      const publicationLabel = getVisiblePublicationLabel(
+        row.publicationLabel,
+        runtimeState,
+        runtimeLabel
+      );
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        publicationLabel
+      );
+      const sessionActionsOpen = openSessionActionsId === conversation.id;
+
+      return (
+        <MemoizedAgentSessionRow
+          conversation={conversation}
+          projectName={project?.name ?? conversation.projectId}
+          showProjectNameInMeta={showProjectNameInMeta}
+          refKind={row.refKind}
+          refLabel={row.refLabel}
+          publicationState={row.publicationState}
+          publicationLabel={publicationLabel}
+          isSelected={isSelected}
+          isPinned={isPinned}
+          runtimeState={runtimeState}
+          runtimeLabel={runtimeLabel}
+          showRuntimeState={showRuntimeState}
+          sessionActionsOpen={sessionActionsOpen}
+          onSelect={() => onSelectConversation(conversation.projectId, conversation)}
+          onRename={() => openRenameDialog(conversation)}
+          onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+          onFork={() => onForkConversation(conversation)}
+          onRestore={() => onRestoreConversation(conversation)}
+          onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+          setActionsTriggerRef={(node) => {
+            sessionActionsTriggerRefs.current[conversation.id] = node;
+          }}
+          onActionsOpenChange={(open) => {
+            setOpenSessionActionsId(open ? conversation.id : null);
+            if (!open) {
+              requestAnimationFrame(() => {
+                sessionActionsTriggerRefs.current[conversation.id]?.blur();
+              });
+            }
+          }}
+        />
+      );
+    },
+    [
+      activeConversationIds,
+      agentActivityLabels,
+      agentStatuses,
+      onForkConversation,
+      onRestoreConversation,
+      onSelectConversation,
+      onTogglePinnedConversation,
+      openRenameDialog,
+      openSessionActionsId,
+      pinnedConversationIds,
+      projectById,
+      selectedConversationId,
+      showProjectNameInMeta,
+    ]
+  );
+
+  const isAutoRenamingDialog =
+    renameDialogConversation !== null &&
+    autoRenameDialogConversationId === renameDialogConversation.id;
+
+  return (
+    <>
+      <Dialog
+        open={renameDialogConversation !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameDialogConversation(null);
+          }
+        }}
+      >
+        <DialogContent hideCloseButton className="max-w-md">
+          <DialogHeader className="block space-y-1.5">
+            <DialogTitle className="text-base">Rename session</DialogTitle>
+            <DialogDescription>
+              Update the title shown in the Agents sidebar for this conversation.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="px-6 py-4">
+            <Input
+              value={renameDraftTitle}
+              onChange={(event) => setRenameDraftTitle(event.target.value)}
+              aria-label="Session title"
+              placeholder="Untitled agent"
+              autoFocus
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleRenameSubmit();
+                }
+              }}
+            />
+          </div>
+          <DialogFooter className="justify-between">
+            <Button
+              type="button"
+              variant="secondary"
+              className="mr-auto"
+              onClick={() => void handleAutoRenameSubmit()}
+              disabled={isAutoRenamingDialog}
+            >
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+              {isAutoRenamingDialog ? "Starting..." : "Auto rename"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRenameDialogConversation(null)}
+              disabled={isAutoRenamingDialog}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleRenameSubmit()}
+              disabled={isAutoRenamingDialog || renameDraftTitle.trim().length === 0}
+            >
+              Rename session
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={archiveDialogConversation !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setArchiveDialogConversation(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive session?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div>
+                <p>
+                  This hides{" "}
+                  <span className="font-medium">
+                    {archiveDialogConversation?.title || "Untitled agent"}
+                  </span>{" "}
+                  from the active conversation list. You can restore it later
+                  from archived sessions.
+                </p>
+                {archiveDialogConversation?.contextType === "project" && (
+                  <p className="mt-2 text-text-muted">
+                    Any open PR will be closed. The local workspace branch will
+                    be cleaned up on next app restart.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (archiveDialogConversation) {
+                  void onArchiveConversation(archiveDialogConversation);
+                }
+                setArchiveDialogConversation(null);
+              }}
+              variant="destructive"
+            >
+              Archive session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {expanded && (
+        <ScrollableAgentSessionList
+          fetchNextPage={fetchNextPage}
+          getItemKey={getRowKey}
+          hasNextPage={hasNextPage}
+          isFetchingNextPage={isFetchingNextPage}
+          isLoading={isLoading}
+          onVisibleRowsChange={handleVisibleRowsChange}
+          renderRow={renderRow}
+          rows={rows}
+          scrollKey={scrollKey}
+          testId={testId}
+        />
+      )}
+    </>
+  );
+}
+
 interface PublicationStateGroupsProps {
   projects: Project[];
   isSidebarVisible: boolean;
@@ -1797,58 +2174,11 @@ function PublicationStateGroup({
     sort: rowSort,
     minimumRowCount: rememberedPublicationRowCount,
   });
-  const activeConversationIds = useChatStore((s) => s.activeConversationIds);
-  const agentStatuses = useChatStore((s) => s.agentStatus);
-  const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
-  const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [renameDialogConversation, setRenameDialogConversation] =
-    useState<AgentConversation | null>(null);
-  const [renameDraftTitle, setRenameDraftTitle] = useState("");
-  const [autoRenameDialogConversationId, setAutoRenameDialogConversationId] =
-    useState<string | null>(null);
-  const [archiveDialogConversation, setArchiveDialogConversation] =
-    useState<AgentConversation | null>(null);
-  const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
-  const [visibleEffectRows, setVisibleEffectRows] = useState<
-    AgentSidebarConversationRow[]
-  >([]);
-
-  const openRenameDialog = useCallback((conversation: AgentConversation) => {
-    setRenameDraftTitle(conversation.title || "Untitled agent");
-    setRenameDialogConversation(conversation);
-  }, []);
-
-  const handleRenameSubmit = useCallback(async () => {
-    if (!renameDialogConversation) return;
-    const trimmed = renameDraftTitle.trim();
-    if (!trimmed) return;
-    await onRenameConversation(renameDialogConversation.id, trimmed);
-    setRenameDialogConversation(null);
-  }, [onRenameConversation, renameDialogConversation, renameDraftTitle]);
-  const handleAutoRenameSubmit = useCallback(async () => {
-    if (!renameDialogConversation) return;
-    setAutoRenameDialogConversationId(renameDialogConversation.id);
-    try {
-      await onAutoRenameConversation(renameDialogConversation);
-      setRenameDialogConversation(null);
-    } catch {
-      // The owning action reports the failure and the dialog stays open.
-    } finally {
-      setAutoRenameDialogConversationId(null);
-    }
-  }, [onAutoRenameConversation, renameDialogConversation]);
-  const isAutoRenamingDialog =
-    renameDialogConversation !== null &&
-    autoRenameDialogConversationId === renameDialogConversation.id;
   const isCurrentPublicationState = expandedPublicationState === publicationState;
   const expanded = searchQuery.length > 0 ? true : isCurrentPublicationState;
   const groupLabel =
     groupQuery.group.label || getSidebarPublicationGroupLabel(publicationState);
   const totalConversationCount = groupQuery.group.total;
-  const visibleEffectConversations = useMemo(
-    () => visibleEffectRows.map((row) => toProjectAgentConversation(row.conversation)),
-    [visibleEffectRows]
-  );
   const selectedConversationInGroup = useMemo(
     () =>
       selectedConversationId !== null &&
@@ -1866,110 +2196,6 @@ function PublicationStateGroup({
     publicationState,
     selectedConversationInGroup,
   ]);
-  useAgentSidebarRunningStates(visibleEffectConversations, isSidebarVisible && expanded);
-  const publicationCurrentStates = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const row of visibleEffectRows) {
-      map.set(row.conversation.id, row.publicationState);
-    }
-    return map;
-  }, [visibleEffectRows]);
-  useAgentSidebarPublicationPolling(
-    visibleEffectConversations,
-    isSidebarVisible && expanded,
-    publicationCurrentStates
-  );
-  const handleVisiblePublicationRowsChange = useCallback(
-    (rows: AgentSidebarConversationRow[]) => {
-      setVisibleEffectRows((currentRows) =>
-        areAgentSidebarRowsSameByConversationId(currentRows, rows)
-          ? currentRows
-          : rows
-      );
-    },
-    []
-  );
-  const getPublicationRowKey = useCallback(
-    (row: AgentSidebarConversationRow) => row.conversation.id,
-    []
-  );
-  const renderPublicationRow = useCallback(
-    (row: AgentSidebarConversationRow) => {
-      const conversation = toProjectAgentConversation(row.conversation);
-      const project = projectById.get(conversation.projectId);
-      const rowKey = getAgentConversationStoreKey(conversation);
-      const activeConversationId = activeConversationIds[rowKey] ?? null;
-      const agentStatus = agentStatuses[rowKey] ?? "idle";
-      const runtimeLabel = agentActivityLabels[rowKey] ?? null;
-      const isSelected = selectedConversationId === conversation.id;
-      const isActiveRuntime = activeConversationId === conversation.id;
-      const isPinned = Boolean(pinnedConversationIds[conversation.id]);
-      const runtimeState = getSessionRuntimeState(
-        conversation,
-        isActiveRuntime,
-        agentStatus
-      );
-      const publicationLabel = getVisiblePublicationLabel(
-        row.publicationLabel,
-        runtimeState,
-        runtimeLabel
-      );
-      const showRuntimeState = shouldShowSessionRuntimeLabel(
-        runtimeState,
-        publicationLabel
-      );
-      const sessionActionsOpen = openSessionActionsId === conversation.id;
-
-      return (
-        <MemoizedAgentSessionRow
-          conversation={conversation}
-          projectName={project?.name ?? conversation.projectId}
-          showProjectNameInMeta
-          refKind={row.refKind}
-          refLabel={row.refLabel}
-          publicationState={row.publicationState}
-          publicationLabel={publicationLabel}
-          isSelected={isSelected}
-          isPinned={isPinned}
-          runtimeState={runtimeState}
-          runtimeLabel={runtimeLabel}
-          showRuntimeState={showRuntimeState}
-          sessionActionsOpen={sessionActionsOpen}
-          onSelect={() => onSelectConversation(conversation.projectId, conversation)}
-          onRename={() => openRenameDialog(conversation)}
-          onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
-          onFork={() => onForkConversation(conversation)}
-          onRestore={() => onRestoreConversation(conversation)}
-          onArchiveRequest={() => setArchiveDialogConversation(conversation)}
-          setActionsTriggerRef={(node) => {
-            sessionActionsTriggerRefs.current[conversation.id] = node;
-          }}
-          onActionsOpenChange={(open) => {
-            setOpenSessionActionsId(open ? conversation.id : null);
-            if (!open) {
-              requestAnimationFrame(() => {
-                sessionActionsTriggerRefs.current[conversation.id]?.blur();
-              });
-            }
-          }}
-        />
-      );
-    },
-    [
-      activeConversationIds,
-      agentActivityLabels,
-      agentStatuses,
-      openRenameDialog,
-      onForkConversation,
-      onRestoreConversation,
-      onSelectConversation,
-      onTogglePinnedConversation,
-      openSessionActionsId,
-      pinnedConversationIds,
-      projectById,
-      selectedConversationId,
-    ]
-  );
 
   return (
     <div
@@ -2003,127 +2229,332 @@ function PublicationStateGroup({
         </button>
       </div>
 
-      <Dialog
-        open={renameDialogConversation !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setRenameDialogConversation(null);
-          }
-        }}
-      >
-        <DialogContent hideCloseButton className="max-w-md">
-          <DialogHeader className="block space-y-1.5">
-            <DialogTitle className="text-base">Rename session</DialogTitle>
-            <DialogDescription>
-              Update the title shown in the Agents sidebar for this conversation.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="px-6 py-4">
-            <Input
-              value={renameDraftTitle}
-              onChange={(event) => setRenameDraftTitle(event.target.value)}
-              aria-label="Session title"
-              placeholder="Untitled agent"
-              autoFocus
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void handleRenameSubmit();
-                }
-              }}
-            />
-          </div>
-          <DialogFooter className="justify-between">
-            <Button
-              type="button"
-              variant="secondary"
-              className="mr-auto"
-              onClick={() => void handleAutoRenameSubmit()}
-              disabled={isAutoRenamingDialog}
-            >
-              <Sparkles className="h-4 w-4" aria-hidden="true" />
-              {isAutoRenamingDialog ? "Starting..." : "Auto rename"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setRenameDialogConversation(null)}
-              disabled={isAutoRenamingDialog}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void handleRenameSubmit()}
-              disabled={isAutoRenamingDialog || renameDraftTitle.trim().length === 0}
-            >
-              Rename session
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AgentSidebarConversationRowsPanel
+        rows={groupQuery.group.rows}
+        fetchNextPage={groupQuery.fetchNextPage}
+        hasNextPage={Boolean(groupQuery.hasNextPage)}
+        isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
+        isLoading={Boolean(groupQuery.isLoading)}
+        expanded={expanded}
+        isSidebarVisible={isSidebarVisible}
+        projectById={projectById}
+        pinnedConversationIds={pinnedConversationIds}
+        scrollKey={publicationScrollKey}
+        selectedConversationId={selectedConversationId}
+        showProjectNameInMeta
+        testId={`agents-sidebar-session-list-publication-${publicationState}`}
+        onArchiveConversation={onArchiveConversation}
+        onAutoRenameConversation={onAutoRenameConversation}
+        onRenameConversation={onRenameConversation}
+        onRestoreConversation={onRestoreConversation}
+        onForkConversation={onForkConversation}
+        onSelectConversation={onSelectConversation}
+        onTogglePinnedConversation={onTogglePinnedConversation}
+      />
+    </div>
+  );
+}
 
-      <AlertDialog
-        open={archiveDialogConversation !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setArchiveDialogConversation(null);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Archive session?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div>
-                <p>
-                  This hides{" "}
-                  <span className="font-medium">
-                    {archiveDialogConversation?.title || "Untitled agent"}
-                  </span>{" "}
-                  from the active conversation list. You can restore it later
-                  from archived sessions.
-                </p>
-                {archiveDialogConversation?.contextType === "project" && (
-                  <p className="mt-2 text-text-muted">
-                    Any open PR will be closed. The local workspace branch will
-                    be cleaned up on next app restart.
-                  </p>
-                )}
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (archiveDialogConversation) {
-                  void onArchiveConversation(archiveDialogConversation);
-                }
-                setArchiveDialogConversation(null);
-              }}
-              variant="destructive"
-            >
-              Archive session
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+interface AutomationGroupsProps {
+  projects: Project[];
+  isSidebarVisible: boolean;
+  pinnedConversationIdList: string[];
+  priorityConversationIds: string[];
+  pinnedConversationIds: Record<string, true>;
+  rowSort: AgentProjectSort;
+  selectedConversationId: string | null;
+  searchQuery: string;
+  selectedPublicationStates: AgentSidebarPublicationState[];
+  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
+  onArchiveConversation: (conversation: AgentConversation) => void;
+  onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onTogglePinnedConversation: (conversationId: string) => void;
+  showArchived: boolean;
+}
 
-      {expanded && (
-        <ScrollableAgentSessionList
-          fetchNextPage={groupQuery.fetchNextPage}
-          getItemKey={getPublicationRowKey}
-          hasNextPage={Boolean(groupQuery.hasNextPage)}
-          isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
-          isLoading={Boolean(groupQuery.isLoading)}
-          onVisibleRowsChange={handleVisiblePublicationRowsChange}
-          renderRow={renderPublicationRow}
-          rows={groupQuery.group.rows}
-          scrollKey={publicationScrollKey}
-          testId={`agents-sidebar-session-list-publication-${publicationState}`}
+function AutomationGroups({
+  projects,
+  isSidebarVisible,
+  pinnedConversationIdList,
+  priorityConversationIds,
+  pinnedConversationIds,
+  rowSort,
+  selectedConversationId,
+  searchQuery,
+  selectedPublicationStates,
+  onArchiveConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onSelectConversation,
+  onTogglePinnedConversation,
+  showArchived,
+}: AutomationGroupsProps) {
+  const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects]
+  );
+  const groupIndexQuery = useAgentSidebarAutomationGroupIndex({
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+  });
+  const groups = useMemo(() => groupIndexQuery.data ?? [], [groupIndexQuery.data]);
+  const [expandedAutomationGroup, setExpandedAutomationGroup] = useState<string | null>(
+    () => groups[0]?.key ?? null
+  );
+
+  useEffect(() => {
+    if (groups.length === 0) {
+      setExpandedAutomationGroup(null);
+      return;
+    }
+    if (
+      expandedAutomationGroup === null ||
+      !groups.some((group) => group.key === expandedAutomationGroup)
+    ) {
+      setExpandedAutomationGroup(groups[0]?.key ?? null);
+    }
+  }, [expandedAutomationGroup, groups]);
+
+  return (
+    <>
+      {groups.map((group) => (
+        <AutomationGroup
+          key={group.key}
+          groupKey={group.key}
+          groupLabel={group.label}
+          groupPreviewRows={group.rows}
+          groupTotal={group.total}
+          expandedAutomationGroup={expandedAutomationGroup}
+          isSidebarVisible={isSidebarVisible}
+          projectById={projectById}
+          projectIds={projectIds}
+          pinnedConversationIdList={pinnedConversationIdList}
+          priorityConversationIds={priorityConversationIds}
+          pinnedConversationIds={pinnedConversationIds}
+          rowSort={rowSort}
+          searchQuery={searchQuery}
+          selectedConversationId={selectedConversationId}
+          selectedPublicationStates={selectedPublicationStates}
+          showArchived={showArchived}
+          onArchiveConversation={onArchiveConversation}
+          onAutoRenameConversation={onAutoRenameConversation}
+          onRenameConversation={onRenameConversation}
+          onRestoreConversation={onRestoreConversation}
+          onForkConversation={onForkConversation}
+          onSelectConversation={onSelectConversation}
+          onToggleAutomationGroup={(key, expanded) =>
+            setExpandedAutomationGroup(expanded ? key : null)
+          }
+          onSelectedConversationAutomationGroup={setExpandedAutomationGroup}
+          onTogglePinnedConversation={onTogglePinnedConversation}
         />
-      )}
+      ))}
+    </>
+  );
+}
+
+interface AutomationGroupProps {
+  groupKey: string;
+  groupLabel: string;
+  groupPreviewRows: AgentSidebarConversationRow[];
+  groupTotal: number;
+  expandedAutomationGroup: string | null;
+  isSidebarVisible: boolean;
+  projectById: Map<string, Project>;
+  projectIds: string[];
+  pinnedConversationIdList: string[];
+  priorityConversationIds: string[];
+  pinnedConversationIds: Record<string, true>;
+  rowSort: AgentProjectSort;
+  searchQuery: string;
+  selectedConversationId: string | null;
+  selectedPublicationStates: AgentSidebarPublicationState[];
+  showArchived: boolean;
+  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
+  onArchiveConversation: (conversation: AgentConversation) => void;
+  onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
+  onToggleAutomationGroup: (groupKey: string, expanded: boolean) => void;
+  onSelectedConversationAutomationGroup: (groupKey: string) => void;
+  onTogglePinnedConversation: (conversationId: string) => void;
+}
+
+function AutomationGroup({
+  groupKey,
+  groupLabel,
+  groupPreviewRows,
+  groupTotal,
+  expandedAutomationGroup,
+  isSidebarVisible,
+  projectById,
+  projectIds,
+  pinnedConversationIdList,
+  priorityConversationIds,
+  pinnedConversationIds,
+  rowSort,
+  searchQuery,
+  selectedConversationId,
+  selectedPublicationStates,
+  showArchived,
+  onArchiveConversation,
+  onAutoRenameConversation,
+  onRenameConversation,
+  onRestoreConversation,
+  onForkConversation,
+  onSelectConversation,
+  onToggleAutomationGroup,
+  onSelectedConversationAutomationGroup,
+  onTogglePinnedConversation,
+}: AutomationGroupProps) {
+  const automationScrollKey = useMemo(
+    () =>
+      [
+        "automation",
+        groupKey,
+        showArchived ? "archived" : "active",
+        searchQuery,
+        rowSort,
+        selectedPublicationStates.join(","),
+        projectIds.join(","),
+        pinnedConversationIdList.join(","),
+      ].join("::"),
+    [
+      groupKey,
+      pinnedConversationIdList,
+      projectIds,
+      rowSort,
+      searchQuery,
+      selectedPublicationStates,
+      showArchived,
+    ]
+  );
+  const rememberedAutomationRowCount =
+    useRememberedAgentSidebarSessionRowCount(automationScrollKey);
+  const isCurrentAutomationGroup = expandedAutomationGroup === groupKey;
+  const expanded = searchQuery.length > 0 ? true : isCurrentAutomationGroup;
+  const selectedConversationInIndexGroup = useMemo(
+    () =>
+      selectedConversationId !== null &&
+      groupPreviewRows.some(
+        (row) => row.conversation.id === selectedConversationId
+      ),
+    [groupPreviewRows, selectedConversationId]
+  );
+  const shouldLoadGroupRows = expanded || selectedConversationInIndexGroup;
+  const groupQuery = useAgentSidebarAutomationGroup({
+    groupKey,
+    projectIds,
+    archivedOnly: showArchived,
+    search: searchQuery,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: pinnedConversationIdList,
+    priorityConversationIds,
+    sort: rowSort,
+    enabled: shouldLoadGroupRows,
+    minimumRowCount: rememberedAutomationRowCount,
+  });
+  const label = groupQuery.group.label || groupLabel || groupKey;
+  const totalConversationCount = groupQuery.group.total || groupTotal;
+  const selectedConversationInGroup = useMemo(
+    () =>
+      selectedConversationId !== null &&
+      (selectedConversationInIndexGroup ||
+        groupQuery.group.rows.some(
+          (row) => row.conversation.id === selectedConversationId
+        )),
+    [
+      groupQuery.group.rows,
+      selectedConversationId,
+      selectedConversationInIndexGroup,
+    ]
+  );
+
+  useEffect(() => {
+    if (selectedConversationInGroup) {
+      onSelectedConversationAutomationGroup(groupKey);
+    }
+  }, [
+    groupKey,
+    onSelectedConversationAutomationGroup,
+    selectedConversationInGroup,
+  ]);
+
+  return (
+    <div
+      className="my-1 flex flex-col gap-0.5"
+      data-testid={`agents-automation-group-${groupKey}`}
+    >
+      <div className="group/automation-row relative">
+        <button
+          type="button"
+          className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          data-testid={`agents-automation-row-${groupKey}`}
+          aria-expanded={expanded}
+          aria-current={isCurrentAutomationGroup ? "true" : undefined}
+          aria-label={`${expanded ? "Collapse" : "Expand"} automation group ${label}`}
+          onClick={() => onToggleAutomationGroup(groupKey, !expanded)}
+        >
+          <span
+            className="agents-project-chevron grid h-3 w-3 place-items-center rounded"
+            aria-hidden="true"
+          >
+            <ChevronRight
+              className={`h-2.5 w-2.5 transition-transform duration-[120ms] ${expanded ? "rotate-90" : ""}`}
+              strokeWidth={2}
+            />
+          </span>
+          <Sparkles
+            className="agents-project-icon h-3.5 w-3.5 shrink-0"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+          <span
+            className="min-w-0 truncate"
+            data-testid={`agents-automation-label-${groupKey}`}
+          >
+            {label}
+          </span>
+          <span className="agents-project-count agents-automation-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6]">
+            {totalConversationCount}
+          </span>
+        </button>
+      </div>
+
+      <AgentSidebarConversationRowsPanel
+        rows={groupQuery.group.rows}
+        fetchNextPage={groupQuery.fetchNextPage}
+        hasNextPage={Boolean(groupQuery.hasNextPage)}
+        isFetchingNextPage={Boolean(groupQuery.isFetchingNextPage)}
+        isLoading={Boolean(groupQuery.isLoading)}
+        expanded={expanded}
+        isSidebarVisible={isSidebarVisible}
+        projectById={projectById}
+        pinnedConversationIds={pinnedConversationIds}
+        scrollKey={automationScrollKey}
+        selectedConversationId={selectedConversationId}
+        showProjectNameInMeta
+        testId={`agents-sidebar-session-list-automation-${groupKey}`}
+        onArchiveConversation={onArchiveConversation}
+        onAutoRenameConversation={onAutoRenameConversation}
+        onRenameConversation={onRenameConversation}
+        onRestoreConversation={onRestoreConversation}
+        onForkConversation={onForkConversation}
+        onSelectConversation={onSelectConversation}
+        onTogglePinnedConversation={onTogglePinnedConversation}
+      />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { automationsApi } from "@/api/automations";
 
+import { agentSidebarConversationKeys } from "./agentSidebarConversationKeys";
 import {
   automationKeys,
   evictDeletedAutomation,
@@ -49,6 +50,9 @@ describe("useAutomations", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
     expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: automationKeys.detail("automation-1"),
     });
     expect(invalidateSpy).toHaveBeenCalledWith({
@@ -64,6 +68,9 @@ describe("useAutomations", () => {
     evictDeletedAutomation(queryClient, "automation-1");
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
     expect(removeSpy).toHaveBeenCalledWith({
       queryKey: automationKeys.detail("automation-1"),
     });
@@ -117,6 +124,9 @@ describe("useAutomations", () => {
       queryKey: automationKeys.detail("automation-1"),
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
     // Deleted event for a mismatched id is ignored; matching id evicts the detail cache.
     expect(removeSpy).not.toHaveBeenCalledWith({
       queryKey: automationKeys.detail("automation-9"),
@@ -156,6 +166,9 @@ describe("useAutomations", () => {
       setupConversationId: "conversation-9",
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: automationKeys.detail("automation-1"),
     });
