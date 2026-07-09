@@ -635,6 +635,7 @@ async function seedAgentsTaskDetailVisualState(page: Page) {
       const { seedMockConversation } = await import("/src/api-mock/chat");
       const { infiniteTaskKeys } = await import("/src/hooks/useInfiniteTasksQuery");
       const linkedSessionId = `${targetConversationId}-ideation-session`;
+      const linkedExecutionPlanId = `${linkedSessionId}-execution-plan`;
       const now = "2026-07-07T10:55:00.000Z";
       const seededTasks: Task[] = [];
 
@@ -648,6 +649,8 @@ async function seedAgentsTaskDetailVisualState(page: Page) {
           category: "feature",
           internalStatus: visualTask.status,
           priority: 2,
+          ideationSessionId: linkedSessionId,
+          executionPlanId: linkedExecutionPlanId,
           planArtifactId: linkedSessionId,
           taskBranch: `task/${visualTask.id}`,
           startedAt: "2026-07-07T10:00:00.000Z",
