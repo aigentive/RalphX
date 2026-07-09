@@ -1648,12 +1648,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !!planApprovalSessionId &&
     !!planApprovalArtifact &&
     planArtifactApprovalStatus === "draft";
-  const canCreatePlanProposals = !!planApprovalSessionId && isPlanApproved;
+  const canCreatePlanProposals =
+    !!planApprovalSessionId && isPlanApproved && !activeAutomationRunId;
   const canImplementPlanDirectly = Boolean(
     planApprovalSessionId &&
       isPlanApproved &&
       activeWorkspace?.conversationId &&
-      activeProjectId,
+      activeProjectId &&
+      !activeAutomationRunId,
   );
   const planComplexityQuery = useQuery({
     queryKey: [

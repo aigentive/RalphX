@@ -28,7 +28,7 @@ use crate::error::{AppError, AppResult};
 const AUTOMATION_RUN_BASE_BRANCH_MODE: &str = "isolated";
 const AUTOMATION_START_FAILED_CODE: &str = "start_failed";
 pub(crate) const AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK: &str = r#"<automation_plan_phase>
-You are in the automation run planning phase. Explore the codebase, then author the run plan artifact with the scope, files to inspect or change, approach, risks, and how it advances the current goal item. Use the plan tools to create or update the plan artifact, then end the turn. Implementation continues in a later resumed turn.
+You are in the automation run planning phase. Explore the codebase, then author the run plan artifact with the scope, files to inspect or change, approach, risks, and how it advances the current goal item. Use the plan tools to create or update the plan artifact, then end the turn. Implementation continues in a later resumed turn. Do not narrate next steps, approval mechanics, or manual actions (approve/verify/implement) at the end of your turn — the system handles continuation.
 </automation_plan_phase>"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

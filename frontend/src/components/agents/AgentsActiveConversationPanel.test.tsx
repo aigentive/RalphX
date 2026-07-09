@@ -2823,6 +2823,36 @@ describe("AgentsActiveConversationPanel", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides approved plan composer CTAs for automation run conversations", async () => {
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "plan",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: /Implement Directly/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("hides plan composer CTAs once the workspace has switched to edit mode", async () => {
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
 
