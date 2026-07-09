@@ -418,6 +418,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         context_id: Some("project-123".to_string()),
         conversation_id: Some("conversation-current".to_string()),
         task_id: None,
+        task_state: Some("executing".to_string()),
         project_id: Some("project-123".to_string()),
         working_directory: Some(workspace_dir.clone()),
         filesystem_read_roots: vec![project_root.clone()],
@@ -462,6 +463,8 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         "args: {args:?}"
     );
     assert!(args.contains(&"--project-id".to_string()), "args: {args:?}");
+    assert!(args.contains(&"--task-state".to_string()), "args: {args:?}");
+    assert!(args.contains(&"executing".to_string()), "args: {args:?}");
     assert!(
         args.contains(&"--working-directory".to_string()),
         "args: {args:?}"

@@ -278,6 +278,7 @@ impl<'a> TransitionHandler<'a> {
 
     async fn spawn_reviewer_agent(&self, task_id: &str) {
         let prompt = format!("Review task: {}", task_id);
+        let project_id = self.machine.context.project_id.as_str();
 
         tracing::info!(
             task_id = task_id,
@@ -289,11 +290,12 @@ impl<'a> TransitionHandler<'a> {
             .context
             .services
             .chat_service
-            .send_message(
+            .send_task_runtime_bootstrap_message(
                 crate::domain::entities::ChatContextType::Review,
                 task_id,
                 &prompt,
-                Default::default(),
+                "reviewing",
+                project_id,
             )
             .await;
 

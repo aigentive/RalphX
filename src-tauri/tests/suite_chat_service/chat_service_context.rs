@@ -63,6 +63,21 @@ fn write_file(path: &Path, contents: &str) {
     fs::write(path, contents).expect("write test file");
 }
 
+fn env_value(envs: &[(std::ffi::OsString, std::ffi::OsString)], key: &str) -> Option<String> {
+    envs.iter()
+        .find(|(env_key, _)| env_key == key)
+        .map(|(_, value)| value.to_string_lossy().into_owned())
+}
+
+fn spawnable_prompt(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> String {
+    spawnable
+        .get_stdin_prompt_for_test()
+        .map(str::to_string)
+        .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"))
+}
+
 fn empty_delegated_session_repo() -> Arc<dyn DelegatedSessionRepository> {
     Arc::new(MemoryDelegatedSessionRepository::new())
 }
@@ -1712,6 +1727,195 @@ async fn codex_verifier_command_disables_shell_tool() {
     );
 }
 
+#[tokio::test]
+async fn task_execution_launch_injects_compact_runtime_context_and_state_env() {
+    let task_id = TaskId::from_string("task-runtime-exec".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id.clone());
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Execute task: task-runtime-exec",
+            working_dir.path(),
+            Some("executing"),
+            Some("project-runtime"),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("task execution command should build");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<task_runtime_context>"));
+    assert!(prompt.contains("<task_id>task-runtime-exec</task_id>"));
+    assert!(prompt.contains("<project_id>project-runtime</project_id>"));
+    assert!(prompt.contains("<context_type>task_execution</context_type>"));
+    assert!(prompt.contains("<task_state>executing</task_state>"));
+    assert!(prompt.contains(&format!(
+        "<working_directory>{}</working_directory>",
+        working_dir.path().to_string_lossy()
+    )));
+    assert!(
+        !prompt.contains("<source_proposal") && !prompt.contains("<plan_artifact"),
+        "bootstrap runtime context must stay compact and avoid full plan/proposal payloads: {prompt}"
+    );
+
+    let envs = command.get_envs_for_test();
+    assert_eq!(
+        env_value(&envs, "RALPHX_TASK_ID").as_deref(),
+        Some(task_id.as_str())
+    );
+    assert_eq!(
+        env_value(&envs, "RALPHX_CONTEXT_ID").as_deref(),
+        Some(task_id.as_str())
+    );
+    assert_eq!(
+        env_value(&envs, "RALPHX_TASK_STATE").as_deref(),
+        Some("executing")
+    );
+}
+
+#[tokio::test]
+async fn task_execution_launch_fails_closed_without_project_identity() {
+    let task_id = TaskId::from_string("task-runtime-missing-project".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id);
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let result = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Execute task: task-runtime-missing-project",
+            working_dir.path(),
+            Some("executing"),
+            None,
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await;
+
+    let error = result.expect_err("task runtime context must fail without project id");
+    assert!(
+        error.contains("missing project identity"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn task_reexecution_launch_injects_reexecuting_state() {
+    let task_id = TaskId::from_string("task-runtime-reexec".to_string());
+    let conversation = ChatConversation::new_task_execution(task_id.clone());
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Re-execute task (revision): task-runtime-reexec",
+            working_dir.path(),
+            Some("re_executing"),
+            Some("project-runtime"),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("re-execution command should build");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<task_runtime_context>"));
+    assert!(prompt.contains("<task_state>re_executing</task_state>"));
+    assert!(prompt.contains("<context_type>task_execution</context_type>"));
+    assert_eq!(
+        env_value(&command.get_envs_for_test(), "RALPHX_TASK_STATE").as_deref(),
+        Some("re_executing")
+    );
+}
+
+#[tokio::test]
+async fn review_launch_injects_reviewing_runtime_context_and_state_env() {
+    let task_id = TaskId::from_string("task-runtime-review".to_string());
+    let conversation = ChatConversation::new_review(task_id.clone());
+    let working_dir = tempfile::tempdir().expect("working dir");
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            std::path::Path::new("/fake/claude"),
+            std::path::Path::new("/fake/plugin"),
+            &conversation,
+            "Review task: task-runtime-review",
+            working_dir.path(),
+            Some("reviewing"),
+            Some("project-runtime"),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("review command should build");
+
+    let prompt = spawnable_prompt(&command);
+    assert!(prompt.contains("<task_runtime_context>"));
+    assert!(prompt.contains("<task_id>task-runtime-review</task_id>"));
+    assert!(prompt.contains("<context_type>review</context_type>"));
+    assert!(prompt.contains("<task_state>reviewing</task_state>"));
+    assert_eq!(
+        env_value(&command.get_envs_for_test(), "RALPHX_TASK_STATE").as_deref(),
+        Some("reviewing")
+    );
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Tests for format_session_history
 //
@@ -3043,7 +3247,7 @@ async fn test_build_command_resumes_from_provider_session_ref_without_legacy_ali
                 0,
                 None,
                 None,
-            None,
+                None,
             )
             .await
         })

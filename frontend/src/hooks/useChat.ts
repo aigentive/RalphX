@@ -27,6 +27,7 @@ import {
   type SendAgentMessageOptions,
   type SendAgentMessageResult,
 } from "@/api/chat";
+import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import {
   appendMessageToConversationHistory,
   appendMessageIfMissing,
@@ -126,16 +127,21 @@ function getConversationMessagesFromHistoryData(
   if (!newestPage) {
     return undefined;
   }
-  const messages = data.pages
+  const rawMessages = data.pages
     .slice()
     .reverse()
     .flatMap((page) => page.messages);
+  const messages = rawMessages.filter(isVisibleChatMessage);
+  const totalMessageCount = Math.max(
+    0,
+    newestPage.totalMessageCount - (rawMessages.length - messages.length)
+  );
 
   return {
     conversation: newestPage.conversation,
     messages,
-    totalMessageCount: newestPage.totalMessageCount,
-    loadedStartIndex: Math.max(0, newestPage.totalMessageCount - messages.length),
+    totalMessageCount,
+    loadedStartIndex: Math.max(0, totalMessageCount - messages.length),
   };
 }
 
@@ -150,16 +156,21 @@ function getConversationMessagesFromTimelineData(
   if (!newestPage) {
     return undefined;
   }
-  const messages = data.pages
+  const rawMessages = data.pages
     .slice()
     .reverse()
     .flatMap((page) => page.messages);
+  const messages = rawMessages.filter(isVisibleChatMessage);
+  const totalMessageCount = Math.max(
+    0,
+    newestPage.totalItemCount - (rawMessages.length - messages.length)
+  );
 
   return {
     conversation: newestPage.conversation,
     messages,
-    totalMessageCount: newestPage.totalItemCount,
-    loadedStartIndex: Math.max(0, newestPage.totalItemCount - messages.length),
+    totalMessageCount,
+    loadedStartIndex: Math.max(0, totalMessageCount - messages.length),
   };
 }
 
@@ -343,6 +354,10 @@ export function upsertFinalizedMessageIntoConversationCache(
   conversationId: string,
   message: ChatMessageResponse
 ): boolean {
+  if (!isVisibleChatMessage(message)) {
+    return false;
+  }
+
   const contentBlocks =
     message.contentBlocks && message.contentBlocks.length > 0
       ? message.contentBlocks
@@ -601,9 +616,15 @@ export function upsertRenderReadyMessageIntoConversationCache(
   }
 
   const message = messageFromRenderReadyPayload(payload.message, conversationId);
+  if (!isVisibleChatMessage(message)) {
+    return false;
+  }
   const insertedItems = payload.timeline_items.map((item) =>
     timelineItemFromRenderReadyPayload(item, conversationId)
-  );
+  ).filter((item) => isVisibleChatMessage(item.asMessage));
+  if (insertedItems.length === 0) {
+    return false;
+  }
   let updatedTimeline = false;
 
   queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
@@ -716,6 +737,7 @@ export function getCachedConversationMessages(
 
   const mergedMessages = new Map<string, ChatMessageResponse>();
   for (const message of fullConversation?.messages ?? []) {
+    if (!isVisibleChatMessage(message)) continue;
     mergedMessages.set(message.id, message);
   }
   for (const message of historyConversation?.messages ?? []) {
