@@ -19,6 +19,7 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     pausedReasonDetail: null,
     goalPrompt: "Keep landing migration tasks.",
     setupConversationId: "conversation-1",
+    specArtifactId: null,
     providerHarness: "codex",
     modelId: "gpt-5.4",
     logicalEffort: "high",
@@ -30,6 +31,9 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     goalItemsJson: null,
     chainMode: "merged_base",
     completionSignal: "pr_merged",
+    planApprovalMode: "manual",
+    prMergeMode: "manual",
+    planDeepVerification: false,
     maxRuns: 25,
     maxConsecutiveFailures: 3,
     firstRunPrompt: null,
@@ -49,6 +53,14 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     status: "running",
     judgeState: "none",
     judgeLeaseExpiresAt: null,
+    planJudgeState: "none",
+    planRevisionRound: 0,
+    planRevisionPending: false,
+    planPhase: false,
+    planArtifactId: null,
+    planApprovedBy: null,
+    planApprovedArtifactVersion: null,
+    planApprovedAt: null,
     conversationId: "conversation-1",
     runPrompt: "Continue the automation.",
     promptAuthor: "judge",
@@ -117,6 +129,52 @@ describe("describeAutomationStage", () => {
     expect(
       describeAutomationStage(automation(), run({ runIndex: 4, status: "running" })),
     ).toBe("Run 4 in progress");
+    expect(
+      describeAutomationStage(
+        automation(),
+        run({ runIndex: 4, status: "running", planPhase: true }),
+      ),
+    ).toBe("Run 4 planning");
+  });
+
+  it("describes parked plan-approval runs before judge fallbacks", () => {
+    expect(
+      describeAutomationStage(
+        automation(),
+        run({
+          status: "awaiting_plan_approval",
+          planJudgeState: "in_progress",
+          judgeState: "none",
+        }),
+      ),
+    ).toBe("Judging plan");
+    expect(
+      describeAutomationStage(
+        automation(),
+        run({
+          status: "awaiting_plan_approval",
+          planApprovedAt: "2026-07-09T13:45:00Z",
+          planJudgeState: "none",
+          judgeState: "none",
+        }),
+      ),
+    ).toBe("Approved — resuming");
+    expect(
+      describeAutomationStage(
+        automation(),
+        run({
+          status: "awaiting_plan_approval",
+          planJudgeState: "none",
+          judgeState: "none",
+        }),
+      ),
+    ).toBe("Awaiting plan approval");
+  });
+
+  it("does not describe cancelled runs as waiting for a judge", () => {
+    expect(
+      describeAutomationStage(automation(), run({ status: "cancelled", judgeState: "none" })),
+    ).toBe("Cancelled");
   });
 
   it("describes published runs waiting for a PR merge", () => {
@@ -187,7 +245,13 @@ describe("isOpenAutomationRun", () => {
   });
 
   it("treats in-flight run statuses as open", () => {
-    for (const status of ["pending", "provisioning", "running", "published"] as const) {
+    for (const status of [
+      "pending",
+      "provisioning",
+      "running",
+      "awaiting_plan_approval",
+      "published",
+    ] as const) {
       expect(isOpenAutomationRun(run({ status, judgeState: "none" }))).toBe(true);
     }
   });

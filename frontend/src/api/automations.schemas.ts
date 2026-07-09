@@ -12,6 +12,7 @@ export const AutomationRunStatusSchema = z.enum([
   "pending",
   "provisioning",
   "running",
+  "awaiting_plan_approval",
   "published",
   "completed",
   "merged",
@@ -26,6 +27,17 @@ export const AutomationJudgeStateSchema = z.enum([
   "done",
   "failed",
   "skipped",
+]);
+
+export const AutomationPlanApprovalModeSchema = z.enum(["manual", "automatic"]);
+
+export const AutomationPrMergeModeSchema = z.enum(["manual", "automatic"]);
+
+export const AutomationPlanJudgeStateSchema = z.enum([
+  "none",
+  "in_progress",
+  "done",
+  "failed",
 ]);
 
 export const AutomationPromptAuthorSchema = z.enum([
@@ -74,6 +86,9 @@ export const AutomationSchema = z.object({
   goal_items_json: z.string().nullable(),
   chain_mode: AutomationChainModeSchema,
   completion_signal: AutomationCompletionSignalSchema,
+  plan_approval_mode: AutomationPlanApprovalModeSchema,
+  pr_merge_mode: AutomationPrMergeModeSchema,
+  plan_deep_verification: z.boolean(),
   max_runs: z.number().int().positive(),
   max_consecutive_failures: z.number().int().positive(),
   first_run_prompt: z.string().nullable(),
@@ -89,6 +104,14 @@ export const AutomationRunSchema = z.object({
   status: AutomationRunStatusSchema,
   judge_state: AutomationJudgeStateSchema,
   judge_lease_expires_at: z.string().nullable(),
+  plan_judge_state: AutomationPlanJudgeStateSchema,
+  plan_revision_round: z.number().int().nonnegative(),
+  plan_revision_pending: z.boolean(),
+  plan_phase: z.boolean(),
+  plan_artifact_id: z.string().nullable(),
+  plan_approved_by: z.string().nullable(),
+  plan_approved_artifact_version: z.number().int().positive().nullable(),
+  plan_approved_at: z.string().nullable(),
   conversation_id: z.string().nullable(),
   run_prompt: z.string(),
   prompt_author: AutomationPromptAuthorSchema,

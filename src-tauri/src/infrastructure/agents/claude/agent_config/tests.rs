@@ -2,8 +2,8 @@ use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
 use crate::infrastructure::agents::claude::agent_names::{
     SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_AUTOMATION_JUDGE,
-    SHORT_AUTOMATION_SETUP, SHORT_CHAT_PROJECT, SHORT_CHAT_TASK, SHORT_CODER,
-    SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER, SHORT_GENERAL_WORKER,
+    SHORT_AUTOMATION_PLAN_JUDGE, SHORT_AUTOMATION_SETUP, SHORT_CHAT_PROJECT, SHORT_CHAT_TASK,
+    SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER, SHORT_GENERAL_WORKER,
     SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC, SHORT_IDEATION_SPECIALIST_BACKEND,
     SHORT_IDEATION_SPECIALIST_CODE_QUALITY, SHORT_IDEATION_SPECIALIST_FRONTEND,
     SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD,
@@ -318,6 +318,7 @@ fn test_all_agent_names_are_known() {
         "ralphx-utility-plan-complexity",
         SHORT_AUTOMATION_SETUP,
         SHORT_AUTOMATION_JUDGE,
+        SHORT_AUTOMATION_PLAN_JUDGE,
     ]);
 
     for agent in agent_configs() {
@@ -645,6 +646,10 @@ automations:
   judge_timeout_secs: 240
   publish_grace_secs: 90
   max_run_duration_secs: 7200
+  plan_max_revision_rounds: 5
+  plan_judge_model:
+    claude: claude-sonnet-5
+    codex: gpt-5.4
 "#;
     let parsed = parse_config_no_env_overrides(yaml).expect("config should parse");
 
@@ -653,6 +658,23 @@ automations:
     assert_eq!(parsed.automations.judge_timeout_secs, 240);
     assert_eq!(parsed.automations.publish_grace_secs, 90);
     assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+    assert_eq!(parsed.automations.plan_max_revision_rounds, 5);
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("gpt-5.4")
+    );
 }
 
 #[test]
@@ -663,6 +685,9 @@ fn test_automations_config_env_overrides() {
         "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS" => Some("240".to_string()),
         "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS" => Some("90".to_string()),
         "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS" => Some("7200".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS" => Some("6".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE" => Some("claude-sonnet-5".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX" => Some("gpt-5.4".to_string()),
         _ => None,
     })
     .expect("config should parse");
@@ -672,6 +697,23 @@ fn test_automations_config_env_overrides() {
     assert_eq!(parsed.automations.judge_timeout_secs, 240);
     assert_eq!(parsed.automations.publish_grace_secs, 90);
     assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+    assert_eq!(parsed.automations.plan_max_revision_rounds, 6);
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("gpt-5.4")
+    );
 }
 
 #[test]
@@ -1698,7 +1740,9 @@ fn test_agent_workspace_repair_can_fetch_review_artifacts() {
         "repair agent must be able to signal completion"
     );
     assert!(
-        config.allowed_mcp_tools.contains(&"get_artifact".to_string()),
+        config
+            .allowed_mcp_tools
+            .contains(&"get_artifact".to_string()),
         "repair agent must be able to fetch blocking Review artifacts"
     );
 }

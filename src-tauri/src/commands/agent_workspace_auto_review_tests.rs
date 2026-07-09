@@ -26,7 +26,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project, AutomationRunId,
 };
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::running_agent_registry::RunningAgentKey;
@@ -213,6 +213,10 @@ fn skip_reason_codes_are_stable() {
         (
             AutoReviewSkipReason::ManualOnlyTerminalPr,
             "manual_only_terminal_pr",
+        ),
+        (
+            AutoReviewSkipReason::PlanPhaseAutomationRun,
+            "plan_phase_automation_run",
         ),
         (
             AutoReviewSkipReason::NoReviewableChanges,
@@ -459,6 +463,44 @@ async fn auto_review_start_action_starts_when_existing_review_is_outdated() {
         .expect("auto-review action should resolve");
 
     assert_eq!(action, AutoReviewStartAction::Start);
+}
+
+#[tokio::test]
+async fn auto_review_skips_plan_phase_automation_run_without_spawning_review() {
+    let (_temp, repo, base_sha) = init_repo();
+    add_all_workspace_delta_sources(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    let mut conversation = ChatConversation::new_project(workspace.project_id.clone());
+    conversation.id = workspace.conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Plan);
+    conversation.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("automation conversation should persist");
+
+    let decision = maybe_start_auto_review(&state, &execution_state, &workspace)
+        .await
+        .expect("auto-review should resolve");
+
+    assert_eq!(
+        decision,
+        AutoReviewDecision::Skipped(AutoReviewSkipReason::PlanPhaseAutomationRun)
+    );
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("workspace monitor lookup should succeed");
+    assert!(
+        monitor.is_none(),
+        "plan-phase automation turn completion must not create a review monitor"
+    );
 }
 
 #[test]

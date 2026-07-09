@@ -7,49 +7,16 @@ pub async fn approve_plan_artifact(
     let session_id_str = req.session_id.clone();
     let requested_artifact_id = req.artifact_id.clone();
 
-    let (session_id, artifact, approved_at) = state
+    let approved = state
         .app_state
         .db
         .run_transaction(move |conn| {
-            let sid = IdeationSessionId::from_string(session_id_str);
-            let session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
-                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
-
-            crate::http_server::helpers::assert_session_mutable(&session)?;
-
-            if session.session_flow != IdeationSessionFlow::Planning {
-                return Err(AppError::Validation(
-                    "Plan approval is only available for planning sessions".to_string(),
-                ));
-            }
-
-            let plan_artifact_id = session.plan_artifact_id.as_ref().ok_or_else(|| {
-                AppError::Validation(
-                    "Cannot approve plan: planning session does not have an owned plan artifact"
-                        .to_string(),
-                )
-            })?;
-
-            if let Some(requested) = requested_artifact_id.as_deref() {
-                if requested != plan_artifact_id.as_str() {
-                    return Err(AppError::Conflict(
-                        "Plan changed before approval. Refresh the current plan and approve again."
-                            .to_string(),
-                    ));
-                }
-            }
-
-            let artifact = ArtifactRepo::get_by_id_sync(conn, plan_artifact_id.as_str())?
-                .ok_or_else(|| {
-                    AppError::NotFound(format!(
-                        "Plan artifact {} not found",
-                        plan_artifact_id.as_str()
-                    ))
-                })?;
-            let approved_at = chrono::Utc::now().to_rfc3339();
-            upsert_plan_approval_sync(conn, sid.as_str(), &artifact, &approved_at)?;
-
-            Ok((sid, artifact, approved_at))
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                IdeationSessionId::from_string(session_id_str),
+                requested_artifact_id.as_deref(),
+                crate::domain::repositories::PlanApprovalActor::User,
+            )
         })
         .await
         .map_err(|e| {
@@ -57,29 +24,33 @@ pub async fn approve_plan_artifact(
             map_app_err(e)
         })?;
 
-    let mut response = ArtifactResponse::from(artifact);
-    response.session_id = Some(session_id.as_str().to_string());
+    let mut response = ArtifactResponse::from(approved.artifact);
+    response.session_id = Some(approved.session_id.as_str().to_string());
     let response_id = response.id.clone();
     let response_version = response.version;
     attach_plan_approval(
         &mut response,
-        PlanApprovalView::approved(response_id.clone(), response_version, approved_at.clone()),
+        PlanApprovalView::approved(
+            response_id.clone(),
+            response_version,
+            approved.approved_at.clone(),
+        ),
     );
 
     crate::http_server::emit_http_event(
         &state,
         "plan_artifact:approved",
         serde_json::json!({
-            "sessionId": session_id.as_str(),
+            "sessionId": approved.session_id.as_str(),
             "artifactId": response_id.clone(),
             "version": response_version,
-            "approvedAt": approved_at,
+            "approvedAt": approved.approved_at,
         }),
     );
 
     crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
         std::sync::Arc::clone(&state.app_state),
-        session_id.as_str().to_string(),
+        approved.session_id.as_str().to_string(),
         response_id,
         response_version,
     );

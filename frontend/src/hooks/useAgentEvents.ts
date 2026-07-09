@@ -29,6 +29,7 @@ import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
 import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
+import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
 import {
   chatKeys,
   invalidateConversationDataQueries,
@@ -93,6 +94,18 @@ function patchConversationMode<T>(
     return value;
   }
   return { ...record, agentMode: mode } as T;
+}
+
+function invalidateConversationAgentTasks(
+  queryClient: QueryClient,
+  conversationId: string | null | undefined
+) {
+  if (!conversationId) {
+    return;
+  }
+  void queryClient.invalidateQueries({
+    queryKey: agentWorkspaceKeys.agentTasks(conversationId),
+  });
 }
 
 function patchConversationModeInListPages<T>(
@@ -865,6 +878,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         conversation_id: string;
         context_id: string;
       }>("agent:task_started", (payload) => {
+        invalidateConversationAgentTasks(queryClient, payload.conversation_id);
         const key = findStoreKeyForContextId(payload.context_id);
         if (key) updateLastAgentEvent(key);
       })
@@ -875,6 +889,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         conversation_id: string;
         context_id: string;
       }>("agent:task_completed", (payload) => {
+        invalidateConversationAgentTasks(queryClient, payload.conversation_id);
         const key = findStoreKeyForContextId(payload.context_id);
         if (key) updateLastAgentEvent(key);
       })

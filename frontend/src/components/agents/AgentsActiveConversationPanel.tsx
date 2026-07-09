@@ -31,6 +31,11 @@ import {
   type Automation,
   type AutomationRun,
 } from "@/api/automations";
+import {
+  getAutomationRunView,
+  isAutomationRunComposerReadOnly,
+} from "@/components/automations/automationStage";
+import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { verificationApi } from "@/api/verification";
 import {
   IntegratedChatPanel,
@@ -148,18 +153,6 @@ const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 const PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS = 150;
 const PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS = 750;
 const PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS = 40;
-const TERMINAL_AUTOMATION_RUN_STATUSES = new Set([
-  "merged",
-  "pr_closed",
-  "agent_failed",
-  "cancelled",
-]);
-const OPEN_AUTOMATION_RUN_STATUSES = new Set<AutomationRun["status"]>([
-  "pending",
-  "provisioning",
-  "running",
-  "published",
-]);
 function getWorkspaceBasePickerKey(
   workspace: AgentConversationWorkspace | null,
   freshness: AgentConversationWorkspaceFreshness | undefined,
@@ -602,14 +595,11 @@ function PlanComposerCtaRow({
   );
 }
 
-function formatAutomationRunStatus(status: AutomationRun["status"]): string {
-  if (OPEN_AUTOMATION_RUN_STATUSES.has(status)) {
-    return "Running";
-  }
-  return status
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+function formatAutomationRunStatus(
+  automation: Automation,
+  run: AutomationRun,
+): string {
+  return getAutomationRunView(automation, run).statusLabel;
 }
 
 function hasPersistedAutomationPhaseSpec(goalItemsJson: string | null): boolean {
@@ -653,17 +643,22 @@ function isAutomationApprovalReady(automation: Automation): boolean {
   return false;
 }
 
-function hasOpenAutomationRun(runs: readonly AutomationRun[]): boolean {
-  return runs.some((run) => OPEN_AUTOMATION_RUN_STATUSES.has(run.status));
+function hasOpenAutomationRun(
+  automation: Automation,
+  runs: readonly AutomationRun[],
+): boolean {
+  return runs.some((run) => getAutomationRunView(automation, run).isOpen);
 }
 
 function AutomationRunsWidget({
   automationId,
+  automation,
   runs,
   currentRunId,
   onOpenRun,
 }: {
   automationId: string;
+  automation: Automation;
   runs: readonly AutomationRun[];
   currentRunId: string | null;
   onOpenRun: (automationId: string, run: AutomationRun) => void;
@@ -730,7 +725,7 @@ function AutomationRunsWidget({
                 className="min-w-0 truncate"
                 style={{ color: "var(--text-muted)" }}
               >
-                {formatAutomationRunStatus(run.status)}
+                {formatAutomationRunStatus(automation, run)}
               </span>
             </button>
           );
@@ -1088,8 +1083,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
   const automationRunReadOnlyReason =
     activeAutomationRunId &&
-    (!automationRun || !TERMINAL_AUTOMATION_RUN_STATUSES.has(automationRun.status))
-      ? "Automation run conversations are read-only until the run reaches a terminal state."
+    (!automationRun ||
+      isAutomationRunComposerReadOnly(automationRun))
+      ? "Automation run conversations are read-only while the automation is working on this run."
       : null;
   // Automation SETUP conversation: automationId present, no run yet. Editable —
   // the user configures the automation by chatting with the setup agent. Mutually
@@ -1506,9 +1502,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       if (!run.conversationId) {
         return;
       }
+      if (run.status === "awaiting_plan_approval") {
+        onSelectArtifact("plan");
+      }
       onFocusAutomationRun(automationId, run.id, run.conversationId);
     },
-    [onFocusAutomationRun],
+    [onFocusAutomationRun, onSelectArtifact],
   );
   const composerTaskLedgerContext = useMemo(() => {
     if (taskRuntimeFocus) {
@@ -1660,12 +1659,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !!planApprovalSessionId &&
     !!planApprovalArtifact &&
     planArtifactApprovalStatus === "draft";
-  const canCreatePlanProposals = !!planApprovalSessionId && isPlanApproved;
+  const canCreatePlanProposals =
+    !!planApprovalSessionId && isPlanApproved && !activeAutomationRunId;
   const canImplementPlanDirectly = Boolean(
     planApprovalSessionId &&
       isPlanApproved &&
       activeWorkspace?.conversationId &&
-      activeProjectId,
+      activeProjectId &&
+      !activeAutomationRunId,
   );
   const planComplexityQuery = useQuery({
     queryKey: [
@@ -2068,9 +2069,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     try {
       const schedule = await automationsApi.triggerRunNow(automationConfigId);
       invalidateAutomationQueries(queryClient, automationConfigId);
-      toast.success(
-        schedule.scheduled ? "Automation run queued" : schedule.reason ?? "Automation run requested",
-      );
+      if (schedule.scheduled) {
+        toast.success("Automation run queued");
+      } else {
+        toast.info(schedule.reason ?? "Automation run was not scheduled");
+      }
     } catch (err) {
       console.error("Failed to run automation:", err);
       toast.error(err instanceof Error ? err.message : "Failed to run automation");
@@ -2103,7 +2106,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     if (
       automation.status === "active" &&
-      !hasOpenAutomationRun(automationSetupDetail.runs)
+      !hasOpenAutomationRun(automation, automationSetupDetail.runs)
     ) {
       return [
         {
@@ -2601,7 +2604,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   />
                   {automationSetupConversationId && automationSetupDetail && (
                     <AutomationRunsWidget
-                      automationId={automationSetupConversationId}
+                      automationId={automationSetupDetail.automation.id}
+                      automation={automationSetupDetail.automation}
                       runs={automationSetupDetail.runs}
                       currentRunId={activeAutomationRunId}
                       onOpenRun={handleOpenAutomationRun}
@@ -2627,29 +2631,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       compactHintOverride={
                         automationSetupDetail?.automation.status === "draft"
                           ? "Ready for approval"
-                          : "Ready to run"
+                          : "Run available"
                       }
                     />
                   )}
                   {automationRunReadOnlyReason && (
-                    <div
-                      className="flex items-start gap-2 rounded-md px-3 py-2 text-xs"
-                      style={{
-                        backgroundColor: "var(--bg-surface)",
-                        borderColor: "var(--border-default)",
-                        borderStyle: "solid",
-                        borderWidth: "1px",
-                        color: "var(--text-muted)",
-                      }}
-                      data-testid="agents-automation-run-readonly-banner"
-                    >
-                      <ShieldCheck
-                        className="mt-0.5 h-4 w-4 shrink-0"
-                        style={{ color: "var(--accent-primary)" }}
-                        aria-hidden="true"
-                      />
-                      <span>{automationRunReadOnlyReason}</span>
-                    </div>
+                    <AutomationRunStatusHeader
+                      automation={automationSetupDetail?.automation ?? null}
+                      run={automationRun ?? null}
+                      density="banner"
+                      message={automationRunReadOnlyReason}
+                      testId="agents-automation-run-readonly-banner"
+                    />
                   )}
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"
@@ -2742,6 +2735,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             // inherit and display it read-only.
                             disabled:
                               isFocusedChildChat ||
+                              Boolean(activeAutomationRunId) ||
                               composerProps.isSending ||
                               composerProps.agentStatus === "generating" ||
                               switchingConversationModeId ===

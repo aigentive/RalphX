@@ -17,6 +17,10 @@ use crate::application::agent_conversation_workspace::agent_name_for_workspace_m
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::git_artifact_cleanup::terminal_agent_workspace_cleanup_marker_for_report;
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
+    AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
@@ -2146,10 +2150,8 @@ async fn sync_agent_workspace_auto_merge_preference(
                     .update_pr_auto_merge_state(
                         &workspace.conversation_id,
                         Some(false),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be enabled yet: {error}"
-                        )),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_enable_failure_summary(&error)),
                     )
                     .await?;
             }
@@ -2172,10 +2174,8 @@ async fn sync_agent_workspace_auto_merge_preference(
                     .update_pr_auto_merge_state(
                         &workspace.conversation_id,
                         Some(true),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be disabled yet: {error}"
-                        )),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_disable_failure_summary(&error)),
                     )
                     .await?;
             }

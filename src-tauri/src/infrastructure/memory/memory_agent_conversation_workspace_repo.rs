@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -31,6 +33,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
         RwLock<HashMap<(ChatConversationId, ArtifactId), Vec<AgentWorkspaceReviewHunkAnnotation>>>,
     pr_review_actions: RwLock<HashMap<String, AgentWorkspacePrReviewAction>>,
     local_cleanup_markers: RwLock<HashMap<ChatConversationId, (String, DateTime<Utc>)>>,
+    #[cfg(test)]
+    next_pr_supervision_preference_error: Mutex<Option<String>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -46,7 +50,14 @@ impl MemoryAgentConversationWorkspaceRepository {
             workspace_review_hunk_annotations: RwLock::new(HashMap::new()),
             pr_review_actions: RwLock::new(HashMap::new()),
             local_cleanup_markers: RwLock::new(HashMap::new()),
+            #[cfg(test)]
+            next_pr_supervision_preference_error: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_pr_supervision_preference_update(&self, message: impl Into<String>) {
+        *self.next_pr_supervision_preference_error.lock().unwrap() = Some(message.into());
     }
 
     pub async fn local_cleanup_status_for_test(
@@ -319,6 +330,18 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         auto_merge_desired: bool,
         auto_merge_method: &str,
     ) -> AppResult<()> {
+        #[cfg(test)]
+        {
+            let error = self
+                .next_pr_supervision_preference_error
+                .lock()
+                .unwrap()
+                .take();
+            if let Some(message) = error {
+                return Err(crate::error::AppError::Infrastructure(message));
+            }
+        }
+
         if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
             workspace.pr_autofix_enabled = autofix_enabled;
             workspace.pr_auto_merge_desired = auto_merge_desired;

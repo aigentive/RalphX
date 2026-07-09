@@ -61,7 +61,7 @@ export function evictDeletedAutomation(
 ) {
   void queryClient.invalidateQueries({ queryKey: automationKeys.lists() });
   void queryClient.invalidateQueries({
-    queryKey: agentSidebarConversationKeys.all,
+    queryKey: agentSidebarConversationKeys.automationScope(),
   });
   if (automationId) {
     queryClient.removeQueries({
@@ -76,7 +76,7 @@ export function invalidateAutomationQueries(
 ) {
   void queryClient.invalidateQueries({ queryKey: automationKeys.lists() });
   void queryClient.invalidateQueries({
-    queryKey: agentSidebarConversationKeys.all,
+    queryKey: agentSidebarConversationKeys.automationScope(),
   });
   if (automationId) {
     void queryClient.invalidateQueries({
@@ -87,6 +87,18 @@ export function invalidateAutomationQueries(
       queryKey: automationKeys.details(),
     });
   }
+}
+
+export function invalidateAutomationRunQueries(
+  queryClient: QueryClient,
+  automationId?: string | null,
+) {
+  if (!automationId) {
+    return;
+  }
+  void queryClient.invalidateQueries({
+    queryKey: automationKeys.detail(automationId),
+  });
 }
 
 export function useAutomationEvents(automationId?: string | null) {
@@ -111,7 +123,10 @@ export function useAutomationEvents(automationId?: string | null) {
         if (automationId && eventAutomationId && eventAutomationId !== automationId) {
           return;
         }
-        invalidateAutomationQueries(queryClient, eventAutomationId ?? automationId ?? null);
+        invalidateAutomationRunQueries(
+          queryClient,
+          eventAutomationId ?? automationId ?? null,
+        );
       },
     );
     const unsubscribeDeleted = bus.subscribe<AutomationEventPayload>(

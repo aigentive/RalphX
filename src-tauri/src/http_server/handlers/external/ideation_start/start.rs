@@ -490,27 +490,20 @@ async fn clone_plan_approval_if_approved(
     }
 
     let new_sid = new_session_id.to_string();
-    let artifact_id = cloned_artifact.id.as_str().to_string();
-    let artifact_version = i64::from(cloned_artifact.metadata.version);
+    let artifact = cloned_artifact.clone();
     let now = chrono::Utc::now().to_rfc3339();
 
     if let Err(e) = state
         .app_state
         .db
         .run(move |conn| {
-            conn.execute(
-                "INSERT INTO plan_artifact_approvals (
-                    session_id, artifact_id, artifact_version, status, approved_at, approved_by
-                 ) VALUES (?1, ?2, ?3, 'approved', ?4, 'plan_import')
-                 ON CONFLICT(session_id) DO UPDATE SET
-                    artifact_id = excluded.artifact_id,
-                    artifact_version = excluded.artifact_version,
-                    status = excluded.status,
-                    approved_at = excluded.approved_at,
-                    approved_by = excluded.approved_by",
-                rusqlite::params![new_sid, artifact_id, artifact_version, now],
-            )?;
-            Ok(())
+            crate::application::plan_artifact_approval::upsert_plan_approval_sync(
+                conn,
+                &new_sid,
+                &artifact,
+                &now,
+                crate::domain::repositories::PlanApprovalActor::PlanImport,
+            )
         })
         .await
     {

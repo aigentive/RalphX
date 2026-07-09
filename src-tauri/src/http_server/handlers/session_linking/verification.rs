@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::entities::{build_child_session, ChildSessionDraftInput};
+use crate::application::verification_child_session::spawn_verification_child_session;
 
 pub(crate) async fn create_verification_child_session(
     state: &HttpServerState,
@@ -8,141 +8,19 @@ pub(crate) async fn create_verification_child_session(
     title: &str,
     disabled_specialists: &[String],
 ) -> Result<bool, String> {
-    let effective_description = if disabled_specialists.is_empty() {
-        description.to_string()
-    } else {
-        format!(
-            "{}\nDISABLED_SPECIALISTS: {}",
-            description,
-            disabled_specialists.join(", ")
-        )
-    };
-
     let parent_id = IdeationSessionId::from_string(parent_session_id.to_string());
-
-    let parent = state
-        .app_state
-        .ideation_session_repo
-        .get_by_id(&parent_id)
-        .await
-        .map_err(|e| format!("Failed to fetch parent session: {}", e))?
-        .ok_or_else(|| format!("Parent session {} not found", parent_session_id))?;
-
-    let child_session = build_child_session(
-        parent_id.clone(),
-        &parent,
-        ChildSessionDraftInput {
-            title: Some(title.to_string()),
-            inherit_context: true,
-            team_mode: None,
-            team_config_json: None,
-            source_task_id: None,
-            source_context_type: None,
-            source_context_id: None,
-            spawn_reason: None,
-            blocker_fingerprint: None,
-            purpose: SessionPurpose::Verification,
-            is_external_trigger: false,
-        },
-    );
-
-    let child_id = child_session.id.clone();
-    let child_session_str = child_id.as_str().to_string();
-    let parent_session_str = parent_session_id.to_string();
-
-    let created_session = state
-        .app_state
-        .ideation_session_repo
-        .create(child_session)
-        .await
-        .map_err(|e| format!("Failed to create verification child session: {}", e))?;
-
-    let link = SessionLink::new(
-        parent_id.clone(),
-        child_id.clone(),
-        SessionRelationship::FollowOn,
-    );
-    state
-        .app_state
-        .session_link_repo
-        .create(link)
-        .await
-        .map_err(|e| format!("Failed to create session link: {}", e))?;
-
-    let chat_service = build_ideation_chat_service(state, &created_session);
-    let orchestration_triggered = match chat_service
-        .send_message(
-            ChatContextType::Ideation,
-            &child_session_str,
-            effective_description.as_str(),
-            Default::default(),
-        )
-        .await
-    {
-        Ok(send_result) => {
-            if send_result.queued_as_pending {
-                tracing::info!(
-                    session_id = child_session_str,
-                    "Verification child launch deferred because ideation capacity is full"
-                );
-                if let Err(persist_err) = state
-                    .app_state
-                    .ideation_session_repo
-                    .set_pending_initial_prompt(
-                        &child_session_str,
-                        Some(effective_description.clone()),
-                    )
-                    .await
-                {
-                    error!(
-                        "Failed to persist pending_initial_prompt for capacity-deferred verification child {}: {}",
-                        child_session_str, persist_err
-                    );
-                }
-                false
-            } else {
-                true
-            }
-        }
-        Err(e) => {
-            error!(
-                "Failed to spawn ralphx-plan-verifier on verification child session {}: {}",
-                child_session_str, e
-            );
-            // Archive the child row so it does not linger as an orphan
-            if let Err(archive_err) = state
-                .app_state
-                .ideation_session_repo
-                .update_status(&child_id, IdeationSessionStatus::Archived)
-                .await
-            {
-                error!(
-                    "Failed to archive verification child session {} after spawn failure: {}",
-                    child_session_str, archive_err
-                );
-            }
-            false
-        }
-    };
-
-    let session_title = created_session
-        .title
-        .clone()
-        .unwrap_or_else(|| title.to_string());
-    crate::http_server::emit_http_event(
-        state,
-        "ideation:child_session_created",
-        serde_json::json!({
-            "sessionId": child_session_str,
-            "parentSessionId": parent_session_str,
-            "title": session_title,
-            "purpose": "verification",
-            "orchestrationTriggered": orchestration_triggered,
-            "pendingInitialPrompt": if orchestration_triggered { serde_json::Value::Null } else { serde_json::json!(description) }
-        }),
-    );
-
-    Ok(orchestration_triggered)
+    spawn_verification_child_session(
+        &state.app_state,
+        &parent_id,
+        description,
+        title,
+        None,
+        disabled_specialists,
+        |created_session| build_ideation_chat_service(state, created_session),
+    )
+    .await
+    .map(|outcome| outcome.orchestration_triggered)
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

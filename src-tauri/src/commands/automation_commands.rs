@@ -1,12 +1,19 @@
 use std::sync::Arc;
 
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde::Deserialize;
 use tauri::State;
 
+use crate::application::agent_conversation_workspace::{
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
+    AgentConversationWorkspaceSetupMode,
+};
 use crate::application::automation::api::{
-    automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
-    AutomationResponse, AutomationRunResponse, AutomationScheduleResponse,
-    CreateAutomationDraftResponse,
+    automation_detail_response_for_state, automation_run_response_for_state,
+    automation_service_for_state, automation_transition_service_for_state,
+    AutomationDetailResponse, AutomationResponse, AutomationRunResponse,
+    AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
 use crate::application::automation::delete::delete_automation_with_archive;
 use crate::application::automation::scheduler::{
@@ -18,20 +25,14 @@ use crate::application::automation::service::{
     CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
-use crate::application::automation::transition::{
-    AutomationTransitionService, NoopAutomationEventEmitter,
-};
-use crate::application::agent_conversation_workspace::{
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
-    AgentConversationWorkspaceSetupMode,
-};
+use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
-    AutomationJudgeState, AutomationRunId, ChatConversation, IdeationAnalysisBaseRefKind,
-    ProjectId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId,
+    ChatConversation, IdeationAnalysisBaseRefKind, ProjectId,
 };
+use crate::infrastructure::agents::claude::automations_config;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +65,12 @@ pub struct UpdateAutomationSettingsInput {
     pub max_runs: Option<i64>,
     #[serde(default)]
     pub max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    pub plan_approval_mode: Option<String>,
+    #[serde(default)]
+    pub pr_merge_mode: Option<String>,
+    #[serde(default)]
+    pub plan_deep_verification: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -231,12 +238,17 @@ pub async fn update_automation_settings(
     state: State<'_, AppState>,
 ) -> Result<AutomationResponse, String> {
     let id = parse_automation_id(&input.id)?;
+    let plan_approval_mode = parse_plan_approval_mode(input.plan_approval_mode)?;
+    let pr_merge_mode = parse_pr_merge_mode(input.pr_merge_mode)?;
     automation_service(&state)
         .update_settings(ServiceUpdateSettingsInput {
             id,
             name: input.name,
             max_runs: input.max_runs,
             max_consecutive_failures: input.max_consecutive_failures,
+            plan_approval_mode,
+            pr_merge_mode,
+            plan_deep_verification: input.plan_deep_verification,
         })
         .await
         .map(AutomationResponse::from)
@@ -322,20 +334,28 @@ pub(crate) async fn trigger_automation_run_now_for_state(
         } => {
             let automation = *automation;
             let run = *run;
-            let config = AutomationSchedulerConfig::default();
+            let config = AutomationSchedulerConfig::from_runtime(automations_config());
+            let judge_lease_expires_at = automation_judge_lease_expires_at(config.judge_timeout);
             let transition_service = automation_transition_service(state);
             let changed = transition_service
                 .transition_judge_state(
                     &run.id,
                     run.judge_state,
                     AutomationJudgeState::InProgress,
+                    AutomationJudgeTransitionGuard::Dispatch,
                     None,
                     None,
-                    Some(automation_judge_lease_expires_at(config.judge_timeout)),
+                    Some(judge_lease_expires_at),
                     None,
                 )
                 .await?;
             if !changed {
+                tracing::warn!(
+                    automation_id = %id,
+                    run_id = %run.id,
+                    from_judge_state = run.judge_state.as_str(),
+                    "Discarded Run Now judge start because judge state changed"
+                );
                 return Ok(AutomationScheduleOutcome {
                     scheduled: false,
                     reason: Some("run in flight".to_string()),
@@ -349,6 +369,7 @@ pub(crate) async fn trigger_automation_run_now_for_state(
                 automation,
                 runs,
                 run,
+                judge_lease_expires_at,
             );
             Ok(AutomationScheduleOutcome {
                 scheduled: true,
@@ -379,10 +400,12 @@ pub async fn cancel_automation_run(
 ) -> Result<AutomationRunResponse, String> {
     let id = parse_automation_id(&input.id)?;
     let run_id = parse_automation_run_id(&input.run_id)?;
-    automation_service(&state)
+    let run = automation_service(&state)
         .cancel_run(&id, &run_id)
         .await
-        .map(AutomationRunResponse::from)
+        .map_err(|error| error.to_string())?;
+    automation_run_response_for_state(run, state.inner())
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -402,11 +425,7 @@ pub(crate) fn automation_service(state: &AppState) -> AutomationService {
 }
 
 fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
-    AutomationTransitionService::new(
-        state.automation_repo.clone(),
-        state.automation_run_repo.clone(),
-        Arc::new(NoopAutomationEventEmitter),
-    )
+    automation_transition_service_for_state(state)
 }
 
 pub(crate) fn parse_automation_id(value: &str) -> Result<AutomationId, String> {
@@ -431,6 +450,28 @@ pub(crate) fn parse_project_id(value: &str) -> Result<ProjectId, String> {
         return Err("project id is required".to_string());
     }
     Ok(ProjectId::from_string(trimmed.to_string()))
+}
+
+fn parse_plan_approval_mode(
+    value: Option<String>,
+) -> Result<Option<AutomationPlanApprovalMode>, String> {
+    value
+        .map(|value| {
+            let trimmed = value.trim();
+            AutomationPlanApprovalMode::parse(trimmed)
+                .ok_or_else(|| format!("invalid planApprovalMode: {trimmed}"))
+        })
+        .transpose()
+}
+
+fn parse_pr_merge_mode(value: Option<String>) -> Result<Option<AutomationPrMergeMode>, String> {
+    value
+        .map(|value| {
+            let trimmed = value.trim();
+            AutomationPrMergeMode::parse(trimmed)
+                .ok_or_else(|| format!("invalid prMergeMode: {trimmed}"))
+        })
+        .transpose()
 }
 
 pub(crate) fn trim_optional(value: Option<String>) -> Option<String> {

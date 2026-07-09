@@ -32,6 +32,7 @@ pub const SHORT_PR_REVIEWER: &str = "ralphx-pr-reviewer";
 pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
 pub const SHORT_AUTOMATION_SETUP: &str = "ralphx-automation-setup";
 pub const SHORT_AUTOMATION_JUDGE: &str = "ralphx-automation-judge";
+pub const SHORT_AUTOMATION_PLAN_JUDGE: &str = "ralphx-automation-plan-judge";
 pub const SHORT_REVIEWER: &str = "ralphx-execution-reviewer";
 pub const SHORT_QA_PREP: &str = "ralphx-qa-prep";
 pub const SHORT_QA_EXECUTOR: &str = "ralphx-qa-executor";
@@ -111,6 +112,9 @@ pub const AGENT_AUTOMATION_SETUP: &str = "ralphx:ralphx-automation-setup";
 
 /// Automation judge utility agent for scheduler-owned verdicts
 pub const AGENT_AUTOMATION_JUDGE: &str = "ralphx:ralphx-automation-judge";
+
+/// Automation plan judge utility agent for automatic plan-gate verdicts
+pub const AGENT_AUTOMATION_PLAN_JUDGE: &str = "ralphx:ralphx-automation-plan-judge";
 
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";

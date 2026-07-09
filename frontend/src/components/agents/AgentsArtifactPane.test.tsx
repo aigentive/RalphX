@@ -643,6 +643,10 @@ const automationFixture = (
   goalItemsJson: null,
   chainMode: "merged_base",
   completionSignal: "pr_merged",
+  specArtifactId: null,
+  planApprovalMode: "manual",
+  prMergeMode: "manual",
+  planDeepVerification: false,
   maxRuns: 25,
   maxConsecutiveFailures: 3,
   firstRunPrompt: null,
@@ -661,6 +665,14 @@ const automationRunFixture = (
   status: "published",
   judgeState: "none",
   judgeLeaseExpiresAt: null,
+  planJudgeState: "none",
+  planRevisionRound: 0,
+  planRevisionPending: false,
+  planPhase: false,
+  planArtifactId: null,
+  planApprovedBy: null,
+  planApprovedArtifactVersion: null,
+  planApprovedAt: null,
   conversationId: "conversation-1",
   runPrompt: "Continue the release automation.",
   promptAuthor: "judge",
@@ -1842,6 +1854,71 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("applies the automation run tab policy instead of generic workspace tabs", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(["atlassian", "settings"], {
+      enabled: true,
+      jiraAvailable: true,
+    });
+    queryClient.setQueryData(["linear", "settings"], {
+      enabled: true,
+      issueSearchAvailable: true,
+    });
+    queryClient.setQueryData(["granola", "settings"], {
+      enabled: true,
+      validationStatus: "valid",
+    });
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "published",
+            planArtifactId: null,
+            prNumber: 593,
+            prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+          }),
+        ],
+      }),
+    );
+
+    renderPane(
+      "jira",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 593,
+        publicationPrUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+      {},
+      queryClient,
+    );
+
+    await waitFor(() =>
+      expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-automation")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.queryByTestId("agents-artifact-tab-publish")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-jira")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-granola")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-content-pr")).toBeInTheDocument();
+  });
+
   it("uses the automation tab as the setup-conversation fallback", async () => {
     const automationConversation = {
       ...conversation(),
@@ -1942,6 +2019,39 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.queryByText("No ideation run attached"),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not render the Plan start panel for automation run conversations", async () => {
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            planArtifactId: "plan-artifact-1",
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+    );
+
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-artifact-content-plan")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
+    expect(screen.getByText("No ideation run attached")).toBeInTheDocument();
   });
 
   it("keeps the empty Plan tab visible when Review is also available", async () => {
@@ -2082,9 +2192,6 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
-    expect(
-      screen.getByRole("status", { name: "Loading pull request..." }),
-    ).toBeInTheDocument();
     expect(await screen.findByTestId("mock-pr-detail-panel")).toHaveTextContent(
       "PR #42",
     );
@@ -5874,6 +5981,128 @@ describe("AgentsArtifactPane", () => {
         artifactId: "artifact-1",
       }),
     );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps Approve Plan visible for automation-run plan conversations", async () => {
+    const draftPlan = {
+      ...approvedPlanArtifact(),
+      planApproval: { status: "draft" as const },
+    };
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            prNumber: null,
+            prUrl: null,
+            planArtifactId: "artifact-1",
+          }),
+        ],
+      }),
+    );
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(draftPlan);
+    approvePlanArtifactMock.mockResolvedValue({
+      ...draftPlan,
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    );
+
+    expect(
+      await screen.findByText("RalphX continues this run automatically after approval."),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Approve Plan/i }));
+
+    await waitFor(() =>
+      expect(approvePlanArtifactMock).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        artifactId: "artifact-1",
+      }),
+    );
+  });
+
+  it("suppresses manual continuation actions for automation-run plan conversations", async () => {
+    const user = userEvent.setup();
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            prNumber: null,
+            prUrl: null,
+            planArtifactId: "artifact-1",
+          }),
+        ],
+      }),
+    );
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-1",
+      sessionId: "session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "straightforward",
+      score: 20,
+      recommendedAction: "implement_directly",
+      confidence: 0.9,
+      reasonSummary: "Single scoped change.",
+      signals: {},
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-04-23T09:31:00Z",
+      updatedAt: "2026-04-23T09:31:00Z",
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    );
+
+    expect(
+      await screen.findByText("RalphX continues this run automatically after approval."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Plan actions"));
+    expect(
+      screen.queryByRole("menuitem", { name: /New Conversation/i }),
+    ).not.toBeInTheDocument();
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });

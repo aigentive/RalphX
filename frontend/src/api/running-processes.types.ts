@@ -68,6 +68,8 @@ export interface RunningIdeationSession {
 export interface RunningWorkspaceSession {
   conversationId: string;
   projectId: string;
+  automationId: string | null;
+  automationRunId: string | null;
   title: string;
   elapsedSeconds: number | null;
   model: string | null;

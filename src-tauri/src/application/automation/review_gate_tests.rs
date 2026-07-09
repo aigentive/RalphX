@@ -6,7 +6,8 @@ use crate::application::automation::review_gate::{
 };
 use crate::application::AppState;
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 
@@ -32,6 +33,9 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -57,6 +61,14 @@ fn automation_run(
         status,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: Some(conversation_id.clone()),
         run_prompt: "Run prompt".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -98,7 +110,11 @@ async fn pause_helper_pauses_automation_and_terminalizes_run() {
         AutomationRunStatus::Running,
         &conversation,
     );
-    state.automation_run_repo.create_run(run.clone()).await.unwrap();
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
 
     let paused = pause_automation_for_blocked_workspace_review(
         &state,
@@ -169,7 +185,11 @@ async fn pause_helper_soft_noops_when_automation_already_paused() {
         AutomationRunStatus::Running,
         &conversation,
     );
-    state.automation_run_repo.create_run(run.clone()).await.unwrap();
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
 
     let handled = pause_automation_for_blocked_workspace_review(&state, &conversation, None)
         .await

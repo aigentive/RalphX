@@ -5,6 +5,7 @@ import type {
 
 export const agentSidebarConversationKeys = {
   all: ["agents", "sidebar-conversations"] as const,
+  automationScope: () => [...agentSidebarConversationKeys.all, "automation"] as const,
   publicationGroup: (
     projectIds: string[],
     publicationState: AgentSidebarPublicationState,

@@ -32,8 +32,8 @@ pub use harness::{
 };
 pub use model_registry::{
     built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,
-    default_model_for_provider, lightweight_model_for_provider, AgentModelDefinition,
-    AgentModelRegistrySnapshot, AgentModelSource,
+    default_model_for_provider, lightweight_model_for_provider, plan_judge_model_for_provider,
+    AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource,
 };
 pub use provider_settings::{AgentProviderCliManagementMode, AgentProviderSettings};
 pub use types::{

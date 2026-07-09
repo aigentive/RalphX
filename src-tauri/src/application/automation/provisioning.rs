@@ -2,19 +2,23 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
+use ralphx_domain::entities::automation::latest_run_holds_goal_authority;
 
 use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
-use crate::application::automation::judge::build_automation_run_context_block;
+use crate::application::automation::judge::{
+    build_automation_run_context_block, mark_current_goal_item_in_progress,
+};
 use crate::application::automation::service::{AutomationService, CreateAutomationRunInput};
 use crate::application::automation::transition::{
-    AutomationEventEmitter, AutomationTransitionService,
+    AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, Automation, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, ChatConversation, ChatConversationId,
+    AgentConversationWorkspaceMode, Automation, AutomationId, AutomationPromptAuthor,
+    AutomationRun, AutomationRunId, AutomationRunStatus, ChatConversation, ChatConversationId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, AutomationRepository,
@@ -27,6 +31,9 @@ use crate::error::{AppError, AppResult};
 
 const AUTOMATION_RUN_BASE_BRANCH_MODE: &str = "isolated";
 const AUTOMATION_START_FAILED_CODE: &str = "start_failed";
+pub(crate) const AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK: &str = r#"<automation_plan_phase>
+You are in the automation run planning phase. Explore the codebase, then author the run plan artifact with the scope, files to inspect or change, approach, risks, and how it advances the current goal item. Use the plan tools to create or update the plan artifact, then end the turn. Implementation continues in a later resumed turn. Do not narrate next steps, approval mechanics, or manual actions (approve/verify/implement) at the end of your turn — the system handles continuation.
+</automation_plan_phase>"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationRunStartRequest {
@@ -91,7 +98,7 @@ impl AutomationRunStartRequest {
             provider_harness: automation.provider_harness.clone(),
             model_id: automation.model_id.clone(),
             logical_effort: automation.logical_effort.clone(),
-            run_mode: automation.run_mode.clone(),
+            run_mode: AgentConversationWorkspaceMode::Plan.to_string(),
             base_ref_kind: run.base_ref_kind.clone(),
             base_ref: run.base_ref_used.clone(),
             base_display_name,
@@ -111,9 +118,15 @@ impl AutomationRunStartRequest {
         // fingerprint (stored prompt vs judge nextRunPrompt) keeps working.
         let content = match &self.automation_context {
             Some(context) if !context.trim().is_empty() => {
-                format!("{context}\n{}", self.run_prompt)
+                format!(
+                    "{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\n{context}\n{}",
+                    self.run_prompt
+                )
             }
-            _ => self.run_prompt.clone(),
+            _ => format!(
+                "{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\n{}",
+                self.run_prompt
+            ),
         };
         Ok(StartAgentConversationInput {
             project_id: self.project_id,
@@ -163,6 +176,7 @@ pub struct AutomationRunProvisioner {
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     service: AutomationService,
     transition_service: AutomationTransitionService,
+    event_emitter: Arc<dyn AutomationEventEmitter>,
     starter: Arc<dyn AutomationRunStarter>,
 }
 
@@ -185,7 +199,7 @@ impl AutomationRunProvisioner {
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
-            event_emitter,
+            Arc::clone(&event_emitter),
         );
         Self {
             automation_repo,
@@ -194,6 +208,7 @@ impl AutomationRunProvisioner {
             workspace_repo,
             service,
             transition_service,
+            event_emitter,
             starter,
         }
     }
@@ -297,6 +312,11 @@ impl AutomationRunProvisioner {
             run,
             conversation.id.clone(),
         );
+        // Capture the phase basis BEFORE the agent spawns: the spawned agent
+        // run's started_at must never predate agent_phase_started_at, or the
+        // current-phase freshness guard treats the first turn as stale and the
+        // run can never park at the plan gate.
+        let agent_phase_basis = Utc::now();
         let outcome = self.starter.start_run(request).await?;
         self.workspace_repo
             .update_auto_publish_initial_pr_preference(&conversation.id, true)
@@ -305,14 +325,27 @@ impl AutomationRunProvisioner {
             .update_start_metadata(&run.id, &conversation.id, outcome.branch_name)
             .await?
             .ok_or_else(|| automation_run_not_found(&run.id))?;
-        self.transition_run_or_conflict(
-            &run.id,
-            AutomationRunStatus::Provisioning,
-            AutomationRunStatus::Running,
-            None,
-            None,
-        )
-        .await?;
+        let changed = self
+            .transition_service
+            .transition_run_status_with_agent_phase_started_at(
+                &run.id,
+                AutomationRunStatus::Provisioning,
+                AutomationRunStatus::Running,
+                agent_phase_basis,
+                None,
+                None,
+            )
+            .await?;
+        if !changed {
+            return Err(AppError::Conflict(format!(
+                "automation run {} status changed before transition {} -> {}",
+                run.id.as_str(),
+                AutomationRunStatus::Provisioning.as_str(),
+                AutomationRunStatus::Running.as_str()
+            )));
+        }
+        self.sync_current_goal_item_started(&automation.id, &run.id)
+            .await;
         self.run_repo
             .get_by_id(&run.id)
             .await?
@@ -324,17 +357,10 @@ impl AutomationRunProvisioner {
         automation: &Automation,
         run: &AutomationRun,
     ) -> AppResult<ChatConversation> {
-        let mode = AgentConversationWorkspaceMode::from_str(automation.run_mode.trim()).map_err(
-            |error| {
-                AppError::Validation(format!(
-                    "automation run_mode is not valid for run provisioning: {error}"
-                ))
-            },
-        )?;
         let mut conversation = ChatConversation::new_project(automation.project_id.clone());
         conversation.automation_id = Some(automation.id.clone());
         conversation.automation_run_id = Some(run.id.clone());
-        conversation.set_agent_mode(Some(mode));
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Plan));
         conversation.set_title(format!("{} run {}", automation.name, run.run_index));
         self.conversation_repo.create(conversation).await
     }
@@ -360,6 +386,152 @@ impl AutomationRunProvisioner {
             )));
         }
         Ok(())
+    }
+
+    pub(crate) async fn sync_current_goal_item_started(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) {
+        let automation = match self.automation_repo.get_by_id(automation_id).await {
+            Ok(Some(automation)) => automation,
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    "Failed to sync automation goal item progress: automation not found"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    error = %error,
+                    "Failed to sync automation goal item progress"
+                );
+                return;
+            }
+        };
+
+        let updated_goal_items_json =
+            match mark_current_goal_item_in_progress(automation.goal_items_json.as_deref()) {
+                Ok(Some(updated)) => updated,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation_id,
+                        error = %error,
+                        "Failed to sync automation goal item progress"
+                    );
+                    return;
+                }
+            };
+
+        match self
+            .automation_repo
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                automation.goal_items_json,
+                Some(updated_goal_items_json.clone()),
+            )
+            .await
+        {
+            Ok(Some(_)) => {
+                self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                    automation_id: automation_id.clone(),
+                });
+                self.revert_started_goal_item_if_run_closed(
+                    automation_id,
+                    run_id,
+                    updated_goal_items_json,
+                )
+                .await;
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    "Skipped automation goal item progress sync because stored goal items changed"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    error = %error,
+                    "Failed to sync automation goal item progress"
+                );
+            }
+        }
+    }
+
+    async fn revert_started_goal_item_if_run_closed(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+        expected_goal_items_json: String,
+    ) {
+        let should_revert = match self.run_repo.get_by_id(run_id).await {
+            Ok(Some(run)) => !latest_run_holds_goal_authority(&run),
+            Ok(None) => true,
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    error = %error,
+                    "Failed to verify automation run remained open after goal item progress sync"
+                );
+                true
+            }
+        };
+        if !should_revert {
+            return;
+        }
+
+        let reverted_goal_items_json =
+            match crate::application::automation::judge::revert_in_progress_goal_items_to_pending(
+                Some(&expected_goal_items_json),
+            ) {
+                Ok(Some(updated)) => updated,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation_id,
+                        run_id = %run_id,
+                        error = %error,
+                        "Failed to revert automation goal item progress after run closed"
+                    );
+                    return;
+                }
+            };
+
+        match self
+            .automation_repo
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                Some(expected_goal_items_json),
+                Some(reverted_goal_items_json),
+            )
+            .await
+        {
+            Ok(Some(_)) => {
+                self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                    automation_id: automation_id.clone(),
+                });
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    "Skipped reverting automation goal item progress after run closed because goal items changed"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    error = %error,
+                    "Failed to persist reverted automation goal item progress after run closed"
+                );
+            }
+        }
     }
 
     async fn mark_run_agent_failed(&self, id: &AutomationRunId, detail: String) {

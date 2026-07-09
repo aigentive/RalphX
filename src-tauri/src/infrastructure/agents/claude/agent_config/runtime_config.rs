@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+
+use crate::domain::agents::{
+    plan_judge_model_for_provider, standard_harness_map, AgentHarnessKind,
+};
 use serde::Deserialize;
 use tracing::warn;
 
@@ -549,6 +554,8 @@ pub struct AutomationsRuntimeConfig {
     pub judge_timeout_secs: u64,
     pub publish_grace_secs: u64,
     pub max_run_duration_secs: u64,
+    pub plan_judge_model: HashMap<AgentHarnessKind, String>,
+    pub plan_max_revision_rounds: u64,
 }
 
 impl Default for AutomationsRuntimeConfig {
@@ -559,8 +566,17 @@ impl Default for AutomationsRuntimeConfig {
             judge_timeout_secs: 180,
             publish_grace_secs: 120,
             max_run_duration_secs: 14_400,
+            plan_judge_model: default_plan_judge_models(),
+            plan_max_revision_rounds: 3,
         }
     }
+}
+
+fn default_plan_judge_models() -> HashMap<AgentHarnessKind, String> {
+    standard_harness_map(
+        plan_judge_model_for_provider(AgentHarnessKind::Claude).to_string(),
+        plan_judge_model_for_provider(AgentHarnessKind::Codex).to_string(),
+    )
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -643,6 +659,22 @@ pub(crate) fn apply_automations_env_overrides_with_lookup(
         cfg.max_run_duration_secs,
         "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS"
     );
+    env_u64!(
+        cfg.plan_max_revision_rounds,
+        "RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS"
+    );
+    if let Some(model) = lookup("RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.plan_judge_model.insert(AgentHarnessKind::Claude, model);
+    }
+    if let Some(model) = lookup("RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.plan_judge_model.insert(AgentHarnessKind::Codex, model);
+    }
 }
 
 pub(crate) fn apply_env_overrides_with_lookup(

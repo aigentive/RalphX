@@ -167,3 +167,19 @@ export function parseAutomationGoalItems(
   }
   return options.limit !== undefined ? items.slice(0, options.limit) : items;
 }
+
+export function findInProgressAutomationGoalItem(
+  value: string | null,
+): AutomationGoalItem | null {
+  return findInProgressAutomationGoalItemFromItems(parseAutomationGoalItems(value));
+}
+
+export function findInProgressAutomationGoalItemFromItems(
+  items: AutomationGoalItem[],
+): AutomationGoalItem | null {
+  return (
+    items.find(
+      (item) => normalizeAutomationPhaseStatus(item.status) === "in_progress",
+    ) ?? null
+  );
+}

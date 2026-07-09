@@ -75,6 +75,11 @@ interface AgentsArtifactPaneRegionProps {
     parentSessionId: string,
     childSessionId: string
   ) => void;
+  onFocusAutomationRun: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusTaskRuntime: (
     taskId: string,
@@ -109,6 +114,7 @@ export function AgentsArtifactPaneRegion({
   taskFocusRequest,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
+  onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
   onFocusTaskRuntime,
@@ -181,6 +187,7 @@ export function AgentsArtifactPaneRegion({
                     onFocusIdeationSessionForConversation={
                       onFocusIdeationSessionForConversation
                     }
+                    onFocusAutomationRun={onFocusAutomationRun}
                     onFocusVerificationSession={onFocusVerificationSession}
                     onFocusWorkspaceReview={onFocusWorkspaceReview}
                     onFocusTaskRuntime={onFocusTaskRuntime}

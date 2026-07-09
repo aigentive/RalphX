@@ -188,6 +188,10 @@ export function useStartAgentConversation({
           conversation,
           messages: optimisticMessages,
         });
+        queryClient.setQueryData(
+          chatKeys.conversationSummary(conversationId),
+          conversation,
+        );
         if (optimisticMessages.length > 0) {
           queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
             chatKeys.conversationHistory(conversationId),
@@ -252,11 +256,16 @@ export function useStartAgentConversation({
           delete next[conversationId];
           return next;
         });
-        setOptimisticSelectedConversationId(null);
+        setOptimisticSelectedConversationId((current) =>
+          current === conversationId ? null : current,
+        );
         if (useAgentSessionStore.getState().selectedConversationId === conversationId) {
           useAgentSessionStore.getState().clearSelection();
         }
         queryClient.removeQueries({ queryKey: chatKeys.conversation(conversationId) });
+        queryClient.removeQueries({
+          queryKey: chatKeys.conversationSummary(conversationId),
+        });
         queryClient.removeQueries({ queryKey: chatKeys.conversationHistory(conversationId) });
         queryClient.removeQueries({ queryKey: chatKeys.conversationTimeline(conversationId) });
         queryClient.removeQueries({

@@ -50,6 +50,11 @@ interface AgentsConversationSideRegionsProps {
     parentSessionId: string,
     childSessionId: string
   ) => void;
+  onFocusAutomationRun: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusTaskRuntime: (
     taskId: string,
@@ -87,6 +92,7 @@ export function AgentsConversationSideRegions({
   terminalUnavailableReason,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
+  onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
   onFocusTaskRuntime,
@@ -132,6 +138,7 @@ export function AgentsConversationSideRegions({
           onFocusVerificationSession={onFocusVerificationSession}
           onFocusWorkspaceReview={onFocusWorkspaceReview}
           onFocusTaskRuntime={onFocusTaskRuntime}
+          onFocusAutomationRun={onFocusAutomationRun}
           {...(onOpenAutomation ? { onOpenAutomation } : {})}
           onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}

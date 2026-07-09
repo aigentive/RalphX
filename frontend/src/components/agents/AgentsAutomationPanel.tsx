@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   CheckCircle2,
   ExternalLink,
@@ -18,36 +18,52 @@ import { toast } from "sonner";
 import {
   automationsApi,
   type Automation,
+  type AutomationPlanApprovalMode,
+  type AutomationPrMergeMode,
   type AutomationRun,
   type AutomationRunMode,
+  type UpdateAutomationSettingsInput,
 } from "@/api/automations";
 import * as chatApi from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
   describeAutomationDeleteConsequences,
-  describeAutomationStage,
   describeRunFailure,
+  getAutomationRunView,
   latestRun,
+  type AutomationRunStatusTone,
 } from "@/components/automations/automationStage";
 import {
   AUTOMATION_PHASES_LABEL,
   AUTOMATION_STATUS_LABELS,
+  findInProgressAutomationGoalItemFromItems,
   parseAutomationGoalItems,
+  type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationRunPhaseChip } from "@/components/automations/AutomationRunPhaseChip";
+import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import {
   evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationDetail,
-  useAutomationEvents,
 } from "@/hooks/useAutomations";
 import { useAskUserQuestion } from "@/hooks/useAskUserQuestion";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { extractErrorMessage } from "@/lib/errors";
+import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
   AgentEffort,
@@ -76,18 +92,26 @@ interface AgentsAutomationPanelProps {
   automationId: string;
   conversationTitle?: string | null;
   onOpenAutomation?: (automationId: string) => void;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
 }
 
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
+const STACKED_CHAIN_MODE = "pr_head_stacked";
+const AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE =
+  "automation_stacked_auto_merge_unsupported";
+const AUTOMATION_AUTO_MERGE_ENABLE_WARNING_CODE = "auto_merge_enable_failed";
+const PLAN_GATE_PAUSED_REASON_CODES = new Set([
+  "plan_revision_exhausted",
+  "plan_judge_failed",
+]);
+type AutomationSettingsPatch = Omit<UpdateAutomationSettingsInput, "id">;
 const UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT =
   "The user clicked Update automation in the Automation artifact. Update the bound draft automation now with the goal, phases, setup summary, first-run prompt, run mode, provider/model, and base from your latest Automation proposal. Call get_automation if needed, then call update_automation with the accepted proposal. Do not finalize, run, or activate the automation.";
-const OPEN_RUN_STATUSES = new Set<AutomationRun["status"]>([
-  "pending",
-  "provisioning",
-  "running",
-  "published",
-]);
 const AUTOMATION_RUN_MODE_OPTIONS: Array<{
   id: AutomationRunMode;
   label: string;
@@ -197,15 +221,373 @@ function formatRunSummary(run: AutomationRun | null, maxRuns: number): string {
   return `${run.runIndex} of ${maxRuns}`;
 }
 
-function formatPrState(run: AutomationRun | null): string {
-  if (!run) {
-    return "No PR yet";
+/** Tone color token for a run-status pill — success / warning / error / neutral. */
+function runStatusToneClass(tone: AutomationRunStatusTone): string {
+  switch (tone) {
+    case "success":
+      return "text-[var(--status-success)]";
+    case "warning":
+      return "text-[var(--status-warning)]";
+    case "error":
+      return "text-[var(--status-error)]";
+    case "neutral":
+      return "text-[var(--text-secondary)]";
   }
-  const status = OPEN_RUN_STATUSES.has(run.status) ? "Running" : run.status;
-  if (!run.prNumber) {
-    return status;
+}
+
+/** Secondary line for a run row: PR link text or the prompt author. */
+function runRowDetail(run: AutomationRun): string {
+  if (run.prNumber) {
+    return `PR #${run.prNumber}`;
   }
-  return `PR #${run.prNumber} · ${status}`;
+  return run.errorCode ? `Failed: ${run.errorCode}` : "No PR";
+}
+
+function runRowWarning(run: AutomationRun): string | null {
+  if (
+    run.status === "published" &&
+    run.errorCode === AUTOMATION_AUTO_MERGE_ENABLE_WARNING_CODE &&
+    run.errorDetail
+  ) {
+    return run.errorDetail;
+  }
+  return null;
+}
+
+function automationSettingsErrorToast(error: unknown): string {
+  const message = extractErrorMessage(error, "");
+  if (message.includes(AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE)) {
+    return "Stacked PR chains require manual merge.";
+  }
+  return "Failed to update automation settings";
+}
+
+function planGatePausedCopy(pausedReasonCode: string | null): string {
+  if (pausedReasonCode === "plan_judge_failed") {
+    return "Plan judge failed — review and approve the plan to resume this automation.";
+  }
+  if (pausedReasonCode === "plan_revision_exhausted") {
+    return "Plan revision limit reached — review and approve the plan to resume this automation.";
+  }
+  return "Review and approve the plan to resume this automation.";
+}
+
+/**
+ * Inline editor for the automation's run budget (`maxRuns`). The backend only allows settings
+ * edits while the automation is Draft or Paused, so this renders only in those states. It lets
+ * a user extend an exhausted budget (e.g. after a `judge_stopped_unmet` pause) and then resume
+ * to schedule another run, instead of being stuck with no way to continue.
+ */
+function MaxRunsEditor({
+  currentMaxRuns,
+  runsUsed,
+  isSaving,
+  onSave,
+}: {
+  currentMaxRuns: number;
+  runsUsed: number;
+  isSaving: boolean;
+  onSave: (maxRuns: number) => void;
+}) {
+  const min = Math.max(1, runsUsed);
+  const [value, setValue] = useState(String(currentMaxRuns));
+  const parsed = Number.parseInt(value, 10);
+  const isValid = Number.isFinite(parsed) && parsed >= min;
+  const isChanged = parsed !== currentMaxRuns;
+  return (
+    <div
+      className="mb-3 flex flex-wrap items-center gap-2"
+      data-testid="agents-automation-max-runs"
+    >
+      <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
+        Max runs
+      </span>
+      <input
+        type="number"
+        min={min}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        aria-label="Max runs"
+        className="w-16 rounded px-2 py-1 text-xs outline-none focus:ring-0 focus:outline-none focus-visible:outline-none"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-default)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          color: "var(--text-primary)",
+          boxShadow: "none",
+        }}
+      />
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        disabled={!isValid || !isChanged || isSaving}
+        onClick={() => onSave(parsed)}
+        data-testid="agents-automation-max-runs-save"
+      >
+        {isSaving ? "Saving..." : "Save"}
+      </Button>
+      <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+        {runsUsed} used
+      </span>
+    </div>
+  );
+}
+
+function AutomationPlanGateSettings({
+  automation,
+  isSaving,
+  pendingPatch,
+  onUpdate,
+}: {
+  automation: Automation;
+  isSaving: boolean;
+  pendingPatch: AutomationSettingsPatch | null;
+  onUpdate: (patch: AutomationSettingsPatch) => void;
+}) {
+  const planApprovalMode =
+    pendingPatch?.planApprovalMode ?? automation.planApprovalMode;
+  const prMergeMode = pendingPatch?.prMergeMode ?? automation.prMergeMode;
+  const planDeepVerification =
+    pendingPatch?.planDeepVerification ?? automation.planDeepVerification;
+  const stackedChain = automation.chainMode === STACKED_CHAIN_MODE;
+  const planApprovalSaving =
+    isSaving && pendingPatch?.planApprovalMode !== undefined;
+  const prMergeSaving = isSaving && pendingPatch?.prMergeMode !== undefined;
+  const planDeepVerificationSaving =
+    isSaving && pendingPatch?.planDeepVerification !== undefined;
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <AutomationSelect
+          label="Plan approval"
+          value={planApprovalMode}
+          disabled={planApprovalSaving}
+          testId="agents-automation-plan-approval-mode"
+          onChange={(value) =>
+            onUpdate({ planApprovalMode: value as AutomationPlanApprovalMode })
+          }
+          options={[
+            { value: "manual", label: "Manual" },
+            { value: "automatic", label: "Automatic (judge)" },
+          ]}
+        />
+        <AutomationSelect
+          label="PR merge"
+          value={prMergeMode}
+          disabled={prMergeSaving || stackedChain}
+          testId="agents-automation-pr-merge-mode"
+          onChange={(value) =>
+            onUpdate({ prMergeMode: value as AutomationPrMergeMode })
+          }
+          options={[
+            { value: "manual", label: "Manual" },
+            { value: "automatic", label: "Automatic" },
+          ]}
+        />
+      </div>
+      {stackedChain ? (
+        <p className="text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+          Stacked PR chains require manual merge.
+        </p>
+      ) : null}
+      <label
+        className="flex items-center justify-between gap-3 rounded-md px-3 py-2"
+        style={{
+          backgroundColor: "var(--bg-base)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        <span className="min-w-0">
+          <span
+            className="block text-xs font-medium"
+            style={{ color: "var(--text-primary)" }}
+          >
+            Deep plan verification
+          </span>
+          <span className="block text-xs" style={{ color: "var(--text-muted)" }}>
+            Adversarially verify each run plan before it can be approved.
+          </span>
+        </span>
+        <Switch
+          checked={planDeepVerification}
+          disabled={planDeepVerificationSaving}
+          onCheckedChange={(checked) =>
+            onUpdate({ planDeepVerification: checked })
+          }
+          className="data-[state=checked]:bg-[var(--accent-primary)] data-[state=unchecked]:bg-[var(--bg-elevated)]"
+          data-testid="agents-automation-plan-deep-verification"
+          aria-label="Deep plan verification"
+        />
+      </label>
+      {isSaving ? (
+        <span className="inline-flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Saving
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Compact newest-first list of an automation's runs with their statuses, mirroring the
+ * runtime/task list rows in the Agents surface. Replaces the single "Run: N of M" summary
+ * line with an actual per-run ledger so failed/succeeded runs are visible at a glance. Each
+ * still-open run exposes a Cancel action so a run can be stopped without stopping the whole
+ * automation.
+ */
+function AutomationRunsList({
+  automation,
+  automationId,
+  runs,
+  activeGoalItem,
+  onCancelRun,
+  cancelingRunId,
+  onFocusAutomationRun,
+}: {
+  automation: Automation;
+  automationId: string;
+  runs: AutomationRun[];
+  activeGoalItem: AutomationGoalItem | null;
+  onCancelRun?: (runId: string) => void;
+  cancelingRunId?: string | null;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
+}) {
+  if (runs.length === 0) {
+    return (
+      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+        No runs yet.
+      </p>
+    );
+  }
+  const ordered = [...runs].sort((a, b) => b.runIndex - a.runIndex);
+  return (
+    <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
+      {ordered.map((run) => {
+        const runView = getAutomationRunView(automation, run);
+        const phaseItem = runView.isOpen ? activeGoalItem : null;
+        const isCancellable = runView.isCancellable;
+        const isCanceling = cancelingRunId === run.id;
+        const conversationId = run.conversationId;
+        const canOpenRun = Boolean(conversationId && onFocusAutomationRun);
+        const warning = runRowWarning(run);
+        const statusPill = (
+          <span
+            className={cn(
+              "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
+              canOpenRun && "group-hover:underline",
+              runStatusToneClass(runView.statusTone),
+            )}
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            {runView.statusLabel}
+          </span>
+        );
+        return (
+          <li
+            key={run.id}
+            className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5"
+            style={{ backgroundColor: "var(--bg-hover)" }}
+            data-testid={`agents-automation-run-${run.runIndex}`}
+          >
+            <span
+              className="font-mono text-xs font-semibold tabular-nums"
+              style={{ color: "var(--text-muted)" }}
+            >
+              #{run.runIndex}
+            </span>
+            <span className="min-w-0">
+              <span
+                className="block truncate text-xs"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {runRowDetail(run)}
+              </span>
+              {phaseItem ? (
+                <AutomationRunPhaseChip
+                  item={phaseItem}
+                  className="mt-1"
+                  testId={`agents-automation-run-${run.runIndex}-phase`}
+                />
+              ) : null}
+              {warning ? (
+                <span
+                  className="mt-0.5 block truncate text-[0.6875rem]"
+                  style={{ color: "var(--status-warning)" }}
+                  data-testid={`agents-automation-run-${run.runIndex}-warning`}
+                >
+                  {warning}
+                </span>
+              ) : null}
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              {run.prUrl ? (
+                <AutomationRunPrLink
+                  run={run}
+                  testId={`agents-automation-run-${run.runIndex}-pr-link`}
+                />
+              ) : null}
+              {canOpenRun && conversationId ? (
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Open run conversation"
+                        onClick={() =>
+                          onFocusAutomationRun?.(
+                            automationId,
+                            run.id,
+                            conversationId,
+                          )
+                        }
+                        className="group cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
+                        data-testid={`agents-automation-run-${run.runIndex}-status`}
+                      >
+                        {statusPill}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Open run conversation
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <span data-testid={`agents-automation-run-${run.runIndex}-status`}>
+                  {statusPill}
+                </span>
+              )}
+              {isCancellable && onCancelRun ? (
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold disabled:opacity-50"
+                  style={{ color: "var(--status-error)" }}
+                  disabled={isCanceling}
+                  onClick={() => onCancelRun(run.id)}
+                  data-testid={`agents-automation-run-${run.runIndex}-cancel`}
+                >
+                  {isCanceling ? "Canceling..." : "Cancel"}
+                </button>
+              ) : null}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 function PanelShell() {
@@ -237,10 +619,13 @@ export function AgentsAutomationPanel({
   automationId,
   conversationTitle,
   onOpenAutomation,
+  onFocusAutomationRun,
 }: AgentsAutomationPanelProps) {
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();
+  const [pendingAutomationSettingsPatch, setPendingAutomationSettingsPatch] =
+    useState<AutomationSettingsPatch | null>(null);
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const { registry: modelRegistry } = useAgentModels();
   const {
@@ -248,7 +633,6 @@ export function AgentsAutomationPanel({
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
-  useAutomationEvents(automationId);
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
   const providerOptions = useMemo(
@@ -378,6 +762,41 @@ export function AgentsAutomationPanel({
       toast.success("Automation stopped");
     },
     onError: () => toast.error("Failed to stop automation"),
+  });
+  const cancelRunMutation = useMutation({
+    mutationFn: (runId: string) =>
+      automationsApi.cancelRun({ id: automationId, runId }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Run canceled");
+    },
+    onError: () => toast.error("Failed to cancel run"),
+  });
+  const maxRunsMutation = useMutation({
+    mutationFn: (maxRuns: number) =>
+      automationsApi.updateSettings({ id: automationId, maxRuns }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Max runs updated");
+    },
+    onError: () => toast.error("Failed to update max runs"),
+  });
+  const automationSettingsMutation = useMutation({
+    mutationFn: (patch: AutomationSettingsPatch) =>
+      automationsApi.updateSettings({ id: automationId, ...patch }),
+    onMutate: (patch) => {
+      setPendingAutomationSettingsPatch((current) => ({ ...current, ...patch }));
+    },
+    onSuccess: () => {
+      invalidate();
+      toast.success("Automation settings updated");
+    },
+    onError: (error) => {
+      toast.error(automationSettingsErrorToast(error));
+    },
+    onSettled: () => {
+      setPendingAutomationSettingsPatch(null);
+    },
   });
   const deleteMutation = useMutation({
     mutationFn: () => automationsApi.delete(automationId),
@@ -596,8 +1015,10 @@ export function AgentsAutomationPanel({
   const { automation, runs } = detail.data;
   const displayName = automationDisplayName(automation, conversationTitle);
   const run = latestRun(runs);
+  const runView = getAutomationRunView(automation, run);
   const goalItems = parseAutomationGoalItems(automation.goalItemsJson);
-  const stage = describeAutomationStage(automation, run);
+  const activeGoalItem = findInProgressAutomationGoalItemFromItems(goalItems);
+  const stage = runView.stageLabel;
   const failureReason = describeRunFailure(run);
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
@@ -627,6 +1048,19 @@ export function AgentsAutomationPanel({
     !showAutomationProposalCta &&
     Boolean(setupConversationId) &&
     (!automation.goalPrompt.trim() || goalItems.length === 0);
+  const planGatePausedRun =
+    automation.status === "paused" &&
+    PLAN_GATE_PAUSED_REASON_CODES.has(automation.pausedReasonCode ?? "")
+      ? [...runs]
+          .sort((a, b) => b.runIndex - a.runIndex)
+          .find(
+            (candidate) =>
+              candidate.status === "awaiting_plan_approval" &&
+              Boolean(candidate.conversationId),
+          ) ?? null
+      : null;
+  const showPlanGatePausedReason = Boolean(planGatePausedRun?.conversationId);
+  const showGenericPausedReason = showPausedReason && !showPlanGatePausedReason;
 
   return (
     <div className="space-y-4 p-5" data-testid="agents-automation-panel">
@@ -663,8 +1097,46 @@ export function AgentsAutomationPanel({
         <SummaryRow label="Model" value={formatModel(automation)} />
         <SummaryRow label="Base" value={formatBase(automation)} />
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
-        <SummaryRow label="Current PR" value={formatPrState(run)} />
+        <SummaryRow
+          label={runView.pr.rowLabel}
+          value={runView.pr.value}
+          testId="agents-automation-pr"
+        />
       </div>
+
+      <DetailSection title="Runs" testId="agents-automation-runs">
+        {automation.status === "draft" || automation.status === "paused" ? (
+          <MaxRunsEditor
+            key={automation.maxRuns}
+            currentMaxRuns={automation.maxRuns}
+            runsUsed={runs.length}
+            isSaving={maxRunsMutation.isPending}
+            onSave={(maxRuns) => maxRunsMutation.mutate(maxRuns)}
+          />
+        ) : null}
+        <AutomationRunsList
+          automation={automation}
+          automationId={automation.id}
+          runs={runs}
+          activeGoalItem={activeGoalItem}
+          onCancelRun={(runId) => cancelRunMutation.mutate(runId)}
+          cancelingRunId={
+            cancelRunMutation.isPending
+              ? (cancelRunMutation.variables ?? null)
+              : null
+          }
+          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
+        />
+      </DetailSection>
+
+      <DetailSection title="Settings" testId="agents-automation-settings">
+        <AutomationPlanGateSettings
+          automation={automation}
+          isSaving={automationSettingsMutation.isPending}
+          pendingPatch={pendingAutomationSettingsPatch}
+          onUpdate={(patch) => automationSettingsMutation.mutate(patch)}
+        />
+      </DetailSection>
 
       {showAutomationProposalCta && activeAutomationSetupQuestion ? (
         <AutomationProposalCallout
@@ -766,7 +1238,42 @@ export function AgentsAutomationPanel({
         >
           {failureReason}
         </div>
-      ) : showPausedReason ? (
+      ) : showPlanGatePausedReason && planGatePausedRun?.conversationId ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-2 text-xs"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-secondary)",
+          }}
+          data-testid="agents-automation-plan-gate-paused"
+        >
+          <span className="min-w-0">
+            {planGatePausedCopy(automation.pausedReasonCode)}
+            {automation.pausedReasonDetail ? ` ${automation.pausedReasonDetail}` : ""}
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!onFocusAutomationRun}
+            onClick={() =>
+              planGatePausedRun.conversationId
+                ? onFocusAutomationRun?.(
+                    automation.id,
+                    planGatePausedRun.id,
+                    planGatePausedRun.conversationId,
+                  )
+                : undefined
+            }
+            data-testid="agents-automation-plan-gate-open"
+          >
+            Open run conversation
+          </Button>
+        </div>
+      ) : showGenericPausedReason ? (
         <div
           className="rounded-md px-3 py-2 text-xs"
           style={{

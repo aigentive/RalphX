@@ -6,7 +6,7 @@ use crate::commands::agent_composer_commands::plan_references::session_can_refer
 use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, ensure_plan_workspace_planning_session_link_for_send,
     switch_agent_conversation_mode_for_state_allowing_running, AgentConversationResponse,
-    AgentConversationWorkspaceResponse, SwitchAgentConversationModeInput,
+    AgentConversationWorkspaceResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
 };
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
@@ -289,6 +289,7 @@ async fn seed_agent_conversation_plan(
             base_source_pull_request: None,
         },
         state,
+        ModeSwitchInitiator::User,
     )
     .await?;
 

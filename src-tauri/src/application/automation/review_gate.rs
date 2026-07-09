@@ -73,42 +73,24 @@ pub async fn pause_automation_for_blocked_workspace_review(
         );
     }
 
-    // Terminalize the stuck run so its wall-clock cannot false-timeout on resume. Only attempt from
-    // a live (running/provisioning) status; a stale CAS or already-terminal run is a soft no-op.
-    if matches!(
-        run.status,
-        AutomationRunStatus::Running | AutomationRunStatus::Provisioning
-    ) {
-        match state
-            .automation_run_repo
-            .compare_and_swap_status(
-                &run.id,
-                run.status,
-                AutomationRunStatus::AgentFailed,
-                Some(WORKSPACE_REVIEW_BLOCKED_REASON_CODE.to_string()),
-                review_detail.map(str::to_string),
-            )
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                tracing::warn!(
-                    target: "ralphx_lib::automation::review_gate",
-                    run_id = %run.id,
-                    conversation_id = %conversation_id,
-                    "Workspace-review-blocked run status changed before terminalization; skipping"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "ralphx_lib::automation::review_gate",
-                    run_id = %run.id,
-                    conversation_id = %conversation_id,
-                    error = %error,
-                    "Failed to terminalize workspace-review-blocked automation run"
-                );
-            }
-        }
+    // Terminalize the stuck run so its wall-clock cannot false-timeout on resume. The service
+    // handles stale/already-terminal runs as soft no-ops and still runs goal-item close sync.
+    if let Err(error) = service
+        .terminalize_blocked_run(
+            &automation_id,
+            &run,
+            WORKSPACE_REVIEW_BLOCKED_REASON_CODE,
+            review_detail.map(str::to_string),
+        )
+        .await
+    {
+        tracing::warn!(
+            target: "ralphx_lib::automation::review_gate",
+            run_id = %run.id,
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to terminalize workspace-review-blocked automation run"
+        );
     }
 
     Ok(true)
