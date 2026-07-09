@@ -74,6 +74,84 @@ function validationCopy(isHistorical: boolean, usingLive: boolean) {
   };
 }
 
+function passedEvidenceReason(
+  latestRun: TaskValidationSummary["latest_run"],
+): string | null {
+  if (!latestRun) return null;
+  if (latestRun.purpose === "baseline") return "baseline_only";
+  if (latestRun.review_evidence_eligible === false) {
+    return latestRun.ineligible_reason ?? "ineligible";
+  }
+  return null;
+}
+
+function passedEvidencePresentation(
+  summary: TaskValidationSummary,
+  subject: string,
+) {
+  const reason = passedEvidenceReason(summary.latest_run);
+  if (!reason) {
+    return {
+      icon: CheckCircle2,
+      label: "Passed",
+      variant: "success" as const,
+      animated: false,
+      message: `${subject} completed successfully.`,
+    };
+  }
+
+  if (reason === "baseline_only") {
+    return {
+      icon: AlertCircle,
+      label: "Baseline Only",
+      variant: "info" as const,
+      animated: false,
+      message: "Baseline validation passed, but final validation is still needed.",
+    };
+  }
+
+  if (reason === "stale_head") {
+    return {
+      icon: AlertCircle,
+      label: "Stale Evidence",
+      variant: "warning" as const,
+      animated: false,
+      message:
+        "Validation passed for an older commit. Final validation is still needed.",
+    };
+  }
+
+  if (reason === "stale_episode") {
+    return {
+      icon: AlertCircle,
+      label: "Stale Evidence",
+      variant: "warning" as const,
+      animated: false,
+      message:
+        "Validation passed for an older execution attempt. Final validation is still needed.",
+    };
+  }
+
+  if (reason === "no_test_commands") {
+    return {
+      icon: AlertCircle,
+      label: "No Test Evidence",
+      variant: "warning" as const,
+      animated: false,
+      message:
+        "Validation passed without test commands. Final validation is still needed.",
+    };
+  }
+
+  return {
+    icon: AlertCircle,
+    label: "Needs Final Validation",
+    variant: "warning" as const,
+    animated: false,
+    message: `${subject} passed, but final validation is still needed.`,
+  };
+}
+
 function runPresentation(summary: TaskValidationSummary, subject: string) {
   if (!summary.policy_enabled) {
     return {
@@ -101,13 +179,7 @@ function runPresentation(summary: TaskValidationSummary, subject: string) {
 
   const status = summary.latest_run.status as ValidationRunStatus;
   if (status === "passed") {
-    return {
-      icon: CheckCircle2,
-      label: "Passed",
-      variant: "success" as const,
-      animated: false,
-      message: `${subject} completed successfully.`,
-    };
+    return passedEvidencePresentation(summary, subject);
   }
   if (status === "running") {
     return {

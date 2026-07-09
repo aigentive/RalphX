@@ -27,4 +27,9 @@ pub trait ValidationRunRepository: Send + Sync {
         &self,
         task_id: &TaskId,
     ) -> AppResult<Option<ValidationRunWithResults>>;
+
+    async fn latest_non_baseline_run_with_results_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>>;
 }

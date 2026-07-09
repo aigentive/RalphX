@@ -2,8 +2,11 @@ use ralphx_lib::application::{
     AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource,
 };
 use ralphx_lib::domain::entities::{
-    Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionId,
-    IdeationSessionStatus, Priority, ProjectId, ProposalCategory, TaskProposalId,
+    Artifact, ArtifactId, ArtifactType, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    InternalStatus, Priority, Project, ProjectId, ProposalCategory, Task, TaskId, TaskProposalId,
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus,
 };
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::helpers::*;
@@ -2034,6 +2037,305 @@ fn make_validation_cache(
         captured_at: Utc::now(),
         captured_by: "execution_complete".to_string(),
     }
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_validation_context_git_repo() -> (tempfile::TempDir, String) {
+    let repo = tempfile::tempdir_in(std::env::current_dir().expect("cwd"))
+        .expect("temp git repo should be created");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "Test User"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("README should be written");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    let head_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    (repo, head_sha)
+}
+
+async fn seeded_validation_context_state(
+    purpose: ValidationPurpose,
+) -> (AppState, tempfile::TempDir, TaskId) {
+    seeded_validation_context_state_with_command_status(purpose, ValidationCommandStatus::Passed)
+        .await
+}
+
+async fn seeded_validation_context_state_with_command_status(
+    purpose: ValidationPurpose,
+    command_status: ValidationCommandStatus,
+) -> (AppState, tempfile::TempDir, TaskId) {
+    let state = AppState::new_test();
+    let (repo, head_sha) = setup_validation_context_git_repo();
+    let project = Project::new(
+        "Validation Context".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    let mut task = Task::new(project.id.clone(), "Validation context task".to_string());
+    task.internal_status = InternalStatus::Executing;
+    task.task_branch = Some("main".to_string());
+    task.worktree_path = Some(repo.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+    state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "agent-started",
+        )
+        .await
+        .expect("execution episode should be recorded");
+    let episode_entered_at = state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .expect("status history lookup should succeed")
+        .expect("execution episode should exist");
+    let run = ValidationRun {
+        id: format!("run-{}", purpose.as_str()),
+        task_id: task_id.clone(),
+        project_id: project.id,
+        purpose,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("ralphx-execution-worker".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::Force,
+        policy_enabled: true,
+        head_sha: Some(head_sha.clone()),
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: episode_entered_at,
+        completed_at: Some(episode_entered_at + Duration::seconds(1)),
+    };
+    state
+        .validation_run_repo
+        .create_run(&run)
+        .await
+        .expect("validation run should persist");
+    state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: format!("command-{}", purpose.as_str()),
+            validation_run_id: run.id,
+            task_id: task_id.clone(),
+            project_id: run.project_id,
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test validation".to_string(),
+            cwd: repo.path().to_string_lossy().to_string(),
+            label: Some("Validation tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: format!("cache-{}", purpose.as_str()),
+            cache_decision: if command_status == ValidationCommandStatus::Cached {
+                ValidationCacheDecision::Cached
+            } else {
+                ValidationCacheDecision::Forced
+            },
+            status: command_status,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: Some("production_shell_resolver".to_string()),
+            resolved_shell_path: Some("/bin/sh".to_string()),
+            head_sha: Some(head_sha),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: episode_entered_at + Duration::seconds(1),
+        })
+        .await
+        .expect("validation command should persist");
+
+    (state, repo, task_id)
+}
+
+#[tokio::test]
+async fn task_context_ignores_baseline_first_class_validation_for_skip_tests_hint() {
+    let (state, _repo, task_id) =
+        seeded_validation_context_state(ValidationPurpose::Baseline).await;
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+
+    assert!(
+        context.validation_cache.is_none(),
+        "baseline validation must remain informational instead of reusable cache proof"
+    );
+    assert!(
+        !context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("VALIDATION SUMMARY: skip_tests")),
+        "baseline validation must not produce skip_tests context hints"
+    );
+}
+
+#[tokio::test]
+async fn task_context_keeps_current_final_validation_skip_tests_hint() {
+    let (state, _repo, task_id) = seeded_validation_context_state(ValidationPurpose::Final).await;
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+    let cache = context
+        .validation_cache
+        .expect("current final validation should produce reusable cache data");
+
+    assert_eq!(cache.validation_hint, "skip_tests");
+    assert!(
+        context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("VALIDATION SUMMARY: skip_tests")),
+        "current final validation should still produce skip_tests context hints"
+    );
+}
+
+#[tokio::test]
+async fn task_context_reuses_current_final_validation_with_cached_test_command() {
+    let (state, _repo, task_id) = seeded_validation_context_state_with_command_status(
+        ValidationPurpose::Final,
+        ValidationCommandStatus::Cached,
+    )
+    .await;
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+    let cache = context
+        .validation_cache
+        .expect("cached current final validation should produce reusable cache data");
+
+    assert_eq!(cache.validation_hint, "skip_tests");
+    assert!(cache.tests_passed);
+    assert!(
+        cache
+            .test_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("passed or reused")),
+        "cached command summary should mention reused validation evidence"
+    );
+}
+
+#[tokio::test]
+async fn task_context_skips_newer_baseline_and_reuses_current_final_validation_hint() {
+    let (state, repo, task_id) = seeded_validation_context_state(ValidationPurpose::Final).await;
+    let task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .expect("task lookup should succeed")
+        .expect("task should exist");
+    let episode_entered_at = state
+        .task_repo
+        .get_status_last_entered_at(&task_id, InternalStatus::Executing)
+        .await
+        .expect("status history lookup should succeed")
+        .expect("execution episode should exist");
+    let head_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    let baseline_started_at = episode_entered_at + Duration::seconds(2);
+    let baseline_run = ValidationRun {
+        id: "run-newer-baseline".to_string(),
+        task_id: task_id.clone(),
+        project_id: task.project_id.clone(),
+        purpose: ValidationPurpose::Baseline,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("ralphx-execution-worker".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::Force,
+        policy_enabled: true,
+        head_sha: Some(head_sha.clone()),
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(episode_entered_at),
+        started_at: baseline_started_at,
+        completed_at: Some(baseline_started_at + Duration::seconds(1)),
+    };
+    state
+        .validation_run_repo
+        .create_run(&baseline_run)
+        .await
+        .expect("newer baseline run should persist");
+    state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: "command-newer-baseline".to_string(),
+            validation_run_id: baseline_run.id,
+            task_id: task_id.clone(),
+            project_id: task.project_id,
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test validation".to_string(),
+            cwd: repo.path().to_string_lossy().to_string(),
+            label: Some("Baseline tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: "cache-newer-baseline".to_string(),
+            cache_decision: ValidationCacheDecision::Forced,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: Some("production_shell_resolver".to_string()),
+            resolved_shell_path: Some("/bin/sh".to_string()),
+            head_sha: Some(head_sha),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: baseline_started_at + Duration::seconds(1),
+        })
+        .await
+        .expect("baseline command should persist");
+
+    let context = get_task_context_impl(&state, &task_id)
+        .await
+        .expect("task context should load");
+    let cache = context
+        .validation_cache
+        .expect("current final validation should be reused after skipping newer baseline");
+
+    assert_eq!(cache.validation_hint, "skip_tests");
+    assert!(
+        context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("VALIDATION SUMMARY: skip_tests")),
+        "newer baseline should not mask current final validation evidence"
+    );
 }
 
 #[test]
