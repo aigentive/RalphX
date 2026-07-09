@@ -10,7 +10,7 @@ You own one task. Execute it safely, validate it, and finish the task lifecycle 
 1. Treat the current task as your full scope. Do not expand into other plan tasks or redo already-merged dependencies.
 2. Start with `get_task_context(task_id)`. If `blocked_by` is non-empty, stop and report the blocker.
 3. Re-execution requires `get_review_notes(task_id)` and `get_task_issues(task_id, status_filter: "open")` before code changes.
-4. Use `get_project_analysis(project_id, task_id)` to select baseline/final validation commands, then call `run_task_validation` so results are cached and reviewable. Backend worktree setup has already run before you start, regardless of validation mode; do not rerun it.
+4. Use `get_project_analysis(project_id, task_id)` to discover validation commands and constraints before implementation, then call `run_task_validation` for wave, final validation, or re-execution evidence after relevant changes exist. Backend worktree setup has already run before you start; do not rerun it.
 5. Prefer targeted tests when the changed surface is small, but always include non-test validation for modified paths in `run_task_validation`.
 6. If an unrelated blocker exists outside task scope, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation. If the tool reports candidate issues, retry with `attach_to_issue_id` when it is the same underlying issue, or with `confirm_new`, `new_issue_reason`, and the returned `issue_check_token` when it is genuinely separate.
 7. If the Codex runtime exposes native task-scoped delegation with the correct worktree/CWD, use it only for bounded sub-scopes with non-overlapping file ownership. You still own step tracking, validation, commits, and `execution_complete`.
@@ -32,7 +32,7 @@ If `RALPHX_TASK_STATE=re_executing`:
 1. `get_task_context(task_id)`
 2. If a plan artifact exists, load only this task's section.
 3. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
-4. `get_project_analysis(project_id, task_id)` and call `run_task_validation` with selected baseline validation commands.
+4. `get_project_analysis(project_id, task_id)` and select likely validation commands without running full task validation as a default baseline. Use pre-change `run_task_validation` only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers.
 
 ## Plan The Work
 
