@@ -6,10 +6,29 @@ Automations run a project-scoped goal as a sequence of ordinary agent conversati
 
 - Source of truth: `automations` and `automation_runs`; setup conversations are authoring surfaces only.
 - Completion signal: `pr_merged` for `edit` mode runs.
-- Run mode: `edit` is the only finalizable mode for `pr_merged` v1 automations. `plan` and `ideation` remain schema-reserved until a non-PR completion signal is designed.
+- Run mode: `edit` is the only finalizable mode for `pr_merged` v1 automations. `plan` and `ideation` remain schema-reserved until a non-PR completion signal is designed. (The plan gate below is a conversation-mode *phase* inside an `edit` run, not an automation run mode.)
 - Single flight: one open automation run at a time, enforced by the run-state machine and repository constraints.
 - Conversations: automation-owned setup and run conversations keep project context and are hidden from the normal Agents list. Direct automation links can still open them for audit.
 - Visibility: the Automations page is on by default after P7, with runtime flag overrides still available through `ui.feature_flags.automations_page` and `RALPHX_UI_AUTOMATIONS_PAGE`.
+
+## Run Plan Gate
+
+Every run plans before it implements. The run conversation is provisioned in workspace **plan mode**: the read-only plan profile explores the repo and authors a versioned plan artifact in a hidden Planning ideation session, then the run parks at `awaiting_plan_approval`. Approval switches the same conversation to edit mode and delivers the implement prompt; from there the run behaves exactly as before (publish, merge, run-level judge).
+
+Per-automation config (editable at any status via settings; also exposed through MCP `update_automation`):
+
+| Field | Values | Default |
+|---|---|---|
+| `plan_approval_mode` | `manual` \| `automatic` | `manual` |
+| `pr_merge_mode` | `manual` \| `automatic` | `manual` |
+| `plan_deep_verification` | off \| on | off |
+
+- **Manual approval:** open the parked run's conversation (runs-list pill deep-links to it), review the plan in the artifact pane, click Approve. Chatting with the parked run requests revisions — the turn re-enters `running` and re-parks with a new plan version. Stale approvals never deliver: the gate matches the approval's artifact id against the session's current plan artifact id.
+- **Automatic approval:** the plan judge (harness-keyed `plan_judge_model`; sonnet-class on Claude, gpt-5.4 on Codex) verdicts the plan against the goal and current goal item. Approve writes the same native approval (`approved_by = judge`); revise sends instructions back to the run agent, bounded by `plan_max_revision_rounds` (default 3 judge-issued revisions) and a repeat-instruction fingerprint guard. Judge failures always fall back to a paused automation awaiting human review — never auto-approve, never run failure. A human approval on a plan-gate-paused automation auto-resumes it.
+- **Deep verification (optional):** each new plan version additionally runs the native ideation plan-verification loop; the judge holds until it terminates and receives the outcome as advisory context. Verification failures degrade to "verification unavailable" and never block the gate.
+- **Automatic PR merge:** when `pr_merge_mode` is `automatic`, publication arms GitHub native auto-merge (squash) on the run PR; cancel disarms it. Enable failures surface as a run-row warning and degrade to manual merge. Rejected for `pr_head_stacked` chains — auto-merging an earlier PR in a stacked chain would retarget successor bases mid-flight.
+
+Migration note: existing Active automations default to `manual` and park at their next run's plan gate — the runs-list pill and paused-reason banner are the discovery path. Runs provisioned before the upgrade never enter plan-phase code paths.
 
 ## Chaining
 
@@ -47,6 +66,11 @@ Drafts are validated fail-closed before activation. Required fields include goal
 
 - Signal authority remains attempt-scoped to the run's captured PR number and conversation.
 - Status and judge-state writes go through `AutomationTransitionService`.
+- Terminal agent-run evidence is freshness-scoped to `agent_phase_started_at`; parked time never counts toward `max_run_duration`.
+- Plan approvals are written only through the actor-parameterized approval helper and read only via the artifact-id match — never bare approval status.
+- Gate prompts flow through exactly one `send_message` with spawn proof (`was_queued == false`); queued landmines are purged; `run_prompt` stays byte-identical to the judge's `next_run_prompt`.
+- User-initiated mode switches on automation-run conversations are rejected at the command layer; only the scheduler's system path switches `plan -> edit`.
+- Automation delete archives each run's plan artifact chain and deletes its approval row and Planning session.
 - Successor creation checks max runs, consecutive failures, and latest-run identity before inserting.
 - Stacked chaining creates a `local_branch` successor from the previous PR head and never carries source-PR linkage.
 - Automation-owned conversations are excluded from Agents list endpoints but remain directly addressable.
