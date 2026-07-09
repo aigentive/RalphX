@@ -1088,6 +1088,28 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("keeps completed automation run conversations read-only until judging settles", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "completed", judgeState: "none" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(screen.getByTestId("agents-automation-run-readonly-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("true");
+  });
+
   it("labels parked automation setup run chips as awaiting plan approval", () => {
     useAutomationDetailMock.mockReturnValue({
       data: {

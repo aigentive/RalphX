@@ -110,7 +110,11 @@ interface ExecutionControlBarProps {
   /** Called when an ideation session is clicked in the running processes popover */
   onNavigateToSession?: (sessionId: string) => void;
   /** Called when a workspace row is clicked in the running processes popover */
-  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
+  onNavigateToWorkspace?: (
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession
+  ) => void;
   /** Called when any execution-bar task row should open its Agent task detail */
   onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
 }

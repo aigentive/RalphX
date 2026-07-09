@@ -5,6 +5,7 @@ import type { Automation, AutomationRun } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import {
   AUTOMATION_RUN_STATUS_LABELS,
   describeAutomationStage,
@@ -25,6 +26,7 @@ interface AutomationsViewProps {
   onSelectedAutomationChange?: (automationId: string | null) => void;
   onOpenAutomation?: (automationId: string) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
 
 const LazyAutomationDetailView = lazy(() => preloadAutomationDetailView());
@@ -273,6 +275,7 @@ export function AutomationsView({
   onSelectedAutomationChange,
   onOpenAutomation,
   onOpenRunConversation,
+  onOpenAutomationRun,
 }: AutomationsViewProps) {
   const [localSelectedAutomationId, setLocalSelectedAutomationId] = useState<string | null>(null);
   const isSelectionControlled = selectedAutomationId !== undefined;
@@ -317,6 +320,7 @@ export function AutomationsView({
           projectName={projectName ?? null}
           onBack={handleBackToList}
           {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
+          {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
         />
       </Suspense>
     );

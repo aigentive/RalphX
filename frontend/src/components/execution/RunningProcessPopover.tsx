@@ -65,7 +65,11 @@ interface RunningProcessPopoverProps {
   /** Called when an ideation session is clicked to navigate to it */
   onNavigateToSession?: (sessionId: string) => void;
   /** Called when a workspace session is clicked to navigate to its agent conversation */
-  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
+  onNavigateToWorkspace?: (
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession
+  ) => void;
   /** Called when a task row should open its Agent conversation task detail */
   onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
   /** Children (anchor element — NOT a trigger, controlled externally) */
@@ -224,7 +228,7 @@ export function RunningProcessPopover({
 
   const handleNavigateToWorkspace = (session: RunningWorkspaceSession) => {
     onOpenChange(false);
-    onNavigateToWorkspace?.(session.projectId, session.conversationId);
+    onNavigateToWorkspace?.(session.projectId, session.conversationId, session);
   };
 
   // Tab-aware header title

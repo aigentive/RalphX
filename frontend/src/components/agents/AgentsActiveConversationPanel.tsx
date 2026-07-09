@@ -33,8 +33,8 @@ import {
 } from "@/api/automations";
 import {
   OPEN_AUTOMATION_RUN_STATUS_SET,
-  TERMINAL_AUTOMATION_RUN_STATUS_SET,
 } from "@/components/automations/automationRunStatusSets";
+import { isAutomationRunComposerReadOnly } from "@/components/automations/automationStage";
 import { verificationApi } from "@/api/verification";
 import {
   IntegratedChatPanel,
@@ -1075,8 +1075,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const automationRunReadOnlyReason =
     activeAutomationRunId &&
     (!automationRun ||
-      (automationRun.status !== "awaiting_plan_approval" &&
-        !TERMINAL_AUTOMATION_RUN_STATUS_SET.has(automationRun.status)))
+      isAutomationRunComposerReadOnly(automationRun))
       ? "Automation run conversations are read-only until the run reaches a terminal state."
       : null;
   // Automation SETUP conversation: automationId present, no run yet. Editable —
@@ -1494,9 +1493,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       if (!run.conversationId) {
         return;
       }
+      if (run.status === "awaiting_plan_approval") {
+        onSelectArtifact("plan");
+      }
       onFocusAutomationRun(automationId, run.id, run.conversationId);
     },
-    [onFocusAutomationRun],
+    [onFocusAutomationRun, onSelectArtifact],
   );
   const composerTaskLedgerContext = useMemo(() => {
     if (taskRuntimeFocus) {

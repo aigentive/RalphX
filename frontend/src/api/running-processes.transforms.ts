@@ -116,6 +116,8 @@ export function transformRunningWorkspaceSession(
   return {
     conversationId: raw.conversation_id,
     projectId: raw.project_id,
+    automationId: raw.automation_id,
+    automationRunId: raw.automation_run_id,
     title: raw.title,
     elapsedSeconds: raw.elapsed_seconds,
     model: raw.model,

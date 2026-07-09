@@ -120,6 +120,14 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     status: "merged",
     judgeState: "done",
     judgeLeaseExpiresAt: null,
+    planJudgeState: "none",
+    planRevisionRound: 0,
+    planRevisionPending: false,
+    planPhase: false,
+    planArtifactId: null,
+    planApprovedBy: null,
+    planApprovedArtifactVersion: null,
+    planApprovedAt: null,
     conversationId: "conversation-1",
     runPrompt: Array.from({ length: 12 }, (_, index) => `Prompt line ${index + 1}`).join("\n"),
     promptAuthor: "setup_agent",
@@ -162,7 +170,11 @@ const usage = {
   estimatedUsd: 0.06,
 };
 
-function renderDetail(detail: AutomationDetail, onOpenRunConversation = vi.fn()) {
+function renderDetail(
+  detail: AutomationDetail,
+  onOpenRunConversation = vi.fn(),
+  onOpenAutomationRun = vi.fn(),
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -171,6 +183,7 @@ function renderDetail(detail: AutomationDetail, onOpenRunConversation = vi.fn())
   });
   getAutomationMock.mockResolvedValue(detail);
   return {
+    onOpenAutomationRun,
     onOpenRunConversation,
     ...render(
       <QueryClientProvider client={queryClient}>
@@ -181,6 +194,7 @@ function renderDetail(detail: AutomationDetail, onOpenRunConversation = vi.fn())
             projectName="Demo Project"
             onBack={vi.fn()}
             onOpenRunConversation={onOpenRunConversation}
+            onOpenAutomationRun={onOpenAutomationRun}
           />
         </TooltipProvider>
       </QueryClientProvider>,
@@ -255,7 +269,7 @@ describe("AutomationDetailView", () => {
       promptAuthor: "judge",
     });
 
-    const { onOpenRunConversation } = renderDetail({
+    const { onOpenAutomationRun, onOpenRunConversation } = renderDetail({
       automation: automation(),
       runs: [olderRun, latestRun],
       usage,
@@ -290,7 +304,19 @@ describe("AutomationDetailView", () => {
     );
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Open conversation" }));
-    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "conversation-2");
+    expect(onOpenAutomationRun).toHaveBeenCalledWith({
+      projectId: "project-1",
+      automationId: "automation-1",
+      runId: "run-2",
+      conversationId: "conversation-2",
+      setupConversationId: "setup-conversation-1",
+      runStatus: "merged",
+      judgeState: "none",
+      planPhase: false,
+      planArtifactId: null,
+      prNumber: 593,
+      prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+    });
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
     expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();

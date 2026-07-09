@@ -10,6 +10,8 @@ import {
   type ConversationListPageResponse,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { getAutomationConversationTabPolicy } from "@/components/automations/automationConversationTabPolicy";
 import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
@@ -17,6 +19,7 @@ import { useEventBus } from "@/providers/EventProvider";
 import {
   useAgentSessionStore,
   type AgentArtifactTab,
+  type AgentAutomationRunFocusRequest,
   type AgentRuntimeSelection,
   type AgentTaskArtifactFocusRequest,
 } from "@/stores/agentSessionStore";
@@ -163,6 +166,21 @@ function lifecyclePayloadOwnsWorkspaceReviewQuery(
   );
 }
 
+function defaultAutomationRunFocusTab(
+  request: AgentAutomationRunFocusRequest,
+): AgentArtifactTab {
+  return getAutomationConversationTabPolicy({
+    surface: "run",
+    runStatus: request.runStatus,
+    judgeState: request.judgeState,
+    workspaceMode: request.workspaceMode,
+    availability: {
+      hasPlanArtifact: request.hasPlanArtifact,
+      hasPullRequest: request.hasPullRequest,
+    },
+  }).defaultTab;
+}
+
 export function useAgentsViewController({
   projectId,
   onCreateProject,
@@ -258,6 +276,12 @@ export function useAgentsViewController({
   const externalTaskArtifactFocusRequest = useAgentSessionStore((state) =>
     selectedConversationId
       ? state.taskArtifactFocusRequestByConversationId[selectedConversationId] ??
+        null
+      : null,
+  );
+  const externalAutomationRunFocusRequest = useAgentSessionStore((state) =>
+    selectedConversationId
+      ? state.automationRunFocusRequestByConversationId[selectedConversationId] ??
         null
       : null,
   );
@@ -773,9 +797,82 @@ export function useAgentsViewController({
   });
   useEffect(() => {
     if (
+      !activeConversation?.automationId ||
+      !activeConversation.automationRunId ||
+      chatFocus.type === "automation_run"
+    ) {
+      return;
+    }
+
+    void requestAutomationRunOpen(
+      queryClient,
+      {
+        projectId: activeConversation.projectId,
+        automationId: activeConversation.automationId,
+        runId: activeConversation.automationRunId,
+        conversationId: activeConversation.id,
+      },
+      { fallback: "clear-selection" },
+    );
+  }, [
+    activeConversation?.automationId,
+    activeConversation?.automationRunId,
+    activeConversation?.id,
+    activeConversation?.projectId,
+    chatFocus.type,
+    queryClient,
+  ]);
+  useEffect(() => {
+    if (
+      !externalAutomationRunFocusRequest ||
       !selectedConversationId ||
       activeConversation?.agentMode !== "automation" ||
-      !activeConversation.automationId
+      activeConversation.automationId !==
+        externalAutomationRunFocusRequest.automationId ||
+      activeConversation.automationRunId
+    ) {
+      return;
+    }
+
+    handleFocusAutomationRun(
+      externalAutomationRunFocusRequest.automationId,
+      externalAutomationRunFocusRequest.runId,
+      externalAutomationRunFocusRequest.conversationId,
+    );
+
+    const hasArtifactSeed = Object.prototype.hasOwnProperty.call(
+      useAgentSessionStore.getState().artifactByConversationId,
+      selectedConversationId,
+    );
+    if (!hasArtifactSeed) {
+      openArtifactTab(
+        selectedConversationId,
+        defaultAutomationRunFocusTab(externalAutomationRunFocusRequest),
+      );
+    }
+
+    useAgentSessionStore
+      .getState()
+      .clearAutomationRunFocusRequest(
+        selectedConversationId,
+        externalAutomationRunFocusRequest.requestId,
+      );
+  }, [
+    activeConversation?.agentMode,
+    activeConversation?.automationId,
+    activeConversation?.automationRunId,
+    externalAutomationRunFocusRequest,
+    handleFocusAutomationRun,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      activeConversation?.agentMode !== "automation" ||
+      !activeConversation.automationId ||
+      chatFocus.type === "automation_run" ||
+      externalAutomationRunFocusRequest
     ) {
       return;
     }
@@ -783,6 +880,8 @@ export function useAgentsViewController({
   }, [
     activeConversation?.agentMode,
     activeConversation?.automationId,
+    chatFocus.type,
+    externalAutomationRunFocusRequest,
     openArtifactTab,
     selectedConversationId,
   ]);

@@ -38,6 +38,8 @@ pub struct RunningIdeationSession {
 pub struct RunningWorkspaceSession {
     pub conversation_id: String,
     pub project_id: String,
+    pub automation_id: Option<String>,
+    pub automation_run_id: Option<String>,
     pub title: String,
     pub elapsed_seconds: Option<i64>,
     pub model: Option<String>,
@@ -119,6 +121,14 @@ pub fn build_running_workspace_session(
     RunningWorkspaceSession {
         conversation_id: conversation.id.as_str().to_string(),
         project_id: conversation.context_id.clone(),
+        automation_id: conversation
+            .automation_id
+            .as_ref()
+            .map(|id| id.as_str().to_string()),
+        automation_run_id: conversation
+            .automation_run_id
+            .as_ref()
+            .map(|id| id.as_str().to_string()),
         title: workspace_session_title(conversation.title.as_deref()),
         elapsed_seconds: Some(elapsed_seconds_since(started_at, now)),
         model,

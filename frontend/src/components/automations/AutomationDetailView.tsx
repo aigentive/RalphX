@@ -45,6 +45,7 @@ import { AutomationPhaseProgress } from "@/components/automations/AutomationPhas
 import { AutomationRunPhaseChip } from "@/components/automations/AutomationRunPhaseChip";
 import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
+import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
@@ -70,6 +71,7 @@ interface AutomationDetailViewProps {
   projectName?: string | null;
   onBack: () => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -546,6 +548,8 @@ const RunTimelineItem = memo(function RunTimelineItem({
   liveStageLabel,
   activeGoalItem,
   onOpenRunConversation,
+  onOpenAutomationRun,
+  setupConversationId,
 }: {
   run: AutomationRun;
   projectId: string | null;
@@ -553,17 +557,53 @@ const RunTimelineItem = memo(function RunTimelineItem({
   liveStageLabel: string | null;
   activeGoalItem: AutomationGoalItem | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
+  setupConversationId: string | null;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
+  const canOpenConversation = Boolean(
+    projectId &&
+      run.conversationId &&
+      (onOpenAutomationRun || onOpenRunConversation),
+  );
   const failureReason = describeRunFailure(run);
   const runOpen = isOpenAutomationRun(run);
   const phaseItem = runOpen ? activeGoalItem : null;
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
+      if (onOpenAutomationRun) {
+        onOpenAutomationRun({
+          projectId,
+          automationId: run.automationId,
+          runId: run.id,
+          conversationId: run.conversationId,
+          setupConversationId,
+          runStatus: run.status,
+          judgeState: run.judgeState,
+          planPhase: run.planPhase,
+          planArtifactId: run.planArtifactId,
+          prNumber: run.prNumber,
+          prUrl: run.prUrl,
+        });
+        return;
+      }
       onOpenRunConversation?.(projectId, run.conversationId);
     }
-  }, [onOpenRunConversation, projectId, run.conversationId]);
+  }, [
+    onOpenAutomationRun,
+    onOpenRunConversation,
+    projectId,
+    run.automationId,
+    run.conversationId,
+    run.id,
+    run.judgeState,
+    run.planArtifactId,
+    run.planPhase,
+    run.prNumber,
+    run.prUrl,
+    run.status,
+    setupConversationId,
+  ]);
 
   return (
     <div className="relative pl-6" data-testid={`automation-run-${run.id}`}>
@@ -779,6 +819,7 @@ export function AutomationDetailView({
   projectName,
   onBack,
   onOpenRunConversation,
+  onOpenAutomationRun,
 }: AutomationDetailViewProps) {
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
@@ -1186,6 +1227,8 @@ export function AutomationDetailView({
                     }
                     activeGoalItem={activeGoalItem}
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
+                    {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
+                    setupConversationId={automation.setupConversationId}
                   />
                 ))}
               </div>

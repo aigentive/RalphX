@@ -502,15 +502,13 @@ function AutomationRunsList({
         const isCancellable = isAutomationRunCancellable(run);
         const isCanceling = cancelingRunId === run.id;
         const conversationId = run.conversationId;
-        const canOpenPlanGate =
-          run.status === "awaiting_plan_approval" &&
-          Boolean(conversationId && onFocusAutomationRun);
+        const canOpenRun = Boolean(conversationId && onFocusAutomationRun);
         const warning = runRowWarning(run);
         const statusPill = (
           <span
             className={cn(
               "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
-              canOpenPlanGate && "group-hover:underline",
+              canOpenRun && "group-hover:underline",
               runStatusToneClass(run.status),
             )}
             style={{
@@ -567,7 +565,7 @@ function AutomationRunsList({
                   testId={`agents-automation-run-${run.runIndex}-pr-link`}
                 />
               ) : null}
-              {canOpenPlanGate && conversationId ? (
+              {canOpenRun && conversationId ? (
                 <TooltipProvider delayDuration={150}>
                   <Tooltip>
                     <TooltipTrigger asChild>

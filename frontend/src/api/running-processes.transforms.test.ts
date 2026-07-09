@@ -166,6 +166,8 @@ describe("transformRunningWorkspaceSession", () => {
     const result = transformRunningWorkspaceSession({
       conversation_id: "conversation-1",
       project_id: "project-1",
+      automation_id: "automation-1",
+      automation_run_id: "run-1",
       title: "Workspace run",
       elapsed_seconds: 30,
       model: "gpt-5.5",
@@ -173,6 +175,8 @@ describe("transformRunningWorkspaceSession", () => {
 
     expect(result.conversationId).toBe("conversation-1");
     expect(result.projectId).toBe("project-1");
+    expect(result.automationId).toBe("automation-1");
+    expect(result.automationRunId).toBe("run-1");
     expect(result.elapsedSeconds).toBe(30);
     expect(result.model).toBe("gpt-5.5");
   });
@@ -220,6 +224,8 @@ describe("transformRunningProcessesResponse", () => {
         {
           conversation_id: "conversation-1",
           project_id: "project-1",
+          automation_id: null,
+          automation_run_id: null,
           title: "Workspace run",
           elapsed_seconds: null,
           model: null,

@@ -467,6 +467,70 @@ describe("agentSessionStore", () => {
       });
     });
 
+    it("stores and clears automation run focus requests without persisting them", () => {
+      const {
+        clearAutomationRunFocusRequest,
+        requestAutomationRunFocus,
+      } = useAgentSessionStore.getState();
+
+      requestAutomationRunFocus("setup-conversation-1", {
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-1",
+        conversationId: "run-conversation-1",
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+      });
+      let state = useAgentSessionStore.getState();
+      expect(state.automationRunFocusRequestByConversationId["setup-conversation-1"]).toEqual({
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-1",
+        conversationId: "run-conversation-1",
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+        requestId: 1,
+      });
+
+      requestAutomationRunFocus("setup-conversation-1", {
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-2",
+        conversationId: "run-conversation-2",
+        runStatus: "published",
+        judgeState: "none",
+        workspaceMode: null,
+        hasPlanArtifact: false,
+        hasPullRequest: true,
+      });
+      state = useAgentSessionStore.getState();
+      expect(state.automationRunFocusRequestByConversationId["setup-conversation-1"]).toMatchObject({
+        runId: "run-2",
+        conversationId: "run-conversation-2",
+        requestId: 2,
+      });
+
+      clearAutomationRunFocusRequest("setup-conversation-1", 1);
+      expect(
+        useAgentSessionStore.getState().automationRunFocusRequestByConversationId[
+          "setup-conversation-1"
+        ],
+      ).toMatchObject({ runId: "run-2", requestId: 2 });
+
+      clearAutomationRunFocusRequest("setup-conversation-1", 2);
+      expect(
+        useAgentSessionStore.getState().automationRunFocusRequestByConversationId[
+          "setup-conversation-1"
+        ],
+      ).toBeUndefined();
+    });
+
     it("setRuntimeForConversation + setLastRuntimeForProject normalize via lib/agent-models", () => {
       const { setRuntimeForConversation, setLastRuntimeForProject } =
         useAgentSessionStore.getState();

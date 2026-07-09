@@ -69,6 +69,8 @@ export const RunningIdeationSessionSchema = z.object({
 export const RunningWorkspaceSessionSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
+  automation_id: z.string().nullable(),
+  automation_run_id: z.string().nullable(),
   title: z.string(),
   elapsed_seconds: z.number().int().nullable(),
   model: z.string().nullable(),

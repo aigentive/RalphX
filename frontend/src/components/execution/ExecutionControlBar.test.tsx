@@ -523,6 +523,8 @@ describe("ExecutionControlBar", () => {
           {
             conversationId: "conversation-1",
             projectId: "project-1",
+            automationId: null,
+            automationRunId: null,
             title: "Workspace",
             elapsedSeconds: 30,
             model: "gpt-5.5",

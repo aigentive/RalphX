@@ -112,6 +112,8 @@ fn build_running_views_shape_expected_fields() {
     let mut conversation =
         ChatConversation::new_project(ProjectId::from_string("proj-1".to_string()));
     conversation.title = Some("Workspace run".to_string());
+    conversation.automation_id = Some(crate::entities::AutomationId::from_string("automation-1"));
+    conversation.automation_run_id = Some(crate::entities::AutomationRunId::from_string("run-1"));
     let workspace = build_running_workspace_session(
         &conversation,
         Utc.with_ymd_and_hms(2026, 3, 29, 11, 58, 0).unwrap(),
@@ -120,6 +122,8 @@ fn build_running_views_shape_expected_fields() {
     );
     assert_eq!(workspace.conversation_id, conversation.id.as_str());
     assert_eq!(workspace.project_id, "proj-1");
+    assert_eq!(workspace.automation_id.as_deref(), Some("automation-1"));
+    assert_eq!(workspace.automation_run_id.as_deref(), Some("run-1"));
     assert_eq!(workspace.title, "Workspace run");
     assert_eq!(workspace.elapsed_seconds, Some(120));
     assert_eq!(workspace.model.as_deref(), Some("gpt-5.5"));
