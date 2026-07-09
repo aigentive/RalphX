@@ -5525,6 +5525,30 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not show the draft approval lifecycle banner outside Plan mode", async () => {
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(draftPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "edit",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await screen.findByTestId("plan-display-chromeless");
+
+    expect(
+      screen.queryByTestId("plan-lifecycle-banner"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Plan needs approval")).not.toBeInTheDocument();
+    expect(approvePlanArtifactMock).not.toHaveBeenCalled();
+  });
+
   it("shows an info lifecycle banner for an approved plan without work", async () => {
     getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
     getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
