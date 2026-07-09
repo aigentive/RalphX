@@ -3,7 +3,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -86,6 +86,99 @@ describe("Agents StateTimelineNav", () => {
     expect(screen.getByTestId("timeline-badge-merged")).toHaveTextContent(
       "Merge attempt 1",
     );
+  });
+
+  it("shows overflow controls and secondary chat metadata for a clipped mixed timeline", async () => {
+    const scrollWidthDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollWidth",
+    );
+    const clientWidthDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientWidth",
+    );
+
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get() {
+        return this.getAttribute("data-testid") === "timeline-scroll-viewport"
+          ? 960
+          : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        return this.getAttribute("data-testid") === "timeline-scroll-viewport"
+          ? 320
+          : 0;
+      },
+    });
+
+    try {
+      mockUseTaskStateTransitions.mockReturnValue({
+        data: [
+          makeTransition("executing", t0, { conversationId: "exec-1" }),
+          makeTransition("reviewing", t1),
+          makeTransition("re_executing", t2, { conversationId: "exec-2" }),
+          makeTransition("review_passed", t3),
+          makeTransition("pending_merge", t4),
+          makeTransition("merged", t5, { conversationId: "merge-1" }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+
+      renderWithProviders(
+        <StateTimelineNav
+          taskId="task-1"
+          currentStatus="merged"
+          onStateSelect={vi.fn()}
+        />,
+      );
+
+      expect(
+        await screen.findByRole("button", { name: "Scroll history left" }),
+      ).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Scroll history right" }),
+      ).not.toBeDisabled();
+
+      const executionBadge = screen.getByTestId("timeline-badge-executing");
+      expect(within(executionBadge).getByTestId("timeline-badge-label")).toHaveTextContent(
+        "Execution attempt 1",
+      );
+      expect(
+        within(executionBadge).getByTestId("timeline-badge-chat-meta"),
+      ).toHaveTextContent("Chat available");
+
+      const reviewBadge = screen.getByTestId("timeline-badge-reviewing");
+      expect(within(reviewBadge).getByTestId("timeline-badge-label")).toHaveTextContent(
+        "Review attempt 1",
+      );
+      expect(
+        within(reviewBadge).getByTestId("timeline-badge-chat-meta"),
+      ).toHaveTextContent("No chat");
+    } finally {
+      if (scrollWidthDescriptor) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollWidth",
+          scrollWidthDescriptor,
+        );
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollWidth;
+      }
+      if (clientWidthDescriptor) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "clientWidth",
+          clientWidthDescriptor,
+        );
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).clientWidth;
+      }
+    }
   });
 
   it("keeps a normal merge flow on one merge attempt", () => {
