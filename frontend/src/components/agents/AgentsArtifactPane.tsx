@@ -744,14 +744,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           displayedVerificationStatus.status !== "unverified"))),
   );
   const proposalCount = proposals.length;
-  const conversationArtifactMode =
-    conversation?.agentMode === "plan" || conversation?.agentMode === "ideation"
-      ? conversation.agentMode
-      : null;
-  const artifactMode =
-    conversationArtifactMode ??
-    workspace?.mode ??
-    (conversation?.contextType === "ideation" ? "ideation" : null);
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
   const automationId = conversation?.automationId ?? null;
@@ -766,18 +758,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
         canStartPlan,
-        hasProposals: proposalCount > 0,
         hasVerificationEvidence,
         hasExecutionTasks: hasImplementationAttempt,
-        artifactMode,
       }),
     [
-      artifactMode,
       canStartPlan,
       hasImplementationAttempt,
       hasVerificationEvidence,
       planArtifactId,
-      proposalCount,
       sessionData,
     ],
   );
@@ -1488,7 +1476,14 @@ function ArtifactContent({
 
   if (activeTab === "automation" && automationId) {
     return (
-      <Suspense fallback={<EmptyArtifactState title="Loading automation..." />}>
+      <Suspense
+        fallback={
+          <EmptyArtifactState
+            title="Loading automation..."
+            testId="agents-automation-panel-loading"
+          />
+        }
+      >
         <LazyAgentsAutomationPanel
           automationId={automationId}
           conversationTitle={conversationTitle}

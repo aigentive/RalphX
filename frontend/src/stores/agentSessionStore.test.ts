@@ -117,6 +117,41 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("migrates legacy standalone proposal artifact tabs to Plan", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          artifactByConversationId: {
+            "conversation-1": {
+              isOpen: true,
+              activeTab: "proposal",
+              taskMode: "kanban",
+            },
+            "conversation-2": {
+              isOpen: false,
+              activeTab: "tasks",
+              taskMode: "graph",
+            },
+          },
+        },
+        6,
+      ),
+    ).toMatchObject({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "kanban",
+        },
+        "conversation-2": {
+          isOpen: false,
+          activeTab: "tasks",
+          taskMode: "graph",
+        },
+      },
+    });
+  });
+
   it("migrates older persisted sidebar metadata filters and pin state", () => {
     expect(
       migrateAgentSessionStore(
