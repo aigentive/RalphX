@@ -770,11 +770,11 @@ describe("AgentsView artifact pane", () => {
         {
           id: "proposal-1",
           sessionId: "session-1",
-          title: "Gate proposal tab visibility",
-          description: "Keep proposal content inside the Plan tab.",
+          title: "Gate embedded proposal access",
+          description: "Keep proposals inside the Plan tab.",
           category: "frontend",
           steps: ["Update artifact tabs"],
-          acceptanceCriteria: ["Proposals shortcut stays hidden"],
+          acceptanceCriteria: ["Proposals remain available inside Plan"],
           suggestedPriority: "high",
           priorityScore: 90,
           priorityReason: "Avoids empty navigation",
@@ -811,6 +811,9 @@ describe("AgentsView artifact pane", () => {
     );
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
   });
 
 });

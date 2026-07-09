@@ -4224,11 +4224,11 @@ describe("AgentsArtifactPane", () => {
         {
           id: "proposal-1",
           sessionId: "session-1",
-          title: "Gate proposal tab visibility",
-          description: "Keep proposal content inside the Plan tab.",
+          title: "Gate embedded proposal access",
+          description: "Show proposals inside the Plan tab.",
           category: "frontend",
           steps: ["Update shared tab helper"],
-          acceptanceCriteria: ["Plan owns proposal content"],
+          acceptanceCriteria: ["Proposal content stays embedded in Plan"],
           suggestedPriority: "high",
           priorityScore: 90,
           priorityReason: "Avoids dead-end navigation",
@@ -4270,7 +4270,7 @@ describe("AgentsArtifactPane", () => {
     });
 
     renderPane(
-      "proposal",
+      "proposal" as AgentArtifactTab,
       workspace({
         mode: "plan",
         linkedIdeationSessionId: "session-1",
@@ -4296,7 +4296,7 @@ describe("AgentsArtifactPane", () => {
     await user.click(proposalsToggle);
 
     expect(
-      await screen.findByText("Gate proposal tab visibility"),
+      await screen.findByText("Gate embedded proposal access"),
     ).toBeInTheDocument();
     await user.click(screen.getByTestId("proposal-card-proposal-1"));
     expect(
@@ -4930,7 +4930,7 @@ describe("AgentsArtifactPane", () => {
     });
 
     renderPane(
-      "proposal",
+      "proposal" as AgentArtifactTab,
       workspace({
         mode: "plan",
         linkedIdeationSessionId: "session-1",

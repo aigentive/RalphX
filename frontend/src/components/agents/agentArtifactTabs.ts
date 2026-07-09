@@ -9,10 +9,8 @@ export interface IdeationArtifactAvailability {
   hasAttachedIdeationSession: boolean;
   hasPlanArtifact: boolean;
   canStartPlan: boolean;
-  hasProposals: boolean;
   hasVerificationEvidence: boolean;
   hasExecutionTasks: boolean;
-  artifactMode: string | null | undefined;
 }
 
 export function getVisibleIdeationArtifactTabs({

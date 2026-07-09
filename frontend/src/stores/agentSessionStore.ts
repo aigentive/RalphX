@@ -25,7 +25,6 @@ export type AgentArtifactTab =
   | "issues"
   | "plan"
   | "verification"
-  | "proposal"
   | "tasks"
   | "pr"
   | "jira"
@@ -169,14 +168,18 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
 ];
 const AGENT_SESSION_STORE_VERSION = 7;
 
+type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
+
 export function normalizeAgentArtifactTab(
-  tab: AgentArtifactTab,
+  tab: LegacyAgentArtifactTab,
 ): AgentArtifactTab {
   return tab === "proposal" ? "plan" : tab;
 }
 
 function normalizeAgentArtifactState(
-  artifactState: AgentArtifactState,
+  artifactState: Omit<AgentArtifactState, "activeTab"> & {
+    activeTab: LegacyAgentArtifactTab;
+  },
 ): AgentArtifactState {
   return {
     ...artifactState,

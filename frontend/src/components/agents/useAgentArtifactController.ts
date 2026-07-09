@@ -205,8 +205,8 @@ export function useAgentArtifactController({
       const tabByKey: Record<string, AgentArtifactTab> = {
         "1": "plan",
         "2": "verification",
-        "3": "tasks",
-        "4": "issues",
+        "4": "tasks",
+        "5": "issues",
       };
       const tab = tabByKey[event.key];
       if (tab) {
