@@ -10,10 +10,11 @@ use tokio::time::{sleep, timeout};
 
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::plan_gate::{
-    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
-    AutomationPlanVerificationStarter, AutomationRunResumer, NoopAutomationPlanVerificationStarter,
-    AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
-    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
+    clear_plan_phase_publication_metadata, AutomationPlanVerificationStartOutcome,
+    AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
+    AutomationRunResumer, NoopAutomationPlanVerificationStarter, AUTOMATION_PLAN_REMINDER_PROMPT,
+    PLAN_JUDGE_FAILED_PAUSED_REASON_CODE, PLAN_RESUME_FAILED_ERROR_CODE,
+    PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
@@ -2021,6 +2022,68 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
 }
 
 #[tokio::test]
+async fn automation_scheduler_does_not_write_merge_metadata_when_merged_status_cas_loses() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    run.pr_number = Some(77);
+    run.pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    run_repo.create_run(run).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    run_repo.lose_next_published_to_merged_cas();
+    let checker = Arc::new(RecordingSignalChecker::with_responses(vec![Ok(
+        PrStatus::Merged {
+            merge_commit_sha: Some("abc123".to_string()),
+            merged_at: Some("2026-07-05T12:00:00Z".to_string()),
+        },
+    )]));
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        checker,
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.merged_runs, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Published);
+    assert!(latest.merge_commit_sha.is_none());
+    assert!(latest.pr_merged_at.is_none());
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_pr_status.as_deref(), Some("merged"));
+}
+
+#[tokio::test]
 async fn automation_scheduler_marks_published_run_closed_from_github_signal() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(
@@ -3658,6 +3721,67 @@ async fn automation_scheduler_delivers_matching_plan_approval_once_and_clears_st
     assert_eq!(second.failed_runs, 0);
     assert_eq!(second.published_runs, 0);
     assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn clear_plan_phase_publication_metadata_preserves_concurrent_workspace_preferences() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::AwaitingPlanApproval,
+        Some(conversation_id.clone()),
+    );
+    run.pr_number = Some(42);
+    run.pr_url = Some("https://github.com/acme/project/pull/42".to_string());
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    let mut stored_workspace = workspace(&conversation_id);
+    stored_workspace.publication_push_status = Some("no_changes".to_string());
+    stored_workspace.publication_pr_number = Some(42);
+    stored_workspace.publication_pr_url =
+        Some("https://github.com/acme/project/pull/42".to_string());
+    stored_workspace.publication_pr_status = Some("open".to_string());
+    stored_workspace.pr_auto_merge_desired = false;
+    workspace_repo
+        .create_or_update(stored_workspace.clone())
+        .await
+        .unwrap();
+
+    let mut stale_snapshot = stored_workspace;
+    stale_snapshot.pr_auto_merge_desired = true;
+    let run_repo_trait: Arc<dyn AutomationRunRepository> = run_repo.clone();
+    let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> =
+        workspace_repo.clone();
+
+    clear_plan_phase_publication_metadata(
+        &run_repo_trait,
+        &workspace_repo_trait,
+        &run,
+        &stale_snapshot,
+    )
+    .await
+    .unwrap();
+
+    let cleared_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(cleared_workspace.publication_push_status.is_none());
+    assert!(cleared_workspace.publication_pr_number.is_none());
+    assert!(cleared_workspace.publication_pr_url.is_none());
+    assert!(cleared_workspace.publication_pr_status.is_none());
+    assert!(
+        !cleared_workspace.pr_auto_merge_desired,
+        "field-scoped publication clear must not replay a stale workspace clone"
+    );
 }
 
 #[tokio::test]
@@ -5705,6 +5829,191 @@ async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
     assert_eq!(
         item_status(automation.goal_items_json.as_deref().unwrap(), "item-2"),
         "done"
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_sweep_reverts_paused_judge_failed_goal_progress() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut paused = automation_with_goal_items(automation_id.as_str(), AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_failed".to_string());
+    paused.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(paused).await.unwrap();
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::AgentFailed,
+        None,
+    );
+    run.judge_state = AutomationJudgeState::Failed;
+    run_repo.create_run(run).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.active_automations, 0);
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "item-2"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_sweep_forward_fills_active_running_goal_progress() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation_with_goal_items(
+            automation_id.as_str(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            None,
+        ))
+        .await
+        .unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.active_with_runs, 1);
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "item-2"),
+        "in_progress"
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_sweep_keeps_signal_terminal_judge_done_goal_progress() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut active = automation_with_goal_items(automation_id.as_str(), AutomationStatus::Active);
+    active.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(active).await.unwrap();
+    let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run.judge_state = AutomationJudgeState::Done;
+    run_repo.create_run(run).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.successor_runs, 0);
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "item-2"),
+        "in_progress"
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_sweep_does_not_revert_plan_gate_paused_goal_progress() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut paused = automation_with_goal_items(automation_id.as_str(), AutomationStatus::Paused);
+    paused.paused_reason_code = Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE.to_string());
+    paused.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(paused).await.unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Cancelled,
+            None,
+        ))
+        .await
+        .unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.resumed_automations, 0);
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "item-2"),
+        "in_progress"
     );
 }
 

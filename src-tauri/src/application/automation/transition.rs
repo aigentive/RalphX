@@ -198,6 +198,38 @@ impl AutomationTransitionService {
         Ok(changed)
     }
 
+    pub async fn transition_run_status_with_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        if !automation_run_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let changed = self
+            .run_repo
+            .compare_and_swap_status_with_merge_metadata(
+                id,
+                from,
+                to,
+                merge_commit_sha,
+                pr_merged_at,
+            )
+            .await?;
+        if changed {
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+        }
+        Ok(changed)
+    }
+
     pub async fn transition_run_status_with_agent_phase_started_at(
         &self,
         id: &AutomationRunId,

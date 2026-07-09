@@ -5,7 +5,7 @@ use crate::entities::{
     AutomationId, AutomationJudgeState, AutomationPlanJudgeState, AutomationRun, AutomationRunId,
     AutomationRunStatus, ChatConversationId,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomationRunPublicationMetadata {
@@ -108,6 +108,23 @@ pub trait AutomationRunRepository: Send + Sync {
         merge_commit_sha: Option<String>,
         pr_merged_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Option<AutomationRun>>;
+
+    /// Atomically transition a published run to merged and record the merge facts in the same
+    /// status-guarded write. Implementations should clear non-terminal error fields and reset
+    /// signal check failures only when the status transition wins.
+    async fn compare_and_swap_status_with_merge_metadata(
+        &self,
+        _id: &AutomationRunId,
+        _from: AutomationRunStatus,
+        _to: AutomationRunStatus,
+        _merge_commit_sha: Option<String>,
+        _pr_merged_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<bool> {
+        Err(AppError::Infrastructure(
+            "automation run repository does not support atomic merge metadata transitions"
+                .to_string(),
+        ))
+    }
 
     /// Increment bounded scheduler-owned PR signal check failures for a published run.
     async fn increment_signal_check_failures(

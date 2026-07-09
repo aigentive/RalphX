@@ -245,6 +245,59 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
 }
 
 #[tokio::test]
+async fn transition_service_emits_after_successful_merge_metadata_cas() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let run = run(
+        "run-1",
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    run_repo.lose_next_published_to_merged_cas();
+    assert!(!service
+        .transition_run_status_with_merge_metadata(
+            &run.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("lost-sha".to_string()),
+            Some(Utc::now()),
+        )
+        .await
+        .unwrap());
+    assert!(emitter.events().is_empty());
+    let unchanged = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.status, AutomationRunStatus::Published);
+    assert!(unchanged.merge_commit_sha.is_none());
+
+    let merged_at = Utc::now();
+    assert!(service
+        .transition_run_status_with_merge_metadata(
+            &run.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("merge-sha".to_string()),
+            Some(merged_at),
+        )
+        .await
+        .unwrap());
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Merged);
+    assert_eq!(stored.merge_commit_sha.as_deref(), Some("merge-sha"));
+    assert_eq!(stored.pr_merged_at, Some(merged_at));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+    );
+}
+
+#[tokio::test]
 async fn transition_service_validates_judge_lifecycle_before_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(

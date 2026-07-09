@@ -278,6 +278,25 @@ impl AutomationService {
         Ok(AutomationDetail { automation, runs })
     }
 
+    pub async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
+        next_goal_items_json: Option<String>,
+    ) -> AppResult<bool> {
+        let updated = self
+            .automation_repo
+            .update_goal_items_json_if_unchanged(id, expected_goal_items_json, next_goal_items_json)
+            .await?;
+        if updated.is_some() {
+            self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                automation_id: id.clone(),
+            });
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub async fn update_settings(
         &self,
         input: UpdateAutomationSettingsInput,

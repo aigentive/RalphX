@@ -101,6 +101,57 @@ fn run(
 }
 
 #[tokio::test]
+async fn memory_run_repo_atomically_merges_status_and_metadata() {
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
+    let merged_at = Utc.with_ymd_and_hms(2026, 7, 5, 12, 0, 0).unwrap();
+    let mut published = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    published.signal_check_failures = 2;
+    published.error_code = Some("warning".to_string());
+    published.error_detail = Some("non-terminal warning".to_string());
+    repo.create_run(published.clone()).await.unwrap();
+
+    assert!(repo
+        .compare_and_swap_status_with_merge_metadata(
+            &published.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("merge-sha".to_string()),
+            Some(merged_at),
+        )
+        .await
+        .unwrap());
+
+    let stored = repo.get_by_id(&published.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Merged);
+    assert_eq!(stored.merge_commit_sha.as_deref(), Some("merge-sha"));
+    assert_eq!(stored.pr_merged_at, Some(merged_at));
+    assert_eq!(stored.signal_check_failures, 0);
+    assert!(stored.error_code.is_none());
+    assert!(stored.error_detail.is_none());
+    assert!(stored.finished_at.is_some());
+
+    assert!(!repo
+        .compare_and_swap_status_with_merge_metadata(
+            &published.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("late-sha".to_string()),
+            None,
+        )
+        .await
+        .unwrap());
+    let unchanged = repo.get_by_id(&published.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.merge_commit_sha.as_deref(), Some("merge-sha"));
+    assert_eq!(unchanged.pr_merged_at, Some(merged_at));
+}
+
+#[tokio::test]
 async fn memory_automation_repo_round_trips_plan_gate_config_fields() {
     let repo = MemoryAutomationRepository::new();
     let mut automation = automation("automation-1", "project-1", AutomationStatus::Draft);

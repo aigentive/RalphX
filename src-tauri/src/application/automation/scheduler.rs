@@ -9,13 +9,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use ralphx_domain::entities::automation::latest_run_holds_goal_authority;
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::application::automation::judge::{
     append_automation_judge_retry_instruction, build_automation_judge_prompt,
-    parse_automation_judge_verdict, truncate_utf8_to_bytes, AutomationJudgeAttachmentContext,
-    AutomationJudgeContextRefSummary, AutomationJudgeValidationContext,
-    BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
+    mark_current_goal_item_in_progress, parse_automation_judge_verdict,
+    revert_in_progress_goal_items_to_pending, truncate_utf8_to_bytes,
+    AutomationJudgeAttachmentContext, AutomationJudgeContextRefSummary,
+    AutomationJudgeValidationContext, BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, arm_plan_reminder, clear_plan_phase_publication_metadata,
@@ -1509,6 +1511,15 @@ impl AutomationScheduler {
                             );
                         }
                     }
+                    if let Err(error) = self.sweep_goal_item_consistency(&automation.id, true).await
+                    {
+                        summary.automation_errors += 1;
+                        tracing::warn!(
+                            automation_id = %automation.id,
+                            error = %error,
+                            "Automation scheduler failed to sweep automation goal items"
+                        );
+                    }
                 }
                 AutomationStatus::Paused
                     if is_plan_gate_pause_reason(automation.paused_reason_code.as_deref()) =>
@@ -1532,12 +1543,94 @@ impl AutomationScheduler {
                             "Automation scheduler failed to scan paused plan gate approval"
                         );
                     }
+                    if let Err(error) = self
+                        .sweep_goal_item_consistency(&automation.id, false)
+                        .await
+                    {
+                        summary.automation_errors += 1;
+                        tracing::warn!(
+                            automation_id = %automation.id,
+                            error = %error,
+                            "Automation scheduler failed to sweep automation goal items"
+                        );
+                    }
                 }
-                _ => {}
+                _ => {
+                    if let Err(error) = self
+                        .sweep_goal_item_consistency(&automation.id, false)
+                        .await
+                    {
+                        summary.automation_errors += 1;
+                        tracing::warn!(
+                            automation_id = %automation.id,
+                            error = %error,
+                            "Automation scheduler failed to sweep automation goal items"
+                        );
+                    }
+                }
             }
         }
 
         Ok(summary)
+    }
+
+    async fn sweep_goal_item_consistency(
+        &self,
+        automation_id: &AutomationId,
+        allow_forward_fill: bool,
+    ) -> AppResult<()> {
+        let detail = self.service.get_automation_detail(automation_id).await?;
+        let Some(latest_run) = detail.runs.last() else {
+            return Ok(());
+        };
+        let plan_gate_paused = detail.automation.status == AutomationStatus::Paused
+            && is_plan_gate_pause_reason(detail.automation.paused_reason_code.as_deref());
+
+        let repair = if !plan_gate_paused && !latest_run_holds_goal_authority(latest_run) {
+            revert_in_progress_goal_items_to_pending(detail.automation.goal_items_json.as_deref())?
+                .map(|goal_items_json| ("revert", goal_items_json))
+        } else if allow_forward_fill
+            && detail.automation.status == AutomationStatus::Active
+            && matches!(
+                latest_run.status,
+                AutomationRunStatus::Running
+                    | AutomationRunStatus::AwaitingPlanApproval
+                    | AutomationRunStatus::Published
+            )
+        {
+            mark_current_goal_item_in_progress(detail.automation.goal_items_json.as_deref())?
+                .map(|goal_items_json| ("forward_fill", goal_items_json))
+        } else {
+            None
+        };
+
+        let Some((repair_kind, goal_items_json)) = repair else {
+            return Ok(());
+        };
+        let updated = self
+            .service
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                detail.automation.goal_items_json.clone(),
+                Some(goal_items_json),
+            )
+            .await?;
+        if updated {
+            tracing::info!(
+                automation_id = %automation_id,
+                run_id = %latest_run.id,
+                repair = repair_kind,
+                "Automation scheduler repaired goal item progress"
+            );
+        } else {
+            tracing::warn!(
+                automation_id = %automation_id,
+                run_id = %latest_run.id,
+                repair = repair_kind,
+                "Skipped automation goal item sweep repair because stored goal items changed"
+            );
+        }
+        Ok(())
     }
 
     async fn resume_plan_gate_paused_automation_on_approval(
@@ -3115,9 +3208,6 @@ impl AutomationScheduler {
                 merged_at,
             }) => {
                 let pr_merged_at = parse_github_datetime(merged_at.as_deref());
-                self.run_repo
-                    .update_merge_metadata(&run.id, merge_commit_sha, pr_merged_at)
-                    .await?;
                 self.workspace_repo
                     .update_publication(
                         conversation_id,
@@ -3129,12 +3219,12 @@ impl AutomationScheduler {
                     .await?;
                 if self
                     .transition_service
-                    .transition_run_status(
+                    .transition_run_status_with_merge_metadata(
                         &run.id,
                         AutomationRunStatus::Published,
                         AutomationRunStatus::Merged,
-                        None,
-                        None,
+                        merge_commit_sha,
+                        pr_merged_at,
                     )
                     .await?
                 {

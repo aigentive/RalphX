@@ -950,6 +950,55 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn compare_and_swap_status_with_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let terminal = matches!(
+                    to,
+                    AutomationRunStatus::Merged
+                        | AutomationRunStatus::Completed
+                        | AutomationRunStatus::PrClosed
+                        | AutomationRunStatus::AgentFailed
+                        | AutomationRunStatus::Cancelled
+                );
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET status = ?1,
+                         error_code = NULL,
+                         error_detail = NULL,
+                         pr_merged_at = ?2,
+                         merge_commit_sha = ?3,
+                         signal_check_failures = 0,
+                         finished_at = CASE
+                             WHEN ?4 = 1 THEN COALESCE(finished_at, ?5)
+                             ELSE finished_at
+                         END,
+                         updated_at = ?5
+                     WHERE id = ?6 AND status = ?7",
+                    params![
+                        to.as_str(),
+                        pr_merged_at.map(|dt| dt.to_rfc3339()),
+                        merge_commit_sha,
+                        if terminal { 1_i64 } else { 0_i64 },
+                        now,
+                        id,
+                        from.as_str(),
+                    ],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
     async fn increment_signal_check_failures(
         &self,
         id: &AutomationRunId,

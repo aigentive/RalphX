@@ -162,13 +162,9 @@ pub(crate) async fn clear_plan_phase_publication_metadata(
         return Ok(());
     }
 
-    let mut updated = workspace.clone();
-    updated.publication_pr_number = None;
-    updated.publication_pr_url = None;
-    updated.publication_pr_status = None;
-    updated.publication_push_status = None;
-    updated.updated_at = Utc::now();
-    workspace_repo.create_or_update(updated).await?;
+    workspace_repo
+        .update_publication(&workspace.conversation_id, None, None, None, None)
+        .await?;
     Ok(())
 }
 

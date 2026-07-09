@@ -292,6 +292,8 @@ pub struct MemoryAutomationRunRepository {
     #[cfg(test)]
     lose_next_running_to_published_cas: AtomicBool,
     #[cfg(test)]
+    lose_next_published_to_merged_cas: AtomicBool,
+    #[cfg(test)]
     published_run_error_updates: AtomicUsize,
 }
 
@@ -303,6 +305,8 @@ impl MemoryAutomationRunRepository {
             #[cfg(test)]
             lose_next_running_to_published_cas: AtomicBool::new(false),
             #[cfg(test)]
+            lose_next_published_to_merged_cas: AtomicBool::new(false),
+            #[cfg(test)]
             published_run_error_updates: AtomicUsize::new(0),
         }
     }
@@ -310,6 +314,12 @@ impl MemoryAutomationRunRepository {
     #[cfg(test)]
     pub fn lose_next_running_to_published_cas(&self) {
         self.lose_next_running_to_published_cas
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub fn lose_next_published_to_merged_cas(&self) {
+        self.lose_next_published_to_merged_cas
             .store(true, Ordering::SeqCst);
     }
 
@@ -421,6 +431,15 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             && to == AutomationRunStatus::Published
             && self
                 .lose_next_running_to_published_cas
+                .swap(false, Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if from == AutomationRunStatus::Published
+            && to == AutomationRunStatus::Merged
+            && self
+                .lose_next_published_to_merged_cas
                 .swap(false, Ordering::SeqCst)
         {
             return Ok(false);
@@ -629,6 +648,59 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.signal_check_failures = 0;
         run.updated_at = Utc::now();
         Ok(Some(run.clone()))
+    }
+
+    async fn compare_and_swap_status_with_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<chrono::DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        #[cfg(test)]
+        if from == AutomationRunStatus::Published
+            && to == AutomationRunStatus::Merged
+            && self
+                .lose_next_published_to_merged_cas
+                .swap(false, Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+
+        let mut runs = self.runs.write().unwrap();
+        let Some(position) = runs.iter().position(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if runs[position].status != from {
+            return Ok(false);
+        }
+        let mut updated = runs[position].clone();
+        let now = Utc::now();
+        updated.status = to;
+        updated.error_code = None;
+        updated.error_detail = None;
+        updated.merge_commit_sha = merge_commit_sha;
+        updated.pr_merged_at = pr_merged_at;
+        updated.signal_check_failures = 0;
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
+        if Self::has_conflicting_open_run(&runs, &updated) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        runs[position] = updated;
+        Ok(true)
     }
 
     async fn increment_signal_check_failures(
