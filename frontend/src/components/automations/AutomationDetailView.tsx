@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
+  Copy,
   ExternalLink,
   GitPullRequest,
   MoreHorizontal,
@@ -26,8 +27,9 @@ import {
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
   describeAutomationDeleteConsequences,
-  describeAutomationStage,
+  describeAutomationRunPrState,
   describeRunFailure,
+  getAutomationRunView,
   isAutomationDeletable,
   isOpenAutomationRun,
   latestRun,
@@ -35,10 +37,15 @@ import {
 import {
   AUTOMATION_PHASES_LABEL,
   AUTOMATION_STATUS_LABELS,
+  findInProgressAutomationGoalItem,
   parseAutomationGoalItems,
+  type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
+import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
+import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
@@ -64,21 +71,10 @@ interface AutomationDetailViewProps {
   projectName?: string | null;
   onBack: () => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
 
 type JsonRecord = Record<string, unknown>;
-
-const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
-  pending: "Running",
-  provisioning: "Running",
-  running: "Running",
-  published: "Running",
-  completed: "Completed",
-  merged: "Merged",
-  pr_closed: "PR closed",
-  agent_failed: "Agent failed",
-  cancelled: "Cancelled",
-};
 
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
   setup_agent: "Setup agent",
@@ -301,8 +297,12 @@ function KeyValueList({ items }: { items: Array<[string, ReactNode]> }) {
           <dt className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
             {label}
           </dt>
-          <dd className="mt-1 truncate text-sm" style={{ color: "var(--text-secondary)" }}>
-            {value}
+          <dd className="mt-1 min-w-0 text-sm" style={{ color: "var(--text-secondary)" }}>
+            {typeof value === "string" || typeof value === "number" ? (
+              <span className="block truncate">{value}</span>
+            ) : (
+              value
+            )}
           </dd>
         </div>
       ))}
@@ -358,6 +358,57 @@ function ExpandableText({
         </Button>
       )}
     </div>
+  );
+}
+
+function BranchConfigValue({ automation }: { automation: Automation }) {
+  const branchRef = automation.baseRef.trim();
+  if (!branchRef) {
+    return <span className="block truncate">Not recorded</span>;
+  }
+  const displayName = automation.baseDisplayName?.trim();
+  const showDisplayName = Boolean(displayName && displayName !== branchRef);
+  const copyBranch = async () => {
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(branchRef);
+      toast.success("Branch copied");
+    } catch {
+      toast.error("Failed to copy branch");
+    }
+  };
+
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
+      <span className="min-w-0 truncate">
+        {showDisplayName ? (
+          <span className="mr-1" style={{ color: "var(--text-muted)" }}>
+            {displayName}
+          </span>
+        ) : null}
+        <code className="font-mono text-[0.8125rem]" data-testid="automation-branch-value">
+          {branchRef}
+        </code>
+      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Copy branch"
+            className="h-6 w-6 shrink-0"
+            onClick={() => void copyBranch()}
+            data-testid="automation-branch-copy"
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Copy branch</TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -492,26 +543,65 @@ function JudgeVerdictCard({ run }: { run: AutomationRun }) {
 
 const RunTimelineItem = memo(function RunTimelineItem({
   run,
+  automation,
   projectId,
   defaultExpanded,
-  liveStageLabel,
+  activeGoalItem,
   onOpenRunConversation,
+  onOpenAutomationRun,
+  setupConversationId,
 }: {
   run: AutomationRun;
+  automation: Automation;
   projectId: string | null;
   defaultExpanded: boolean;
-  liveStageLabel: string | null;
+  activeGoalItem: AutomationGoalItem | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
+  setupConversationId: string | null;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
+  const canOpenConversation = Boolean(
+    projectId &&
+      run.conversationId &&
+      (onOpenAutomationRun || onOpenRunConversation),
+  );
   const failureReason = describeRunFailure(run);
-  const runOpen = isOpenAutomationRun(run);
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
+      if (onOpenAutomationRun) {
+        onOpenAutomationRun({
+          projectId,
+          automationId: run.automationId,
+          runId: run.id,
+          conversationId: run.conversationId,
+          setupConversationId,
+          runStatus: run.status,
+          judgeState: run.judgeState,
+          planPhase: run.planPhase,
+          planArtifactId: run.planArtifactId,
+          prNumber: run.prNumber,
+          prUrl: run.prUrl,
+        });
+        return;
+      }
       onOpenRunConversation?.(projectId, run.conversationId);
     }
-  }, [onOpenRunConversation, projectId, run.conversationId]);
+  }, [
+    onOpenAutomationRun,
+    onOpenRunConversation,
+    projectId,
+    run.automationId,
+    run.conversationId,
+    run.id,
+    run.judgeState,
+    run.planArtifactId,
+    run.planPhase,
+    run.prNumber,
+    run.prUrl,
+    run.status,
+    setupConversationId,
+  ]);
 
   return (
     <div className="relative pl-6" data-testid={`automation-run-${run.id}`}>
@@ -540,19 +630,15 @@ const RunTimelineItem = memo(function RunTimelineItem({
           aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
           className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
         >
-          <span className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-              Run {run.runIndex}
-            </span>
-            <Pill label={RUN_STATUS_LABELS[run.status]} status={run.status} />
-            <Pill label={`Judge ${run.judgeState}`} status={run.judgeState} />
-            {liveStageLabel && (
-              <RunStatusChip
-                label={liveStageLabel}
-                testId={`automation-run-${run.id}-live`}
-              />
-            )}
-          </span>
+          <AutomationRunStatusHeader
+            automation={automation}
+            run={run}
+            density="card"
+            activeGoalItem={activeGoalItem}
+            showPr={false}
+            phaseTestId={`automation-run-${run.id}-phase`}
+            testId={`automation-run-${run.id}-header`}
+          />
           <span className="flex shrink-0 items-center gap-2">
             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
               {formatDate(run.updatedAt)}
@@ -564,6 +650,15 @@ const RunTimelineItem = memo(function RunTimelineItem({
             )}
           </span>
         </button>
+
+        {run.prUrl ? (
+          <div className="mt-2">
+            <AutomationRunPrLink
+              run={run}
+              testId={`automation-run-${run.id}-pr-link`}
+            />
+          </div>
+        ) : null}
 
         {expanded && (
           <div data-testid={`automation-run-${run.id}-body`}>
@@ -615,21 +710,15 @@ const RunTimelineItem = memo(function RunTimelineItem({
             <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
               PR
             </div>
-            {run.prUrl ? (
-              <a
-                href={run.prUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-flex items-center gap-1 text-sm text-[var(--accent-primary)]"
-              >
-                PR #{run.prNumber ?? "?"}
-                <ExternalLink className="h-3 w-3" aria-hidden="true" />
-              </a>
-            ) : (
-              <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-                {run.prNumber ? `PR #${run.prNumber}` : "Not published"}
-              </div>
-            )}
+            <div
+              className="mt-1"
+              style={{ color: "var(--text-secondary)" }}
+              data-testid={`automation-run-${run.id}-pr-state`}
+            >
+              {run.prNumber || run.prUrl
+                ? describeAutomationRunPrState(run)
+                : "Not published"}
+            </div>
           </div>
           <div>
             <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
@@ -669,7 +758,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
             <AutomationRunTaskLedger
               conversationId={run.conversationId}
               projectId={projectId}
-              isOpen={runOpen}
+              runStatus={run.status}
             />
           </div>
         )}
@@ -716,6 +805,7 @@ export function AutomationDetailView({
   projectName,
   onBack,
   onOpenRunConversation,
+  onOpenAutomationRun,
 }: AutomationDetailViewProps) {
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
@@ -794,6 +884,11 @@ export function AutomationDetailView({
     },
     onError: () => toast.error("Failed to delete automation"),
   });
+  const goalItemsJson = detail.data?.automation.goalItemsJson ?? null;
+  const activeGoalItem = useMemo(
+    () => findInProgressAutomationGoalItem(goalItemsJson),
+    [goalItemsJson],
+  );
 
   if (!afterPaint || detail.isLoading) {
     return <DetailLoading onBack={onBack} />;
@@ -834,9 +929,10 @@ export function AutomationDetailView({
   // user is allowed to trigger even with a run still open, so don't block it.
   const openRun = isOpenAutomationRun(latest) ? latest : null;
   const activeRun = automation.status === "active" ? openRun : null;
-  const liveStageLabel = activeRun ? describeAutomationStage(automation, activeRun) : null;
+  const activeRunView = activeRun ? getAutomationRunView(automation, activeRun) : null;
+  const liveStageLabel = activeRunView?.stageLabel ?? null;
   const runNowBlockedReason = activeRun
-    ? `${describeAutomationStage(automation, activeRun)} — wait for it to finish before running again`
+    ? `${liveStageLabel} — wait for it to finish before running again`
     : automation.status === "draft"
       ? "Approve the automation before running it"
       : isAutomationTerminal(automation.status)
@@ -1071,6 +1167,7 @@ export function AutomationDetailView({
                     ),
                   ],
                   ["Base", formatBase(automation)],
+                  ["Branch", <BranchConfigValue automation={automation} />],
                   ["Chain mode", automation.chainMode],
                   ["Completion signal", automation.completionSignal],
                   ["Max runs", `${runs.length} / ${automation.maxRuns}`],
@@ -1106,16 +1203,15 @@ export function AutomationDetailView({
                   <RunTimelineItem
                     key={run.id}
                     run={run}
+                    automation={automation}
                     projectId={projectId}
                     defaultExpanded={
                       run.runIndex === latest?.runIndex || isOpenAutomationRun(run)
                     }
-                    liveStageLabel={
-                      isOpenAutomationRun(run)
-                        ? describeAutomationStage(automation, run)
-                        : null
-                    }
+                    activeGoalItem={activeGoalItem}
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
+                    {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
+                    setupConversationId={automation.setupConversationId}
                   />
                 ))}
               </div>

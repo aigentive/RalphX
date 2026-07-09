@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::entities::{
-    AutomationId, AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus,
-    ChatConversationId,
+    AutomationId, AutomationJudgeState, AutomationPlanJudgeState, AutomationRun, AutomationRunId,
+    AutomationRunStatus, ChatConversationId,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomationRunPublicationMetadata {
@@ -14,6 +14,15 @@ pub struct AutomationRunPublicationMetadata {
     pub pr_title: Option<String>,
     pub pr_head_ref_name: Option<String>,
     pub pr_base_ref_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationJudgeTransitionGuard {
+    Dispatch,
+    Settle(DateTime<Utc>),
+    /// Legacy escape for pre-token InProgress rows. Matches only NULL leases;
+    /// switch to a dedicated judge_dispatch_id column iff lease renewal is ever added.
+    LegacyNullLease,
 }
 
 #[async_trait]
@@ -51,6 +60,25 @@ pub trait AutomationRunRepository: Send + Sync {
         error_detail: Option<String>,
     ) -> AppResult<bool>;
 
+    async fn compare_and_swap_status_with_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        agent_phase_started_at: DateTime<Utc>,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool>;
+
+    async fn compare_and_swap_status_clearing_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool>;
+
     /// Attach the started conversation/workspace metadata while the run is still provisioning.
     /// Implementations return `None` when the run is missing or has already left provisioning.
     async fn update_start_metadata(
@@ -68,6 +96,14 @@ pub trait AutomationRunRepository: Send + Sync {
         metadata: AutomationRunPublicationMetadata,
     ) -> AppResult<Option<AutomationRun>>;
 
+    async fn clear_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        self.update_publication_metadata(id, AutomationRunPublicationMetadata::default())
+            .await
+    }
+
     /// Record PR merge metadata while the run is still waiting for a published PR signal.
     async fn update_merge_metadata(
         &self,
@@ -75,6 +111,23 @@ pub trait AutomationRunRepository: Send + Sync {
         merge_commit_sha: Option<String>,
         pr_merged_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Option<AutomationRun>>;
+
+    /// Atomically transition a published run to merged and record the merge facts in the same
+    /// status-guarded write. Implementations should clear non-terminal error fields and reset
+    /// signal check failures only when the status transition wins.
+    async fn compare_and_swap_status_with_merge_metadata(
+        &self,
+        _id: &AutomationRunId,
+        _from: AutomationRunStatus,
+        _to: AutomationRunStatus,
+        _merge_commit_sha: Option<String>,
+        _pr_merged_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<bool> {
+        Err(AppError::Infrastructure(
+            "automation run repository does not support atomic merge metadata transitions"
+                .to_string(),
+        ))
+    }
 
     /// Increment bounded scheduler-owned PR signal check failures for a published run.
     async fn increment_signal_check_failures(
@@ -88,16 +141,76 @@ pub trait AutomationRunRepository: Send + Sync {
         id: &AutomationRunId,
     ) -> AppResult<Option<AutomationRun>>;
 
+    /// Update non-terminal warning/error fields for a published run without changing status.
+    async fn update_published_run_error(
+        &self,
+        id: &AutomationRunId,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
     async fn compare_and_swap_judge_state(
         &self,
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool>;
+
+    async fn compare_and_swap_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool>;
+
+    async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool>;
+
+    async fn set_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        plan_pending_instructions: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_revision_round(
+        &self,
+        id: &AutomationRunId,
+        plan_revision_round: i64,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_last_parked_artifact_id(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_plan_reminder_count(
+        &self,
+        id: &AutomationRunId,
+        plan_reminder_count: i64,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    async fn set_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        agent_phase_started_at: Option<DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    /// Atomically insert the judge-created successor for the latest judged terminal run.
+    /// Returns `None` when the previous run is stale, not `Done`, not signal-terminal, or the
+    /// owning automation is no longer active.
+    async fn create_judge_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>>;
 
     /// Atomically mark the latest unjudged terminal run as skipped and insert its successor.
     /// Returns `None` when the previous run is stale, no longer unjudged, or no longer latest.

@@ -134,7 +134,7 @@ pub fn session_is_team_mode(session: &IdeationSession) -> bool {
     session.team_mode.as_deref().is_some_and(|m| m != "solo")
 }
 
-pub(super) fn build_ideation_chat_service(
+pub(crate) fn build_ideation_chat_service(
     state: &HttpServerState,
     session: &IdeationSession,
 ) -> crate::application::AppChatService {

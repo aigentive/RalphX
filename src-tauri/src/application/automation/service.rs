@@ -1,27 +1,39 @@
+use std::path::Path;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use ralphx_domain::entities::automation::is_signal_terminal_automation_run;
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde_json::Value;
 
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
-    AutomationJudgeVerdict,
+    revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
+    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
+};
+use crate::application::automation::plan_gate::{
+    is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_disable_failure_summary, AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
 use crate::domain::entities::{
-    is_open_automation_run, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
-    ArtifactMetadata, ArtifactType, Automation, AutomationId, AutomationJudgeState,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatConversationId, ProjectId,
+    is_open_automation_run, AgentConversationWorkspace, Artifact, ArtifactBucketId,
+    ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, Automation, AutomationId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    ArtifactRepository, AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
-    AutomationSettingsPatch,
+    AgentConversationWorkspaceRepository, ArtifactRepository, AutomationConfigPatch,
+    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
 };
+use crate::domain::services::github_service::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 const DEFAULT_AUTOMATION_NAME: &str = "Automation setup";
 const DEFAULT_PROVIDER_HARNESS: &str = "claude";
@@ -30,12 +42,15 @@ const DEFAULT_RUN_MODE: &str = "edit";
 const DEFAULT_BASE_REF_KIND: &str = "project_default";
 const DEFAULT_CHAIN_MODE: &str = "merged_base";
 const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
+const JUDGE_FAILED_PAUSED_REASON_CODE: &str = "judge_failed";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
 const AGENT_COMPLETED_COMPLETION_SIGNAL: &str = "agent_completed";
 const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 const SPEC_ARTIFACT_BUCKET: &str = "prd-library";
 const SPEC_ARTIFACT_CREATED_BY: &str = "automation-setup";
+pub const AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE: &str =
+    "automation_stacked_auto_merge_unsupported";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationDetail {
@@ -60,6 +75,9 @@ pub struct UpdateAutomationSettingsInput {
     pub name: Option<String>,
     pub max_runs: Option<i64>,
     pub max_consecutive_failures: Option<i64>,
+    pub plan_approval_mode: Option<AutomationPlanApprovalMode>,
+    pub pr_merge_mode: Option<AutomationPrMergeMode>,
+    pub plan_deep_verification: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +157,7 @@ impl AutomationRunNowAction {
 pub struct CompleteAutomationJudgeInput {
     pub automation: Automation,
     pub previous_run: AutomationRun,
+    pub judge_lease_expires_at: DateTime<Utc>,
     pub verdict: AutomationJudgeVerdict,
     pub verdict_json: String,
     pub judge_model_id: Option<String>,
@@ -155,7 +174,13 @@ pub struct ApplyAutomationJudgeVerdictInput {
 pub struct AutomationJudgeApplyOutcome {
     pub successor_run: Option<AutomationRun>,
     pub terminal_automation_status: Option<AutomationStatus>,
+    pub noop_reason: Option<AutomationJudgeApplyNoopReason>,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationJudgeApplyNoopReason {
+    NotCurrent,
 }
 
 #[derive(Clone)]
@@ -165,6 +190,8 @@ pub struct AutomationService {
     transition_service: AutomationTransitionService,
     event_emitter: Arc<dyn AutomationEventEmitter>,
     artifact_repo: Arc<dyn ArtifactRepository>,
+    workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
 }
 
 impl AutomationService {
@@ -185,7 +212,19 @@ impl AutomationService {
             transition_service,
             event_emitter,
             artifact_repo,
+            workspace_repo: None,
+            github_service: None,
         }
+    }
+
+    pub fn with_pr_auto_merge_controls(
+        mut self,
+        workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        github_service: Option<Arc<dyn GithubServiceTrait>>,
+    ) -> Self {
+        self.workspace_repo = Some(workspace_repo);
+        self.github_service = github_service;
+        self
     }
 
     pub async fn create_draft(&self, input: CreateAutomationDraftInput) -> AppResult<Automation> {
@@ -212,6 +251,9 @@ impl AutomationService {
             goal_items_json: None,
             chain_mode: DEFAULT_CHAIN_MODE.to_string(),
             completion_signal: DEFAULT_COMPLETION_SIGNAL.to_string(),
+            plan_approval_mode: AutomationPlanApprovalMode::Manual,
+            pr_merge_mode: AutomationPrMergeMode::Manual,
+            plan_deep_verification: false,
             max_runs: DEFAULT_MAX_RUNS,
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             first_run_prompt: None,
@@ -236,12 +278,35 @@ impl AutomationService {
         Ok(AutomationDetail { automation, runs })
     }
 
+    pub async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
+        next_goal_items_json: Option<String>,
+    ) -> AppResult<bool> {
+        let updated = self
+            .automation_repo
+            .update_goal_items_json_if_unchanged(id, expected_goal_items_json, next_goal_items_json)
+            .await?;
+        if updated.is_some() {
+            self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                automation_id: id.clone(),
+            });
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub async fn update_settings(
         &self,
         input: UpdateAutomationSettingsInput,
     ) -> AppResult<Automation> {
         validate_positive("max_runs", input.max_runs)?;
         validate_positive("max_consecutive_failures", input.max_consecutive_failures)?;
+        let automation = self.require_automation(&input.id).await?;
+        if let Some(pr_merge_mode) = input.pr_merge_mode {
+            validate_stacked_chain_merge_mode(automation.chain_mode.as_str(), pr_merge_mode)?;
+        }
         let name = match input.name.as_deref() {
             Some(value) => Some(normalize_name(Some(value))?),
             None => None,
@@ -250,6 +315,9 @@ impl AutomationService {
             name,
             max_runs: input.max_runs,
             max_consecutive_failures: input.max_consecutive_failures,
+            plan_approval_mode: input.plan_approval_mode,
+            pr_merge_mode: input.pr_merge_mode,
+            plan_deep_verification: input.plan_deep_verification,
         };
         let updated = self
             .automation_repo
@@ -279,15 +347,16 @@ impl AutomationService {
                 automation.status.as_str()
             )));
         }
-        let completion_signal = input
-            .completion_signal
-            .or_else(|| {
-                input
-                    .run_mode
-                    .as_deref()
-                    .map(completion_signal_for_run_mode)
-                    .map(str::to_string)
-            });
+        let completion_signal = input.completion_signal.or_else(|| {
+            input
+                .run_mode
+                .as_deref()
+                .map(completion_signal_for_run_mode)
+                .map(str::to_string)
+        });
+        if let Some(chain_mode) = input.chain_mode.as_deref() {
+            validate_stacked_chain_merge_mode(chain_mode, automation.pr_merge_mode)?;
+        }
         let spec_artifact_id = self
             .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
             .await?;
@@ -444,17 +513,35 @@ impl AutomationService {
                 None,
             )
             .await?;
-        if let Some(run) = self.run_repo.latest_for_automation(id).await? {
+        let mut first_cancel_error = None;
+        for run in self.run_repo.list_for_automation(id).await? {
             if run_status_is_cancellable(run.status) {
-                self.transition_run_status_or_conflict(
-                    &run.id,
-                    run.status,
-                    AutomationRunStatus::Cancelled,
-                    None,
-                    None,
-                )
-                .await?;
+                if let Err(error) = self
+                    .transition_run_status_or_conflict(
+                        &run.id,
+                        run.status,
+                        AutomationRunStatus::Cancelled,
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        automation_id = %id,
+                        run_id = %run.id,
+                        error = %error,
+                        "Failed to cancel automation run during stop sweep"
+                    );
+                    if first_cancel_error.is_none() {
+                        first_cancel_error = Some(error);
+                    }
+                }
             }
+        }
+        self.sync_goal_items_for_closed_run_without_successor(id)
+            .await;
+        if let Some(error) = first_cancel_error {
+            return Err(error);
         }
         Ok(stopped)
     }
@@ -473,6 +560,11 @@ impl AutomationService {
         match automation.status {
             AutomationStatus::Active => {}
             AutomationStatus::Paused => {
+                if is_plan_gate_pause_reason(automation.paused_reason_code.as_deref()) {
+                    return Err(AppError::Validation(format!(
+                        "{AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE} This automation is paused at the plan gate. Review the run plan and approve it from the plan artifact pane."
+                    )));
+                }
                 automation = self
                     .transition_automation_status_or_conflict(
                         id,
@@ -497,20 +589,31 @@ impl AutomationService {
             )));
         };
 
-        if matches!(
-            latest.status,
-            AutomationRunStatus::Pending
-                | AutomationRunStatus::Provisioning
-                | AutomationRunStatus::Running
-                | AutomationRunStatus::Published
-        ) || latest.judge_state == AutomationJudgeState::InProgress
+        if run_status_blocks_trigger_run_now(latest.status)
+            || latest.judge_state == AutomationJudgeState::InProgress
         {
             return Ok(AutomationRunNowAction::Outcome(schedule_not_scheduled(
                 "run in flight",
             )));
         }
 
-        if !run_status_is_signal_terminal(latest.status) {
+        if latest.status == AutomationRunStatus::Cancelled {
+            self.create_run(CreateAutomationRunInput {
+                automation_id: automation.id.clone(),
+                run_prompt: latest.run_prompt.clone(),
+                prompt_author: latest.prompt_author,
+                base_ref_kind: latest.base_ref_kind.clone(),
+                base_ref_used: latest.base_ref_used.clone(),
+                base_from_run_id: latest.base_from_run_id.clone(),
+            })
+            .await?;
+            return Ok(AutomationRunNowAction::Outcome(AutomationScheduleOutcome {
+                scheduled: true,
+                reason: None,
+            }));
+        }
+
+        if !is_signal_terminal_automation_run(latest.status) {
             return Ok(AutomationRunNowAction::Outcome(schedule_not_scheduled(
                 "latest run is not ready",
             )));
@@ -525,24 +628,13 @@ impl AutomationService {
                 })
             }
             AutomationJudgeState::Done => {
-                let Some(verdict_json) = latest.judge_verdict_json.as_deref() else {
+                if latest.judge_verdict_json.is_none() {
                     return Ok(AutomationRunNowAction::Outcome(schedule_not_scheduled(
                         "judge verdict is missing",
                     )));
-                };
-                let verdict = parse_automation_judge_verdict(
-                    verdict_json,
-                    AutomationJudgeValidationContext {
-                        automation: &automation,
-                        previous_run: &latest,
-                    },
-                )?;
+                }
                 let outcome = self
-                    .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
-                        automation,
-                        previous_run: latest,
-                        verdict,
-                    })
+                    .apply_stored_judge_verdict(&automation.id, &latest.id)
                     .await?;
                 Ok(AutomationRunNowAction::Outcome(schedule_from_judge_apply(
                     outcome,
@@ -562,8 +654,10 @@ impl AutomationService {
         id: &AutomationId,
         run_id: &AutomationRunId,
     ) -> AppResult<AutomationScheduleOutcome> {
-        let automation = self.require_automation(id).await?;
-        if automation.status != AutomationStatus::Active {
+        let mut automation = self.require_automation(id).await?;
+        let resume_failed_judge = automation.status == AutomationStatus::Paused
+            && automation.paused_reason_code.as_deref() == Some(JUDGE_FAILED_PAUSED_REASON_CODE);
+        if automation.status != AutomationStatus::Active && !resume_failed_judge {
             return Err(AppError::Validation(
                 "automation must be active to skip judge".to_string(),
             ));
@@ -581,17 +675,30 @@ impl AutomationService {
                 "runId must reference the latest automation run".to_string(),
             ));
         }
-        if run.judge_state != AutomationJudgeState::None {
+        let skip_failed_judge =
+            resume_failed_judge && run.judge_state == AutomationJudgeState::Failed;
+        if run.judge_state != AutomationJudgeState::None && !skip_failed_judge {
             return Ok(AutomationScheduleOutcome {
                 scheduled: false,
                 reason: Some("judge already started".to_string()),
             });
         }
-        if !run_status_is_signal_terminal(run.status) {
+        if !is_signal_terminal_automation_run(run.status) {
             return Ok(AutomationScheduleOutcome {
                 scheduled: false,
                 reason: Some("run is not ready for judge skipping".to_string()),
             });
+        }
+        if resume_failed_judge {
+            automation = self
+                .transition_automation_status_or_conflict(
+                    &automation.id,
+                    AutomationStatus::Paused,
+                    AutomationStatus::Active,
+                    None,
+                    None,
+                )
+                .await?;
         }
         match self.successor_readiness(&automation, &latest, true).await? {
             SuccessorReadiness::Ready => {
@@ -613,15 +720,25 @@ impl AutomationService {
                 {
                     Some(run) => {
                         self.event_emitter
-                            .emit(AutomationEvent::AutomationRunUpdated { run_id: latest.id });
+                            .emit(AutomationEvent::AutomationRunUpdated {
+                                automation_id: automation.id.clone(),
+                                run_id: latest.id,
+                            });
                         self.event_emitter
-                            .emit(AutomationEvent::AutomationRunUpdated { run_id: run.id });
+                            .emit(AutomationEvent::AutomationRunUpdated {
+                                automation_id: automation.id.clone(),
+                                run_id: run.id,
+                            });
                         Ok(AutomationScheduleOutcome {
                             scheduled: true,
                             reason: None,
                         })
                     }
-                    None => Ok(schedule_not_scheduled("judge already started")),
+                    None => Ok(schedule_not_scheduled(if skip_failed_judge {
+                        "not skipped: judge redispatched"
+                    } else {
+                        "judge already started"
+                    })),
                 }
             }
             SuccessorReadiness::NotScheduled(outcome) => {
@@ -639,15 +756,204 @@ impl AutomationService {
         id: &AutomationId,
         run_id: &AutomationRunId,
     ) -> AppResult<AutomationRun> {
-        let run = self.require_run_for_automation(id, run_id).await?;
-        self.transition_run_status_or_conflict(
-            run_id,
+        let automation = self.require_automation(id).await?;
+        let run = self
+            .run_repo
+            .get_by_id(run_id)
+            .await?
+            .ok_or_else(|| automation_run_not_found(run_id))?;
+        if run.automation_id != *id {
+            return Err(AppError::Validation(
+                "automation run is not owned by the requested automation".to_string(),
+            ));
+        }
+        let cancelled = self
+            .transition_run_status_or_conflict(
+                run_id,
+                run.status,
+                AutomationRunStatus::Cancelled,
+                None,
+                None,
+            )
+            .await?;
+        if automation.pr_merge_mode == AutomationPrMergeMode::Automatic {
+            self.disarm_cancelled_run_auto_merge(&run).await;
+        }
+        self.run_repo.clear_plan_judge_state(run_id).await?;
+        self.sync_goal_items_for_closed_run_without_successor(id)
+            .await;
+        Ok(cancelled)
+    }
+
+    pub async fn terminalize_blocked_run(
+        &self,
+        automation_id: &AutomationId,
+        run: &AutomationRun,
+        error_code: &str,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        if run.automation_id != *automation_id {
+            return Err(AppError::Validation(
+                "automation run is not owned by the requested automation".to_string(),
+            ));
+        }
+        let changed = if matches!(
             run.status,
-            AutomationRunStatus::Cancelled,
-            None,
-            None,
-        )
-        .await
+            AutomationRunStatus::Running | AutomationRunStatus::Provisioning
+        ) {
+            self.transition_service
+                .transition_run_status(
+                    &run.id,
+                    run.status,
+                    AutomationRunStatus::AgentFailed,
+                    Some(error_code.to_string()),
+                    error_detail,
+                )
+                .await?
+        } else {
+            false
+        };
+        if !changed
+            && matches!(
+                run.status,
+                AutomationRunStatus::Running | AutomationRunStatus::Provisioning
+            )
+        {
+            tracing::warn!(
+                automation_id = %automation_id,
+                run_id = %run.id,
+                from_status = run.status.as_str(),
+                "Discarded workspace-review-blocked run terminalization because run status changed"
+            );
+        }
+        self.sync_goal_items_for_closed_run_without_successor(automation_id)
+            .await;
+        Ok(changed)
+    }
+
+    async fn disarm_cancelled_run_auto_merge(&self, run: &AutomationRun) {
+        let Some(workspace_repo) = self.workspace_repo.as_ref() else {
+            return;
+        };
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return;
+        };
+        let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+            Ok(Some(workspace)) => workspace,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run.id.as_str(),
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Automation cancel could not load workspace to disarm automatic PR auto-merge"
+                );
+                return;
+            }
+        };
+        if !workspace.pr_auto_merge_desired {
+            return;
+        }
+        if let Err(error) = workspace_repo
+            .update_pr_supervision_preferences(
+                conversation_id,
+                workspace.pr_autofix_enabled,
+                false,
+                &workspace.pr_auto_merge_method,
+            )
+            .await
+        {
+            tracing::warn!(
+                run_id = run.id.as_str(),
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Automation cancel could not clear automatic PR auto-merge preference"
+            );
+        }
+        self.disable_cancelled_run_remote_auto_merge(run, &workspace)
+            .await;
+    }
+
+    async fn disable_cancelled_run_remote_auto_merge(
+        &self,
+        run: &AutomationRun,
+        workspace: &AgentConversationWorkspace,
+    ) {
+        let Some(github) = self.github_service.as_ref() else {
+            return;
+        };
+        let Some(pr_number) = run.pr_number.or(workspace.publication_pr_number) else {
+            return;
+        };
+        let working_dir = match validate_absolute_non_root_path(
+            Path::new(&workspace.worktree_path),
+            "cancelled automation workspace",
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run.id.as_str(),
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Automation cancel could not disable GitHub auto-merge for an unsafe workspace path"
+                );
+                return;
+            }
+        };
+        match github.disable_pr_auto_merge(&working_dir, pr_number).await {
+            Ok(()) => {
+                let Some(workspace_repo) = self.workspace_repo.as_ref() else {
+                    return;
+                };
+                if let Err(error) = workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(false),
+                        None,
+                        Some("GitHub auto-merge is disabled."),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        run_id = run.id.as_str(),
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error = %error,
+                        "Automation cancel disabled GitHub auto-merge but could not persist workspace state"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run.id.as_str(),
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Automation cancel could not disable GitHub auto-merge; preference was cleared"
+                );
+                let Some(workspace_repo) = self.workspace_repo.as_ref() else {
+                    return;
+                };
+                if let Err(update_error) = workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(true),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_disable_failure_summary(&error)),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        run_id = run.id.as_str(),
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error = %update_error,
+                        "Automation cancel could not persist GitHub auto-merge disable warning"
+                    );
+                }
+            }
+        }
     }
 
     /// Row-deletion core for automation deletion.
@@ -733,6 +1039,14 @@ impl AutomationService {
             status: AutomationRunStatus::Pending,
             judge_state: AutomationJudgeState::None,
             judge_lease_expires_at: None,
+            plan_judge_state: AutomationPlanJudgeState::None,
+            plan_judge_lease_expires_at: None,
+            plan_judge_verdict_json: None,
+            plan_revision_round: 0,
+            plan_reminder_count: 0,
+            plan_pending_instructions: None,
+            plan_last_parked_artifact_id: None,
+            agent_phase_started_at: None,
             conversation_id: None,
             run_prompt: input.run_prompt,
             prompt_author: input.prompt_author,
@@ -762,6 +1076,7 @@ impl AutomationService {
         let created = self.run_repo.create_run(run).await?;
         self.event_emitter
             .emit(AutomationEvent::AutomationRunUpdated {
+                automation_id: created.automation_id.clone(),
                 run_id: created.id.clone(),
             });
         Ok(created)
@@ -827,16 +1142,13 @@ impl AutomationService {
         &self,
         input: CompleteAutomationJudgeInput,
     ) -> AppResult<AutomationJudgeApplyOutcome> {
-        let applied_goal_items = apply_updated_item_statuses(
-            input.automation.goal_items_json.as_deref(),
-            input.verdict.updated_item_statuses.as_deref(),
-        )?;
         let changed = self
             .transition_service
             .transition_judge_state(
                 &input.previous_run.id,
                 AutomationJudgeState::InProgress,
                 AutomationJudgeState::Done,
+                AutomationJudgeTransitionGuard::Settle(input.judge_lease_expires_at),
                 Some(input.verdict_json),
                 input.judge_model_id,
                 None,
@@ -847,18 +1159,16 @@ impl AutomationService {
             return Ok(AutomationJudgeApplyOutcome {
                 successor_run: None,
                 terminal_automation_status: None,
+                noop_reason: Some(AutomationJudgeApplyNoopReason::NotCurrent),
                 reason: Some("judge state changed before verdict persistence".to_string()),
             });
         }
 
-        self.apply_judge_verdict_effects(
-            ApplyAutomationJudgeVerdictInput {
-                automation: input.automation,
-                previous_run: input.previous_run,
-                verdict: input.verdict,
-            },
-            applied_goal_items,
-        )
+        self.apply_judge_verdict_effects(ApplyAutomationJudgeVerdictInput {
+            automation: input.automation,
+            previous_run: input.previous_run,
+            verdict: input.verdict,
+        })
         .await
     }
 
@@ -866,12 +1176,121 @@ impl AutomationService {
         &self,
         input: ApplyAutomationJudgeVerdictInput,
     ) -> AppResult<AutomationJudgeApplyOutcome> {
-        let applied_goal_items = apply_updated_item_statuses(
-            input.automation.goal_items_json.as_deref(),
-            input.verdict.updated_item_statuses.as_deref(),
-        )?;
-        self.apply_judge_verdict_effects(input, applied_goal_items)
+        self.apply_judge_verdict_effects(input).await
+    }
+
+    pub async fn apply_stored_judge_verdict(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+    ) -> AppResult<AutomationJudgeApplyOutcome> {
+        let Some((automation, latest)) = self
+            .current_judge_verdict_authority(automation_id, previous_run_id)
+            .await?
+        else {
+            return Ok(AutomationJudgeApplyOutcome {
+                successor_run: None,
+                terminal_automation_status: None,
+                noop_reason: Some(AutomationJudgeApplyNoopReason::NotCurrent),
+                reason: Some("judge verdict is no longer current".to_string()),
+            });
+        };
+        let Some(verdict_json) = latest.judge_verdict_json.as_deref() else {
+            return Ok(AutomationJudgeApplyOutcome {
+                successor_run: None,
+                terminal_automation_status: None,
+                noop_reason: Some(AutomationJudgeApplyNoopReason::NotCurrent),
+                reason: Some("judge verdict is missing".to_string()),
+            });
+        };
+        let verdict = match parse_automation_judge_verdict(
+            verdict_json,
+            AutomationJudgeValidationContext {
+                automation: &automation,
+                previous_run: &latest,
+            },
+        ) {
+            Ok(verdict) => verdict,
+            Err(error) => {
+                return self
+                    .mark_stored_judge_verdict_failed(
+                        &automation,
+                        &latest,
+                        format!("Automation stored judge verdict is invalid: {error}"),
+                    )
+                    .await;
+            }
+        };
+
+        self.apply_judge_verdict_effects_with_current(automation, latest, verdict)
             .await
+    }
+
+    pub(crate) async fn sync_goal_items_for_closed_run_without_successor(
+        &self,
+        automation_id: &AutomationId,
+    ) {
+        let automation = match self.automation_repo.get_by_id(automation_id).await {
+            Ok(Some(automation)) => automation,
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    "Failed to sync automation goal items after run close: automation not found"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    error = %error,
+                    "Failed to sync automation goal items after run close"
+                );
+                return;
+            }
+        };
+
+        let updated_goal_items_json =
+            match revert_in_progress_goal_items_to_pending(automation.goal_items_json.as_deref()) {
+                Ok(Some(updated)) => updated,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation_id,
+                        error = %error,
+                        "Failed to sync automation goal items after run close"
+                    );
+                    return;
+                }
+            };
+
+        match self
+            .automation_repo
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                automation.goal_items_json,
+                Some(updated_goal_items_json),
+            )
+            .await
+        {
+            Ok(Some(_)) => {
+                self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                    automation_id: automation_id.clone(),
+                });
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    "Skipped automation goal item close sync because stored goal items changed"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    error = %error,
+                    "Failed to sync automation goal items after run close"
+                );
+            }
+        }
     }
 
     async fn require_automation(&self, id: &AutomationId) -> AppResult<Automation> {
@@ -949,20 +1368,54 @@ impl AutomationService {
     async fn apply_judge_verdict_effects(
         &self,
         input: ApplyAutomationJudgeVerdictInput,
-        applied_goal_items: Option<String>,
     ) -> AppResult<AutomationJudgeApplyOutcome> {
-        if applied_goal_items.as_deref() != input.automation.goal_items_json.as_deref() {
+        let Some((automation, latest)) = self
+            .current_judge_verdict_authority(&input.automation.id, &input.previous_run.id)
+            .await?
+        else {
+            return Ok(AutomationJudgeApplyOutcome {
+                successor_run: None,
+                terminal_automation_status: None,
+                noop_reason: Some(AutomationJudgeApplyNoopReason::NotCurrent),
+                reason: Some("judge verdict is no longer current".to_string()),
+            });
+        };
+
+        self.apply_judge_verdict_effects_with_current(automation, latest, input.verdict)
+            .await
+    }
+
+    async fn apply_judge_verdict_effects_with_current(
+        &self,
+        automation: Automation,
+        latest: AutomationRun,
+        verdict: AutomationJudgeVerdict,
+    ) -> AppResult<AutomationJudgeApplyOutcome> {
+        let applied_goal_items = apply_updated_item_statuses(
+            automation.goal_items_json.as_deref(),
+            verdict.updated_item_statuses.as_deref(),
+        )?;
+        if applied_goal_items.as_deref() != automation.goal_items_json.as_deref() {
             self.automation_repo
-                .update_goal_items_json(&input.automation.id, applied_goal_items.clone())
+                .update_goal_items_json_if_unchanged(
+                    &automation.id,
+                    automation.goal_items_json.clone(),
+                    applied_goal_items.clone(),
+                )
                 .await?
-                .ok_or_else(|| automation_not_found(&input.automation.id))?;
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "automation {} goal items changed before judge verdict could apply",
+                        automation.id.as_str()
+                    ))
+                })?;
         }
 
-        match input.verdict.decision {
+        match verdict.decision {
             AutomationJudgeDecision::Continue => {
-                if automation_judge_loop_suspected(&input.previous_run, &input.verdict) {
+                if automation_judge_loop_suspected(&latest, &verdict) {
                     self.transition_automation_status_or_conflict(
-                        &input.automation.id,
+                        &automation.id,
                         AutomationStatus::Active,
                         AutomationStatus::Paused,
                         Some("judge_loop_suspected".to_string()),
@@ -972,58 +1425,69 @@ impl AutomationService {
                         ),
                     )
                     .await?;
+                    self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                        .await;
                     return Ok(AutomationJudgeApplyOutcome {
                         successor_run: None,
                         terminal_automation_status: Some(AutomationStatus::Paused),
+                        noop_reason: None,
                         reason: Some("judge_loop_suspected".to_string()),
                     });
                 }
-                let next_prompt = input
-                    .verdict
+                let next_prompt = verdict
                     .next_run_prompt
                     .as_deref()
                     .unwrap_or("")
                     .trim()
                     .to_string();
-                let latest = self.latest_run_for_automation(&input.automation.id).await?;
-                if latest.id != input.previous_run.id {
-                    return Err(AppError::Validation(
-                        "previousRunId must reference the latest automation run".to_string(),
-                    ));
-                }
                 if let SuccessorReadiness::NotScheduled(outcome) = self
-                    .successor_readiness(&input.automation, &latest, false)
+                    .successor_readiness(&automation, &latest, false)
                     .await?
                 {
                     let outcome = *outcome;
                     return Ok(AutomationJudgeApplyOutcome {
                         successor_run: outcome.run,
                         terminal_automation_status: None,
+                        noop_reason: None,
                         reason: outcome.reason,
                     });
                 }
 
                 let (base_ref_kind, base_ref_used) =
-                    judge_successor_base(&input.automation, &latest, &input.verdict)?;
-                let run = self
-                    .create_run(CreateAutomationRunInput {
-                        automation_id: input.automation.id.clone(),
-                        run_prompt: next_prompt,
-                        prompt_author: AutomationPromptAuthor::Judge,
-                        base_ref_kind,
-                        base_ref_used,
-                        base_from_run_id: Some(latest.id),
-                    })
-                    .await?;
-                Ok(AutomationJudgeApplyOutcome {
-                    successor_run: Some(run),
-                    terminal_automation_status: None,
-                    reason: None,
-                })
+                    judge_successor_base(&automation, &latest, &verdict)?;
+                let successor = pending_successor_run(
+                    automation.id.clone(),
+                    &latest,
+                    latest.run_index + 1,
+                    next_prompt,
+                    AutomationPromptAuthor::Judge,
+                    base_ref_kind,
+                    base_ref_used,
+                );
+                match self
+                    .create_judge_successor_run(&automation, &latest, successor)
+                    .await?
+                {
+                    Some(run) => Ok(AutomationJudgeApplyOutcome {
+                        successor_run: Some(run),
+                        terminal_automation_status: None,
+                        noop_reason: None,
+                        reason: None,
+                    }),
+                    None => Ok(AutomationJudgeApplyOutcome {
+                        successor_run: None,
+                        terminal_automation_status: None,
+                        noop_reason: None,
+                        reason: Some(
+                            self.judge_successor_not_scheduled_reason(&automation)
+                                .await?,
+                        ),
+                    }),
+                }
             }
-            AutomationJudgeDecision::Stop if input.verdict.goal_met => {
+            AutomationJudgeDecision::Stop if verdict.goal_met => {
                 self.transition_automation_status_or_conflict(
-                    &input.automation.id,
+                    &automation.id,
                     AutomationStatus::Active,
                     AutomationStatus::Completed,
                     None,
@@ -1033,25 +1497,145 @@ impl AutomationService {
                 Ok(AutomationJudgeApplyOutcome {
                     successor_run: None,
                     terminal_automation_status: Some(AutomationStatus::Completed),
+                    noop_reason: None,
                     reason: None,
                 })
             }
             AutomationJudgeDecision::Stop => {
                 self.transition_automation_status_or_conflict(
-                    &input.automation.id,
+                    &automation.id,
                     AutomationStatus::Active,
                     AutomationStatus::Paused,
                     Some("judge_stopped_unmet".to_string()),
-                    Some(input.verdict.reason.clone()),
+                    Some(verdict.reason.clone()),
                 )
                 .await?;
+                self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                    .await;
                 Ok(AutomationJudgeApplyOutcome {
                     successor_run: None,
                     terminal_automation_status: Some(AutomationStatus::Paused),
+                    noop_reason: None,
                     reason: Some("judge_stopped_unmet".to_string()),
                 })
             }
         }
+    }
+
+    async fn create_judge_successor_run(
+        &self,
+        automation: &Automation,
+        latest: &AutomationRun,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        let created = self
+            .run_repo
+            .create_judge_successor_run(&automation.id, &latest.id, successor)
+            .await?;
+        if let Some(run) = created.as_ref() {
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated {
+                    automation_id: automation.id.clone(),
+                    run_id: latest.id.clone(),
+                });
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated {
+                    automation_id: automation.id.clone(),
+                    run_id: run.id.clone(),
+                });
+        }
+        Ok(created)
+    }
+
+    async fn judge_successor_not_scheduled_reason(
+        &self,
+        automation: &Automation,
+    ) -> AppResult<String> {
+        let Some(current) = self.automation_repo.get_by_id(&automation.id).await? else {
+            return Ok("automation is not active".to_string());
+        };
+        if current.status != AutomationStatus::Active {
+            return Ok("automation is not active".to_string());
+        }
+        Ok("successor already scheduled".to_string())
+    }
+
+    async fn mark_stored_judge_verdict_failed(
+        &self,
+        automation: &Automation,
+        latest: &AutomationRun,
+        detail: String,
+    ) -> AppResult<AutomationJudgeApplyOutcome> {
+        let changed = self
+            .transition_service
+            .transition_judge_state(
+                &latest.id,
+                AutomationJudgeState::Done,
+                AutomationJudgeState::Failed,
+                AutomationJudgeTransitionGuard::Dispatch,
+                None,
+                None,
+                None,
+                Some(detail.clone()),
+            )
+            .await?;
+        if !changed {
+            return Ok(AutomationJudgeApplyOutcome {
+                successor_run: None,
+                terminal_automation_status: None,
+                noop_reason: Some(AutomationJudgeApplyNoopReason::NotCurrent),
+                reason: Some("judge verdict is no longer current".to_string()),
+            });
+        }
+        let paused = self
+            .transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some(JUDGE_FAILED_PAUSED_REASON_CODE.to_string()),
+                Some(detail),
+            )
+            .await?;
+        if paused {
+            self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                .await;
+            return Ok(AutomationJudgeApplyOutcome {
+                successor_run: None,
+                terminal_automation_status: Some(AutomationStatus::Paused),
+                noop_reason: None,
+                reason: Some(JUDGE_FAILED_PAUSED_REASON_CODE.to_string()),
+            });
+        }
+        Ok(AutomationJudgeApplyOutcome {
+            successor_run: None,
+            terminal_automation_status: None,
+            noop_reason: Some(AutomationJudgeApplyNoopReason::NotCurrent),
+            reason: Some("judge verdict is no longer current".to_string()),
+        })
+    }
+
+    async fn current_judge_verdict_authority(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+    ) -> AppResult<Option<(Automation, AutomationRun)>> {
+        let Some(automation) = self.automation_repo.get_by_id(automation_id).await? else {
+            return Ok(None);
+        };
+        if automation.status != AutomationStatus::Active {
+            return Ok(None);
+        }
+        let Some(latest) = self.run_repo.latest_for_automation(automation_id).await? else {
+            return Ok(None);
+        };
+        if latest.id != *previous_run_id
+            || latest.judge_state != AutomationJudgeState::Done
+            || latest.judge_verdict_json.is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some((automation, latest)))
     }
 
     async fn successor_readiness(
@@ -1060,15 +1644,18 @@ impl AutomationService {
         latest: &AutomationRun,
         allow_unjudged_latest: bool,
     ) -> AppResult<SuccessorReadiness> {
-        let unjudged_terminal = allow_unjudged_latest
-            && run_status_is_signal_terminal(latest.status)
-            && latest.judge_state == AutomationJudgeState::None;
-        if is_open_automation_run(latest.status, latest.judge_state) && !unjudged_terminal {
+        let skippable_terminal = allow_unjudged_latest
+            && is_signal_terminal_automation_run(latest.status)
+            && matches!(
+                latest.judge_state,
+                AutomationJudgeState::None | AutomationJudgeState::Failed
+            );
+        if is_open_automation_run(latest.status, latest.judge_state) && !skippable_terminal {
             return Ok(SuccessorReadiness::NotScheduled(Box::new(
                 successor_not_scheduled("run in flight"),
             )));
         }
-        if !run_status_is_signal_terminal(latest.status) {
+        if !is_signal_terminal_automation_run(latest.status) {
             return Err(AppError::Validation(
                 "previous run is not signal-terminal".to_string(),
             ));
@@ -1076,32 +1663,52 @@ impl AutomationService {
 
         let runs = self.run_repo.list_for_automation(&automation.id).await?;
         if runs.len() as i64 >= automation.max_runs {
-            self.transition_automation_status_or_conflict(
-                &automation.id,
-                AutomationStatus::Active,
-                AutomationStatus::Paused,
-                Some("max_runs_exhausted".to_string()),
-                Some("Automation reached max_runs before scheduling a successor".to_string()),
-            )
-            .await?;
+            let paused = self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some("max_runs_exhausted".to_string()),
+                    Some("Automation reached max_runs before scheduling a successor".to_string()),
+                )
+                .await?;
+            if paused {
+                self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                    .await;
+            }
             return Ok(SuccessorReadiness::NotScheduled(Box::new(
-                successor_not_scheduled("max_runs_exhausted"),
+                successor_not_scheduled(if paused {
+                    "max_runs_exhausted"
+                } else {
+                    "already settled"
+                }),
             )));
         }
         if consecutive_failure_count(&runs) >= automation.max_consecutive_failures {
-            self.transition_automation_status_or_conflict(
-                &automation.id,
-                AutomationStatus::Active,
-                AutomationStatus::Paused,
-                Some("max_consecutive_failures".to_string()),
-                Some(
-                    "Automation reached max_consecutive_failures before scheduling a successor"
-                        .to_string(),
-                ),
-            )
-            .await?;
+            let paused = self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some("max_consecutive_failures".to_string()),
+                    Some(
+                        "Automation reached max_consecutive_failures before scheduling a successor"
+                            .to_string(),
+                    ),
+                )
+                .await?;
+            if paused {
+                self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                    .await;
+            }
             return Ok(SuccessorReadiness::NotScheduled(Box::new(
-                successor_not_scheduled("max_consecutive_failures"),
+                successor_not_scheduled(if paused {
+                    "max_consecutive_failures"
+                } else {
+                    "already settled"
+                }),
             )));
         }
         Ok(SuccessorReadiness::Ready)
@@ -1135,12 +1742,24 @@ fn successor_not_scheduled(reason: &str) -> AutomationSuccessorRunOutcome {
     }
 }
 
-fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
+pub(crate) fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
     matches!(
         status,
         AutomationRunStatus::Pending
             | AutomationRunStatus::Provisioning
             | AutomationRunStatus::Running
+            | AutomationRunStatus::AwaitingPlanApproval
+            | AutomationRunStatus::Published
+    )
+}
+
+pub(crate) fn run_status_blocks_trigger_run_now(status: AutomationRunStatus) -> bool {
+    matches!(
+        status,
+        AutomationRunStatus::Pending
+            | AutomationRunStatus::Provisioning
+            | AutomationRunStatus::Running
+            | AutomationRunStatus::AwaitingPlanApproval
             | AutomationRunStatus::Published
     )
 }
@@ -1249,6 +1868,14 @@ fn pending_successor_run(
         status: AutomationRunStatus::Pending,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt,
         prompt_author,
@@ -1289,16 +1916,6 @@ fn skip_judge_template_prompt(previous_run: &AutomationRun) -> String {
     }
 }
 
-fn run_status_is_signal_terminal(status: AutomationRunStatus) -> bool {
-    matches!(
-        status,
-        AutomationRunStatus::Completed
-            | AutomationRunStatus::Merged
-            | AutomationRunStatus::PrClosed
-            | AutomationRunStatus::AgentFailed
-    )
-}
-
 fn completion_signal_for_run_mode(run_mode: &str) -> &'static str {
     match run_mode.trim() {
         DEFAULT_RUN_MODE => DEFAULT_COMPLETION_SIGNAL,
@@ -1319,6 +1936,18 @@ fn normalize_name(value: Option<&str>) -> AppResult<String> {
 fn validate_positive(field: &str, value: Option<i64>) -> AppResult<()> {
     if value.is_some_and(|value| value <= 0) {
         return Err(AppError::Validation(format!("{field} must be positive")));
+    }
+    Ok(())
+}
+
+fn validate_stacked_chain_merge_mode(
+    chain_mode: &str,
+    pr_merge_mode: AutomationPrMergeMode,
+) -> AppResult<()> {
+    if chain_mode == STACKED_CHAIN_MODE && pr_merge_mode == AutomationPrMergeMode::Automatic {
+        return Err(AppError::Validation(format!(
+            "{AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE}: automatic PR merge is not supported for stacked PR chains"
+        )));
     }
     Ok(())
 }
@@ -1389,6 +2018,7 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         "max_consecutive_failures",
         Some(automation.max_consecutive_failures),
     )?;
+    validate_stacked_chain_merge_mode(&automation.chain_mode, automation.pr_merge_mode)?;
     Ok(())
 }
 

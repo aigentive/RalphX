@@ -823,8 +823,8 @@ mod tests {
     use super::*;
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Automation,
-        AutomationId, AutomationRunId, AutomationStatus, ChatConversation,
-        IdeationAnalysisBaseRefKind, Project,
+        AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId,
+        AutomationStatus, ChatConversation, IdeationAnalysisBaseRefKind, Project,
     };
 
     fn sidebar_input(project_id: &ProjectId) -> AgentSidebarConversationsInput {
@@ -881,6 +881,9 @@ mod tests {
             first_run_prompt: Some("Run the next slice".to_string()),
             setup_analysis_summary: None,
             spec_artifact_id: None,
+            plan_approval_mode: AutomationPlanApprovalMode::Manual,
+            pr_merge_mode: AutomationPrMergeMode::Manual,
+            plan_deep_verification: false,
             created_at: now,
             updated_at: now,
         };

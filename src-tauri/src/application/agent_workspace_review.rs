@@ -6705,7 +6705,8 @@ x
     #[tokio::test]
     async fn mark_workspace_review_blocked_pauses_owning_automation() {
         use crate::domain::entities::{
-            Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+            Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+            AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
             AutomationRunId, AutomationRunStatus, AutomationStatus,
         };
 
@@ -6747,6 +6748,9 @@ x
                 goal_items_json: None,
                 chain_mode: "merged_base".to_string(),
                 completion_signal: "pr_merged".to_string(),
+                plan_approval_mode: AutomationPlanApprovalMode::Manual,
+                pr_merge_mode: AutomationPrMergeMode::Manual,
+                plan_deep_verification: false,
                 max_runs: 25,
                 max_consecutive_failures: 3,
                 first_run_prompt: None,
@@ -6767,6 +6771,14 @@ x
                 status: AutomationRunStatus::Running,
                 judge_state: AutomationJudgeState::None,
                 judge_lease_expires_at: None,
+                plan_judge_state: AutomationPlanJudgeState::None,
+                plan_judge_lease_expires_at: None,
+                plan_judge_verdict_json: None,
+                plan_revision_round: 0,
+                plan_reminder_count: 0,
+                plan_pending_instructions: None,
+                plan_last_parked_artifact_id: None,
+                agent_phase_started_at: None,
                 conversation_id: Some(workspace.conversation_id.clone()),
                 run_prompt: "Run".to_string(),
                 prompt_author: AutomationPromptAuthor::SetupAgent,

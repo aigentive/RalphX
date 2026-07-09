@@ -2,6 +2,7 @@ import {
   selectArtifactState,
   selectHasStoredArtifactState,
   useAgentSessionStore,
+  type AgentArtifactTab,
   type AgentArtifactState,
 } from "@/stores/agentSessionStore";
 
@@ -47,6 +48,19 @@ export function getAgentArtifactStateSnapshot(
     persisted: persisted ?? DEFAULT_AGENT_ARTIFACT_UI_STATE,
     hasStored: Boolean(persisted),
     hasAutoOpenArtifacts,
+  });
+}
+
+export function seedAgentArtifactTab(
+  conversationId: string,
+  tab: AgentArtifactTab,
+  hasAutoOpenArtifacts: boolean,
+): void {
+  const current = getAgentArtifactStateSnapshot(conversationId, hasAutoOpenArtifacts);
+  useAgentArtifactUiStore.getState().setArtifactState(conversationId, {
+    ...current,
+    activeTab: tab,
+    isOpen: true,
   });
 }
 

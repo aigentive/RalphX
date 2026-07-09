@@ -10,7 +10,8 @@ use chrono::Utc;
 use super::*;
 use crate::application::AppState;
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationStatus, ChatConversation, ChatConversationId, ProjectId,
+    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
+    ChatConversation, ChatConversationId, ProjectId,
 };
 
 fn caller_headers(conversation_id: &ChatConversationId) -> HeaderMap {
@@ -46,6 +47,9 @@ fn automation(id: &AutomationId, project_id: ProjectId, status: AutomationStatus
         ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -190,6 +194,50 @@ async fn update_automation_persists_config_fields_for_bound_conversation() {
         stored.goal_items_json.as_deref(),
         Some(r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#),
     );
+}
+
+#[tokio::test]
+async fn update_automation_persists_plan_gate_settings_for_bound_conversation() {
+    let app_state = Arc::new(AppState::new_test());
+    let (project_id, automation_id, conversation) = seed_bound_conversation(&app_state).await;
+    let mut automation = automation(&automation_id, project_id, AutomationStatus::Draft);
+    automation.setup_conversation_id = Some(conversation.id);
+    app_state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+    let state = HttpServerState::new_test(app_state.clone());
+
+    let Json(updated) = update_automation(
+        State(state),
+        caller_headers(&conversation.id),
+        Json(UpdateAutomationRequest {
+            plan_approval_mode: Some("automatic".to_string()),
+            pr_merge_mode: Some("automatic".to_string()),
+            plan_deep_verification: Some(true),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(updated.plan_approval_mode, "automatic");
+    assert_eq!(updated.pr_merge_mode, "automatic");
+    assert!(updated.plan_deep_verification);
+
+    let stored = app_state
+        .automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.plan_approval_mode,
+        AutomationPlanApprovalMode::Automatic
+    );
+    assert_eq!(stored.pr_merge_mode, AutomationPrMergeMode::Automatic);
+    assert!(stored.plan_deep_verification);
 }
 
 #[tokio::test]

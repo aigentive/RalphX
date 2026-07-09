@@ -5,8 +5,9 @@ import type { Automation, AutomationRun } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import {
-  describeAutomationStage,
+  getAutomationRunView,
   latestRun,
 } from "@/components/automations/automationStage";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
@@ -24,6 +25,7 @@ interface AutomationsViewProps {
   onSelectedAutomationChange?: (automationId: string | null) => void;
   onOpenAutomation?: (automationId: string) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
+  onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
 }
 
 const LazyAutomationDetailView = lazy(() => preloadAutomationDetailView());
@@ -61,17 +63,13 @@ function formatGoalMetadata(automation: Automation): string {
   return `${goalState} · ${phaseState} · ${firstRunState}`;
 }
 
-function formatLastRun(run: AutomationRun | null): string {
+function formatLastRun(automation: Automation, run: AutomationRun | null): string {
   if (!run) {
     return "No runs yet";
   }
   const pr = run.prNumber ? ` · PR #${run.prNumber}` : "";
-  const status = ["pending", "provisioning", "running", "published"].includes(
-    run.status,
-  )
-    ? "Running"
-    : run.status;
-  return `Run ${run.runIndex} ${status}${pr}`;
+  const view = getAutomationRunView(automation, run);
+  return `Run ${run.runIndex} ${view.statusLabel}${pr}`;
 }
 
 function AutomationsListSkeleton() {
@@ -136,6 +134,7 @@ function AutomationRow({
   const detail = useAutomationDetail(automation.id);
   const runs = detail.data?.runs;
   const run = latestRun(runs ?? []);
+  const runView = getAutomationRunView(automation, run);
   const canOpen = Boolean(onOpenAutomation);
 
   return (
@@ -182,10 +181,10 @@ function AutomationRow({
         {detail.isLoading ? "..." : `${runs?.length ?? 0} / ${automation.maxRuns}`}
       </div>
       <div className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
-        {detail.isLoading ? "Loading runs..." : formatLastRun(run)}
+        {detail.isLoading ? "Loading runs..." : formatLastRun(automation, run)}
       </div>
       <div className="truncate text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
-        {detail.isLoading ? "Hydrating status" : describeAutomationStage(automation, run)}
+        {detail.isLoading ? "Hydrating status" : runView.stageLabel}
       </div>
       <ChevronRight className="h-4 w-4" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
     </button>
@@ -274,6 +273,7 @@ export function AutomationsView({
   onSelectedAutomationChange,
   onOpenAutomation,
   onOpenRunConversation,
+  onOpenAutomationRun,
 }: AutomationsViewProps) {
   const [localSelectedAutomationId, setLocalSelectedAutomationId] = useState<string | null>(null);
   const isSelectionControlled = selectedAutomationId !== undefined;
@@ -318,6 +318,7 @@ export function AutomationsView({
           projectName={projectName ?? null}
           onBack={handleBackToList}
           {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
+          {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}
         />
       </Suspense>
     );

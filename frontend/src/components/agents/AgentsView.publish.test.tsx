@@ -306,65 +306,72 @@ describe("AgentsView publish", () => {
       configurable: true,
       value: scrollIntoViewMock,
     });
-    const activeConversation = conversation({ agentMode: "edit" });
-    mockAgentViewData(activeConversation);
-    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
-    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
-      [activeConversation.id]: {
-        conversationId: activeConversation.id,
-        isRunning: true,
-        agentStatus: "generating",
-        primarySource: "workspace",
-        summaryLabel: "Agent running",
-        items: [],
-      },
-    });
-    listAgentTasksMock.mockResolvedValue([
-      {
-        taskId: "task-1",
-        taskNumber: 1,
-        title: "Smoke the task ledger",
-        state: "active",
-        ownerAgent: "worker",
-        blockedBy: [],
-        blocks: [],
-        availability: "ready",
-        updatedAt: "2026-05-20T10:00:00Z",
-      },
-    ]);
-    renderAgentsView();
-    selectSidebarConversationRow();
-    act(() => {
-      useChatStore.setState({
-        agentStatus: {
-          [getAgentConversationStoreKey(activeConversation)]: "generating",
+    try {
+      const activeConversation = conversation({ agentMode: "edit" });
+      mockAgentViewData(activeConversation);
+      getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+      getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+        [activeConversation.id]: {
+          conversationId: activeConversation.id,
+          isRunning: true,
+          agentStatus: "generating",
+          primarySource: "workspace",
+          summaryLabel: "Agent running",
+          items: [],
         },
       });
-    });
+      listAgentTasksMock.mockResolvedValue([
+        {
+          taskId: "task-1",
+          taskNumber: 1,
+          title: "Smoke the task ledger",
+          state: "active",
+          ownerAgent: "worker",
+          blockedBy: [],
+          blocks: [],
+          availability: "ready",
+          updatedAt: "2026-05-20T10:00:00Z",
+        },
+      ]);
+      renderAgentsView();
+      selectSidebarConversationRow();
+      act(() => {
+        useChatStore.setState({
+          agentStatus: {
+            [getAgentConversationStoreKey(activeConversation)]: "generating",
+          },
+        });
+      });
 
-    await screen.findByTestId(
-      "agents-composer-task-list",
-      undefined,
-      deferredHydrationTimeout,
-    );
-    expect(screen.getByTestId("agents-composer-tasks-toggle")).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
-    expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent(
-      "Smoke the task ledger",
-    );
-    expect(screen.getByTestId("agents-composer-task-1")).toHaveStyle({
-      backgroundColor: "var(--bg-hover)",
-    });
-    expect(scrollIntoViewMock).toHaveBeenCalledWith({
-      block: "nearest",
-      behavior: "smooth",
-    });
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: originalScrollIntoView,
-    });
+      await screen.findByTestId(
+        "agents-composer-task-list",
+        undefined,
+        deferredHydrationTimeout,
+      );
+      expect(screen.getByTestId("agents-composer-tasks-toggle")).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+      expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent(
+        "Smoke the task ledger",
+      );
+      expect(screen.getByTestId("agents-composer-task-1")).toHaveStyle({
+        backgroundColor: "var(--bg-hover)",
+      });
+      await waitFor(() =>
+        expect(scrollIntoViewMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            block: "nearest",
+            behavior: "smooth",
+          }),
+        ),
+      );
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: originalScrollIntoView,
+      });
+    }
   });
 
   it("shows a check icon when all tasks are done", async () => {

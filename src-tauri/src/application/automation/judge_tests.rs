@@ -4,13 +4,15 @@ use serde_json::json;
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
     automation_judge_loop_suspected, build_automation_judge_prompt,
-    build_automation_run_context_block, parse_automation_judge_verdict, AutomationGoalItemStatus,
-    AutomationJudgeAttachmentContext, AutomationJudgeDecision, AutomationJudgeItemStatusUpdate,
-    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
-    BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
+    build_automation_run_context_block, mark_current_goal_item_in_progress,
+    parse_automation_judge_verdict, AutomationGoalItemStatus, AutomationJudgeAttachmentContext,
+    AutomationJudgeDecision, AutomationJudgeItemStatusUpdate, AutomationJudgeNextBaseBranch,
+    AutomationJudgeValidationContext, AutomationJudgeVerdict, BuildAutomationJudgePromptInput,
+    AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
 };
 use crate::error::AppError;
@@ -37,6 +39,9 @@ fn automation_with_goal_items(goal_items_json: Option<String>) -> Automation {
         goal_items_json,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1 prompt".to_string()),
@@ -56,6 +61,14 @@ fn automation_run(index: i64, status: AutomationRunStatus) -> AutomationRun {
         status,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: format!("Implement item {index} from the migration spec."),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -198,6 +211,28 @@ fn parses_valid_stop_verdict() {
 }
 
 #[test]
+fn rejects_goal_met_stop_when_updated_items_leave_non_terminal_work() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(1, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "stop",
+        "goalMet": true,
+        "reason": "The goal is complete.",
+        "confidence": 0.91,
+        "goalProgress": { "completedItems": 2, "totalItems": 2, "summary": "Both items are done." },
+        "updatedItemStatuses": [{ "id": "item-2", "status": "in_progress" }],
+        "nextRunPrompt": null,
+        "nextBaseBranch": null
+    })
+    .to_string();
+
+    let error =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("goalMet")));
+}
+
+#[test]
 fn parses_fenced_json_verdict() {
     let automation = automation_with_goal_items(Some(goal_items_json()));
     let run = automation_run(1, AutomationRunStatus::Merged);
@@ -211,7 +246,7 @@ fn parses_fenced_json_verdict() {
 
 #[test]
 fn parses_last_json_object_in_text() {
-    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let automation = automation_with_goal_items(None);
     let run = automation_run(1, AutomationRunStatus::Merged);
     let stop = json!({
         "decision": "stop",
@@ -470,9 +505,41 @@ fn applies_all_goal_item_status_variants_and_rejects_missing_storage() {
 }
 
 #[test]
-fn detects_continue_loop_when_prompt_repeats_after_non_merged_run() {
+fn start_mark_treats_missing_status_as_pending_current_item() {
+    let goal_items = json!([
+        { "id": "item-1", "title": "Implicit pending" },
+        { "id": "item-2", "title": "Later", "status": "pending" }
+    ])
+    .to_string();
+
+    let updated = mark_current_goal_item_in_progress(Some(&goal_items))
+        .unwrap()
+        .expect("implicit pending item should be marked");
+    let value: serde_json::Value = serde_json::from_str(&updated).unwrap();
+
+    assert_eq!(value[0]["status"], "in_progress");
+    assert_eq!(value[1]["status"], "pending");
+}
+
+#[test]
+fn start_mark_does_not_create_second_in_progress_item() {
+    let goal_items = json!([
+        { "id": "item-1", "title": "First", "status": "pending" },
+        { "id": "item-2", "title": "Already active", "status": "in_progress" }
+    ])
+    .to_string();
+
+    let updated = mark_current_goal_item_in_progress(Some(&goal_items)).unwrap();
+
+    assert_eq!(updated, None);
+}
+
+#[test]
+fn detects_continue_loop_when_prompt_repeats_after_produced_but_unmerged_run() {
+    // A run that produced a PR which was closed unmerged, then the judge proposes the exact
+    // same prompt again -> a genuine judge loop.
     let automation = automation_with_goal_items(Some(goal_items_json()));
-    let mut run = automation_run(1, AutomationRunStatus::AgentFailed);
+    let mut run = automation_run(1, AutomationRunStatus::PrClosed);
     run.run_prompt =
         "Implement item 2 from spec with targeted tests and publish the scoped PR".to_string();
     let output = valid_continue_output().replace(
@@ -483,6 +550,30 @@ fn detects_continue_loop_when_prompt_repeats_after_non_merged_run() {
         parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
 
     assert!(automation_judge_loop_suspected(&run, &verdict));
+}
+
+#[test]
+fn retry_after_agent_failed_run_is_not_a_loop() {
+    // Runs that crashed / timed out / were killed never got a fair attempt, so re-issuing the
+    // same prompt is a legitimate retry, not a judge loop (repeated agent failures are bounded
+    // by max_consecutive_failures instead). Regression for an automation that could not be
+    // resumed after its agent was killed by a full disk.
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let mut failed = automation_run(1, AutomationRunStatus::AgentFailed);
+    failed.run_prompt =
+        "Implement item 2 from spec with targeted tests and publish the scoped PR".to_string();
+    let output = valid_continue_output().replace(
+        "Implement item 2 from the migration spec. Keep the PR scoped, include tests, and publish the PR.",
+        " Implement item 2 from spec with targeted tests and publish the scoped PR! ",
+    );
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &failed)).unwrap();
+    assert!(!automation_judge_loop_suspected(&failed, &verdict));
+
+    // Cancelled runs are likewise a retry, not a loop.
+    let mut cancelled = failed.clone();
+    cancelled.status = AutomationRunStatus::Cancelled;
+    assert!(!automation_judge_loop_suspected(&cancelled, &verdict));
 }
 
 #[test]
@@ -535,8 +626,9 @@ fn parses_uppercase_fence_after_invalid_fence_and_escaped_text_json() {
 
     let escaped_stop = r#"draft {"ignored":true}
 final: {"decision":"stop","goalMet":true,"reason":"done with \"quoted\" path C:\\tmp","confidence":1.8,"goalProgress":null,"updatedItemStatuses":null,"nextRunPrompt":null,"nextBaseBranch":null}"#;
+    let stop_automation = automation_with_goal_items(None);
     let verdict =
-        parse_automation_judge_verdict(escaped_stop, validation_context(&automation, &run))
+        parse_automation_judge_verdict(escaped_stop, validation_context(&stop_automation, &run))
             .unwrap();
     assert_eq!(verdict.confidence, 1.0);
     assert!(verdict.reason.contains("\"quoted\""));

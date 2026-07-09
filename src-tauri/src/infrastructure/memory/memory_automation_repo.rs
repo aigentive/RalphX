@@ -1,12 +1,17 @@
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use ralphx_domain::entities::automation::is_signal_terminal_automation_run;
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::domain::entities::{
     is_open_automation_run, judge_transition_clears_verdict, Automation, AutomationId,
-    AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatConversationId, ProjectId,
+    AutomationJudgeState, AutomationPlanJudgeState, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
@@ -14,15 +19,27 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
+pub type MemoryAutomationState = Arc<RwLock<Vec<Automation>>>;
+
 pub struct MemoryAutomationRepository {
-    automations: RwLock<Vec<Automation>>,
+    automations: MemoryAutomationState,
 }
 
 impl MemoryAutomationRepository {
     pub fn new() -> Self {
-        Self {
-            automations: RwLock::new(Vec::new()),
-        }
+        Self::with_shared_state(Self::new_shared_state())
+    }
+
+    pub fn new_shared_state() -> MemoryAutomationState {
+        Arc::new(RwLock::new(Vec::new()))
+    }
+
+    pub fn with_shared_state(automations: MemoryAutomationState) -> Self {
+        Self { automations }
+    }
+
+    pub fn shared_state(&self) -> MemoryAutomationState {
+        Arc::clone(&self.automations)
     }
 }
 
@@ -96,6 +113,15 @@ impl AutomationRepository for MemoryAutomationRepository {
         }
         if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
             automation.max_consecutive_failures = max_consecutive_failures;
+        }
+        if let Some(plan_approval_mode) = patch.plan_approval_mode {
+            automation.plan_approval_mode = plan_approval_mode;
+        }
+        if let Some(pr_merge_mode) = patch.pr_merge_mode {
+            automation.pr_merge_mode = pr_merge_mode;
+        }
+        if let Some(plan_deep_verification) = patch.plan_deep_verification {
+            automation.plan_deep_verification = plan_deep_verification;
         }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
@@ -177,6 +203,27 @@ impl AutomationRepository for MemoryAutomationRepository {
         Ok(Some(automation.clone()))
     }
 
+    async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(automation) = automations
+            .iter_mut()
+            .find(|automation| automation.id == *id)
+        else {
+            return Ok(None);
+        };
+        if automation.goal_items_json != expected_goal_items_json {
+            return Ok(None);
+        }
+        automation.goal_items_json = goal_items_json;
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,
@@ -240,14 +287,45 @@ impl AutomationRepository for MemoryAutomationRepository {
 }
 
 pub struct MemoryAutomationRunRepository {
+    automation_state: MemoryAutomationState,
     runs: RwLock<Vec<AutomationRun>>,
+    #[cfg(test)]
+    lose_next_running_to_published_cas: AtomicBool,
+    #[cfg(test)]
+    lose_next_published_to_merged_cas: AtomicBool,
+    #[cfg(test)]
+    published_run_error_updates: AtomicUsize,
 }
 
 impl MemoryAutomationRunRepository {
-    pub fn new() -> Self {
+    pub fn new(automation_state: MemoryAutomationState) -> Self {
         Self {
+            automation_state,
             runs: RwLock::new(Vec::new()),
+            #[cfg(test)]
+            lose_next_running_to_published_cas: AtomicBool::new(false),
+            #[cfg(test)]
+            lose_next_published_to_merged_cas: AtomicBool::new(false),
+            #[cfg(test)]
+            published_run_error_updates: AtomicUsize::new(0),
         }
+    }
+
+    #[cfg(test)]
+    pub fn lose_next_running_to_published_cas(&self) {
+        self.lose_next_running_to_published_cas
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub fn lose_next_published_to_merged_cas(&self) {
+        self.lose_next_published_to_merged_cas
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub fn published_run_error_update_count(&self) -> usize {
+        self.published_run_error_updates.load(Ordering::SeqCst)
     }
 
     fn has_conflicting_open_run(runs: &[AutomationRun], candidate: &AutomationRun) -> bool {
@@ -258,11 +336,11 @@ impl MemoryAutomationRunRepository {
                     && is_open_automation_run(run.status, run.judge_state)
             })
     }
-}
 
-impl Default for MemoryAutomationRunRepository {
-    fn default() -> Self {
-        Self::new()
+    fn automation_is_active(automations: &[Automation], automation_id: &AutomationId) -> bool {
+        automations.iter().any(|automation| {
+            automation.id == *automation_id && automation.status == AutomationStatus::Active
+        })
     }
 }
 
@@ -348,6 +426,25 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         error_code: Option<String>,
         error_detail: Option<String>,
     ) -> AppResult<bool> {
+        #[cfg(test)]
+        if from == AutomationRunStatus::Running
+            && to == AutomationRunStatus::Published
+            && self
+                .lose_next_running_to_published_cas
+                .swap(false, Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if from == AutomationRunStatus::Published
+            && to == AutomationRunStatus::Merged
+            && self
+                .lose_next_published_to_merged_cas
+                .swap(false, Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+
         let mut runs = self.runs.write().unwrap();
         let Some(position) = runs.iter().position(|run| run.id == *id) else {
             return Ok(false);
@@ -360,6 +457,95 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         updated.status = to;
         updated.error_code = error_code;
         updated.error_detail = error_detail;
+        if to == AutomationRunStatus::Running {
+            updated.agent_phase_started_at = Some(now);
+        }
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
+        if Self::has_conflicting_open_run(&runs, &updated) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        runs[position] = updated;
+        Ok(true)
+    }
+
+    async fn compare_and_swap_status_with_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        agent_phase_started_at: chrono::DateTime<Utc>,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(position) = runs.iter().position(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if runs[position].status != from {
+            return Ok(false);
+        }
+        let mut updated = runs[position].clone();
+        let now = Utc::now();
+        updated.status = to;
+        updated.error_code = error_code;
+        updated.error_detail = error_detail;
+        updated.agent_phase_started_at = Some(agent_phase_started_at);
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
+        if Self::has_conflicting_open_run(&runs, &updated) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        runs[position] = updated;
+        Ok(true)
+    }
+
+    async fn compare_and_swap_status_clearing_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(position) = runs.iter().position(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if runs[position].status != from {
+            return Ok(false);
+        }
+        let mut updated = runs[position].clone();
+        let now = Utc::now();
+        updated.status = to;
+        updated.error_code = error_code;
+        updated.error_detail = error_detail;
+        updated.plan_pending_instructions = None;
+        if to == AutomationRunStatus::Running {
+            updated.agent_phase_started_at = Some(now);
+        }
         if matches!(
             to,
             AutomationRunStatus::Merged
@@ -427,6 +613,23 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(Some(run.clone()))
     }
 
+    async fn clear_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.pr_number = None;
+        run.pr_url = None;
+        run.pr_title = None;
+        run.pr_head_ref_name = None;
+        run.pr_base_ref_name = None;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
     async fn update_merge_metadata(
         &self,
         id: &AutomationRunId,
@@ -445,6 +648,59 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.signal_check_failures = 0;
         run.updated_at = Utc::now();
         Ok(Some(run.clone()))
+    }
+
+    async fn compare_and_swap_status_with_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<chrono::DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        #[cfg(test)]
+        if from == AutomationRunStatus::Published
+            && to == AutomationRunStatus::Merged
+            && self
+                .lose_next_published_to_merged_cas
+                .swap(false, Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+
+        let mut runs = self.runs.write().unwrap();
+        let Some(position) = runs.iter().position(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if runs[position].status != from {
+            return Ok(false);
+        }
+        let mut updated = runs[position].clone();
+        let now = Utc::now();
+        updated.status = to;
+        updated.error_code = None;
+        updated.error_detail = None;
+        updated.merge_commit_sha = merge_commit_sha;
+        updated.pr_merged_at = pr_merged_at;
+        updated.signal_check_failures = 0;
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
+        if Self::has_conflicting_open_run(&runs, &updated) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        runs[position] = updated;
+        Ok(true)
     }
 
     async fn increment_signal_check_failures(
@@ -481,11 +737,35 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(Some(run.clone()))
     }
 
+    async fn update_published_run_error(
+        &self,
+        id: &AutomationRunId,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        #[cfg(test)]
+        self.published_run_error_updates
+            .fetch_add(1, Ordering::SeqCst);
+
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if run.status != AutomationRunStatus::Published {
+            return Ok(None);
+        }
+        run.error_code = error_code;
+        run.error_detail = error_detail;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
     async fn compare_and_swap_judge_state(
         &self,
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,
@@ -496,6 +776,16 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             return Ok(false);
         };
         if run.judge_state != from {
+            return Ok(false);
+        }
+        let guard_matches = match guard {
+            AutomationJudgeTransitionGuard::Dispatch => true,
+            AutomationJudgeTransitionGuard::Settle(expected_lease) => {
+                run.judge_lease_expires_at == Some(expected_lease)
+            }
+            AutomationJudgeTransitionGuard::LegacyNullLease => run.judge_lease_expires_at.is_none(),
+        };
+        if !guard_matches {
             return Ok(false);
         }
         let clear_judge_verdict =
@@ -520,12 +810,193 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn compare_and_swap_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if run.plan_judge_state != from {
+            return Ok(false);
+        }
+        run.plan_judge_state = to;
+        if let Some(verdict) = plan_judge_verdict_json {
+            run.plan_judge_verdict_json = Some(verdict);
+        }
+        if to == AutomationPlanJudgeState::InProgress {
+            run.plan_judge_lease_expires_at = plan_judge_lease_expires_at;
+        } else {
+            run.plan_judge_lease_expires_at = None;
+        }
+        run.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        let changed = run.plan_judge_state != AutomationPlanJudgeState::None
+            || run.plan_judge_lease_expires_at.is_some()
+            || run.plan_judge_verdict_json.is_some();
+        if !changed {
+            return Ok(false);
+        }
+        run.plan_judge_state = AutomationPlanJudgeState::None;
+        run.plan_judge_lease_expires_at = None;
+        run.plan_judge_verdict_json = None;
+        run.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn set_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        plan_pending_instructions: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_pending_instructions = plan_pending_instructions;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_revision_round(
+        &self,
+        id: &AutomationRunId,
+        plan_revision_round: i64,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_revision_round = plan_revision_round;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_last_parked_artifact_id(
+        &self,
+        id: &AutomationRunId,
+        plan_last_parked_artifact_id: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_last_parked_artifact_id = plan_last_parked_artifact_id;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_plan_reminder_count(
+        &self,
+        id: &AutomationRunId,
+        plan_reminder_count: i64,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.plan_reminder_count = plan_reminder_count;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn set_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        agent_phase_started_at: Option<DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.agent_phase_started_at = agent_phase_started_at;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn create_judge_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation judge successor does not match the judged run".to_string(),
+            ));
+        }
+
+        let automations = self.automation_state.read().unwrap();
+        if !Self::automation_is_active(&automations, automation_id) {
+            return Ok(None);
+        }
+
+        let mut runs = self.runs.write().unwrap();
+        let Some(previous) = runs.iter().find(|run| run.id == *previous_run_id) else {
+            return Ok(None);
+        };
+        let is_latest = runs
+            .iter()
+            .filter(|run| run.automation_id == *automation_id)
+            .all(|run| run.run_index <= previous.run_index);
+        if previous.automation_id != *automation_id
+            || !is_latest
+            || previous.judge_state != AutomationJudgeState::Done
+            || !is_signal_terminal_automation_run(previous.status)
+        {
+            return Ok(None);
+        }
+        if runs.iter().any(|existing| {
+            existing.automation_id == successor.automation_id
+                && existing.run_index == successor.run_index
+        }) {
+            return Err(AppError::Conflict(
+                "automation run index already exists".to_string(),
+            ));
+        }
+        if Self::has_conflicting_open_run(&runs, &successor) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+
+        runs.push(successor.clone());
+        Ok(Some(successor))
+    }
+
     async fn skip_judge_and_create_successor_run(
         &self,
         automation_id: &AutomationId,
         previous_run_id: &AutomationRunId,
         successor: AutomationRun,
     ) -> AppResult<Option<AutomationRun>> {
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation skip-judge successor does not match the skipped run".to_string(),
+            ));
+        }
+
+        let automations = self.automation_state.read().unwrap();
+        if !Self::automation_is_active(&automations, automation_id) {
+            return Ok(None);
+        }
+
         let mut runs = self.runs.write().unwrap();
         let Some(previous_position) = runs.iter().position(|run| run.id == *previous_run_id) else {
             return Ok(None);
@@ -537,22 +1008,13 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             .all(|run| run.run_index <= previous.run_index);
         if previous.automation_id != *automation_id
             || !is_latest
-            || previous.judge_state != AutomationJudgeState::None
             || !matches!(
-                previous.status,
-                AutomationRunStatus::Merged
-                    | AutomationRunStatus::PrClosed
-                    | AutomationRunStatus::AgentFailed
+                previous.judge_state,
+                AutomationJudgeState::None | AutomationJudgeState::Failed
             )
+            || !is_signal_terminal_automation_run(previous.status)
         {
             return Ok(None);
-        }
-        if successor.automation_id != *automation_id
-            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
-        {
-            return Err(AppError::Validation(
-                "automation skip-judge successor does not match the skipped run".to_string(),
-            ));
         }
         if runs.iter().any(|existing| {
             existing.automation_id == successor.automation_id

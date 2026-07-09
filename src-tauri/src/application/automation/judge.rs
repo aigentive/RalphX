@@ -244,6 +244,18 @@ pub fn validate_automation_judge_verdict(
             }
         }
     }
+    if verdict.decision == AutomationJudgeDecision::Stop && verdict.goal_met {
+        let applied_goal_items = apply_updated_item_statuses(
+            context.automation.goal_items_json.as_deref(),
+            verdict.updated_item_statuses.as_deref(),
+        )?;
+        if goal_items_have_unfinished_work(applied_goal_items.as_deref())? {
+            return Err(AppError::Validation(
+                "judge verdict goalMet=true requires all goal items to be done or skipped"
+                    .to_string(),
+            ));
+        }
+    }
 
     verdict.reason = verdict.reason.trim().chars().take(1000).collect();
     if verdict.reason.is_empty() {
@@ -342,6 +354,67 @@ pub fn apply_updated_item_statuses(
         .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
 }
 
+pub(crate) fn mark_current_goal_item_in_progress(
+    goal_items_json: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(goal_items_json) = goal_items_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut value = parse_goal_items_json(goal_items_json)?;
+    if goal_items_contain_status(&value, AutomationGoalItemStatus::InProgress.as_str()) {
+        return Ok(None);
+    }
+    let Some(current) = find_current_goal_item(&value) else {
+        return Ok(None);
+    };
+
+    let updates_by_id = BTreeMap::from([(
+        current.id,
+        AutomationGoalItemStatus::InProgress.as_str().to_string(),
+    )]);
+    if apply_goal_item_updates(&mut value, &updates_by_id) == 0 {
+        return Ok(None);
+    }
+    serde_json::to_string(&value)
+        .map(Some)
+        .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
+}
+
+pub(crate) fn revert_in_progress_goal_items_to_pending(
+    goal_items_json: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(goal_items_json) = goal_items_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut value = parse_goal_items_json(goal_items_json)?;
+    let mut in_progress_ids = Vec::new();
+    collect_goal_item_ids_with_status(
+        &value,
+        AutomationGoalItemStatus::InProgress.as_str(),
+        &mut in_progress_ids,
+    );
+    if in_progress_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let updates_by_id = in_progress_ids
+        .into_iter()
+        .map(|id| (id, AutomationGoalItemStatus::Pending.as_str().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    if apply_goal_item_updates(&mut value, &updates_by_id) == 0 {
+        return Ok(None);
+    }
+    serde_json::to_string(&value)
+        .map(Some)
+        .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
+}
+
 pub fn automation_judge_loop_suspected(
     previous_run: &AutomationRun,
     verdict: &AutomationJudgeVerdict,
@@ -349,9 +422,20 @@ pub fn automation_judge_loop_suspected(
     if verdict.decision != AutomationJudgeDecision::Continue {
         return false;
     }
+    // A repeated prompt is only a judge loop when the previous run actually produced an
+    // outcome that failed to advance the goal (e.g. a PR that was closed unmerged). It is NOT
+    // a loop when the previous run made progress (Merged/Completed) or never got a fair
+    // attempt: an agent that crashed, timed out, or was killed/cancelled legitimately reruns
+    // the same prompt. Repeated genuine agent failures are bounded separately by
+    // `max_consecutive_failures`, so excluding them here does not risk an infinite loop — it
+    // just lets an automation recover from infrastructure failures (e.g. a full disk) instead
+    // of pausing permanently with no way to resume.
     if matches!(
         previous_run.status,
-        AutomationRunStatus::Completed | AutomationRunStatus::Merged
+        AutomationRunStatus::Completed
+            | AutomationRunStatus::Merged
+            | AutomationRunStatus::AgentFailed
+            | AutomationRunStatus::Cancelled
     ) {
         return false;
     }
@@ -362,7 +446,7 @@ pub fn automation_judge_loop_suspected(
         == normalized_prompt_fingerprint(next_prompt)
 }
 
-fn extract_automation_verdict_value(output: &str) -> AppResult<Value> {
+pub(crate) fn extract_automation_verdict_value(output: &str) -> AppResult<Value> {
     let trimmed = output.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         if value.is_object() {
@@ -472,6 +556,23 @@ fn collect_goal_item_ids(goal_items_json: Option<&str>) -> AppResult<HashSet<Str
     Ok(ids)
 }
 
+fn goal_items_have_unfinished_work(goal_items_json: Option<&str>) -> AppResult<bool> {
+    let Some(goal_items_json) = goal_items_json.filter(|value| !value.trim().is_empty()) else {
+        return Ok(false);
+    };
+    let value = parse_goal_items_json(goal_items_json)?;
+    Ok(first_non_done_goal_item_value(&value).is_some())
+}
+
+struct CurrentGoalItem {
+    id: String,
+}
+
+struct CurrentGoalItemCandidate {
+    id: Option<String>,
+    value: Value,
+}
+
 fn parse_goal_items_json(goal_items_json: &str) -> AppResult<Value> {
     serde_json::from_str::<Value>(goal_items_json).map_err(|error| {
         AppError::Validation(format!(
@@ -493,6 +594,105 @@ fn collect_ids_from_value(value: &Value, ids: &mut HashSet<String>) {
         Value::Array(values) => {
             for value in values {
                 collect_ids_from_value(value, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn first_non_done_goal_item_value(value: &Value) -> Option<Value> {
+    find_current_goal_item_candidate(value, &mut |_| true).map(|candidate| candidate.value)
+}
+
+fn find_current_goal_item(value: &Value) -> Option<CurrentGoalItem> {
+    find_current_goal_item_candidate(value, &mut |candidate| candidate.id.is_some())
+        .and_then(|candidate| candidate.id.map(|id| CurrentGoalItem { id }))
+}
+
+fn find_current_goal_item_candidate<F>(
+    value: &Value,
+    accept: &mut F,
+) -> Option<CurrentGoalItemCandidate>
+where
+    F: FnMut(&CurrentGoalItemCandidate) -> bool,
+{
+    match value {
+        Value::Object(object) => {
+            if let Some(candidate) = current_goal_item_candidate_from_object(object) {
+                if accept(&candidate) {
+                    return Some(candidate);
+                }
+            }
+            for value in object.values() {
+                if let Some(current) = find_current_goal_item_candidate(value, accept) {
+                    return Some(current);
+                }
+            }
+            None
+        }
+        Value::Array(values) => {
+            for value in values {
+                if let Some(current) = find_current_goal_item_candidate(value, accept) {
+                    return Some(current);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn current_goal_item_candidate_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<CurrentGoalItemCandidate> {
+    let id = object.get("id").and_then(Value::as_str).map(str::to_string);
+    let status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or(AutomationGoalItemStatus::Pending.as_str())
+        .to_string();
+    if id.is_none() && !object.contains_key("status") {
+        return None;
+    }
+    if matches!(status.as_str(), "done" | "skipped") {
+        return None;
+    }
+    Some(CurrentGoalItemCandidate {
+        id,
+        value: Value::Object(object.clone()),
+    })
+}
+
+fn goal_items_contain_status(value: &Value, status: &str) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.get("status").and_then(Value::as_str) == Some(status)
+                || object
+                    .values()
+                    .any(|value| goal_items_contain_status(value, status))
+        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| goal_items_contain_status(value, status)),
+        _ => false,
+    }
+}
+
+fn collect_goal_item_ids_with_status(value: &Value, status: &str, ids: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if object.get("status").and_then(Value::as_str) == Some(status) {
+                if let Some(id) = object.get("id").and_then(Value::as_str) {
+                    ids.push(id.to_string());
+                }
+            }
+            for value in object.values() {
+                collect_goal_item_ids_with_status(value, status, ids);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_goal_item_ids_with_status(value, status, ids);
             }
         }
         _ => {}
@@ -767,6 +967,7 @@ Rules:
 - `continue` requires `nextRunPrompt` and `nextBaseBranch`.
 - `previous_pr_head` is valid only for `chainMode=pr_head_stacked` with a valid previous PR head.
 - `updatedItemStatuses` ids must exist in `goal_items`.
+- If `stop` uses `goalMet=true`, the resulting `goal_items` after `updatedItemStatuses` must all be `done` or `skipped`.
 - If there is no concrete unfinished work, choose `stop`.
 - The next run prompt must be self-contained and may cite attached specs by file or section.
 </output_contract>
@@ -774,7 +975,7 @@ Rules:
     .to_string()
 }
 
-fn normalized_prompt_fingerprint(value: &str) -> String {
+pub(crate) fn normalized_prompt_fingerprint(value: &str) -> String {
     value
         .split_whitespace()
         .flat_map(|part| {

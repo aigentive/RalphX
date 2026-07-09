@@ -53,6 +53,9 @@ export function transformAutomation(raw: RawAutomation): Automation {
     goalItemsJson: raw.goal_items_json,
     chainMode: raw.chain_mode,
     completionSignal: raw.completion_signal,
+    planApprovalMode: raw.plan_approval_mode,
+    prMergeMode: raw.pr_merge_mode,
+    planDeepVerification: raw.plan_deep_verification,
     maxRuns: raw.max_runs,
     maxConsecutiveFailures: raw.max_consecutive_failures,
     firstRunPrompt: raw.first_run_prompt,
@@ -70,6 +73,14 @@ export function transformAutomationRun(raw: RawAutomationRun): AutomationRun {
     status: raw.status,
     judgeState: raw.judge_state,
     judgeLeaseExpiresAt: raw.judge_lease_expires_at,
+    planJudgeState: raw.plan_judge_state,
+    planRevisionRound: raw.plan_revision_round,
+    planRevisionPending: raw.plan_revision_pending,
+    planPhase: raw.plan_phase,
+    planArtifactId: raw.plan_artifact_id,
+    planApprovedBy: raw.plan_approved_by,
+    planApprovedArtifactVersion: raw.plan_approved_artifact_version,
+    planApprovedAt: raw.plan_approved_at,
     conversationId: raw.conversation_id,
     runPrompt: raw.run_prompt,
     promptAuthor: raw.prompt_author,
@@ -145,6 +156,13 @@ export function transformUpdateAutomationSettingsInput(
     ...(input.maxRuns !== undefined && { maxRuns: input.maxRuns }),
     ...(input.maxConsecutiveFailures !== undefined && {
       maxConsecutiveFailures: input.maxConsecutiveFailures,
+    }),
+    ...(input.planApprovalMode !== undefined && {
+      planApprovalMode: input.planApprovalMode,
+    }),
+    ...(input.prMergeMode !== undefined && { prMergeMode: input.prMergeMode }),
+    ...(input.planDeepVerification !== undefined && {
+      planDeepVerification: input.planDeepVerification,
     }),
   };
 }

@@ -330,6 +330,13 @@ pub fn lightweight_model_for_provider(provider: AgentHarnessKind) -> &'static st
     }
 }
 
+pub fn plan_judge_model_for_provider(provider: AgentHarnessKind) -> &'static str {
+    match provider {
+        AgentHarnessKind::Claude => "sonnet",
+        AgentHarnessKind::Codex => "gpt-5.4",
+    }
+}
+
 pub fn default_effort_for_provider(provider: AgentHarnessKind) -> LogicalEffort {
     match provider {
         AgentHarnessKind::Claude => LogicalEffort::Medium,

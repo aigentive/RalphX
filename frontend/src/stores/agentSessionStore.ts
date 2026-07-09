@@ -16,6 +16,10 @@ import type {
   ComposerProjectReference,
   TeamIntent,
 } from "@/api/chat";
+import type {
+  AutomationJudgeState,
+  AutomationRunStatus,
+} from "@/api/automations";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
@@ -53,6 +57,25 @@ export interface AgentTaskArtifactFocusRequest {
   taskId: string;
   requestId: number;
 }
+
+export interface AgentAutomationRunFocusRequest {
+  projectId: string;
+  automationId: string;
+  runId: string;
+  conversationId: string;
+  runStatus: AutomationRunStatus | null;
+  judgeState: AutomationJudgeState | null;
+  workspaceMode: AgentConversationWorkspaceMode | null;
+  hasPlanArtifact: boolean;
+  hasPullRequest: boolean;
+  seededTab: AgentArtifactTab;
+  requestId: number;
+}
+
+export type AgentAutomationRunFocusRequestInput = Omit<
+  AgentAutomationRunFocusRequest,
+  "requestId"
+>;
 
 export interface AgentBranchBaseCacheEntry {
   options: BranchBaseOption[];
@@ -107,6 +130,10 @@ interface AgentSessionState {
     string,
     AgentTaskArtifactFocusRequest
   >;
+  automationRunFocusRequestByConversationId: Record<
+    string,
+    AgentAutomationRunFocusRequest
+  >;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
@@ -140,6 +167,14 @@ interface AgentSessionActions {
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
   setTaskArtifactMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
   focusTaskArtifact: (conversationId: string, taskId: string) => void;
+  requestAutomationRunFocus: (
+    setupConversationId: string,
+    request: AgentAutomationRunFocusRequestInput
+  ) => void;
+  clearAutomationRunFocusRequest: (
+    setupConversationId: string,
+    requestId?: number
+  ) => void;
   setRuntimeForConversation: (
     conversationId: string,
     projectId: string,
@@ -338,6 +373,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       pinnedConversationIds: {},
       artifactByConversationId: {},
       taskArtifactFocusRequestByConversationId: {},
+      automationRunFocusRequestByConversationId: {},
       runtimeByConversationId: {},
       lastRuntimeByProjectId: {},
       branchBaseCacheByProjectId: {},
@@ -499,6 +535,31 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
             taskId,
             requestId: (current?.requestId ?? 0) + 1,
           };
+        }),
+
+      requestAutomationRunFocus: (setupConversationId, request) =>
+        set((state) => {
+          const current =
+            state.automationRunFocusRequestByConversationId[setupConversationId];
+          state.automationRunFocusRequestByConversationId[setupConversationId] = {
+            ...request,
+            requestId: (current?.requestId ?? 0) + 1,
+          };
+        }),
+
+      clearAutomationRunFocusRequest: (setupConversationId, requestId) =>
+        set((state) => {
+          const current =
+            state.automationRunFocusRequestByConversationId[setupConversationId];
+          if (!current) {
+            return;
+          }
+          if (requestId !== undefined && current.requestId !== requestId) {
+            return;
+          }
+          delete state.automationRunFocusRequestByConversationId[
+            setupConversationId
+          ];
         }),
 
       setRuntimeForConversation: (conversationId, projectId, runtime) =>

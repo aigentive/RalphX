@@ -220,6 +220,12 @@ automations:
   publish_grace_secs: 120 # Env: RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS
   # automation scheduler — maximum wall-clock seconds for a running automation run
   max_run_duration_secs: 14400 # Env: RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS
+  # automation plan judge — provider-keyed model floor for automatic plan approval
+  plan_judge_model:
+    claude: sonnet # Env: RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE
+    codex: gpt-5.4 # Env: RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX
+  # automation plan judge — max plan revision rounds before pausing for human review
+  plan_max_revision_rounds: 3 # Env: RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS
 
 supervisor:
   # supervisor_service.rs — wall-clock seconds before supervisor warns agent about time usage

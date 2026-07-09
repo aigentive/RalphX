@@ -404,6 +404,7 @@ mod v20260704193000_automations_p1;
 mod v20260706113000_agent_conversation_issue_identity;
 mod v20260707113000_automation_agent_completed_signal;
 mod v20260707120000_automations_spec_artifact_id;
+mod v20260708120000_automation_run_plan_gate;
 mod v20260708130511_workspace_review_autofix_setting;
 mod v20260708131548_chat_conversation_coordination_mode;
 #[cfg(test)]
@@ -474,6 +475,8 @@ mod v20260704193000_automations_p1_tests;
 mod v20260707113000_automation_agent_completed_signal_tests;
 #[cfg(test)]
 mod v20260707120000_automations_spec_artifact_id_tests;
+#[cfg(test)]
+mod v20260708120000_automation_run_plan_gate_tests;
 #[cfg(test)]
 mod v20260708130511_workspace_review_autofix_setting_tests;
 #[cfg(test)]
@@ -1402,6 +1405,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260707120000,
         name: "automations_spec_artifact_id",
         migrate: v20260707120000_automations_spec_artifact_id::migrate,
+    },
+    Migration {
+        version: 20260708120000,
+        name: "automation_run_plan_gate",
+        migrate: v20260708120000_automation_run_plan_gate::migrate,
     },
     Migration {
         version: 20260708130511,

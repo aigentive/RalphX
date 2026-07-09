@@ -75,6 +75,7 @@ pub(crate) enum AutoReviewSkipReason {
     NotReviewableMode,
     ManualOnlyArchived,
     ManualOnlyTerminalPr,
+    PlanPhaseAutomationRun,
     NoReviewableChanges,
     GateNotRequired,
     AlreadyReviewing,
@@ -92,6 +93,7 @@ impl AutoReviewSkipReason {
             Self::NotReviewableMode => "not_reviewable_mode",
             Self::ManualOnlyArchived => "manual_only_archived",
             Self::ManualOnlyTerminalPr => "manual_only_terminal_pr",
+            Self::PlanPhaseAutomationRun => "plan_phase_automation_run",
             Self::NoReviewableChanges => "no_reviewable_changes",
             Self::GateNotRequired => "gate_not_required",
             Self::AlreadyReviewing => "already_reviewing",
@@ -399,6 +401,19 @@ pub(crate) async fn resolve_auto_review_start_action(
         return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::NotReviewableMode,
         ));
+    }
+    if workspace.mode == AgentConversationWorkspaceMode::Plan {
+        let is_automation_run = state
+            .chat_conversation_repo
+            .get_by_id(&workspace.conversation_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some_and(|conversation| conversation.automation_run_id.is_some());
+        if is_automation_run {
+            return Ok(AutoReviewStartAction::Skip(
+                AutoReviewSkipReason::PlanPhaseAutomationRun,
+            ));
+        }
     }
     if workspace.has_terminal_publication_pr_status() {
         return Ok(AutoReviewStartAction::Skip(

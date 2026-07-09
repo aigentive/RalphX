@@ -1,6 +1,8 @@
 pub mod api;
 pub mod delete;
 pub mod judge;
+pub mod plan_judge;
+pub mod plan_gate;
 pub mod provisioning;
 pub mod review_gate;
 pub mod scheduler;
@@ -11,6 +13,8 @@ pub mod transition;
 mod delete_tests;
 #[cfg(test)]
 mod judge_tests;
+#[cfg(test)]
+mod plan_judge_tests;
 #[cfg(test)]
 mod provisioning_tests;
 #[cfg(test)]

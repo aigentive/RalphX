@@ -1,12 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
@@ -52,6 +54,9 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
@@ -71,6 +76,14 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
         status,
         judge_state,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Run prompt".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -99,10 +112,103 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
     }
 }
 
+#[test]
+fn production_automation_transition_services_use_shared_event_emitter_factory() {
+    const API_SOURCE: &str = include_str!("api.rs");
+    const PRODUCTION_SOURCES: &[(&str, &str)] = &[
+        (
+            "src/application/automation/delete.rs",
+            include_str!("delete.rs"),
+        ),
+        (
+            "src/application/automation/judge.rs",
+            include_str!("judge.rs"),
+        ),
+        (
+            "src/application/automation/plan_gate.rs",
+            include_str!("plan_gate.rs"),
+        ),
+        (
+            "src/application/automation/plan_judge.rs",
+            include_str!("plan_judge.rs"),
+        ),
+        (
+            "src/application/automation/provisioning.rs",
+            include_str!("provisioning.rs"),
+        ),
+        (
+            "src/application/automation/review_gate.rs",
+            include_str!("review_gate.rs"),
+        ),
+        (
+            "src/application/automation/scheduler.rs",
+            include_str!("scheduler.rs"),
+        ),
+        (
+            "src/application/automation/service.rs",
+            include_str!("service.rs"),
+        ),
+        (
+            "src/commands/automation_commands.rs",
+            include_str!("../../commands/automation_commands.rs"),
+        ),
+    ];
+
+    let offenders: Vec<_> = PRODUCTION_SOURCES
+        .iter()
+        .filter_map(|(path, source)| {
+            source
+                .contains("NoopAutomationEventEmitter")
+                .then_some(*path)
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "NoopAutomationEventEmitter construction must stay in the API fallback; offenders: {offenders:?}"
+    );
+    assert_eq!(
+        API_SOURCE
+            .matches("Arc::new(NoopAutomationEventEmitter)")
+            .count(),
+        1,
+        "automation API should own the single Noop event-emitter fallback"
+    );
+}
+
+#[test]
+fn automation_event_names_are_stable_for_ui_subscriptions() {
+    assert_eq!(
+        (AutomationEvent::AutomationUpdated {
+            automation_id: AutomationId::from_string("automation-1")
+        })
+        .event_name(),
+        "automation:updated"
+    );
+    assert_eq!(
+        (AutomationEvent::AutomationRunUpdated {
+            automation_id: AutomationId::from_string("automation-1"),
+            run_id: AutomationRunId::from_string("run-1")
+        })
+        .event_name(),
+        "automation:run:updated"
+    );
+    assert_eq!(
+        (AutomationEvent::AutomationDeleted {
+            automation_id: AutomationId::from_string("automation-1"),
+            project_id: ProjectId::from_string("project-1".to_string())
+        })
+        .event_name(),
+        "automation:deleted"
+    );
+}
+
 #[tokio::test]
 async fn transition_service_emits_after_successful_automation_status_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service =
         AutomationTransitionService::new(automation_repo.clone(), run_repo, emitter.clone());
@@ -140,7 +246,9 @@ async fn transition_service_emits_after_successful_automation_status_cas() {
 #[tokio::test]
 async fn transition_service_rejects_invalid_automation_transition_without_emit() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service = AutomationTransitionService::new(automation_repo, run_repo, emitter.clone());
 
@@ -161,7 +269,9 @@ async fn transition_service_rejects_invalid_automation_transition_without_emit()
 #[tokio::test]
 async fn transition_service_emits_only_when_run_status_cas_wins() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service =
         AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
@@ -196,14 +306,156 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
         .unwrap());
     assert_eq!(
         emitter.events(),
-        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn transition_service_emits_after_successful_merge_metadata_cas() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let run = run(
+        "run-1",
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    run_repo.lose_next_published_to_merged_cas();
+    assert!(!service
+        .transition_run_status_with_merge_metadata(
+            &run.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("lost-sha".to_string()),
+            Some(Utc::now()),
+        )
+        .await
+        .unwrap());
+    assert!(emitter.events().is_empty());
+    let unchanged = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.status, AutomationRunStatus::Published);
+    assert!(unchanged.merge_commit_sha.is_none());
+
+    let merged_at = Utc::now();
+    assert!(service
+        .transition_run_status_with_merge_metadata(
+            &run.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("merge-sha".to_string()),
+            Some(merged_at),
+        )
+        .await
+        .unwrap());
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Merged);
+    assert_eq!(stored.merge_commit_sha.as_deref(), Some("merge-sha"));
+    assert_eq!(stored.pr_merged_at, Some(merged_at));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn transition_service_records_explicit_agent_phase_start_time() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let run = run(
+        "run-1",
+        AutomationRunStatus::Provisioning,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let agent_phase_started_at = Utc::now();
+
+    assert!(service
+        .transition_run_status_with_agent_phase_started_at(
+            &run.id,
+            AutomationRunStatus::Provisioning,
+            AutomationRunStatus::Running,
+            agent_phase_started_at,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Running);
+    assert_eq!(stored.agent_phase_started_at, Some(agent_phase_started_at));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn transition_service_clears_plan_pending_instructions_on_retry_start() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let mut run = run(
+        "run-1",
+        AutomationRunStatus::Pending,
+        AutomationJudgeState::None,
+    );
+    run.plan_pending_instructions = Some("Revise the plan before retrying".to_string());
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    assert!(service
+        .transition_run_status_clearing_plan_pending_instructions(
+            &run.id,
+            AutomationRunStatus::Pending,
+            AutomationRunStatus::Provisioning,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationRunStatus::Provisioning);
+    assert!(stored.plan_pending_instructions.is_none());
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
     );
 }
 
 #[tokio::test]
 async fn transition_service_validates_judge_lifecycle_before_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service =
         AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
@@ -219,6 +471,7 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
             &run.id,
             AutomationJudgeState::None,
             AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Dispatch,
             None,
             None,
             None,
@@ -234,15 +487,75 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
             &run.id,
             AutomationJudgeState::None,
             AutomationJudgeState::InProgress,
+            AutomationJudgeTransitionGuard::Dispatch,
             None,
             None,
-            None,
+            Some(Utc::now()),
             None,
         )
         .await
         .unwrap());
+    let settle_without_token = service
+        .transition_judge_state(
+            &run.id,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeState::Done,
+            AutomationJudgeTransitionGuard::Dispatch,
+            Some(r#"{"decision":"stop"}"#.to_string()),
+            Some("judge-model".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(settle_without_token, AppError::Validation(_)));
     assert_eq!(
         emitter.events(),
-        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn transition_service_emits_after_successful_plan_judge_state_cas() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let service =
+        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let run = run(
+        "run-1",
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let lease_expires_at = Utc::now();
+
+    assert!(service
+        .transition_plan_judge_state(
+            &run.id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::InProgress,
+            None,
+            Some(lease_expires_at),
+        )
+        .await
+        .unwrap());
+    let stored = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.plan_judge_state,
+        AutomationPlanJudgeState::InProgress
+    );
+    assert_eq!(stored.plan_judge_lease_expires_at, Some(lease_expires_at));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
     );
 }
