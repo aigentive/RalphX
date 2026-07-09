@@ -4022,6 +4022,201 @@ exit 0
         );
     }
 
+    #[test]
+    fn task_runtime_initial_prompts_include_supplied_runtime_context() {
+        let runtime_context =
+            "<task_runtime_context>\n<task_state>executing</task_state>\n</task_runtime_context>";
+        let execution_prompt = build_initial_prompt_with_history(
+            ChatContextType::TaskExecution,
+            "task-runtime-prompt",
+            "Execute task: task-runtime-prompt",
+            runtime_context,
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        );
+        assert!(execution_prompt.contains(runtime_context));
+        assert!(
+            execution_prompt
+                .contains("<user_message>Execute task: task-runtime-prompt</user_message>")
+        );
+
+        let first_turn_execution_prompt = build_initial_prompt_with_history(
+            ChatContextType::TaskExecution,
+            "task-runtime-empty",
+            "Execute task: task-runtime-empty",
+            "",
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        );
+        assert!(!first_turn_execution_prompt.contains("<task_runtime_context>"));
+
+        let review_context =
+            "<task_runtime_context>\n<task_state>reviewing</task_state>\n</task_runtime_context>";
+        let review_prompt = build_initial_prompt_with_history(
+            ChatContextType::Review,
+            "task-runtime-review",
+            "Review task: task-runtime-review",
+            review_context,
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        );
+        assert!(review_prompt.contains(review_context));
+        assert!(
+            review_prompt.contains("<user_message>Review task: task-runtime-review</user_message>")
+        );
+    }
+
+    #[test]
+    fn task_runtime_state_reaches_env_and_mcp_context() {
+        let mut spawnable = test_spawnable();
+        apply_ralphx_env_vars(
+            &mut spawnable,
+            agent_names::AGENT_WORKER,
+            ChatContextType::TaskExecution,
+            "task-runtime-env",
+            Path::new("/tmp/task-runtime-env"),
+            Some("re_executing"),
+            Some("project-runtime-env"),
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            spawnable_env_value(&spawnable, "RALPHX_TASK_STATE").as_deref(),
+            Some("re_executing")
+        );
+
+        let mut project_spawnable = test_spawnable();
+        apply_ralphx_env_vars(
+            &mut project_spawnable,
+            agent_names::AGENT_CHAT_PROJECT,
+            ChatContextType::Project,
+            "project-runtime-env",
+            Path::new("/tmp/project-runtime-env"),
+            Some("executing"),
+            Some("project-runtime-env"),
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            spawnable_env_value(&project_spawnable, "RALPHX_TASK_STATE"),
+            None
+        );
+
+        let runtime_context = build_mcp_runtime_context(
+            ChatContextType::Review,
+            "task-runtime-mcp",
+            Some("conversation-runtime-mcp".to_string()),
+            Some("run-runtime-mcp"),
+            Path::new("/tmp/task-runtime-mcp"),
+            Some("reviewing"),
+            Some("project-runtime-mcp"),
+            &[],
+            None,
+            None,
+        );
+        assert_eq!(runtime_context.task_state.as_deref(), Some("reviewing"));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_launch_plans_inject_prompt_env_and_mcp_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-runtime-launch".to_string());
+        let harness_clis = [
+            (
+                AgentHarnessKind::Claude,
+                make_fake_claude_cli(&temp),
+                "Claude",
+            ),
+            (AgentHarnessKind::Codex, make_fake_codex_cli(&temp), "Codex"),
+        ];
+
+        for (harness, cli_path, harness_label) in harness_clis {
+            let task_id = TaskId::from_string(format!("task-runtime-launch-{harness_label}"));
+            let conversation = ChatConversation::new_task_execution(task_id.clone());
+            let resolved_spawn_settings =
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_names::AGENT_WORKER,
+                    Some(project_id.as_str()),
+                    ChatContextType::TaskExecution,
+                    Some("executing"),
+                    Some(harness),
+                    None,
+                    None,
+                )
+                .await;
+
+            let launch_plan = build_launch_plan_for_harness_for_test(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                &format!("Execute task: {}", task_id.as_str()),
+                Some(agent_names::AGENT_WORKER),
+                None,
+                ChatContextType::TaskExecution,
+                task_id.as_str(),
+                Some(conversation.id.as_str()),
+                Some("run-runtime-launch"),
+                temp.path(),
+                Some("executing"),
+                Some(project_id.as_str()),
+                &[],
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                false,
+                None,
+                &resolved_spawn_settings,
+                None,
+                None,
+            )
+            .await
+            .expect("task runtime launch plan should build");
+
+            let spawnable = launch_spawnable(&launch_plan);
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<task_runtime_context>")
+                    && prompt.contains("<task_state>executing</task_state>")
+                    && prompt.contains(task_id.as_str()),
+                "{harness_label} prompt should include task runtime context: {prompt}"
+            );
+            assert_eq!(
+                spawnable_env_value(spawnable, "RALPHX_TASK_STATE").as_deref(),
+                Some("executing"),
+                "{harness_label} launch env should include task state"
+            );
+
+            let mcp_args = match harness {
+                AgentHarnessKind::Claude => claude_mcp_config_args(spawnable).join("\n"),
+                AgentHarnessKind::Codex => spawnable
+                    .get_args_for_test()
+                    .into_iter()
+                    .filter(|arg| arg.starts_with("mcp_servers."))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            assert!(
+                mcp_args.contains("--task-state") && mcp_args.contains("executing"),
+                "{harness_label} MCP args should include task state: {mcp_args}"
+            );
+        }
+    }
+
     async fn build_project_agent_launch_plan(
         harness: AgentHarnessKind,
         cli_path: &Path,

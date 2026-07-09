@@ -1088,6 +1088,31 @@ describe("useConversationTimelineWindow", () => {
     expect(timelineContents).toEqual(["Hello"]);
   });
 
+  it("filters hidden full conversation messages from merged cache reads", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [
+        {
+          ...mockMessage1,
+          id: "bootstrap-hidden",
+          content: "Execute task: task-hidden",
+          metadata: JSON.stringify({
+            hidden_from_ui: true,
+            source: "task_runtime_bootstrap",
+          }),
+        },
+        mockMessage1,
+      ],
+    });
+
+    expect(
+      getCachedConversationMessages(queryClient, "conv-1").map(
+        (message) => message.content,
+      ),
+    ).toEqual(["Hello"]);
+  });
+
   it("upserts backend render-ready timeline items without synthesizing sequences", () => {
     const { queryClient } = createWrapperWithClient();
     queryClient.setQueryData(chatKeys.conversation("conv-1"), {
