@@ -37,8 +37,7 @@ use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
 };
 use crate::application::automation::service::{
-    ApplyAutomationJudgeVerdictInput, AutomationJudgeApplyOutcome, AutomationService,
-    CompleteAutomationJudgeInput,
+    AutomationJudgeApplyOutcome, AutomationService, CompleteAutomationJudgeInput,
 };
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
@@ -2874,23 +2873,9 @@ impl AutomationScheduler {
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
-        let Some(verdict_json) = run.judge_verdict_json.as_deref() else {
-            return Ok(());
-        };
-        let verdict = parse_automation_judge_verdict(
-            verdict_json,
-            AutomationJudgeValidationContext {
-                automation,
-                previous_run: run,
-            },
-        )?;
         let outcome = self
             .service
-            .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
-                automation: automation.clone(),
-                previous_run: run.clone(),
-                verdict,
-            })
+            .apply_stored_judge_verdict(&automation.id, &run.id)
             .await?;
         self.record_judge_apply_outcome(outcome, summary);
         Ok(())

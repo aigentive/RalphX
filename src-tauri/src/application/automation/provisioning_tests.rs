@@ -484,7 +484,9 @@ fn automation_run_start_request_drops_source_pr_after_run_one() {
 #[tokio::test]
 async fn provision_first_run_marks_current_goal_item_in_progress_and_emits_automation_update() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -550,7 +552,9 @@ async fn provision_first_run_marks_current_goal_item_in_progress_and_emits_autom
 #[tokio::test]
 async fn provision_pending_successor_run_marks_current_goal_item_in_progress() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -602,7 +606,9 @@ async fn provision_pending_successor_run_marks_current_goal_item_in_progress() {
 #[tokio::test]
 async fn provision_pending_run_does_not_rewrite_already_in_progress_goal_item() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -655,7 +661,9 @@ async fn provision_pending_run_does_not_rewrite_already_in_progress_goal_item() 
 #[tokio::test]
 async fn provision_goal_item_sync_self_reverts_when_run_closed_after_mark() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -707,7 +715,9 @@ async fn provision_goal_item_sync_self_reverts_when_run_closed_after_mark() {
 #[tokio::test]
 async fn provision_goal_item_sync_self_reverts_when_judge_failed_loses_goal_authority() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -756,7 +766,9 @@ async fn provision_goal_item_sync_self_reverts_when_judge_failed_loses_goal_auth
 #[tokio::test]
 async fn provision_goal_item_sync_keeps_completed_judge_settled_goal_authority() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -805,7 +817,9 @@ async fn provision_goal_item_sync_keeps_completed_judge_settled_goal_authority()
 #[tokio::test]
 async fn provision_first_run_does_not_rewrite_when_all_goal_items_are_terminal() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -860,7 +874,9 @@ async fn provision_first_run_skips_malformed_goal_items_json_but_starts_and_warn
     let _guard = subscriber.set_default();
 
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -909,7 +925,9 @@ async fn provision_first_run_skips_malformed_goal_items_json_but_starts_and_warn
 #[tokio::test]
 async fn provision_first_run_noops_or_rejects_when_not_ready() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -955,7 +973,9 @@ async fn provision_first_run_noops_or_rejects_when_not_ready() {
 #[tokio::test]
 async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial_publish() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -1047,7 +1067,9 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
 #[tokio::test]
 async fn provision_first_run_phase_basis_never_postdates_agent_spawn() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -1086,7 +1108,9 @@ async fn provision_first_run_phase_basis_never_postdates_agent_spawn() {
 #[tokio::test]
 async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_status() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -1125,7 +1149,9 @@ async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_stat
 #[tokio::test]
 async fn provision_pending_run_marks_agent_failed_when_starter_errors() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation = automation("automation-1");

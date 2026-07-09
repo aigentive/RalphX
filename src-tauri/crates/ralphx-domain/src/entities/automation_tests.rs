@@ -255,7 +255,9 @@ fn judge_lifecycle_transition_matrix_matches_spec() {
         (None, Skipped),
         (InProgress, Done),
         (InProgress, Failed),
+        (Done, Failed),
         (Failed, InProgress),
+        (Failed, Skipped),
     ];
 
     for from in states {

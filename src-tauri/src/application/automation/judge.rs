@@ -244,6 +244,18 @@ pub fn validate_automation_judge_verdict(
             }
         }
     }
+    if verdict.decision == AutomationJudgeDecision::Stop && verdict.goal_met {
+        let applied_goal_items = apply_updated_item_statuses(
+            context.automation.goal_items_json.as_deref(),
+            verdict.updated_item_statuses.as_deref(),
+        )?;
+        if goal_items_have_unfinished_work(applied_goal_items.as_deref())? {
+            return Err(AppError::Validation(
+                "judge verdict goalMet=true requires all goal items to be done or skipped"
+                    .to_string(),
+            ));
+        }
+    }
 
     verdict.reason = verdict.reason.trim().chars().take(1000).collect();
     if verdict.reason.is_empty() {
@@ -542,6 +554,14 @@ fn collect_goal_item_ids(goal_items_json: Option<&str>) -> AppResult<HashSet<Str
     let mut ids = HashSet::new();
     collect_ids_from_value(&value, &mut ids);
     Ok(ids)
+}
+
+fn goal_items_have_unfinished_work(goal_items_json: Option<&str>) -> AppResult<bool> {
+    let Some(goal_items_json) = goal_items_json.filter(|value| !value.trim().is_empty()) else {
+        return Ok(false);
+    };
+    let value = parse_goal_items_json(goal_items_json)?;
+    Ok(first_non_done_goal_item_value(&value).is_some())
 }
 
 struct CurrentGoalItem {
@@ -947,6 +967,7 @@ Rules:
 - `continue` requires `nextRunPrompt` and `nextBaseBranch`.
 - `previous_pr_head` is valid only for `chainMode=pr_head_stacked` with a valid previous PR head.
 - `updatedItemStatuses` ids must exist in `goal_items`.
+- If `stop` uses `goalMet=true`, the resulting `goal_items` after `updatedItemStatuses` must all be `done` or `skipped`.
 - If there is no concrete unfinished work, choose `stop`.
 - The next run prompt must be self-contained and may cite attached specs by file or section.
 </output_contract>

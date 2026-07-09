@@ -1283,6 +1283,58 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn create_judge_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation judge successor does not match the judged run".to_string(),
+            ));
+        }
+
+        let automation_id = automation_id.as_str().to_string();
+        let previous_run_id = previous_run_id.as_str().to_string();
+        let to_insert = successor.clone();
+        self.db
+            .run_transaction(move |conn| {
+                let guard = conn
+                    .query_row(
+                        "SELECT 1
+                         FROM automation_runs
+                         WHERE id = ?1
+                           AND automation_id = ?2
+                           AND judge_state = 'done'
+                           AND status IN ('merged', 'pr_closed', 'agent_failed', 'completed')
+                           AND run_index = (
+                               SELECT MAX(run_index)
+                               FROM automation_runs
+                               WHERE automation_id = ?2
+                           )
+                           AND EXISTS (
+                               SELECT 1
+                               FROM automations
+                               WHERE id = ?2
+                                 AND status = 'active'
+                           )",
+                        params![previous_run_id, automation_id],
+                        |_| Ok(()),
+                    )
+                    .optional()?;
+                if guard.is_none() {
+                    return Ok(None);
+                }
+
+                Self::insert_run_row(conn, &to_insert)?;
+                Ok(Some(to_insert))
+            })
+            .await
+    }
+
     async fn skip_judge_and_create_successor_run(
         &self,
         automation_id: &AutomationId,
@@ -1310,12 +1362,18 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                          updated_at = ?1
                      WHERE id = ?2
                        AND automation_id = ?3
-                       AND judge_state = 'none'
-                       AND status IN ('merged', 'pr_closed', 'agent_failed')
+                       AND judge_state IN ('none', 'failed')
+                       AND status IN ('merged', 'pr_closed', 'agent_failed', 'completed')
                        AND run_index = (
                            SELECT MAX(run_index)
                            FROM automation_runs
                            WHERE automation_id = ?3
+                       )
+                       AND EXISTS (
+                           SELECT 1
+                           FROM automations
+                           WHERE id = ?3
+                             AND status = 'active'
                        )",
                     params![Utc::now().to_rfc3339(), previous_run_id, automation_id],
                 )?;

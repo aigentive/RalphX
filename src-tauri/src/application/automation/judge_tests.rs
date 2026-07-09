@@ -211,6 +211,28 @@ fn parses_valid_stop_verdict() {
 }
 
 #[test]
+fn rejects_goal_met_stop_when_updated_items_leave_non_terminal_work() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(1, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "stop",
+        "goalMet": true,
+        "reason": "The goal is complete.",
+        "confidence": 0.91,
+        "goalProgress": { "completedItems": 2, "totalItems": 2, "summary": "Both items are done." },
+        "updatedItemStatuses": [{ "id": "item-2", "status": "in_progress" }],
+        "nextRunPrompt": null,
+        "nextBaseBranch": null
+    })
+    .to_string();
+
+    let error =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("goalMet")));
+}
+
+#[test]
 fn parses_fenced_json_verdict() {
     let automation = automation_with_goal_items(Some(goal_items_json()));
     let run = automation_run(1, AutomationRunStatus::Merged);
@@ -224,7 +246,7 @@ fn parses_fenced_json_verdict() {
 
 #[test]
 fn parses_last_json_object_in_text() {
-    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let automation = automation_with_goal_items(None);
     let run = automation_run(1, AutomationRunStatus::Merged);
     let stop = json!({
         "decision": "stop",
@@ -604,8 +626,9 @@ fn parses_uppercase_fence_after_invalid_fence_and_escaped_text_json() {
 
     let escaped_stop = r#"draft {"ignored":true}
 final: {"decision":"stop","goalMet":true,"reason":"done with \"quoted\" path C:\\tmp","confidence":1.8,"goalProgress":null,"updatedItemStatuses":null,"nextRunPrompt":null,"nextBaseBranch":null}"#;
+    let stop_automation = automation_with_goal_items(None);
     let verdict =
-        parse_automation_judge_verdict(escaped_stop, validation_context(&automation, &run))
+        parse_automation_judge_verdict(escaped_stop, validation_context(&stop_automation, &run))
             .unwrap();
     assert_eq!(verdict.confidence, 1.0);
     assert!(verdict.reason.contains("\"quoted\""));

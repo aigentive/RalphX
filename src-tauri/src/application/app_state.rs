@@ -1444,6 +1444,7 @@ impl AppState {
         let app_paths = AppPaths::for_tests();
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
+        let automation_state = MemoryAutomationRepository::new_shared_state();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1517,8 +1518,10 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
-            automation_repo: Arc::new(MemoryAutomationRepository::new()),
-            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new()),
+            automation_repo: Arc::new(MemoryAutomationRepository::with_shared_state(Arc::clone(
+                &automation_state,
+            ))),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -1601,6 +1604,7 @@ impl AppState {
         let app_paths = AppPaths::for_tests();
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
+        let automation_state = MemoryAutomationRepository::new_shared_state();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1674,8 +1678,10 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
-            automation_repo: Arc::new(MemoryAutomationRepository::new()),
-            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new()),
+            automation_repo: Arc::new(MemoryAutomationRepository::with_shared_state(Arc::clone(
+                &automation_state,
+            ))),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -1935,6 +1941,7 @@ impl AppState {
         let app_paths = AppPaths::for_tests();
         let attachment_storage_path = app_paths.attachment_storage_path();
         let (events, internal_event_bus) = Self::null_event_runtime();
+        let automation_state = MemoryAutomationRepository::new_shared_state();
 
         Self {
             task_repo: Arc::clone(&task_repo),
@@ -1996,8 +2003,10 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
-            automation_repo: Arc::new(MemoryAutomationRepository::new()),
-            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new()),
+            automation_repo: Arc::new(MemoryAutomationRepository::with_shared_state(Arc::clone(
+                &automation_state,
+            ))),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),

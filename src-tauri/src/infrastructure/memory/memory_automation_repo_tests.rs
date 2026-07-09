@@ -328,7 +328,9 @@ async fn memory_automation_repo_goal_items_cas_matches_only_expected_json() {
 
 #[tokio::test]
 async fn memory_run_repo_enforces_open_run_single_flight() {
-    let repo = Arc::new(MemoryAutomationRunRepository::new());
+    let repo = Arc::new(MemoryAutomationRunRepository::new(
+        MemoryAutomationRepository::new_shared_state(),
+    ));
     repo.create_run(run(
         "run-1",
         "automation-1",
@@ -388,12 +390,23 @@ async fn memory_run_repo_enforces_open_run_single_flight() {
 
 #[tokio::test]
 async fn memory_run_repo_skip_judge_and_successor_are_atomic() {
-    let repo = Arc::new(MemoryAutomationRunRepository::new());
+    let automation_repo = MemoryAutomationRepository::new();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            "project-1",
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let previous = run(
         "run-1",
         "automation-1",
         1,
-        AutomationRunStatus::Merged,
+        AutomationRunStatus::Completed,
         AutomationJudgeState::None,
     );
     repo.create_run(previous.clone()).await.unwrap();
@@ -440,8 +453,71 @@ async fn memory_run_repo_skip_judge_and_successor_are_atomic() {
 }
 
 #[tokio::test]
+async fn memory_run_repo_create_judge_successor_requires_active_latest_done_signal_terminal() {
+    let automation_repo = MemoryAutomationRepository::new();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            "project-1",
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let repo = MemoryAutomationRunRepository::new(automation_repo.shared_state());
+    let previous = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    repo.create_run(previous.clone()).await.unwrap();
+
+    assert!(repo
+        .create_judge_successor_run(
+            &AutomationId::from_string("automation-1"),
+            &previous.id,
+            successor_run("run-2", "automation-1", 2, &previous.id),
+        )
+        .await
+        .unwrap()
+        .is_some());
+
+    let paused_automation_repo = MemoryAutomationRepository::new();
+    paused_automation_repo
+        .create(automation(
+            "automation-paused",
+            "project-1",
+            AutomationStatus::Paused,
+        ))
+        .await
+        .unwrap();
+    let paused_repo = MemoryAutomationRunRepository::new(paused_automation_repo.shared_state());
+    let paused_previous = run(
+        "run-paused-1",
+        "automation-paused",
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    paused_repo
+        .create_run(paused_previous.clone())
+        .await
+        .unwrap();
+    assert!(paused_repo
+        .create_judge_successor_run(
+            &AutomationId::from_string("automation-paused"),
+            &paused_previous.id,
+            successor_run("run-paused-2", "automation-paused", 2, &paused_previous.id),
+        )
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
-    let repo = MemoryAutomationRunRepository::new();
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
     let mut failed = run(
         "run-1",
         "automation-1",
@@ -525,7 +601,7 @@ async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
 
 #[tokio::test]
 async fn memory_run_repo_round_trips_and_updates_plan_gate_fields() {
-    let repo = MemoryAutomationRunRepository::new();
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
     let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
     let agent_phase_started_at = Utc::now();
     let mut run = run(
@@ -611,7 +687,7 @@ async fn memory_run_repo_round_trips_and_updates_plan_gate_fields() {
 
 #[tokio::test]
 async fn memory_run_repo_status_cas_with_agent_phase_started_at_uses_observed_phase() {
-    let repo = MemoryAutomationRunRepository::new();
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
     let run = run(
         "run-1",
         "automation-1",
@@ -644,7 +720,7 @@ async fn memory_run_repo_status_cas_with_agent_phase_started_at_uses_observed_ph
 
 #[tokio::test]
 async fn memory_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
-    let repo = MemoryAutomationRunRepository::new();
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
     let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
     let mut run = run(
         "run-plan-cas-stale",
@@ -686,7 +762,7 @@ async fn memory_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
 
 #[tokio::test]
 async fn memory_plan_judge_dispatch_sets_lease_and_preserves_stored_verdict() {
-    let repo = MemoryAutomationRunRepository::new();
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
     let lease_expires_at = Utc::now() + chrono::Duration::minutes(5);
     let mut run = run(
         "run-plan-cas-dispatch",
@@ -746,7 +822,7 @@ async fn memory_automation_repo_child_row_deletes_are_noop_ok() {
 
 #[tokio::test]
 async fn memory_find_run_by_conversation_id_returns_latest_linked_run() {
-    let repo = MemoryAutomationRunRepository::new();
+    let repo = MemoryAutomationRunRepository::new(MemoryAutomationRepository::new_shared_state());
     // Valid distinct UUIDs — from_string collapses non-UUID text to Uuid::nil().
     let conversation = ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
 

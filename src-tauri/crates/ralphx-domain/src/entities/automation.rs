@@ -479,10 +479,12 @@ pub fn judge_is_transition_allowed(from: AutomationJudgeState, to: AutomationJud
                 AutomationJudgeState::InProgress,
                 AutomationJudgeState::Failed
             )
+            | (AutomationJudgeState::Done, AutomationJudgeState::Failed)
             | (
                 AutomationJudgeState::Failed,
                 AutomationJudgeState::InProgress
             )
+            | (AutomationJudgeState::Failed, AutomationJudgeState::Skipped)
     )
 }
 

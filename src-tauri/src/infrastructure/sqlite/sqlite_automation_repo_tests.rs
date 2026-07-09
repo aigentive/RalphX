@@ -650,7 +650,7 @@ async fn sqlite_run_repo_skip_judge_and_successor_are_atomic() {
     let previous = run(
         "run-1",
         1,
-        AutomationRunStatus::Merged,
+        AutomationRunStatus::Completed,
         AutomationJudgeState::None,
     );
     run_repo.create_run(previous.clone()).await.unwrap();
@@ -695,6 +695,64 @@ async fn sqlite_run_repo_skip_judge_and_successor_are_atomic() {
             .len(),
         2
     );
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_create_judge_successor_requires_active_latest_done_signal_terminal() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id.clone(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let previous = run(
+        "run-1",
+        1,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    assert!(run_repo
+        .create_judge_successor_run(
+            &AutomationId::from_string("automation-1"),
+            &previous.id,
+            successor_run("run-2", 2, &previous.id),
+        )
+        .await
+        .unwrap()
+        .is_some());
+
+    automation_repo
+        .create(automation(
+            "automation-paused",
+            project_id,
+            AutomationStatus::Paused,
+        ))
+        .await
+        .unwrap();
+    let mut paused_previous = run(
+        "run-paused-1",
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    paused_previous.automation_id = AutomationId::from_string("automation-paused");
+    run_repo.create_run(paused_previous.clone()).await.unwrap();
+    let mut paused_successor = successor_run("run-paused-2", 2, &paused_previous.id);
+    paused_successor.automation_id = AutomationId::from_string("automation-paused");
+    assert!(run_repo
+        .create_judge_successor_run(
+            &AutomationId::from_string("automation-paused"),
+            &paused_previous.id,
+            paused_successor,
+        )
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

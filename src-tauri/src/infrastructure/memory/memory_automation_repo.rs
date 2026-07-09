@@ -1,10 +1,11 @@
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use ralphx_domain::entities::automation::is_signal_terminal_automation_run;
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::domain::entities::{
@@ -18,15 +19,27 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
+pub type MemoryAutomationState = Arc<RwLock<Vec<Automation>>>;
+
 pub struct MemoryAutomationRepository {
-    automations: RwLock<Vec<Automation>>,
+    automations: MemoryAutomationState,
 }
 
 impl MemoryAutomationRepository {
     pub fn new() -> Self {
-        Self {
-            automations: RwLock::new(Vec::new()),
-        }
+        Self::with_shared_state(Self::new_shared_state())
+    }
+
+    pub fn new_shared_state() -> MemoryAutomationState {
+        Arc::new(RwLock::new(Vec::new()))
+    }
+
+    pub fn with_shared_state(automations: MemoryAutomationState) -> Self {
+        Self { automations }
+    }
+
+    pub fn shared_state(&self) -> MemoryAutomationState {
+        Arc::clone(&self.automations)
     }
 }
 
@@ -274,6 +287,7 @@ impl AutomationRepository for MemoryAutomationRepository {
 }
 
 pub struct MemoryAutomationRunRepository {
+    automation_state: MemoryAutomationState,
     runs: RwLock<Vec<AutomationRun>>,
     #[cfg(test)]
     lose_next_running_to_published_cas: AtomicBool,
@@ -282,8 +296,9 @@ pub struct MemoryAutomationRunRepository {
 }
 
 impl MemoryAutomationRunRepository {
-    pub fn new() -> Self {
+    pub fn new(automation_state: MemoryAutomationState) -> Self {
         Self {
+            automation_state,
             runs: RwLock::new(Vec::new()),
             #[cfg(test)]
             lose_next_running_to_published_cas: AtomicBool::new(false),
@@ -311,11 +326,11 @@ impl MemoryAutomationRunRepository {
                     && is_open_automation_run(run.status, run.judge_state)
             })
     }
-}
 
-impl Default for MemoryAutomationRunRepository {
-    fn default() -> Self {
-        Self::new()
+    fn automation_is_active(automations: &[Automation], automation_id: &AutomationId) -> bool {
+        automations.iter().any(|automation| {
+            automation.id == *automation_id && automation.status == AutomationStatus::Active
+        })
     }
 }
 
@@ -834,12 +849,77 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(Some(run.clone()))
     }
 
+    async fn create_judge_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation judge successor does not match the judged run".to_string(),
+            ));
+        }
+
+        let automations = self.automation_state.read().unwrap();
+        if !Self::automation_is_active(&automations, automation_id) {
+            return Ok(None);
+        }
+
+        let mut runs = self.runs.write().unwrap();
+        let Some(previous) = runs.iter().find(|run| run.id == *previous_run_id) else {
+            return Ok(None);
+        };
+        let is_latest = runs
+            .iter()
+            .filter(|run| run.automation_id == *automation_id)
+            .all(|run| run.run_index <= previous.run_index);
+        if previous.automation_id != *automation_id
+            || !is_latest
+            || previous.judge_state != AutomationJudgeState::Done
+            || !is_signal_terminal_automation_run(previous.status)
+        {
+            return Ok(None);
+        }
+        if runs.iter().any(|existing| {
+            existing.automation_id == successor.automation_id
+                && existing.run_index == successor.run_index
+        }) {
+            return Err(AppError::Conflict(
+                "automation run index already exists".to_string(),
+            ));
+        }
+        if Self::has_conflicting_open_run(&runs, &successor) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+
+        runs.push(successor.clone());
+        Ok(Some(successor))
+    }
+
     async fn skip_judge_and_create_successor_run(
         &self,
         automation_id: &AutomationId,
         previous_run_id: &AutomationRunId,
         successor: AutomationRun,
     ) -> AppResult<Option<AutomationRun>> {
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation skip-judge successor does not match the skipped run".to_string(),
+            ));
+        }
+
+        let automations = self.automation_state.read().unwrap();
+        if !Self::automation_is_active(&automations, automation_id) {
+            return Ok(None);
+        }
+
         let mut runs = self.runs.write().unwrap();
         let Some(previous_position) = runs.iter().position(|run| run.id == *previous_run_id) else {
             return Ok(None);
@@ -851,22 +931,13 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             .all(|run| run.run_index <= previous.run_index);
         if previous.automation_id != *automation_id
             || !is_latest
-            || previous.judge_state != AutomationJudgeState::None
             || !matches!(
-                previous.status,
-                AutomationRunStatus::Merged
-                    | AutomationRunStatus::PrClosed
-                    | AutomationRunStatus::AgentFailed
+                previous.judge_state,
+                AutomationJudgeState::None | AutomationJudgeState::Failed
             )
+            || !is_signal_terminal_automation_run(previous.status)
         {
             return Ok(None);
-        }
-        if successor.automation_id != *automation_id
-            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
-        {
-            return Err(AppError::Validation(
-                "automation skip-judge successor does not match the skipped run".to_string(),
-            ));
         }
         if runs.iter().any(|existing| {
             existing.automation_id == successor.automation_id

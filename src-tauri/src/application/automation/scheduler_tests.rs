@@ -759,7 +759,9 @@ impl ParkedPlanGateScenario {
         plan_artifact_id: &str,
     ) -> Self {
         let automation_repo = Arc::new(MemoryAutomationRepository::new());
-        let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+        let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+            automation_repo.shared_state(),
+        ));
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -803,7 +805,9 @@ impl ParkedPlanGateScenario {
 
     async fn new_running(automation_status: AutomationStatus, plan_artifact_id: &str) -> Self {
         let automation_repo = Arc::new(MemoryAutomationRepository::new());
-        let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+        let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+            automation_repo.shared_state(),
+        ));
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -1464,7 +1468,9 @@ fn automation_scheduler_registry_enforces_per_automation_lease() {
 #[tokio::test]
 async fn automation_scheduler_tick_only_leases_active_automations() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     automation_repo
@@ -1535,7 +1541,9 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
 #[tokio::test]
 async fn automation_scheduler_marks_running_run_published_from_workspace_pr() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -1591,7 +1599,9 @@ async fn automation_scheduler_marks_running_run_published_from_workspace_pr() {
 #[tokio::test]
 async fn automation_scheduler_enables_workspace_auto_merge_preference_for_automatic_pr_merge() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -1651,7 +1661,9 @@ async fn automation_scheduler_enables_workspace_auto_merge_preference_for_automa
 #[tokio::test]
 async fn automation_scheduler_keeps_autofix_disabled_when_automatic_pr_merge_publishes() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -1697,7 +1709,9 @@ async fn automation_scheduler_keeps_autofix_disabled_when_automatic_pr_merge_pub
 #[tokio::test]
 async fn automation_scheduler_does_not_arm_auto_merge_when_publication_cas_loses() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     run_repo.lose_next_running_to_published_cas();
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -1748,7 +1762,9 @@ async fn automation_scheduler_does_not_arm_auto_merge_when_publication_cas_loses
 #[tokio::test]
 async fn automation_scheduler_publishes_when_auto_merge_preference_write_fails() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     workspace_repo.fail_next_pr_supervision_preference_update("workspace repo unavailable");
     let automation_id = AutomationId::from_string("automation-1");
@@ -1799,7 +1815,9 @@ async fn automation_scheduler_publishes_when_auto_merge_preference_write_fails()
 #[tokio::test]
 async fn automation_scheduler_rearms_published_automatic_run_after_crash_window() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -1845,7 +1863,9 @@ async fn automation_scheduler_rearms_published_automatic_run_after_crash_window(
 #[tokio::test]
 async fn automation_scheduler_leaves_auto_merge_preference_untouched_for_manual_pr_merge() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -1897,7 +1917,9 @@ async fn automation_scheduler_leaves_auto_merge_preference_untouched_for_manual_
 #[tokio::test]
 async fn automation_scheduler_provisions_pending_successor_runs() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -1937,7 +1959,9 @@ async fn automation_scheduler_provisions_pending_successor_runs() {
 #[tokio::test]
 async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -1999,7 +2023,9 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
 #[tokio::test]
 async fn automation_scheduler_marks_published_run_closed_from_github_signal() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -2046,7 +2072,9 @@ async fn automation_scheduler_marks_published_run_closed_from_github_signal() {
 #[tokio::test]
 async fn automation_scheduler_pauses_after_bounded_signal_check_errors() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -2109,7 +2137,9 @@ async fn automation_scheduler_pauses_after_bounded_signal_check_errors() {
 async fn automation_scheduler_surfaces_auto_merge_enable_warning_without_signal_penalty() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -2194,7 +2224,9 @@ async fn automation_scheduler_surfaces_auto_merge_enable_warning_without_signal_
 #[tokio::test]
 async fn automation_scheduler_does_not_rewrite_identical_auto_merge_warning() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -2238,7 +2270,9 @@ async fn automation_scheduler_does_not_rewrite_identical_auto_merge_warning() {
 #[tokio::test]
 async fn automation_scheduler_does_not_clobber_unrelated_published_run_error() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
@@ -2290,7 +2324,9 @@ async fn automation_scheduler_does_not_clobber_unrelated_published_run_error() {
 #[tokio::test]
 async fn automation_scheduler_holds_signals_while_automation_is_paused() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -2334,7 +2370,9 @@ async fn automation_scheduler_holds_signals_while_automation_is_paused() {
 #[tokio::test]
 async fn automation_scheduler_times_out_running_run() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -2380,7 +2418,9 @@ async fn automation_scheduler_times_out_running_run() {
 #[tokio::test]
 async fn automation_scheduler_completes_agent_completed_run_from_agent_run_status() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -2427,7 +2467,9 @@ async fn automation_scheduler_completes_agent_completed_run_from_agent_run_statu
 #[tokio::test]
 async fn automation_scheduler_does_not_enable_auto_merge_for_agent_completed_run_without_pr() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -2485,7 +2527,9 @@ async fn automation_scheduler_does_not_enable_auto_merge_for_agent_completed_run
 #[tokio::test]
 async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalization() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2545,7 +2589,9 @@ async fn automation_scheduler_parks_plan_run_before_agent_completed_terminalizat
 #[tokio::test]
 async fn automation_scheduler_sends_one_plan_reminder_after_terminal_turn_without_artifact() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2604,7 +2650,9 @@ async fn automation_scheduler_sends_one_plan_reminder_after_terminal_turn_withou
 async fn automation_scheduler_redelivers_plan_reminder_after_resume_crash_ignores_stale_terminal_agent_run(
 ) {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2666,7 +2714,9 @@ async fn automation_scheduler_redelivers_plan_reminder_after_resume_crash_ignore
 #[tokio::test]
 async fn automation_scheduler_waits_without_reminder_while_launches_are_paused() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2726,7 +2776,9 @@ async fn automation_scheduler_waits_without_reminder_while_launches_are_paused()
 #[tokio::test]
 async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2782,7 +2834,9 @@ async fn automation_scheduler_fails_second_terminal_plan_turn_without_artifact()
 #[tokio::test]
 async fn automation_scheduler_fails_running_run_when_plan_reminder_send_fails() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2843,7 +2897,9 @@ async fn automation_scheduler_fails_running_run_when_plan_reminder_send_fails() 
 #[tokio::test]
 async fn automation_scheduler_suppresses_publication_failures_during_plan_phase() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -2903,7 +2959,9 @@ async fn automation_scheduler_suppresses_publication_failures_during_plan_phase(
 #[tokio::test]
 async fn automation_scheduler_reenters_running_when_awaiting_plan_agent_is_live() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
     let resumer = Arc::new(RecordingResumer::default());
@@ -2963,7 +3021,9 @@ async fn automation_scheduler_reenters_running_when_awaiting_plan_agent_is_live(
 #[tokio::test]
 async fn automation_scheduler_arm_zero_reentry_preserves_live_agent_phase_basis() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -3032,7 +3092,9 @@ async fn automation_scheduler_arm_zero_reentry_preserves_live_agent_phase_basis(
 #[tokio::test]
 async fn automation_scheduler_refreshes_plan_baseline_for_parked_revision_without_live_agent() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -3602,7 +3664,9 @@ async fn automation_scheduler_delivers_matching_plan_approval_once_and_clears_st
 async fn automation_scheduler_redelivers_plan_approval_after_resume_crash_ignores_stale_terminal_agent_run(
 ) {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -5134,7 +5198,9 @@ async fn automation_scheduler_does_not_scan_paused_automation_for_other_reasons(
 #[tokio::test]
 async fn automation_scheduler_marks_plan_phase_agent_failed_when_agent_run_failed() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -5191,7 +5257,9 @@ async fn automation_scheduler_marks_plan_phase_agent_failed_when_agent_run_faile
 #[tokio::test]
 async fn automation_scheduler_marks_plan_phase_cancelled_when_agent_run_cancelled() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
@@ -5262,7 +5330,9 @@ async fn automation_scheduler_marks_plan_phase_cancelled_when_agent_run_cancelle
 #[tokio::test]
 async fn automation_scheduler_running_timeout_prefers_agent_phase_started_at() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -5320,7 +5390,9 @@ async fn automation_scheduler_running_timeout_prefers_agent_phase_started_at() {
 #[tokio::test]
 async fn automation_scheduler_marks_no_changes_publish_outcome_as_agent_failed() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -5366,7 +5438,9 @@ async fn automation_scheduler_fails_pr_merged_run_when_agent_process_died_before
     // pruned (agent_run -> Cancelled) with no publication started must fail promptly on the
     // next tick, not linger Running until the max_run_duration backstop hours later.
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -5421,7 +5495,9 @@ async fn automation_scheduler_keeps_running_pr_merged_run_while_agent_is_alive()
     // A live agent (agent_run Running) with no publication yet must NOT be failed — the run
     // is legitimately in progress.
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -5474,7 +5550,9 @@ async fn automation_scheduler_keeps_running_pr_merged_run_when_agent_completed_a
     // scheduler is intentionally review-unaware, so it MUST NOT fail such a run — doing so
     // would kill healthy runs mid-review. Only a dead agent (Failed/Cancelled) fails here.
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
@@ -5525,7 +5603,9 @@ async fn automation_scheduler_keeps_running_pr_merged_run_when_agent_completed_a
 #[tokio::test]
 async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -5568,7 +5648,9 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
 #[tokio::test]
 async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     let mut active = automation_with_goal_items(automation_id.as_str(), AutomationStatus::Active);
@@ -5629,7 +5711,9 @@ async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
 #[tokio::test]
 async fn automation_scheduler_detaches_judge_without_blocking_other_signal_checks() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let judging_id = AutomationId::from_string("automation-judging");
     let signal_id = AutomationId::from_string("automation-signal");
@@ -5707,7 +5791,9 @@ async fn automation_scheduler_detaches_judge_without_blocking_other_signal_check
 #[tokio::test]
 async fn automation_scheduler_retries_invalid_judge_output_once_then_pauses() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -5771,7 +5857,9 @@ async fn automation_scheduler_retries_invalid_judge_output_once_then_pauses() {
 #[tokio::test]
 async fn automation_scheduler_marks_stale_in_progress_judge_failed() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -5817,7 +5905,9 @@ async fn automation_scheduler_marks_stale_in_progress_judge_failed() {
 #[tokio::test]
 async fn automation_scheduler_redrives_failed_judge_after_resume() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo
@@ -5860,7 +5950,9 @@ async fn automation_scheduler_redrives_failed_judge_after_resume() {
 #[tokio::test]
 async fn automation_scheduler_consumes_stored_continue_verdict_without_duplicate_judge() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
     automation_repo

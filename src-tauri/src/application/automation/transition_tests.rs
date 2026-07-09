@@ -115,7 +115,9 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
 #[tokio::test]
 async fn transition_service_emits_after_successful_automation_status_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service =
         AutomationTransitionService::new(automation_repo.clone(), run_repo, emitter.clone());
@@ -153,7 +155,9 @@ async fn transition_service_emits_after_successful_automation_status_cas() {
 #[tokio::test]
 async fn transition_service_rejects_invalid_automation_transition_without_emit() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service = AutomationTransitionService::new(automation_repo, run_repo, emitter.clone());
 
@@ -174,7 +178,9 @@ async fn transition_service_rejects_invalid_automation_transition_without_emit()
 #[tokio::test]
 async fn transition_service_emits_only_when_run_status_cas_wins() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service =
         AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
@@ -216,7 +222,9 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
 #[tokio::test]
 async fn transition_service_validates_judge_lifecycle_before_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let emitter = Arc::new(RecordingEmitter::default());
     let service =
         AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());

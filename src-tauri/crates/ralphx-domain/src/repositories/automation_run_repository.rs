@@ -182,6 +182,16 @@ pub trait AutomationRunRepository: Send + Sync {
         agent_phase_started_at: Option<DateTime<Utc>>,
     ) -> AppResult<Option<AutomationRun>>;
 
+    /// Atomically insert the judge-created successor for the latest judged terminal run.
+    /// Returns `None` when the previous run is stale, not `Done`, not signal-terminal, or the
+    /// owning automation is no longer active.
+    async fn create_judge_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>>;
+
     /// Atomically mark the latest unjudged terminal run as skipped and insert its successor.
     /// Returns `None` when the previous run is stale, no longer unjudged, or no longer latest.
     async fn skip_judge_and_create_successor_run(
