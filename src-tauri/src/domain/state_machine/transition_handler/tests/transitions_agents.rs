@@ -15,6 +15,25 @@ use crate::domain::state_machine::{
 use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
 use std::sync::Arc;
 
+fn assert_task_runtime_bootstrap_options(
+    options: &[crate::application::chat_service::SendMessageOptions],
+) {
+    let metadata = options
+        .first()
+        .and_then(|options| options.metadata.as_deref())
+        .expect("bootstrap send options should include metadata");
+    let value: serde_json::Value =
+        serde_json::from_str(metadata).expect("bootstrap metadata should be valid JSON");
+
+    assert_eq!(value["hidden_from_ui"], true);
+    assert_eq!(value["source"], "task_runtime_bootstrap");
+    assert_eq!(
+        value.get("recovery_context"),
+        None,
+        "task bootstrap metadata must not reuse recovery semantics"
+    );
+}
+
 async fn build_pre_execution_setup_handler(
     merge_validation_mode: MergeValidationMode,
     detected_analysis: String,
@@ -444,6 +463,8 @@ async fn test_entering_executing_uses_chat_service() {
         chat_service.call_count() > 0,
         "ChatService should have been called"
     );
+    let options = chat_service.get_sent_options().await;
+    assert_task_runtime_bootstrap_options(&options);
 
     // Agent spawner should NOT have been called (we used ChatService instead)
     let spawner_calls = spawner.get_calls();
@@ -517,6 +538,8 @@ async fn test_entering_reviewing_uses_chat_service() {
         chat_service.call_count() > 0,
         "ChatService should have been called"
     );
+    let options = chat_service.get_sent_options().await;
+    assert_task_runtime_bootstrap_options(&options);
 
     // Agent spawner should NOT have been called (we used ChatService instead)
     let spawner_calls = spawner.get_calls();
@@ -574,6 +597,8 @@ async fn test_entering_re_executing_uses_chat_service() {
         chat_service.call_count() > 0,
         "ChatService should have been called"
     );
+    let options = chat_service.get_sent_options().await;
+    assert_task_runtime_bootstrap_options(&options);
 
     // Agent spawner should NOT have been called (we used ChatService instead)
     let spawner_calls = spawner.get_calls();

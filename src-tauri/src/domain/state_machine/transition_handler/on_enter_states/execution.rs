@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::chat_service::task_runtime_bootstrap_send_options;
 use crate::domain::entities::{GitMode, InternalStatus};
 use crate::domain::state_machine::transition_handler::merge_validation;
 use crate::domain::state_machine::transition_handler::{
@@ -695,7 +696,7 @@ impl<'a> TransitionHandler<'a> {
                 crate::domain::entities::ChatContextType::TaskExecution,
                 task_id_str,
                 prompt,
-                Default::default(),
+                task_runtime_bootstrap_send_options(),
             )
             .await
         {

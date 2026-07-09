@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::chat_service::task_runtime_bootstrap_send_options;
 use crate::domain::state_machine::services::ReviewStartResult;
 use crate::domain::state_machine::TransitionHandler;
 
@@ -293,7 +294,7 @@ impl<'a> TransitionHandler<'a> {
                 crate::domain::entities::ChatContextType::Review,
                 task_id,
                 &prompt,
-                Default::default(),
+                task_runtime_bootstrap_send_options(),
             )
             .await;
 

@@ -316,6 +316,23 @@ pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
         })
 }
 
+pub(crate) fn task_runtime_bootstrap_send_options() -> SendMessageOptions {
+    SendMessageOptions {
+        metadata: Some(
+            serde_json::json!({
+                "hidden_from_ui": true,
+                "source": "task_runtime_bootstrap",
+            })
+            .to_string(),
+        ),
+        ..Default::default()
+    }
+}
+
+fn should_emit_message_queued_event(metadata: Option<&str>) -> bool {
+    !message_metadata_hidden_from_ui(metadata)
+}
+
 fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
     let raw = metadata?;
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -1353,7 +1370,7 @@ impl<R: Runtime> AppChatService<R> {
                 .delete(context_type, context_id, &queued.id);
             return Err(error);
         }
-        if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
+        if should_emit_message_queued_event(queued.metadata_override.as_deref()) {
             self.emit_event(
                 "agent:message_queued",
                 AgentMessageQueuedPayload {
@@ -6563,6 +6580,80 @@ mod agent_workspace_send_tests {
         )));
         assert!(!super::message_metadata_hidden_from_ui(Some("not-json")));
         assert!(!super::message_metadata_hidden_from_ui(None));
+    }
+
+    #[test]
+    fn task_runtime_bootstrap_options_hide_user_message_without_recovery_context() {
+        let options = super::task_runtime_bootstrap_send_options();
+        let metadata = options.metadata.as_deref().expect("metadata");
+        let value: serde_json::Value = serde_json::from_str(metadata).expect("metadata json");
+        let persisted =
+            super::persisted_user_metadata(&options).expect("bootstrap metadata should persist");
+
+        assert!(super::message_metadata_hidden_from_ui(Some(metadata)));
+        assert_eq!(persisted, metadata);
+        assert_eq!(value["source"], "task_runtime_bootstrap");
+        assert_eq!(value.get("recovery_context"), None);
+    }
+
+    #[tokio::test]
+    async fn hidden_task_runtime_bootstrap_queue_skips_visible_message_queued_event() {
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+
+        let app = crate::testing::create_mock_app();
+        let handle = app.handle().clone();
+        let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+        handle.listen("agent:message_queued", move |event| {
+            let payload: serde_json::Value =
+                serde_json::from_str(event.payload()).expect("message queued payload");
+            captured_clone.lock().unwrap().push(payload);
+        });
+
+        let state = AppState::new_test();
+        let service = state.build_chat_service_for_runtime(None, Some(handle));
+        let visible = service
+            .enqueue_pending_send(
+                ChatContextType::TaskExecution,
+                "task-visible-queued",
+                "visible queued task message",
+                &SendMessageOptions::default(),
+                Some("conversation-visible".to_string()),
+            )
+            .await
+            .expect("visible message should queue");
+        let hidden_options = super::task_runtime_bootstrap_send_options();
+        let hidden = service
+            .enqueue_pending_send(
+                ChatContextType::TaskExecution,
+                "task-hidden-queued",
+                "Execute task: task-hidden-queued",
+                &hidden_options,
+                Some("conversation-hidden".to_string()),
+            )
+            .await
+            .expect("hidden bootstrap message should queue");
+
+        assert_eq!(
+            hidden.metadata_override.as_deref(),
+            hidden_options.metadata.as_deref()
+        );
+        assert!(super::message_metadata_hidden_from_ui(
+            hidden.metadata_override.as_deref()
+        ));
+
+        let events = captured.lock().unwrap().clone();
+        assert_eq!(
+            events.len(),
+            1,
+            "hidden bootstrap messages must not emit visible queued-message events"
+        );
+        assert_eq!(events[0]["message_id"].as_str(), Some(visible.id.as_str()));
+        assert_eq!(
+            events[0]["content"].as_str(),
+            Some("visible queued task message")
+        );
     }
 
     #[test]
