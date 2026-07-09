@@ -59,9 +59,10 @@ use crate::domain::repositories::{
     ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
+    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
@@ -91,15 +92,15 @@ use crate::infrastructure::memory::{
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
-    MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
-    MemoryQueuedMessageRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
-    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
-    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
-    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
-    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
-    MemoryTicketingStatusCatalogRepository, MemoryValidationRunRepository,
-    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
+    MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
+    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
+    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
+    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
+    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -125,15 +126,15 @@ use crate::infrastructure::sqlite::{
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
-    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
-    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
-    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
-    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
-    SqliteTicketingStatusCatalogRepository, SqliteValidationRunRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
+    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
+    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
+    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
+    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
+    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
+    SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
+    SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -214,6 +215,8 @@ pub struct AppState {
     pub global_execution_settings_repo: Arc<dyn GlobalExecutionSettingsRepository>,
     /// Ideation session repository
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    /// Native plan artifact approval repository
+    pub plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     /// Ideation settings repository
     pub ideation_settings_repo: Arc<dyn IdeationSettingsRepository>,
     /// Delegated specialist session repository
@@ -1223,6 +1226,9 @@ impl AppState {
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
+            )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1475,6 +1481,9 @@ impl AppState {
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
+            )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1634,6 +1643,9 @@ impl AppState {
             global_execution_settings_repo: Arc::new(MemoryGlobalExecutionSettingsRepository::new()),
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
+            )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1804,6 +1816,9 @@ impl AppState {
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
+            )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1968,6 +1983,7 @@ impl AppState {
             execution_settings_repo: Arc::new(MemoryExecutionSettingsRepository::new()),
             global_execution_settings_repo: Arc::new(MemoryGlobalExecutionSettingsRepository::new()),
             ideation_session_repo: Arc::new(MemoryIdeationSessionRepository::new()),
+            plan_approval_repo: Arc::new(MemoryPlanArtifactApprovalRepository::new()),
             delegated_session_repo: Arc::new(MemoryDelegatedSessionRepository::new()),
             agent_task_repo: Arc::new(MemoryAgentTaskRepository::new()),
             agent_conversation_issue_repo: Arc::new(MemoryAgentConversationIssueRepository::new()),

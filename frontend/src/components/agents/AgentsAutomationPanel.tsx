@@ -36,12 +36,14 @@ import {
 } from "@/components/ui/tooltip";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  describeAutomationRunPrState,
   describeAutomationDeleteConsequences,
   describeAutomationStage,
   describeRunFailure,
+  isAutomationRunCancellable,
+  isOpenAutomationRun,
   latestRun,
 } from "@/components/automations/automationStage";
-import { OPEN_AUTOMATION_RUN_STATUS_SET } from "@/components/automations/automationRunStatusSets";
 import {
   AUTOMATION_PHASES_LABEL,
   AUTOMATION_STATUS_LABELS,
@@ -219,24 +221,6 @@ function formatRunSummary(run: AutomationRun | null, maxRuns: number): string {
     return `0 of ${maxRuns}`;
   }
   return `${run.runIndex} of ${maxRuns}`;
-}
-
-function formatPrState(run: AutomationRun | null): string {
-  if (!run) {
-    return "No PR yet";
-  }
-  if (run.status === "awaiting_plan_approval") {
-    return run.prNumber
-      ? `PR #${run.prNumber} · Awaiting plan approval`
-      : "Awaiting plan approval";
-  }
-  const status = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status)
-    ? "Running"
-    : run.status;
-  if (!run.prNumber) {
-    return status;
-  }
-  return `PR #${run.prNumber} · ${status}`;
 }
 
 const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
@@ -514,8 +498,8 @@ function AutomationRunsList({
   return (
     <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
       {ordered.map((run) => {
-        const isOpen = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status);
-        const phaseItem = isOpen ? activeGoalItem : null;
+        const phaseItem = isOpenAutomationRun(run) ? activeGoalItem : null;
+        const isCancellable = isAutomationRunCancellable(run);
         const isCanceling = cancelingRunId === run.id;
         const conversationId = run.conversationId;
         const canOpenPlanGate =
@@ -613,7 +597,7 @@ function AutomationRunsList({
                   {statusPill}
                 </span>
               )}
-              {isOpen && onCancelRun ? (
+              {isCancellable && onCancelRun ? (
                 <button
                   type="button"
                   className="rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold disabled:opacity-50"
@@ -1139,7 +1123,7 @@ export function AgentsAutomationPanel({
         <SummaryRow label="Model" value={formatModel(automation)} />
         <SummaryRow label="Base" value={formatBase(automation)} />
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
-        <SummaryRow label="Current PR" value={formatPrState(run)} />
+        <SummaryRow label="Current PR" value={describeAutomationRunPrState(run)} />
       </div>
 
       <DetailSection title="Runs" testId="agents-automation-runs">

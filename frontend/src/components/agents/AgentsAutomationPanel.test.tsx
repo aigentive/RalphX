@@ -207,6 +207,11 @@ const automationRunFixture = (
   planJudgeState: "none",
   planRevisionRound: 0,
   planRevisionPending: false,
+  planPhase: false,
+  planArtifactId: null,
+  planApprovedBy: null,
+  planApprovedArtifactVersion: null,
+  planApprovedAt: null,
   conversationId: "conversation-1",
   runPrompt: "Continue the release automation.",
   promptAuthor: "judge",
@@ -335,7 +340,7 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByText("Release automation")).toBeInTheDocument();
     expect(screen.getByText("Approved")).toBeInTheDocument();
     expect(screen.getByText("3 of 25")).toBeInTheDocument();
-    expect(screen.getByText("PR #593 · Running")).toBeInTheDocument();
+    expect(screen.getByText("Current PR #593")).toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-goal")).toHaveTextContent(
       "Ship the remaining release tasks.",
     );
@@ -477,6 +482,7 @@ describe("AgentsAutomationPanel", () => {
             id: "run-terminal",
             runIndex: 3,
             status: "merged",
+            judgeState: "done",
             prNumber: 103,
           }),
         ],

@@ -93,6 +93,11 @@ export interface AutomationRun {
   planJudgeState: AutomationPlanJudgeState;
   planRevisionRound: number;
   planRevisionPending: boolean;
+  planPhase: boolean;
+  planArtifactId: string | null;
+  planApprovedBy: string | null;
+  planApprovedArtifactVersion: number | null;
+  planApprovedAt: string | null;
   conversationId: string | null;
   runPrompt: string;
   promptAuthor: AutomationPromptAuthor;

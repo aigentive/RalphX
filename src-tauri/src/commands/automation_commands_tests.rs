@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 use std::process::Command;
@@ -14,12 +15,35 @@ use crate::application::automation::api::{
 use crate::application::automation::service::{AutomationDetail, AutomationScheduleOutcome};
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AgentRun, Automation, AutomationId, AutomationJudgeState,
-    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatContextType, ChatConversationId, Project, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ArtifactId, Automation,
+    AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, Project, ProjectId,
 };
+use crate::domain::repositories::{PlanArtifactApproval, PlanArtifactApprovalRepository};
 use crate::error::AppError;
+
+struct FailingPlanApprovalRepository;
+
+#[async_trait]
+impl PlanArtifactApprovalRepository for FailingPlanApprovalRepository {
+    async fn get_by_session(
+        &self,
+        _session_id: &IdeationSessionId,
+    ) -> crate::error::AppResult<Option<PlanArtifactApproval>> {
+        Err(AppError::Database(
+            "approval repository unavailable".to_string(),
+        ))
+    }
+
+    async fn delete_by_session(
+        &self,
+        _session_id: &IdeationSessionId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
+}
 
 fn automation() -> Automation {
     let now = Utc::now();
@@ -156,6 +180,67 @@ fn setup_git_project() -> (tempfile::TempDir, Project) {
     (temp, project)
 }
 
+async fn link_run_to_plan_session(
+    state: &AppState,
+    automation: &Automation,
+    conversation_id: &ChatConversationId,
+    workspace_mode: AgentConversationWorkspaceMode,
+    artifact_id: Option<&str>,
+) -> IdeationSessionId {
+    let session_id = IdeationSessionId::from_string("plan-session-1");
+    let mut session = IdeationSession::new(automation.project_id.clone());
+    session.id = session_id.clone();
+    session.plan_artifact_id = artifact_id.map(ArtifactId::from_string);
+    state.ideation_session_repo.create(session).await.unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        automation.project_id.clone(),
+        workspace_mode,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        String::new(),
+        None,
+        None,
+        "ralphx/automation-run-1".to_string(),
+        "/tmp/ralphx-automation-run-1".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session_id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    session_id
+}
+
+async fn insert_plan_approval(
+    state: &AppState,
+    session_id: &IdeationSessionId,
+    artifact_id: &str,
+    version: i64,
+    approved_at: &str,
+    approved_by: &str,
+) {
+    let session_id = session_id.as_str().to_string();
+    let artifact_id = artifact_id.to_string();
+    let approved_at = approved_at.to_string();
+    let approved_by = approved_by.to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "INSERT INTO plan_artifact_approvals (
+                    session_id, artifact_id, artifact_version, status, approved_at, approved_by
+                 ) VALUES (?1, ?2, ?3, 'approved', ?4, ?5)",
+                rusqlite::params![session_id, artifact_id, version, approved_at, approved_by],
+            )
+            .map(|_| ())
+            .map_err(AppError::from)
+        })
+        .await
+        .unwrap();
+}
+
 #[test]
 fn command_inputs_accept_camel_case_wrapped_payloads() {
     let input: UpdateAutomationSettingsInput = serde_json::from_value(json!({
@@ -284,6 +369,135 @@ async fn automation_detail_response_aggregates_usage_from_run_conversations() {
     assert_eq!(response.usage.cache_creation_tokens, 7);
     assert_eq!(response.usage.cache_read_tokens, 9);
     assert_eq!(response.usage.estimated_usd, Some(0.06));
+}
+
+#[tokio::test]
+async fn automation_detail_response_exposes_open_run_plan_gate_fields() {
+    let state = AppState::new_sqlite_test();
+    let automation = automation();
+    let conversation_id = ChatConversationId::from_string("conversation-plan-open");
+    let mut run = automation_run(&automation.id);
+    run.status = AutomationRunStatus::AwaitingPlanApproval;
+    run.judge_state = AutomationJudgeState::None;
+    run.conversation_id = Some(conversation_id.clone());
+
+    let session_id = link_run_to_plan_session(
+        &state,
+        &automation,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Plan,
+        Some("plan-artifact-1"),
+    )
+    .await;
+    insert_plan_approval(
+        &state,
+        &session_id,
+        "plan-artifact-1",
+        3,
+        "2026-07-09T13:45:00Z",
+        "judge",
+    )
+    .await;
+
+    let response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation,
+            runs: vec![run],
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let run = &response.runs[0];
+
+    assert!(run.plan_phase);
+    assert_eq!(run.plan_artifact_id.as_deref(), Some("plan-artifact-1"));
+    assert_eq!(run.plan_approved_by.as_deref(), Some("judge"));
+    assert_eq!(run.plan_approved_artifact_version, Some(3));
+    assert_eq!(
+        run.plan_approved_at.as_deref(),
+        Some("2026-07-09T13:45:00Z")
+    );
+}
+
+#[tokio::test]
+async fn automation_detail_response_keeps_terminal_run_plan_artifact_auditable_only() {
+    let state = AppState::new_sqlite_test();
+    let automation = automation();
+    let conversation_id = ChatConversationId::from_string("conversation-plan-terminal");
+    let mut run = automation_run(&automation.id);
+    run.status = AutomationRunStatus::Merged;
+    run.judge_state = AutomationJudgeState::Done;
+    run.conversation_id = Some(conversation_id.clone());
+
+    let session_id = link_run_to_plan_session(
+        &state,
+        &automation,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Plan,
+        Some("plan-artifact-1"),
+    )
+    .await;
+    insert_plan_approval(
+        &state,
+        &session_id,
+        "plan-artifact-1",
+        3,
+        "2026-07-09T13:45:00Z",
+        "user",
+    )
+    .await;
+
+    let response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation,
+            runs: vec![run],
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let run = &response.runs[0];
+
+    assert!(!run.plan_phase);
+    assert_eq!(run.plan_artifact_id.as_deref(), Some("plan-artifact-1"));
+    assert!(run.plan_approved_by.is_none());
+    assert!(run.plan_approved_artifact_version.is_none());
+    assert!(run.plan_approved_at.is_none());
+}
+
+#[tokio::test]
+async fn automation_detail_response_fails_closed_when_open_run_approval_join_fails() {
+    let mut state = AppState::new_test();
+    state.plan_approval_repo = std::sync::Arc::new(FailingPlanApprovalRepository);
+    let automation = automation();
+    let conversation_id = ChatConversationId::from_string("conversation-plan-open");
+    let mut run = automation_run(&automation.id);
+    run.status = AutomationRunStatus::AwaitingPlanApproval;
+    run.conversation_id = Some(conversation_id.clone());
+
+    link_run_to_plan_session(
+        &state,
+        &automation,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Plan,
+        Some("plan-artifact-1"),
+    )
+    .await;
+
+    let error = automation_detail_response_for_state(
+        AutomationDetail {
+            automation,
+            runs: vec![run],
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("approval repository unavailable"));
 }
 
 #[tokio::test]

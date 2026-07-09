@@ -26,6 +26,7 @@ import {
 } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  AUTOMATION_RUN_STATUS_LABELS,
   describeAutomationDeleteConsequences,
   describeAutomationStage,
   describeRunFailure,
@@ -40,7 +41,6 @@ import {
   parseAutomationGoalItems,
   type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
-import { OPEN_AUTOMATION_RUN_STATUS_SET } from "@/components/automations/automationRunStatusSets";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
 import { AutomationRunPhaseChip } from "@/components/automations/AutomationRunPhaseChip";
 import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
@@ -73,19 +73,6 @@ interface AutomationDetailViewProps {
 }
 
 type JsonRecord = Record<string, unknown>;
-
-const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
-  pending: "Running",
-  provisioning: "Running",
-  running: "Running",
-  awaiting_plan_approval: "Awaiting plan approval",
-  published: "Running",
-  completed: "Completed",
-  merged: "Merged",
-  pr_closed: "PR closed",
-  agent_failed: "Agent failed",
-  cancelled: "Cancelled",
-};
 
 const PROMPT_AUTHOR_LABELS: Record<AutomationRun["promptAuthor"], string> = {
   setup_agent: "Setup agent",
@@ -571,9 +558,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
   const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
   const failureReason = describeRunFailure(run);
   const runOpen = isOpenAutomationRun(run);
-  const phaseItem = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status)
-    ? activeGoalItem
-    : null;
+  const phaseItem = runOpen ? activeGoalItem : null;
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       onOpenRunConversation?.(projectId, run.conversationId);
@@ -611,7 +596,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
             <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
               Run {run.runIndex}
             </span>
-            <Pill label={RUN_STATUS_LABELS[run.status]} status={run.status} />
+            <Pill label={AUTOMATION_RUN_STATUS_LABELS[run.status]} status={run.status} />
             <Pill label={`Judge ${run.judgeState}`} status={run.judgeState} />
             {liveStageLabel && (
               <RunStatusChip

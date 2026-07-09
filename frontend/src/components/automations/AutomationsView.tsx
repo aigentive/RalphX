@@ -6,10 +6,10 @@ import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  AUTOMATION_RUN_STATUS_LABELS,
   describeAutomationStage,
   latestRun,
 } from "@/components/automations/automationStage";
-import { OPEN_AUTOMATION_RUN_STATUS_SET } from "@/components/automations/automationRunStatusSets";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
@@ -70,10 +70,7 @@ function formatLastRun(run: AutomationRun | null): string {
   if (run.status === "awaiting_plan_approval") {
     return `Run ${run.runIndex} Awaiting plan approval${pr}`;
   }
-  const status = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status)
-    ? "Running"
-    : run.status;
-  return `Run ${run.runIndex} ${status}${pr}`;
+  return `Run ${run.runIndex} ${AUTOMATION_RUN_STATUS_LABELS[run.status]}${pr}`;
 }
 
 function AutomationsListSkeleton() {

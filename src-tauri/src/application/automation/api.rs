@@ -10,7 +10,13 @@ use crate::application::automation::transition::{
     TauriAutomationEventEmitter,
 };
 use crate::application::AppState;
-use crate::domain::entities::{AgentRun, Automation, AutomationRun};
+use crate::domain::entities::{
+    is_open_automation_run, AgentConversationWorkspaceMode, AgentRun, Automation, AutomationRun,
+};
+
+use super::plan_gate::{
+    current_plan_artifact_id_for_workspace, matching_plan_approval_for_workspace,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AutomationResponse {
@@ -56,6 +62,11 @@ pub struct AutomationRunResponse {
     pub plan_judge_state: String,
     pub plan_revision_round: i64,
     pub plan_revision_pending: bool,
+    pub plan_phase: bool,
+    pub plan_artifact_id: Option<String>,
+    pub plan_approved_by: Option<String>,
+    pub plan_approved_artifact_version: Option<u32>,
+    pub plan_approved_at: Option<String>,
     pub conversation_id: Option<String>,
     pub run_prompt: String,
     pub prompt_author: String,
@@ -145,7 +156,12 @@ pub async fn automation_detail_response_for_state(
     state: &AppState,
 ) -> crate::error::AppResult<AutomationDetailResponse> {
     let usage = automation_usage_for_runs(&detail.runs, state).await?;
-    Ok(AutomationDetailResponse::from_detail(detail, usage))
+    let runs = automation_run_responses_for_state(detail.runs, state).await?;
+    Ok(AutomationDetailResponse {
+        automation: AutomationResponse::from(detail.automation),
+        runs,
+        usage,
+    })
 }
 
 async fn automation_usage_for_runs(
@@ -166,6 +182,69 @@ async fn automation_usage_for_runs(
         }
     }
     Ok(usage)
+}
+
+#[derive(Default)]
+struct AutomationRunPlanReadModel {
+    plan_phase: bool,
+    plan_artifact_id: Option<String>,
+    plan_approved_by: Option<String>,
+    plan_approved_artifact_version: Option<u32>,
+    plan_approved_at: Option<String>,
+}
+
+async fn automation_run_responses_for_state(
+    runs: Vec<AutomationRun>,
+    state: &AppState,
+) -> crate::error::AppResult<Vec<AutomationRunResponse>> {
+    let mut responses = Vec::with_capacity(runs.len());
+    for run in runs {
+        let plan = automation_run_plan_read_model_for_state(&run, state).await?;
+        responses.push(AutomationRunResponse::from_run_with_plan_read_model(
+            run, plan,
+        ));
+    }
+    Ok(responses)
+}
+
+async fn automation_run_plan_read_model_for_state(
+    run: &AutomationRun,
+    state: &AppState,
+) -> crate::error::AppResult<AutomationRunPlanReadModel> {
+    let Some(conversation_id) = run.conversation_id.as_ref() else {
+        return Ok(AutomationRunPlanReadModel::default());
+    };
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+    else {
+        return Ok(AutomationRunPlanReadModel::default());
+    };
+
+    let open = is_open_automation_run(run.status, run.judge_state);
+    let plan_artifact_id =
+        current_plan_artifact_id_for_workspace(&state.ideation_session_repo, &workspace).await?;
+    let approval = if open {
+        matching_plan_approval_for_workspace(
+            &state.ideation_session_repo,
+            &state.plan_approval_repo,
+            &workspace,
+        )
+        .await?
+    } else {
+        None
+    };
+
+    Ok(AutomationRunPlanReadModel {
+        plan_phase: open && workspace.mode == AgentConversationWorkspaceMode::Plan,
+        plan_artifact_id,
+        plan_approved_by: approval
+            .as_ref()
+            .map(|approval| approval.approved_by.clone()),
+        plan_approved_artifact_version: approval.as_ref().map(|approval| approval.artifact_version),
+        plan_approved_at: approval.map(|approval| approval.approved_at),
+    })
 }
 
 impl From<Automation> for AutomationResponse {
@@ -216,6 +295,11 @@ impl From<AutomationRun> for AutomationRunResponse {
             plan_judge_state: run.plan_judge_state.as_str().to_string(),
             plan_revision_round: run.plan_revision_round,
             plan_revision_pending: run.plan_pending_instructions.is_some(),
+            plan_phase: false,
+            plan_artifact_id: None,
+            plan_approved_by: None,
+            plan_approved_artifact_version: None,
+            plan_approved_at: None,
             conversation_id: run.conversation_id.map(|id| id.as_str()),
             run_prompt: run.run_prompt,
             prompt_author: run.prompt_author.as_str().to_string(),
@@ -245,6 +329,18 @@ impl From<AutomationRun> for AutomationRunResponse {
     }
 }
 
+impl AutomationRunResponse {
+    fn from_run_with_plan_read_model(run: AutomationRun, plan: AutomationRunPlanReadModel) -> Self {
+        let mut response = Self::from(run);
+        response.plan_phase = plan.plan_phase;
+        response.plan_artifact_id = plan.plan_artifact_id;
+        response.plan_approved_by = plan.plan_approved_by;
+        response.plan_approved_artifact_version = plan.plan_approved_artifact_version;
+        response.plan_approved_at = plan.plan_approved_at;
+        response
+    }
+}
+
 impl AutomationUsageResponse {
     fn add_agent_run(&mut self, run: &AgentRun) {
         self.input_tokens += run.input_tokens.unwrap_or(0);
@@ -266,26 +362,6 @@ impl Default for AutomationUsageResponse {
             cache_read_tokens: 0,
             estimated_usd: None,
         }
-    }
-}
-
-impl AutomationDetailResponse {
-    fn from_detail(detail: AutomationDetail, usage: AutomationUsageResponse) -> Self {
-        Self {
-            automation: AutomationResponse::from(detail.automation),
-            runs: detail
-                .runs
-                .into_iter()
-                .map(AutomationRunResponse::from)
-                .collect(),
-            usage,
-        }
-    }
-}
-
-impl From<AutomationDetail> for AutomationDetailResponse {
-    fn from(detail: AutomationDetail) -> Self {
-        Self::from_detail(detail, AutomationUsageResponse::default())
     }
 }
 

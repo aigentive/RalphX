@@ -56,6 +56,11 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     planJudgeState: "none",
     planRevisionRound: 0,
     planRevisionPending: false,
+    planPhase: false,
+    planArtifactId: null,
+    planApprovedBy: null,
+    planApprovedArtifactVersion: null,
+    planApprovedAt: null,
     conversationId: "conversation-1",
     runPrompt: "Continue the automation.",
     promptAuthor: "judge",
@@ -124,6 +129,12 @@ describe("describeAutomationStage", () => {
     expect(
       describeAutomationStage(automation(), run({ runIndex: 4, status: "running" })),
     ).toBe("Run 4 in progress");
+    expect(
+      describeAutomationStage(
+        automation(),
+        run({ runIndex: 4, status: "running", planPhase: true }),
+      ),
+    ).toBe("Run 4 planning");
   });
 
   it("describes parked plan-approval runs before judge fallbacks", () => {
@@ -142,11 +153,28 @@ describe("describeAutomationStage", () => {
         automation(),
         run({
           status: "awaiting_plan_approval",
+          planApprovedAt: "2026-07-09T13:45:00Z",
+          planJudgeState: "none",
+          judgeState: "none",
+        }),
+      ),
+    ).toBe("Approved — resuming");
+    expect(
+      describeAutomationStage(
+        automation(),
+        run({
+          status: "awaiting_plan_approval",
           planJudgeState: "none",
           judgeState: "none",
         }),
       ),
     ).toBe("Awaiting plan approval");
+  });
+
+  it("does not describe cancelled runs as waiting for a judge", () => {
+    expect(
+      describeAutomationStage(automation(), run({ status: "cancelled", judgeState: "none" })),
+    ).toBe("Cancelled");
   });
 
   it("describes published runs waiting for a PR merge", () => {
