@@ -434,7 +434,7 @@ export interface ConversationListPageResponse {
 export type AgentSidebarPublicationState =
   "active" | "draft" | "merged" | "closed" | "uncommitted" | "unpushed";
 
-export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarGroupBy = "project" | "publication" | "automation";
 export type AgentSidebarSort = "latest" | "az" | "za";
 
 export interface AgentSidebarConversationsInput {

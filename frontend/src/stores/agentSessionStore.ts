@@ -33,7 +33,7 @@ export type AgentArtifactTab =
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
-export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarGroupBy = "project" | "publication" | "automation";
 export type AgentSidebarPublicationState =
   | "active"
   | "draft"

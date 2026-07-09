@@ -368,13 +368,13 @@ describe("agentSessionStore", () => {
         togglePinnedConversation,
       } = useAgentSessionStore.getState();
 
-      setSidebarGroupBy("publication");
+      setSidebarGroupBy("automation");
       setSidebarProjectFilterIds(["project-2"]);
       setSidebarPublicationStateFilters(["merged", "closed"]);
       togglePinnedConversation("conversation-1");
 
       let s = useAgentSessionStore.getState();
-      expect(s.sidebarGroupBy).toBe("publication");
+      expect(s.sidebarGroupBy).toBe("automation");
       expect(s.sidebarProjectFilterIds).toEqual(["project-2"]);
       expect(s.sidebarPublicationStateFilters).toEqual(["merged", "closed"]);
       expect(s.pinnedConversationIds["conversation-1"]).toBe(true);
