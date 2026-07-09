@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
-    AutomationJudgeVerdict,
+    revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
+    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
 };
 use crate::application::automation::plan_gate::{
     is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
@@ -484,17 +484,35 @@ impl AutomationService {
                 None,
             )
             .await?;
-        if let Some(run) = self.run_repo.latest_for_automation(id).await? {
+        let mut first_cancel_error = None;
+        for run in self.run_repo.list_for_automation(id).await? {
             if run_status_is_cancellable(run.status) {
-                self.transition_run_status_or_conflict(
-                    &run.id,
-                    run.status,
-                    AutomationRunStatus::Cancelled,
-                    None,
-                    None,
-                )
-                .await?;
+                if let Err(error) = self
+                    .transition_run_status_or_conflict(
+                        &run.id,
+                        run.status,
+                        AutomationRunStatus::Cancelled,
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        automation_id = %id,
+                        run_id = %run.id,
+                        error = %error,
+                        "Failed to cancel automation run during stop sweep"
+                    );
+                    if first_cancel_error.is_none() {
+                        first_cancel_error = Some(error);
+                    }
+                }
             }
+        }
+        self.sync_goal_items_for_closed_run_without_successor(id)
+            .await;
+        if let Some(error) = first_cancel_error {
+            return Err(error);
         }
         Ok(stopped)
     }
@@ -703,6 +721,8 @@ impl AutomationService {
             self.disarm_cancelled_run_auto_merge(&run).await;
         }
         self.run_repo.clear_plan_judge_state(run_id).await?;
+        self.sync_goal_items_for_closed_run_without_successor(id)
+            .await;
         Ok(cancelled)
     }
 
@@ -1063,6 +1083,73 @@ impl AutomationService {
             .await
     }
 
+    pub(crate) async fn sync_goal_items_for_closed_run_without_successor(
+        &self,
+        automation_id: &AutomationId,
+    ) {
+        let automation = match self.automation_repo.get_by_id(automation_id).await {
+            Ok(Some(automation)) => automation,
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    "Failed to sync automation goal items after run close: automation not found"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    error = %error,
+                    "Failed to sync automation goal items after run close"
+                );
+                return;
+            }
+        };
+
+        let updated_goal_items_json =
+            match revert_in_progress_goal_items_to_pending(automation.goal_items_json.as_deref()) {
+                Ok(Some(updated)) => updated,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation_id,
+                        error = %error,
+                        "Failed to sync automation goal items after run close"
+                    );
+                    return;
+                }
+            };
+
+        match self
+            .automation_repo
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                automation.goal_items_json,
+                Some(updated_goal_items_json),
+            )
+            .await
+        {
+            Ok(Some(_)) => {
+                self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                    automation_id: automation_id.clone(),
+                });
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    "Skipped automation goal item close sync because stored goal items changed"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    error = %error,
+                    "Failed to sync automation goal items after run close"
+                );
+            }
+        }
+    }
+
     async fn require_automation(&self, id: &AutomationId) -> AppResult<Automation> {
         self.automation_repo
             .get_by_id(id)
@@ -1142,9 +1229,18 @@ impl AutomationService {
     ) -> AppResult<AutomationJudgeApplyOutcome> {
         if applied_goal_items.as_deref() != input.automation.goal_items_json.as_deref() {
             self.automation_repo
-                .update_goal_items_json(&input.automation.id, applied_goal_items.clone())
+                .update_goal_items_json_if_unchanged(
+                    &input.automation.id,
+                    input.automation.goal_items_json.clone(),
+                    applied_goal_items.clone(),
+                )
                 .await?
-                .ok_or_else(|| automation_not_found(&input.automation.id))?;
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "automation {} goal items changed before judge verdict could apply",
+                        input.automation.id.as_str()
+                    ))
+                })?;
         }
 
         match input.verdict.decision {
@@ -1161,6 +1257,8 @@ impl AutomationService {
                         ),
                     )
                     .await?;
+                    self.sync_goal_items_for_closed_run_without_successor(&input.automation.id)
+                        .await;
                     return Ok(AutomationJudgeApplyOutcome {
                         successor_run: None,
                         terminal_automation_status: Some(AutomationStatus::Paused),
@@ -1234,6 +1332,8 @@ impl AutomationService {
                     Some(input.verdict.reason.clone()),
                 )
                 .await?;
+                self.sync_goal_items_for_closed_run_without_successor(&input.automation.id)
+                    .await;
                 Ok(AutomationJudgeApplyOutcome {
                     successor_run: None,
                     terminal_automation_status: Some(AutomationStatus::Paused),
@@ -1273,6 +1373,8 @@ impl AutomationService {
                 Some("Automation reached max_runs before scheduling a successor".to_string()),
             )
             .await?;
+            self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                .await;
             return Ok(SuccessorReadiness::NotScheduled(Box::new(
                 successor_not_scheduled("max_runs_exhausted"),
             )));
@@ -1289,6 +1391,8 @@ impl AutomationService {
                 ),
             )
             .await?;
+            self.sync_goal_items_for_closed_run_without_successor(&automation.id)
+                .await;
             return Ok(SuccessorReadiness::NotScheduled(Box::new(
                 successor_not_scheduled("max_consecutive_failures"),
             )));

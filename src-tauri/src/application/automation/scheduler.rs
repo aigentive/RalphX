@@ -1312,7 +1312,8 @@ impl AutomationJudgeTask {
         {
             return Ok(false);
         }
-        self.transition_service
+        let paused = self
+            .transition_service
             .transition_automation_status(
                 &automation.id,
                 AutomationStatus::Active,
@@ -1320,7 +1321,13 @@ impl AutomationJudgeTask {
                 Some("judge_failed".to_string()),
                 Some(detail),
             )
-            .await
+            .await?;
+        if paused {
+            self.service
+                .sync_goal_items_for_closed_run_without_successor(&automation.id)
+                .await;
+        }
+        Ok(paused)
     }
 }
 
@@ -1721,6 +1728,9 @@ impl AutomationScheduler {
                         .await?
                     {
                         summary.failed_runs += 1;
+                        self.service
+                            .sync_goal_items_for_closed_run_without_successor(&automation.id)
+                            .await;
                     }
                     return Ok(());
                 }
@@ -1861,6 +1871,9 @@ impl AutomationScheduler {
                     .await?
                 {
                     summary.failed_runs += 1;
+                    self.service
+                        .sync_goal_items_for_closed_run_without_successor(&automation.id)
+                        .await;
                 }
             }
             Some(AgentRunStatus::Completed) => {
@@ -2734,6 +2747,9 @@ impl AutomationScheduler {
                 .await?
             {
                 summary.paused_automations += 1;
+                self.service
+                    .sync_goal_items_for_closed_run_without_successor(&automation.id)
+                    .await;
             }
         }
         Ok(())

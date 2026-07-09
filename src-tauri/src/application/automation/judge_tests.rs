@@ -4,10 +4,11 @@ use serde_json::json;
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
     automation_judge_loop_suspected, build_automation_judge_prompt,
-    build_automation_run_context_block, parse_automation_judge_verdict, AutomationGoalItemStatus,
-    AutomationJudgeAttachmentContext, AutomationJudgeDecision, AutomationJudgeItemStatusUpdate,
-    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
-    BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
+    build_automation_run_context_block, mark_current_goal_item_in_progress,
+    parse_automation_judge_verdict, AutomationGoalItemStatus, AutomationJudgeAttachmentContext,
+    AutomationJudgeDecision, AutomationJudgeItemStatusUpdate, AutomationJudgeNextBaseBranch,
+    AutomationJudgeValidationContext, AutomationJudgeVerdict, BuildAutomationJudgePromptInput,
+    AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
@@ -479,6 +480,36 @@ fn applies_all_goal_item_status_variants_and_rejects_missing_storage() {
     }];
     let error = apply_updated_item_statuses(Some(&goal_items), Some(&unmatched)).unwrap_err();
     assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn start_mark_treats_missing_status_as_pending_current_item() {
+    let goal_items = json!([
+        { "id": "item-1", "title": "Implicit pending" },
+        { "id": "item-2", "title": "Later", "status": "pending" }
+    ])
+    .to_string();
+
+    let updated = mark_current_goal_item_in_progress(Some(&goal_items))
+        .unwrap()
+        .expect("implicit pending item should be marked");
+    let value: serde_json::Value = serde_json::from_str(&updated).unwrap();
+
+    assert_eq!(value[0]["status"], "in_progress");
+    assert_eq!(value[1]["status"], "pending");
+}
+
+#[test]
+fn start_mark_does_not_create_second_in_progress_item() {
+    let goal_items = json!([
+        { "id": "item-1", "title": "First", "status": "pending" },
+        { "id": "item-2", "title": "Already active", "status": "in_progress" }
+    ])
+    .to_string();
+
+    let updated = mark_current_goal_item_in_progress(Some(&goal_items)).unwrap();
+
+    assert_eq!(updated, None);
 }
 
 #[test]

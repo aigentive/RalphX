@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::entities::{
-    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode,
-    AutomationStatus, ProjectId,
+    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
+    ProjectId,
 };
 use crate::error::AppResult;
 
@@ -64,6 +64,13 @@ pub trait AutomationRepository: Send + Sync {
     async fn update_goal_items_json(
         &self,
         id: &AutomationId,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>>;
+
+    async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
         goal_items_json: Option<String>,
     ) -> AppResult<Option<Automation>>;
 

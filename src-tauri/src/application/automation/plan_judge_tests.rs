@@ -159,6 +159,33 @@ fn plan_judge_prompt_includes_budgeted_sections_current_phase_and_artifact_pin()
 }
 
 #[test]
+fn plan_judge_prompt_uses_current_goal_item_without_id() {
+    let mut automation = automation_with_goal_items();
+    automation.goal_items_json = Some(
+        json!([
+            { "title": "No id but current", "status": "pending" },
+            { "id": "item-2", "title": "Later", "status": "pending" }
+        ])
+        .to_string(),
+    );
+    let run = automation_run();
+
+    let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &automation,
+        run: &run,
+        evaluated_artifact_id: "plan-artifact-1",
+        plan_content: "Plan body.",
+        verification_context: None,
+        spec_attachments: &[],
+        previous_verdict_json: None,
+    })
+    .unwrap();
+
+    assert!(prompt.contains("\"currentPhase\""));
+    assert!(prompt.contains("\"title\": \"No id but current\""));
+}
+
+#[test]
 fn plan_judge_retry_instruction_respects_prompt_budget() {
     let automation = automation_with_goal_items();
     let run = automation_run();

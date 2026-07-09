@@ -285,6 +285,47 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
 }
 
 #[tokio::test]
+async fn memory_automation_repo_goal_items_cas_matches_only_expected_json() {
+    let repo = MemoryAutomationRepository::new();
+    let mut automation = automation("automation-1", "project-1", AutomationStatus::Draft);
+    automation.goal_items_json = Some(r#"[{"id":"item-1","status":"pending"}]"#.to_string());
+    repo.create(automation.clone()).await.unwrap();
+
+    let updated = repo
+        .update_goal_items_json_if_unchanged(
+            &automation.id,
+            automation.goal_items_json.clone(),
+            Some(r#"[{"id":"item-1","status":"in_progress"}]"#.to_string()),
+        )
+        .await
+        .unwrap()
+        .expect("expected JSON should match");
+    assert_eq!(
+        updated.goal_items_json.as_deref(),
+        Some(r#"[{"id":"item-1","status":"in_progress"}]"#)
+    );
+
+    assert!(repo
+        .update_goal_items_json_if_unchanged(
+            &automation.id,
+            automation.goal_items_json.clone(),
+            Some(r#"[{"id":"item-1","status":"done"}]"#.to_string()),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_by_id(&automation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .goal_items_json
+            .as_deref(),
+        Some(r#"[{"id":"item-1","status":"in_progress"}]"#)
+    );
+}
+
+#[tokio::test]
 async fn memory_run_repo_enforces_open_run_single_flight() {
     let repo = Arc::new(MemoryAutomationRunRepository::new());
     repo.create_run(run(

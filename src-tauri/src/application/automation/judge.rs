@@ -342,6 +342,67 @@ pub fn apply_updated_item_statuses(
         .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
 }
 
+pub(crate) fn mark_current_goal_item_in_progress(
+    goal_items_json: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(goal_items_json) = goal_items_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut value = parse_goal_items_json(goal_items_json)?;
+    if goal_items_contain_status(&value, AutomationGoalItemStatus::InProgress.as_str()) {
+        return Ok(None);
+    }
+    let Some(current) = find_current_goal_item(&value) else {
+        return Ok(None);
+    };
+
+    let updates_by_id = BTreeMap::from([(
+        current.id,
+        AutomationGoalItemStatus::InProgress.as_str().to_string(),
+    )]);
+    if apply_goal_item_updates(&mut value, &updates_by_id) == 0 {
+        return Ok(None);
+    }
+    serde_json::to_string(&value)
+        .map(Some)
+        .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
+}
+
+pub(crate) fn revert_in_progress_goal_items_to_pending(
+    goal_items_json: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(goal_items_json) = goal_items_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut value = parse_goal_items_json(goal_items_json)?;
+    let mut in_progress_ids = Vec::new();
+    collect_goal_item_ids_with_status(
+        &value,
+        AutomationGoalItemStatus::InProgress.as_str(),
+        &mut in_progress_ids,
+    );
+    if in_progress_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let updates_by_id = in_progress_ids
+        .into_iter()
+        .map(|id| (id, AutomationGoalItemStatus::Pending.as_str().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    if apply_goal_item_updates(&mut value, &updates_by_id) == 0 {
+        return Ok(None);
+    }
+    serde_json::to_string(&value)
+        .map(Some)
+        .map_err(|error| AppError::Validation(format!("failed to serialize goal items: {error}")))
+}
+
 pub fn automation_judge_loop_suspected(
     previous_run: &AutomationRun,
     verdict: &AutomationJudgeVerdict,
@@ -483,6 +544,15 @@ fn collect_goal_item_ids(goal_items_json: Option<&str>) -> AppResult<HashSet<Str
     Ok(ids)
 }
 
+struct CurrentGoalItem {
+    id: String,
+}
+
+struct CurrentGoalItemCandidate {
+    id: Option<String>,
+    value: Value,
+}
+
 fn parse_goal_items_json(goal_items_json: &str) -> AppResult<Value> {
     serde_json::from_str::<Value>(goal_items_json).map_err(|error| {
         AppError::Validation(format!(
@@ -504,6 +574,105 @@ fn collect_ids_from_value(value: &Value, ids: &mut HashSet<String>) {
         Value::Array(values) => {
             for value in values {
                 collect_ids_from_value(value, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn first_non_done_goal_item_value(value: &Value) -> Option<Value> {
+    find_current_goal_item_candidate(value, &mut |_| true).map(|candidate| candidate.value)
+}
+
+fn find_current_goal_item(value: &Value) -> Option<CurrentGoalItem> {
+    find_current_goal_item_candidate(value, &mut |candidate| candidate.id.is_some())
+        .and_then(|candidate| candidate.id.map(|id| CurrentGoalItem { id }))
+}
+
+fn find_current_goal_item_candidate<F>(
+    value: &Value,
+    accept: &mut F,
+) -> Option<CurrentGoalItemCandidate>
+where
+    F: FnMut(&CurrentGoalItemCandidate) -> bool,
+{
+    match value {
+        Value::Object(object) => {
+            if let Some(candidate) = current_goal_item_candidate_from_object(object) {
+                if accept(&candidate) {
+                    return Some(candidate);
+                }
+            }
+            for value in object.values() {
+                if let Some(current) = find_current_goal_item_candidate(value, accept) {
+                    return Some(current);
+                }
+            }
+            None
+        }
+        Value::Array(values) => {
+            for value in values {
+                if let Some(current) = find_current_goal_item_candidate(value, accept) {
+                    return Some(current);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn current_goal_item_candidate_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<CurrentGoalItemCandidate> {
+    let id = object.get("id").and_then(Value::as_str).map(str::to_string);
+    let status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or(AutomationGoalItemStatus::Pending.as_str())
+        .to_string();
+    if id.is_none() && !object.contains_key("status") {
+        return None;
+    }
+    if matches!(status.as_str(), "done" | "skipped") {
+        return None;
+    }
+    Some(CurrentGoalItemCandidate {
+        id,
+        value: Value::Object(object.clone()),
+    })
+}
+
+fn goal_items_contain_status(value: &Value, status: &str) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.get("status").and_then(Value::as_str) == Some(status)
+                || object
+                    .values()
+                    .any(|value| goal_items_contain_status(value, status))
+        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| goal_items_contain_status(value, status)),
+        _ => false,
+    }
+}
+
+fn collect_goal_item_ids_with_status(value: &Value, status: &str, ids: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if object.get("status").and_then(Value::as_str) == Some(status) {
+                if let Some(id) = object.get("id").and_then(Value::as_str) {
+                    ids.push(id.to_string());
+                }
+            }
+            for value in object.values() {
+                collect_goal_item_ids_with_status(value, status, ids);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_goal_item_ids_with_status(value, status, ids);
             }
         }
         _ => {}

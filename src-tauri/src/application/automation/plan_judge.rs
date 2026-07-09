@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::application::automation::judge::{
-    extract_automation_verdict_value, truncate_utf8_to_bytes, AutomationJudgeAttachmentContext,
-    AUTOMATION_JUDGE_PROMPT_MAX_BYTES, SPEC_ATTACHMENT_MAX_BYTES,
+    extract_automation_verdict_value, first_non_done_goal_item_value, truncate_utf8_to_bytes,
+    AutomationJudgeAttachmentContext, AUTOMATION_JUDGE_PROMPT_MAX_BYTES, SPEC_ATTACHMENT_MAX_BYTES,
 };
 use crate::domain::entities::{Automation, AutomationRun};
 use crate::error::{AppError, AppResult};
@@ -331,26 +331,15 @@ fn format_goal_items(goal_items_json: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("[]");
     let parsed = serde_json::from_str::<Value>(raw);
-    let current_phase = parsed.as_ref().ok().and_then(first_non_done_goal_item);
+    let current_phase = parsed
+        .as_ref()
+        .ok()
+        .and_then(first_non_done_goal_item_value);
     serde_json::to_string_pretty(&json!({
         "items": parsed.unwrap_or_else(|_| Value::String(raw.to_string())),
         "currentPhase": current_phase,
     }))
     .expect("goal items context JSON should serialize")
-}
-
-fn first_non_done_goal_item(value: &Value) -> Option<Value> {
-    match value {
-        Value::Object(object) => {
-            let status = object.get("status").and_then(Value::as_str);
-            if status.is_some_and(|status| status != "done" && status != "skipped") {
-                return Some(Value::Object(object.clone()));
-            }
-            object.values().find_map(first_non_done_goal_item)
-        }
-        Value::Array(values) => values.iter().find_map(first_non_done_goal_item),
-        _ => None,
-    }
 }
 
 fn format_spec_attachments(attachments: &[AutomationJudgeAttachmentContext]) -> String {

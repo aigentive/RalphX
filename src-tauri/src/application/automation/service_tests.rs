@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use ralphx_domain::entities::is_open_automation_run;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::application::automation::judge::{
-    automation_judge_loop_suspected, AutomationJudgeDecision, AutomationJudgeNextBaseBranch,
-    AutomationJudgeVerdict,
+    automation_judge_loop_suspected, AutomationGoalItemStatus, AutomationJudgeDecision,
+    AutomationJudgeItemStatusUpdate, AutomationJudgeNextBaseBranch, AutomationJudgeVerdict,
 };
 use crate::application::automation::plan_gate::{
     AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
@@ -367,6 +367,19 @@ fn workspace(conversation_id: &ChatConversationId) -> AgentConversationWorkspace
     )
 }
 
+fn item_status(goal_items_json: &str, id: &str) -> String {
+    let value: Value = serde_json::from_str(goal_items_json).unwrap();
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
+        .and_then(|item| item.get("status"))
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string()
+}
+
 struct LostStatusAutomationRepository {
     automation: Mutex<Automation>,
     winning_status: AutomationStatus,
@@ -498,6 +511,21 @@ impl AutomationRepository for LostStatusAutomationRepository {
     ) -> crate::error::AppResult<Option<Automation>> {
         let mut automation = self.automation.lock().unwrap();
         if automation.id != *id {
+            return Ok(None);
+        }
+        automation.goal_items_json = goal_items_json;
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
+    async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
+        goal_items_json: Option<String>,
+    ) -> crate::error::AppResult<Option<Automation>> {
+        let mut automation = self.automation.lock().unwrap();
+        if automation.id != *id || automation.goal_items_json != expected_goal_items_json {
             return Ok(None);
         }
         automation.goal_items_json = goal_items_json;
@@ -2011,6 +2039,178 @@ async fn service_cancel_run_and_stop_use_run_transition_service() {
 }
 
 #[tokio::test]
+async fn service_cancel_run_reverts_in_progress_goal_items_and_emits_update() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "in_progress" },
+            { "id": "item-2", "title": "Second", "status": "done" },
+            { "id": "item-3", "title": "Third", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(active.clone()).await.unwrap();
+    let run = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    let cancelled = service.cancel_run(&active.id, &run.id).await.unwrap();
+
+    assert_eq!(cancelled.status, AutomationRunStatus::Cancelled);
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(item_status(goal_items_json, "item-1"), "pending");
+    assert_eq!(item_status(goal_items_json, "item-2"), "done");
+    assert_eq!(item_status(goal_items_json, "item-3"), "pending");
+    assert_eq!(
+        emitter.events(),
+        vec![
+            AutomationEvent::AutomationRunUpdated { run_id: run.id },
+            AutomationEvent::AutomationUpdated {
+                automation_id: active.id
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn service_cancel_run_keeps_close_path_successful_for_malformed_goal_items() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.goal_items_json = Some("not-json".to_string());
+    automation_repo.create(active.clone()).await.unwrap();
+    let run = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    let cancelled = service.cancel_run(&active.id, &run.id).await.unwrap();
+
+    assert_eq!(cancelled.status, AutomationRunStatus::Cancelled);
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.goal_items_json.as_deref(), Some("not-json"));
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+    );
+}
+
+#[tokio::test]
+async fn service_stop_sweep_cancels_open_run_and_reverts_in_progress_goal_items() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(active.clone()).await.unwrap();
+    let parked = automation_run(
+        "run-parked",
+        &active.id,
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(parked.clone()).await.unwrap();
+
+    let stopped = service.stop(&active.id).await.unwrap();
+
+    assert_eq!(stopped.status, AutomationStatus::Stopped);
+    assert_eq!(
+        run_repo
+            .get_by_id(&parked.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationRunStatus::Cancelled
+    );
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "item-2"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_stop_reverts_in_progress_goal_items_when_no_run_is_cancellable() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "Closed run work", "status": "in_progress" },
+            { "id": "item-2", "title": "Done", "status": "done" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(active.clone()).await.unwrap();
+    let closed = automation_run(
+        "run-closed",
+        &active.id,
+        1,
+        AutomationRunStatus::Completed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(closed.clone()).await.unwrap();
+
+    let stopped = service.stop(&active.id).await.unwrap();
+
+    assert_eq!(stopped.status, AutomationStatus::Stopped);
+    assert_eq!(
+        run_repo
+            .get_by_id(&closed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationRunStatus::Completed
+    );
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "item-1"),
+        "pending"
+    );
+    assert!(emitter
+        .events()
+        .contains(&AutomationEvent::AutomationUpdated {
+            automation_id: active.id
+        }));
+}
+
+#[tokio::test]
 async fn service_cancel_run_clears_parked_plan_judge_state() {
     let (service, automation_repo, run_repo) =
         service_with_emitter(Arc::new(NoopAutomationEventEmitter));
@@ -2687,7 +2887,9 @@ async fn service_judge_verdict_stop_and_loop_outcomes_update_automation_state() 
         Some(AutomationStatus::Completed)
     );
 
-    let active_unmet = automation("automation-unmet", AutomationStatus::Active);
+    let mut active_unmet = automation("automation-unmet", AutomationStatus::Active);
+    active_unmet.goal_items_json =
+        Some(json!([{ "id": "phase-1", "title": "Run 1", "status": "in_progress" }]).to_string());
     automation_repo.create(active_unmet.clone()).await.unwrap();
     let unmet_run = automation_run(
         "run-unmet",
@@ -2710,8 +2912,19 @@ async fn service_judge_verdict_stop_and_loop_outcomes_update_automation_state() 
         Some(AutomationStatus::Paused)
     );
     assert_eq!(unmet.reason.as_deref(), Some("judge_stopped_unmet"));
+    let unmet_stored = automation_repo
+        .get_by_id(&active_unmet.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(unmet_stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
 
-    let active_loop = automation("automation-loop", AutomationStatus::Active);
+    let mut active_loop = automation("automation-loop", AutomationStatus::Active);
+    active_loop.goal_items_json =
+        Some(json!([{ "id": "phase-1", "title": "Run 1", "status": "in_progress" }]).to_string());
     automation_repo.create(active_loop.clone()).await.unwrap();
     let mut loop_run = automation_run(
         "run-loop",
@@ -2738,6 +2951,255 @@ async fn service_judge_verdict_stop_and_loop_outcomes_update_automation_state() 
         Some(AutomationStatus::Paused)
     );
     assert_eq!(suspected.reason.as_deref(), Some("judge_loop_suspected"));
+    let loop_stored = automation_repo
+        .get_by_id(&active_loop.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(loop_stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_continue_successor_keeps_verdict_in_progress_status() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut verdict = continue_verdict_struct(
+        "Implement item 1 from the automation goal. Keep the PR scoped and publish it.",
+        AutomationJudgeNextBaseBranch::AutomationBase,
+    );
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::InProgress,
+    }]);
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.successor_run.is_some());
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "in_progress"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_stop_goal_met_leaves_exactly_verdict_goal_status() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut verdict = stop_verdict(true, "Goal is complete");
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::InProgress,
+    }]);
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.terminal_automation_status,
+        Some(AutomationStatus::Completed)
+    );
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Completed);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "in_progress"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_status_update_fails_closed_when_goal_items_changed() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let stale = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(stale.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &stale.id,
+        1,
+        AutomationRunStatus::PrClosed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    automation_repo
+        .update_goal_items_json_if_unchanged(
+            &stale.id,
+            stale.goal_items_json.clone(),
+            Some(
+                json!([
+                    { "id": "phase-1", "title": "Run 1", "status": "pending" },
+                    { "id": "phase-2", "title": "Concurrent edit", "status": "pending" }
+                ])
+                .to_string(),
+            ),
+        )
+        .await
+        .unwrap()
+        .expect("concurrent goal item update should land");
+    let mut verdict = stop_verdict(false, "Stop without overwriting concurrent goal items");
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::Done,
+    }]);
+
+    let error = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: stale.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Conflict(_)));
+    let stored = automation_repo.get_by_id(&stale.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationStatus::Active);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-2"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_continue_max_runs_pause_reverts_in_progress_status() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.max_runs = 1;
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut verdict = continue_verdict_struct(
+        "Retry item 1 from the automation goal. Keep the PR scoped and publish it.",
+        AutomationJudgeNextBaseBranch::AutomationBase,
+    );
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::InProgress,
+    }]);
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.successor_run.is_none());
+    assert_eq!(outcome.reason.as_deref(), Some("max_runs_exhausted"));
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Paused);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn service_judge_continue_consecutive_failure_pause_reverts_in_progress_status() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.max_consecutive_failures = 1;
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut verdict = continue_verdict_struct(
+        "Retry item 1 from the automation goal. Keep the PR scoped and publish it.",
+        AutomationJudgeNextBaseBranch::AutomationBase,
+    );
+    verdict.updated_item_statuses = Some(vec![AutomationJudgeItemStatusUpdate {
+        id: "phase-1".to_string(),
+        status: AutomationGoalItemStatus::InProgress,
+    }]);
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.successor_run.is_none());
+    assert_eq!(outcome.reason.as_deref(), Some("max_consecutive_failures"));
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, AutomationStatus::Paused);
+    assert_eq!(
+        item_status(stored.goal_items_json.as_deref().unwrap(), "phase-1"),
+        "pending"
+    );
 }
 
 #[tokio::test]

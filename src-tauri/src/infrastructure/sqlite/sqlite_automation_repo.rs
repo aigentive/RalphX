@@ -206,11 +206,15 @@ impl AutomationRepository for SqliteAutomationRepository {
                         patch.name,
                         patch.max_runs,
                         patch.max_consecutive_failures,
-                        patch.plan_approval_mode.map(|mode| mode.as_str().to_string()),
-                        patch.pr_merge_mode.map(|mode| mode.as_str().to_string()),
                         patch
-                            .plan_deep_verification
-                            .map(|enabled| if enabled { 1_i64 } else { 0_i64 }),
+                            .plan_approval_mode
+                            .map(|mode| mode.as_str().to_string()),
+                        patch.pr_merge_mode.map(|mode| mode.as_str().to_string()),
+                        patch.plan_deep_verification.map(|enabled| if enabled {
+                            1_i64
+                        } else {
+                            0_i64
+                        }),
                         Utc::now().to_rfc3339(),
                         id,
                     ],
@@ -298,6 +302,41 @@ impl AutomationRepository for SqliteAutomationRepository {
                          updated_at = ?2
                      WHERE id = ?3",
                     params![goal_items_json, Utc::now().to_rfc3339(), id],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_AUTOMATION} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_automation)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automations
+                     SET goal_items_json = ?1,
+                         updated_at = ?2
+                     WHERE id = ?3
+                       AND ((goal_items_json IS NULL AND ?4 IS NULL)
+                            OR goal_items_json = ?4)",
+                    params![
+                        goal_items_json,
+                        Utc::now().to_rfc3339(),
+                        id,
+                        expected_goal_items_json
+                    ],
                 )?;
                 if affected == 0 {
                     return Ok(None);

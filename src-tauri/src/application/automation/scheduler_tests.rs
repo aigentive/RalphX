@@ -404,10 +404,12 @@ impl AutomationPlanJudgeInvoker for MutatingPlanJudgeInvoker {
             .update_plan_artifact_id(
                 &self.session_id,
                 Some(self.replacement_artifact_id.as_str().to_string()),
-        )
-        .await?;
+            )
+            .await?;
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: self.output.replace("plan-artifact-1", &input.plan_artifact_id),
+            raw_output: self
+                .output
+                .replace("plan-artifact-1", &input.plan_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -453,7 +455,9 @@ impl AutomationPlanJudgeInvoker for ApprovingPlanJudgeInvoker {
             PlanApprovalActor::User,
         );
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: self.output.replace("plan-artifact-1", &input.plan_artifact_id),
+            raw_output: self
+                .output
+                .replace("plan-artifact-1", &input.plan_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -478,10 +482,12 @@ impl AutomationPlanJudgeInvoker for SupersedingPlanJudgeInvoker {
                 self.superseded_state,
                 None,
                 None,
-        )
-        .await?;
+            )
+            .await?;
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: self.output.replace("plan-artifact-1", &input.plan_artifact_id),
+            raw_output: self
+                .output
+                .replace("plan-artifact-1", &input.plan_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -1303,10 +1309,7 @@ async fn wait_for_latest_plan_judge_state(
     );
 }
 
-async fn wait_for_plan_judge_call_count(
-    plan_judge: &RecordingPlanJudgeInvoker,
-    expected: usize,
-) {
+async fn wait_for_plan_judge_call_count(plan_judge: &RecordingPlanJudgeInvoker, expected: usize) {
     for _ in 0..100 {
         if plan_judge.call_count() == expected {
             return;
@@ -4482,6 +4485,20 @@ async fn automation_scheduler_plan_judge_revision_limit_counts_judge_issued_revi
 async fn automation_scheduler_plan_judge_artifact_read_error_pauses_failed_without_approval() {
     let scenario =
         ParkedPlanGateScenario::new(AutomationStatus::Active, None, "missing-plan-artifact").await;
+    scenario
+        .automation_repo
+        .update_goal_items_json(
+            &scenario.automation_id,
+            Some(
+                json!([
+                    { "id": "item-1", "title": "First", "status": "done" },
+                    { "id": "item-2", "title": "Second", "status": "in_progress" }
+                ])
+                .to_string(),
+            ),
+        )
+        .await
+        .unwrap();
     scenario.use_automatic_plan_approval("claude").await;
     let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
     let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
@@ -4497,6 +4514,10 @@ async fn automation_scheduler_plan_judge_artifact_read_error_pauses_failed_witho
     assert_eq!(
         automation.paused_reason_code.as_deref(),
         Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE)
+    );
+    assert_eq!(
+        item_status(automation.goal_items_json.as_deref().unwrap(), "item-2"),
+        "in_progress"
     );
     let latest = scenario
         .run_repo
@@ -5175,10 +5196,15 @@ async fn automation_scheduler_marks_plan_phase_cancelled_when_agent_run_cancelle
     let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
     let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
-    automation_repo
-        .create(automation(automation_id.as_str(), AutomationStatus::Active))
-        .await
-        .unwrap();
+    let mut active = automation(automation_id.as_str(), AutomationStatus::Active);
+    active.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(active).await.unwrap();
     let conversation_id = ChatConversationId::from_string("conversation-1");
     run_repo
         .create_run(automation_run(
@@ -5222,6 +5248,15 @@ async fn automation_scheduler_marks_plan_phase_cancelled_when_agent_run_cancelle
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::Cancelled);
     assert_eq!(latest.error_code.as_deref(), Some("agent_cancelled"));
+    let automation = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(automation.goal_items_json.as_deref().unwrap(), "item-2"),
+        "pending"
+    );
 }
 
 #[tokio::test]
@@ -5536,13 +5571,15 @@ async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
-    automation_repo
-        .create(automation_with_goal_items(
-            automation_id.as_str(),
-            AutomationStatus::Active,
-        ))
-        .await
-        .unwrap();
+    let mut active = automation_with_goal_items(automation_id.as_str(), AutomationStatus::Active);
+    active.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "in_progress" }
+        ])
+        .to_string(),
+    );
+    automation_repo.create(active).await.unwrap();
     let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
     run.pr_number = Some(81);
     run.pr_base_ref_name = Some("main".to_string());
@@ -5724,6 +5761,10 @@ async fn automation_scheduler_retries_invalid_judge_output_once_then_pauses() {
     assert_eq!(
         automation.paused_reason_code.as_deref(),
         Some("judge_failed")
+    );
+    assert_eq!(
+        item_status(automation.goal_items_json.as_deref().unwrap(), "item-2"),
+        "pending"
     );
 }
 

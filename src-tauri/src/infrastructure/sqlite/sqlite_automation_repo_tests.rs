@@ -266,6 +266,38 @@ async fn sqlite_automation_repo_updates_goal_items_and_maps_optional_fields() {
         .expect("goal items should clear");
     assert_eq!(cleared.goal_items_json, None);
 
+    let cas_from_null = repo
+        .update_goal_items_json_if_unchanged(
+            &automation.id,
+            None,
+            Some(r#"[{"id":"item-1","status":"pending"}]"#.to_string()),
+        )
+        .await
+        .unwrap()
+        .expect("null expected value should match");
+    assert_eq!(
+        cas_from_null.goal_items_json.as_deref(),
+        Some(r#"[{"id":"item-1","status":"pending"}]"#)
+    );
+    assert!(repo
+        .update_goal_items_json_if_unchanged(
+            &automation.id,
+            Some(r#"[{"id":"item-1","status":"done"}]"#.to_string()),
+            Some(r#"[{"id":"item-1","status":"in_progress"}]"#.to_string()),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repo.get_by_id(&automation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .goal_items_json
+            .as_deref(),
+        Some(r#"[{"id":"item-1","status":"pending"}]"#)
+    );
+
     assert!(repo
         .update_goal_items_json(
             &AutomationId::from_string("missing-automation"),

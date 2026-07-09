@@ -189,6 +189,27 @@ impl AutomationRepository for MemoryAutomationRepository {
         Ok(Some(automation.clone()))
     }
 
+    async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(automation) = automations
+            .iter_mut()
+            .find(|automation| automation.id == *id)
+        else {
+            return Ok(None);
+        };
+        if automation.goal_items_json != expected_goal_items_json {
+            return Ok(None);
+        }
+        automation.goal_items_json = goal_items_json;
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,
