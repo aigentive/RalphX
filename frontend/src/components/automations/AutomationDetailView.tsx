@@ -26,8 +26,8 @@ import {
 } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
-  AUTOMATION_RUN_STATUS_LABELS,
   describeAutomationDeleteConsequences,
+  describeAutomationRunPrState,
   describeAutomationStage,
   describeRunFailure,
   isAutomationDeletable,
@@ -42,8 +42,8 @@ import {
   type AutomationGoalItem,
 } from "@/components/automations/automationGoalItems";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
-import { AutomationRunPhaseChip } from "@/components/automations/AutomationRunPhaseChip";
 import { AutomationRunPrLink } from "@/components/automations/AutomationRunPrLink";
+import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
@@ -543,18 +543,18 @@ function JudgeVerdictCard({ run }: { run: AutomationRun }) {
 
 const RunTimelineItem = memo(function RunTimelineItem({
   run,
+  automation,
   projectId,
   defaultExpanded,
-  liveStageLabel,
   activeGoalItem,
   onOpenRunConversation,
   onOpenAutomationRun,
   setupConversationId,
 }: {
   run: AutomationRun;
+  automation: Automation;
   projectId: string | null;
   defaultExpanded: boolean;
-  liveStageLabel: string | null;
   activeGoalItem: AutomationGoalItem | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
@@ -567,8 +567,6 @@ const RunTimelineItem = memo(function RunTimelineItem({
       (onOpenAutomationRun || onOpenRunConversation),
   );
   const failureReason = describeRunFailure(run);
-  const runOpen = isOpenAutomationRun(run);
-  const phaseItem = runOpen ? activeGoalItem : null;
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       if (onOpenAutomationRun) {
@@ -632,25 +630,15 @@ const RunTimelineItem = memo(function RunTimelineItem({
           aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
           className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
         >
-          <span className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-              Run {run.runIndex}
-            </span>
-            <Pill label={AUTOMATION_RUN_STATUS_LABELS[run.status]} status={run.status} />
-            <Pill label={`Judge ${run.judgeState}`} status={run.judgeState} />
-            {liveStageLabel && (
-              <RunStatusChip
-                label={liveStageLabel}
-                testId={`automation-run-${run.id}-live`}
-              />
-            )}
-            {phaseItem ? (
-              <AutomationRunPhaseChip
-                item={phaseItem}
-                testId={`automation-run-${run.id}-phase`}
-              />
-            ) : null}
-          </span>
+          <AutomationRunStatusHeader
+            automation={automation}
+            run={run}
+            density="card"
+            activeGoalItem={activeGoalItem}
+            showPr={false}
+            phaseTestId={`automation-run-${run.id}-phase`}
+            testId={`automation-run-${run.id}-header`}
+          />
           <span className="flex shrink-0 items-center gap-2">
             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
               {formatDate(run.updatedAt)}
@@ -722,17 +710,11 @@ const RunTimelineItem = memo(function RunTimelineItem({
             <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
               PR
             </div>
-            {run.prUrl ? (
-              <AutomationRunPrLink
-                run={run}
-                className="mt-1"
-                testId={`automation-run-${run.id}-pr-field-link`}
-              />
-            ) : (
-              <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
-                {run.prNumber ? `PR #${run.prNumber}` : "Not published"}
-              </div>
-            )}
+            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
+              {run.prNumber || run.prUrl
+                ? describeAutomationRunPrState(run)
+                : "Not published"}
+            </div>
           </div>
           <div>
             <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
@@ -1216,14 +1198,10 @@ export function AutomationDetailView({
                   <RunTimelineItem
                     key={run.id}
                     run={run}
+                    automation={automation}
                     projectId={projectId}
                     defaultExpanded={
                       run.runIndex === latest?.runIndex || isOpenAutomationRun(run)
-                    }
-                    liveStageLabel={
-                      isOpenAutomationRun(run)
-                        ? describeAutomationStage(automation, run)
-                        : null
                     }
                     activeGoalItem={activeGoalItem}
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}

@@ -35,6 +35,7 @@ import {
   OPEN_AUTOMATION_RUN_STATUS_SET,
 } from "@/components/automations/automationRunStatusSets";
 import { isAutomationRunComposerReadOnly } from "@/components/automations/automationStage";
+import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { verificationApi } from "@/api/verification";
 import {
   IntegratedChatPanel,
@@ -2653,24 +2654,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     />
                   )}
                   {automationRunReadOnlyReason && (
-                    <div
-                      className="flex items-start gap-2 rounded-md px-3 py-2 text-xs"
-                      style={{
-                        backgroundColor: "var(--bg-surface)",
-                        borderColor: "var(--border-default)",
-                        borderStyle: "solid",
-                        borderWidth: "1px",
-                        color: "var(--text-muted)",
-                      }}
-                      data-testid="agents-automation-run-readonly-banner"
-                    >
-                      <ShieldCheck
-                        className="mt-0.5 h-4 w-4 shrink-0"
-                        style={{ color: "var(--accent-primary)" }}
-                        aria-hidden="true"
-                      />
-                      <span>{automationRunReadOnlyReason}</span>
-                    </div>
+                    <AutomationRunStatusHeader
+                      run={automationRun ?? null}
+                      density="banner"
+                      message={automationRunReadOnlyReason}
+                      testId="agents-automation-run-readonly-banner"
+                    />
                   )}
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"

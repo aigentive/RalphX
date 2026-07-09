@@ -933,7 +933,7 @@ function AppContent() {
     useAgentSessionStore.getState().selectConversation(projectId, conversationId);
     useChatStore.getState().setActiveConversation(`project:${projectId}`, conversationId);
     setCurrentView("agents");
-  }, [handleOpenAutomationDetail, queryClient, setCurrentView, setFocusedAgentProject]);
+  }, [handleOpenAutomationDetail, setCurrentView, setFocusedAgentProject]);
 
   const handleNavigateToExecutionTask = useCallback(
     (target: ExecutionBarTaskNavigationTarget) => {
@@ -975,7 +975,7 @@ function AppContent() {
         },
       );
     },
-    [handleOpenAutomationDetail, queryClient],
+    [handleOpenAutomationDetail],
   );
 
   const createAutomationDraft = useCreateAutomationDraft();

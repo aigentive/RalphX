@@ -668,6 +668,11 @@ const automationRunFixture = (
   planJudgeState: "none",
   planRevisionRound: 0,
   planRevisionPending: false,
+  planPhase: false,
+  planArtifactId: null,
+  planApprovedBy: null,
+  planApprovedArtifactVersion: null,
+  planApprovedAt: null,
   conversationId: "conversation-1",
   runPrompt: "Continue the release automation.",
   promptAuthor: "judge",
@@ -1848,6 +1853,71 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("applies the automation run tab policy instead of generic workspace tabs", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(["atlassian", "settings"], {
+      enabled: true,
+      jiraAvailable: true,
+    });
+    queryClient.setQueryData(["linear", "settings"], {
+      enabled: true,
+      issueSearchAvailable: true,
+    });
+    queryClient.setQueryData(["granola", "settings"], {
+      enabled: true,
+      validationStatus: "valid",
+    });
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "published",
+            planArtifactId: null,
+            prNumber: 593,
+            prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+          }),
+        ],
+      }),
+    );
+
+    renderPane(
+      "jira",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 593,
+        publicationPrUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+      {},
+      queryClient,
+    );
+
+    await waitFor(() =>
+      expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-automation")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.queryByTestId("agents-artifact-tab-publish")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-jira")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-linear")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-granola")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-content-pr")).toBeInTheDocument();
+  });
+
   it("uses the automation tab as the setup-conversation fallback", async () => {
     const automationConversation = {
       ...conversation(),
@@ -2088,9 +2158,6 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
-    expect(
-      screen.getByRole("status", { name: "Loading pull request..." }),
-    ).toBeInTheDocument();
     expect(await screen.findByTestId("mock-pr-detail-panel")).toHaveTextContent(
       "PR #42",
     );
@@ -5867,6 +5934,18 @@ describe("AgentsArtifactPane", () => {
       ...approvedPlanArtifact(),
       planApproval: { status: "draft" as const },
     };
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            prNumber: null,
+            prUrl: null,
+            planArtifactId: "artifact-1",
+          }),
+        ],
+      }),
+    );
     getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
     getSessionPlanMock.mockResolvedValue(draftPlan);
     approvePlanArtifactMock.mockResolvedValue({
@@ -5909,6 +5988,18 @@ describe("AgentsArtifactPane", () => {
 
   it("suppresses manual continuation actions for automation-run plan conversations", async () => {
     const user = userEvent.setup();
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            prNumber: null,
+            prUrl: null,
+            planArtifactId: "artifact-1",
+          }),
+        ],
+      }),
+    );
     getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
     getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
     getPlanComplexityAssessmentMock.mockResolvedValue({

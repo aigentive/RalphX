@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AutomationRunTaskLedger,
-  automationRunTaskLedgerRefetchInterval,
 } from "./AutomationRunTaskLedger";
+import { automationRunTaskLedgerRefetchInterval } from "./automationRunTaskLedgerPolling";
 import type { AgentTaskSummary } from "@/api/agent-tasks";
 import type { AutomationRunStatus } from "@/api/automations";
 

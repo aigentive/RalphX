@@ -332,33 +332,38 @@ describe("AutomationDetailView", () => {
       writable: true,
     });
 
-    renderDetail({
-      automation: automation({
-        baseDisplayName: "Automation workspace",
-        baseRef: "ralphx/automation-workspace/automation-1",
-      }),
-      runs: [],
-      usage,
-    });
-
-    await screen.findByTestId("automation-detail-view");
-    expect(screen.getByText("Branch")).toBeInTheDocument();
-    expect(screen.getAllByText("Automation workspace").length).toBeGreaterThan(0);
-    expect(screen.getByTestId("automation-branch-value")).toHaveTextContent(
-      "ralphx/automation-workspace/automation-1",
-    );
-
-    await user.click(screen.getByRole("button", { name: "Copy branch" }));
-
-    expect(writeText).toHaveBeenCalledWith(
-      "ralphx/automation-workspace/automation-1",
-    );
-    expect(toastSuccessMock).toHaveBeenCalledWith("Branch copied");
-    if (originalClipboard !== undefined) {
-      Object.defineProperty(navigator, "clipboard", {
-        configurable: true,
-        value: originalClipboard,
+    try {
+      renderDetail({
+        automation: automation({
+          baseDisplayName: "Automation workspace",
+          baseRef: "ralphx/automation-workspace/automation-1",
+        }),
+        runs: [],
+        usage,
       });
+
+      await screen.findByTestId("automation-detail-view");
+      expect(screen.getByText("Branch")).toBeInTheDocument();
+      expect(screen.getAllByText("Automation workspace").length).toBeGreaterThan(0);
+      expect(screen.getByTestId("automation-branch-value")).toHaveTextContent(
+        "ralphx/automation-workspace/automation-1",
+      );
+
+      await user.click(screen.getByRole("button", { name: "Copy branch" }));
+
+      expect(writeText).toHaveBeenCalledWith(
+        "ralphx/automation-workspace/automation-1",
+      );
+      expect(toastSuccessMock).toHaveBeenCalledWith("Branch copied");
+    } finally {
+      if (originalClipboard !== undefined) {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: originalClipboard,
+        });
+      } else {
+        delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+      }
     }
   });
 
@@ -377,12 +382,15 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
+    expect(
+      screen.getAllByRole("button", { name: "Open PR #612 in browser" }),
+    ).toHaveLength(1);
     expect(screen.getByTestId("automation-run-run-pr-pr-link")).toHaveTextContent(
       "PR #612",
     );
     expect(
-      screen.getByTestId("automation-run-run-pr-pr-field-link"),
-    ).toHaveAccessibleName("Open PR #612 in browser");
+      screen.queryByTestId("automation-run-run-pr-pr-field-link"),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("automation-run-run-pr-pr-link"));
 
@@ -407,11 +415,14 @@ describe("AutomationDetailView", () => {
 
     await screen.findByTestId("automation-detail-view");
     expect(
+      screen.getAllByRole("button", { name: "Open PR in browser" }),
+    ).toHaveLength(1);
+    expect(
       screen.getByTestId("automation-run-run-pr-url-only-pr-link"),
     ).toHaveTextContent("PR");
     expect(
-      screen.getByTestId("automation-run-run-pr-url-only-pr-field-link"),
-    ).toHaveAccessibleName("Open PR in browser");
+      screen.queryByTestId("automation-run-run-pr-url-only-pr-field-link"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Not published")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("automation-run-run-pr-url-only-pr-link"));
@@ -419,6 +430,30 @@ describe("AutomationDetailView", () => {
     expect(openExternalUrlMock).toHaveBeenCalledWith(
       "https://github.com/aigentive/ralphx.app/pull/preview",
     );
+  });
+
+  it("renders non-HTTP PR URLs as disabled text", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [
+        run({
+          id: "run-pr-local",
+          prNumber: 612,
+          prUrl: "file:///tmp/preview",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const disabledPr = screen.getByTestId("automation-run-run-pr-local-pr-link");
+    expect(disabledPr).toHaveTextContent("PR #612");
+    expect(disabledPr).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByRole("button", { name: "Open PR #612 in browser" }),
+    ).not.toBeInTheDocument();
+    expect(openExternalUrlMock).not.toHaveBeenCalled();
   });
 
   it("does not render an external PR link when a run is unpublished", async () => {
@@ -1026,7 +1061,7 @@ describe("AutomationDetailView", () => {
     await screen.findByTestId("automation-detail-view");
     expect(screen.getByText("Stopped")).toBeInTheDocument();
     expect(screen.getByText("current_branch")).toBeInTheDocument();
-    expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Phase 1")).toBeInTheDocument();
     expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
     expect(screen.getByText("invalid-date")).toBeInTheDocument();

@@ -11,10 +11,7 @@ import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "@/components/agents/agentWorkspaceQueries";
-
-const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
-const PARKED_AGENT_TASK_REFRESH_MS = 15_000;
-const UNCHANGED_RESPONSE_SLOWDOWN_THRESHOLD = 40;
+import { automationRunTaskLedgerRefetchInterval } from "./automationRunTaskLedgerPolling";
 
 const STATE_LABELS: Record<AgentTaskState, string> = {
   open: "Open",
@@ -83,21 +80,6 @@ function TaskRow({ task }: { task: AgentTaskSummary }) {
       )}
     </div>
   );
-}
-
-export function automationRunTaskLedgerRefetchInterval(
-  runStatus: AutomationRunStatus,
-  unchangedResponses: number,
-): number | false {
-  if (runStatus === "running") {
-    return unchangedResponses >= UNCHANGED_RESPONSE_SLOWDOWN_THRESHOLD
-      ? PARKED_AGENT_TASK_REFRESH_MS
-      : ACTIVE_AGENT_TASK_REFRESH_MS;
-  }
-  if (runStatus === "awaiting_plan_approval" || runStatus === "published") {
-    return PARKED_AGENT_TASK_REFRESH_MS;
-  }
-  return false;
 }
 
 function taskLedgerFingerprint(tasks: AgentTaskSummary[]): string {
