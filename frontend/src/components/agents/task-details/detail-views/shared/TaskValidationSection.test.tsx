@@ -74,13 +74,17 @@ function failedSummary(): TaskValidationSummary {
   };
 }
 
-function passedSummary(): TaskValidationSummary {
+type RunSummary = NonNullable<TaskValidationSummary["latest_run"]>;
+
+function passedSummary(overrides: Partial<RunSummary> = {}): TaskValidationSummary {
+  const summary = failedSummary();
   return {
-    ...failedSummary(),
+    ...summary,
     latest_run: {
-      ...failedSummary().latest_run!,
+      ...summary.latest_run!,
       status: "passed",
       completed_at: "2026-07-06T11:00:03.000Z",
+      ...overrides,
     },
     commands: [],
   };
@@ -184,6 +188,94 @@ describe("TaskValidationSection", () => {
       screen.getByText("Latest validation run completed successfully."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Validation Commands")).not.toBeInTheDocument();
+  });
+
+  it("keeps current eligible post-change passed validation as approving evidence", () => {
+    render(
+      <TaskValidationSummaryCard
+        displaySummary={passedSummary({
+          purpose: "final",
+          current_for_head: true,
+          current_for_execution_episode: true,
+          review_evidence_eligible: true,
+          ineligible_reason: null,
+        })}
+        isHistorical={false}
+        usingLive={false}
+      />,
+    );
+
+    expect(screen.getByText("Passed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Latest validation run completed successfully."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders backend-classified baseline-only passed evidence as informational", () => {
+    render(
+      <TaskValidationSummaryCard
+        displaySummary={passedSummary({
+          purpose: "baseline",
+          current_for_head: true,
+          current_for_execution_episode: true,
+          review_evidence_eligible: false,
+          ineligible_reason: "baseline_only",
+        })}
+        isHistorical={false}
+        usingLive={false}
+      />,
+    );
+
+    expect(screen.getByText("Baseline Only")).toBeInTheDocument();
+    expect(
+      screen.getByText("Baseline validation passed, but final validation is still needed."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Latest validation run completed successfully."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("treats older baseline passed responses without eligibility fields as non-approving", () => {
+    render(
+      <TaskValidationSummaryCard
+        displaySummary={passedSummary({ purpose: "baseline" })}
+        isHistorical={false}
+        usingLive={false}
+      />,
+    );
+
+    expect(screen.getByText("Baseline Only")).toBeInTheDocument();
+    expect(
+      screen.getByText("Baseline validation passed, but final validation is still needed."),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["stale_head", "Validation passed for an older commit. Final validation is still needed."],
+    [
+      "stale_episode",
+      "Validation passed for an older execution attempt. Final validation is still needed.",
+    ],
+  ] as const)("renders %s passed evidence as a warning", (reason, message) => {
+    render(
+      <TaskValidationSummaryCard
+        displaySummary={passedSummary({
+          purpose: "final",
+          current_for_head: reason !== "stale_head",
+          current_for_execution_episode: reason !== "stale_episode",
+          review_evidence_eligible: false,
+          ineligible_reason: reason,
+        })}
+        isHistorical={false}
+        usingLive={false}
+      />,
+    );
+
+    expect(screen.getByText("Stale Evidence")).toBeInTheDocument();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(
+      screen.queryByText("Latest validation run completed successfully."),
+    ).not.toBeInTheDocument();
   });
 
   it("renders live validation summary copy", () => {
