@@ -2,8 +2,12 @@ import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AutomationRunTaskLedger } from "./AutomationRunTaskLedger";
+import {
+  AutomationRunTaskLedger,
+  automationRunTaskLedgerRefetchInterval,
+} from "./AutomationRunTaskLedger";
 import type { AgentTaskSummary } from "@/api/agent-tasks";
+import type { AutomationRunStatus } from "@/api/automations";
 
 const { listConversationTasksMock } = vi.hoisted(() => ({
   listConversationTasksMock: vi.fn(),
@@ -30,7 +34,7 @@ function task(overrides: Partial<AgentTaskSummary> = {}): AgentTaskSummary {
   };
 }
 
-function renderLedger(isOpen: boolean) {
+function renderLedger(runStatus: AutomationRunStatus) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
@@ -39,7 +43,7 @@ function renderLedger(isOpen: boolean) {
       <AutomationRunTaskLedger
         conversationId="conversation-1"
         projectId="project-1"
-        isOpen={isOpen}
+        runStatus={runStatus}
       />
     </QueryClientProvider>,
   );
@@ -59,7 +63,7 @@ describe("AutomationRunTaskLedger", () => {
       task({ taskId: "d", taskNumber: 4, title: "Dropped work", state: "dropped" }),
     ]);
 
-    renderLedger(true);
+    renderLedger("running");
 
     expect(await screen.findByText("Active work")).toBeInTheDocument();
     expect(screen.getByText("Open work")).toBeInTheDocument();
@@ -78,7 +82,7 @@ describe("AutomationRunTaskLedger", () => {
   it("shows the empty state when there are no agent tasks", async () => {
     listConversationTasksMock.mockResolvedValue([]);
 
-    renderLedger(false);
+    renderLedger("merged");
 
     expect(await screen.findByText("No agent tasks yet.")).toBeInTheDocument();
   });
@@ -87,7 +91,7 @@ describe("AutomationRunTaskLedger", () => {
     vi.useFakeTimers();
     listConversationTasksMock.mockResolvedValue([task()]);
 
-    renderLedger(true);
+    renderLedger("running");
 
     await vi.advanceTimersByTimeAsync(0);
     expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
@@ -96,11 +100,34 @@ describe("AutomationRunTaskLedger", () => {
     expect(listConversationTasksMock).toHaveBeenCalledTimes(2);
   });
 
+  it("slows down running polls after repeated unchanged responses", () => {
+    expect(automationRunTaskLedgerRefetchInterval("running", 39)).toBe(2_500);
+    expect(automationRunTaskLedgerRefetchInterval("running", 40)).toBe(15_000);
+    expect(automationRunTaskLedgerRefetchInterval("published", 0)).toBe(15_000);
+    expect(automationRunTaskLedgerRefetchInterval("merged", 0)).toBe(false);
+  });
+
+  it("polls parked and published runs on a slower interval", async () => {
+    vi.useFakeTimers();
+    listConversationTasksMock.mockResolvedValue([task()]);
+
+    renderLedger("awaiting_plan_approval");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(12_500);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(2);
+  });
+
   it("does not poll once the run is terminal", async () => {
     vi.useFakeTimers();
     listConversationTasksMock.mockResolvedValue([task({ state: "done" })]);
 
-    renderLedger(false);
+    renderLedger("merged");
 
     await vi.advanceTimersByTimeAsync(0);
     expect(listConversationTasksMock).toHaveBeenCalledTimes(1);

@@ -240,7 +240,10 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
         .unwrap());
     assert_eq!(
         emitter.events(),
-        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
     );
 }
 
@@ -293,7 +296,10 @@ async fn transition_service_emits_after_successful_merge_metadata_cas() {
     assert_eq!(stored.pr_merged_at, Some(merged_at));
     assert_eq!(
         emitter.events(),
-        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
     );
 }
 
@@ -358,6 +364,9 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
     assert!(matches!(settle_without_token, AppError::Validation(_)));
     assert_eq!(
         emitter.events(),
-        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: run.automation_id,
+            run_id: run.id,
+        }]
     );
 }

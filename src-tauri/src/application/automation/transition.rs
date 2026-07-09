@@ -24,6 +24,7 @@ pub enum AutomationEvent {
         automation_id: AutomationId,
     },
     AutomationRunUpdated {
+        automation_id: AutomationId,
         run_id: AutomationRunId,
     },
     AutomationDeleted {
@@ -73,6 +74,9 @@ struct AutomationUpdatedPayload {
 
 #[derive(Clone, Debug, Serialize)]
 struct AutomationRunUpdatedPayload {
+    automation_id: String,
+    #[serde(rename = "automationId")]
+    automation_id_camel: String,
     run_id: String,
     #[serde(rename = "runId")]
     run_id_camel: String,
@@ -99,11 +103,17 @@ impl AutomationEventEmitter for TauriAutomationEventEmitter {
                 };
                 let _ = self.app_handle.emit(AUTOMATION_UPDATED_EVENT, payload);
             }
-            AutomationEvent::AutomationRunUpdated { run_id } => {
-                let id = run_id.as_str().to_string();
+            AutomationEvent::AutomationRunUpdated {
+                automation_id,
+                run_id,
+            } => {
+                let automation_id = automation_id.as_str().to_string();
+                let run_id = run_id.as_str().to_string();
                 let payload = AutomationRunUpdatedPayload {
-                    run_id: id.clone(),
-                    run_id_camel: id,
+                    automation_id: automation_id.clone(),
+                    automation_id_camel: automation_id,
+                    run_id: run_id.clone(),
+                    run_id_camel: run_id,
                 };
                 let _ = self.app_handle.emit(AUTOMATION_RUN_UPDATED_EVENT, payload);
             }
@@ -142,6 +152,24 @@ impl AutomationTransitionService {
             automation_repo,
             run_repo,
             event_emitter,
+        }
+    }
+
+    async fn automation_id_for_run(&self, id: &AutomationRunId) -> AppResult<Option<AutomationId>> {
+        Ok(self
+            .run_repo
+            .get_by_id(id)
+            .await?
+            .map(|run| run.automation_id))
+    }
+
+    fn emit_run_updated(&self, automation_id: Option<AutomationId>, run_id: &AutomationRunId) {
+        if let Some(automation_id) = automation_id {
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated {
+                    automation_id,
+                    run_id: run_id.clone(),
+                });
         }
     }
 
@@ -187,13 +215,13 @@ impl AutomationTransitionService {
             });
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status(id, from, to, error_code, error_detail)
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }
@@ -213,6 +241,7 @@ impl AutomationTransitionService {
             });
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status_with_merge_metadata(
@@ -224,8 +253,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }
@@ -246,6 +274,7 @@ impl AutomationTransitionService {
             });
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status_with_agent_phase_started_at(
@@ -258,8 +287,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }
@@ -279,6 +307,7 @@ impl AutomationTransitionService {
             });
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status_clearing_plan_pending_instructions(
@@ -290,8 +319,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }
@@ -325,6 +353,7 @@ impl AutomationTransitionService {
             ));
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_judge_state(
@@ -339,8 +368,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }
@@ -360,6 +388,7 @@ impl AutomationTransitionService {
             });
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_plan_judge_state(
@@ -371,8 +400,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }

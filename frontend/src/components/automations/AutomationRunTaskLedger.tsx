@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -6,16 +6,15 @@ import {
   type AgentTaskState,
   type AgentTaskSummary,
 } from "@/api/agent-tasks";
+import type { AutomationRunStatus } from "@/api/automations";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "@/components/agents/agentWorkspaceQueries";
 
-/**
- * Poll cadence for the live agent-task ledger while the owning run is still
- * open. Mirrors the composer workspace card's `ACTIVE_AGENT_TASK_REFRESH_MS`.
- */
 const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
+const PARKED_AGENT_TASK_REFRESH_MS = 15_000;
+const UNCHANGED_RESPONSE_SLOWDOWN_THRESHOLD = 40;
 
 const STATE_LABELS: Record<AgentTaskState, string> = {
   open: "Open",
@@ -86,22 +85,47 @@ function TaskRow({ task }: { task: AgentTaskSummary }) {
   );
 }
 
+export function automationRunTaskLedgerRefetchInterval(
+  runStatus: AutomationRunStatus,
+  unchangedResponses: number,
+): number | false {
+  if (runStatus === "running") {
+    return unchangedResponses >= UNCHANGED_RESPONSE_SLOWDOWN_THRESHOLD
+      ? PARKED_AGENT_TASK_REFRESH_MS
+      : ACTIVE_AGENT_TASK_REFRESH_MS;
+  }
+  if (runStatus === "awaiting_plan_approval" || runStatus === "published") {
+    return PARKED_AGENT_TASK_REFRESH_MS;
+  }
+  return false;
+}
+
+function taskLedgerFingerprint(tasks: AgentTaskSummary[]): string {
+  return tasks
+    .map(
+      (task) =>
+        `${task.taskId}:${task.taskNumber}:${task.state}:${task.updatedAt}`,
+    )
+    .join("|");
+}
+
 /**
  * Live "what the agent is doing now" ledger for a single automation run's
- * conversation. Reuses the shared agent-task query surface and polls only while
- * the run is still open ({@link ACTIVE_AGENT_TASK_REFRESH_MS}); terminal runs
- * render a static snapshot. Mounted lazily by the run card only after it expands
- * so the timeline first paint is not blocked by this fetch.
+ * conversation. Reuses the shared agent-task query surface and keeps terminal
+ * runs on a static snapshot. Mounted lazily by the run card only after it
+ * expands so the timeline first paint is not blocked by this fetch.
  */
 export function AutomationRunTaskLedger({
   conversationId,
   projectId,
-  isOpen,
+  runStatus,
 }: {
   conversationId: string;
   projectId: string | null;
-  isOpen: boolean;
+  runStatus: AutomationRunStatus;
 }) {
+  const lastFingerprintRef = useRef<string | null>(null);
+  const unchangedResponsesRef = useRef(0);
   const query = useQuery({
     queryKey: agentWorkspaceKeys.agentTasksForScope("conversation", conversationId),
     queryFn: () =>
@@ -111,8 +135,31 @@ export function AutomationRunTaskLedger({
         includeDone: true,
       }),
     staleTime: AGENT_WORKSPACE_STALE_MS,
-    refetchInterval: isOpen ? ACTIVE_AGENT_TASK_REFRESH_MS : false,
+    refetchInterval: () =>
+      automationRunTaskLedgerRefetchInterval(
+        runStatus,
+        unchangedResponsesRef.current,
+      ),
+    refetchIntervalInBackground: false,
   });
+
+  useEffect(() => {
+    lastFingerprintRef.current = null;
+    unchangedResponsesRef.current = 0;
+  }, [conversationId, runStatus]);
+
+  useEffect(() => {
+    if (!query.data) {
+      return;
+    }
+    const fingerprint = taskLedgerFingerprint(query.data);
+    if (fingerprint === lastFingerprintRef.current) {
+      unchangedResponsesRef.current += 1;
+      return;
+    }
+    lastFingerprintRef.current = fingerprint;
+    unchangedResponsesRef.current = 0;
+  }, [query.data]);
 
   const { taskCount, activeTasks, doneCount, droppedCount } = useMemo(() => {
     const tasks = query.data ?? [];

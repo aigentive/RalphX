@@ -747,7 +747,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
             <AutomationRunTaskLedger
               conversationId={run.conversationId}
               projectId={projectId}
-              isOpen={runOpen}
+              runStatus={run.status}
             />
           </div>
         )}

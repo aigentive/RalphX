@@ -24,6 +24,7 @@ import type {
   ConversationMessagesPageResponse,
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
+import { agentWorkspaceKeys } from "@/components/agents/agentWorkspaceQueries";
 
 // ============================================================================
 // Mock EventBus
@@ -2415,7 +2416,8 @@ describe("useAgentEvents", () => {
 
   describe("agent:task_started / agent:task_completed", () => {
     it("agent:task_started resets lastAgentEventTimestamp for matching context", () => {
-      const wrapper = createWrapper();
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
       renderHook(() => useAgentEvents(null), { wrapper });
 
       act(() => {
@@ -2436,10 +2438,14 @@ describe("useAgentEvents", () => {
       // Timestamp should be updated to a recent value (> 100)
       const ts = useChatStore.getState().lastAgentEventTimestamp["session:task-ctx"] ?? 0;
       expect(ts).toBeGreaterThan(100);
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: agentWorkspaceKeys.agentTasks("conv-x"),
+      });
     });
 
     it("agent:task_completed resets lastAgentEventTimestamp for matching context", () => {
-      const wrapper = createWrapper();
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
       renderHook(() => useAgentEvents(null), { wrapper });
 
       act(() => {
@@ -2459,6 +2465,9 @@ describe("useAgentEvents", () => {
 
       const ts = useChatStore.getState().lastAgentEventTimestamp["session:task-done"] ?? 0;
       expect(ts).toBeGreaterThan(100);
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: agentWorkspaceKeys.agentTasks("conv-x"),
+      });
     });
   });
 });

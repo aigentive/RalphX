@@ -44,12 +44,16 @@ describe("useAutomations", () => {
   it("invalidates list and detail query scopes", () => {
     const queryClient = new QueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const automationSidebarKey = agentSidebarConversationKeys.automationScope();
 
     invalidateAutomationQueries(queryClient, "automation-1");
     invalidateAutomationQueries(queryClient, null);
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
     expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: automationSidebarKey,
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
     });
     expect(invalidateSpy).toHaveBeenCalledWith({
@@ -64,11 +68,15 @@ describe("useAutomations", () => {
     const queryClient = new QueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     const removeSpy = vi.spyOn(queryClient, "removeQueries");
+    const automationSidebarKey = agentSidebarConversationKeys.automationScope();
 
     evictDeletedAutomation(queryClient, "automation-1");
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
     expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: automationSidebarKey,
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
     });
     expect(removeSpy).toHaveBeenCalledWith({
@@ -83,6 +91,7 @@ describe("useAutomations", () => {
     const queryClient = new QueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     const removeSpy = vi.spyOn(queryClient, "removeQueries");
+    const automationSidebarKey = agentSidebarConversationKeys.automationScope();
     const unsubscribeAutomation = vi.fn();
     const unsubscribeRun = vi.fn();
     const unsubscribeDeleted = vi.fn();
@@ -125,6 +134,9 @@ describe("useAutomations", () => {
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
     expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: automationSidebarKey,
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
     });
     // Deleted event for a mismatched id is ignored; matching id evicts the detail cache.
@@ -142,10 +154,43 @@ describe("useAutomations", () => {
     expect(unsubscribeDeleted).toHaveBeenCalledTimes(1);
   });
 
+  it("scopes run update events to the owning automation detail only", () => {
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const handlers = new Map<string, (payload: unknown) => void>();
+    subscribeMock.mockImplementation((eventName: string, handler: (payload: unknown) => void) => {
+      handlers.set(eventName, handler);
+      return vi.fn();
+    });
+
+    renderHook(() => useAutomationEvents(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    act(() => {
+      handlers.get("automation:run:updated")?.({
+        automationId: "automation-1",
+        runId: "run-1",
+      });
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: automationKeys.detail("automation-1"),
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: automationKeys.lists(),
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: agentSidebarConversationKeys.all,
+    });
+  });
+
   it("useCreateAutomationDraft creates a draft and invalidates list + detail scopes", async () => {
     const queryClient = new QueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     const createDraftMock = vi.mocked(automationsApi.createDraft);
+    const automationSidebarKey = agentSidebarConversationKeys.automationScope();
     createDraftMock.mockResolvedValue({
       automation: { id: "automation-1" } as never,
       setupConversationId: "conversation-9",
@@ -167,6 +212,9 @@ describe("useAutomations", () => {
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
     expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: automationSidebarKey,
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: agentSidebarConversationKeys.all,
     });
     expect(invalidateSpy).toHaveBeenCalledWith({

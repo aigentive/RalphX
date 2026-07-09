@@ -2046,6 +2046,7 @@ async fn service_terminalizes_review_blocked_run_with_event_and_goal_sync() {
     );
     let events = emitter.events();
     assert!(events.contains(&AutomationEvent::AutomationRunUpdated {
+        automation_id: active.id.clone(),
         run_id: running.id.clone()
     }));
     assert!(events.contains(&AutomationEvent::AutomationUpdated {
@@ -2116,16 +2117,22 @@ async fn service_cancel_run_and_stop_use_run_transition_service() {
         emitter.events(),
         vec![
             AutomationEvent::AutomationRunUpdated {
+                automation_id: active.id.clone(),
                 run_id: run.id.clone()
             },
-            AutomationEvent::AutomationRunUpdated { run_id: run.id },
             AutomationEvent::AutomationRunUpdated {
+                automation_id: active.id,
+                run_id: run.id,
+            },
+            AutomationEvent::AutomationRunUpdated {
+                automation_id: second.id.clone(),
                 run_id: second_run.id.clone()
             },
             AutomationEvent::AutomationUpdated {
-                automation_id: second.id
+                automation_id: second.id.clone()
             },
             AutomationEvent::AutomationRunUpdated {
+                automation_id: second.id,
                 run_id: second_run.id
             },
         ]
@@ -2170,7 +2177,10 @@ async fn service_cancel_run_reverts_in_progress_goal_items_and_emits_update() {
     assert_eq!(
         emitter.events(),
         vec![
-            AutomationEvent::AutomationRunUpdated { run_id: run.id },
+            AutomationEvent::AutomationRunUpdated {
+                automation_id: active.id.clone(),
+                run_id: run.id,
+            },
             AutomationEvent::AutomationUpdated {
                 automation_id: active.id
             },
@@ -2205,7 +2215,10 @@ async fn service_cancel_run_keeps_close_path_successful_for_malformed_goal_items
     assert_eq!(stored.goal_items_json.as_deref(), Some("not-json"));
     assert_eq!(
         emitter.events(),
-        vec![AutomationEvent::AutomationRunUpdated { run_id: run.id }]
+        vec![AutomationEvent::AutomationRunUpdated {
+            automation_id: active.id,
+            run_id: run.id,
+        }]
     );
 }
 
@@ -2618,7 +2631,10 @@ async fn service_skip_judge_creates_template_successor_for_latest_terminal_run()
     assert_eq!(runs[1].base_from_run_id, Some(run.id.clone()));
     assert!(emitter
         .events()
-        .contains(&AutomationEvent::AutomationRunUpdated { run_id: run.id }));
+        .contains(&AutomationEvent::AutomationRunUpdated {
+            automation_id: active.id,
+            run_id: run.id,
+        }));
 }
 
 #[tokio::test]

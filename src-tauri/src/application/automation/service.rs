@@ -704,9 +704,15 @@ impl AutomationService {
                 {
                     Some(run) => {
                         self.event_emitter
-                            .emit(AutomationEvent::AutomationRunUpdated { run_id: latest.id });
+                            .emit(AutomationEvent::AutomationRunUpdated {
+                                automation_id: automation.id.clone(),
+                                run_id: latest.id,
+                            });
                         self.event_emitter
-                            .emit(AutomationEvent::AutomationRunUpdated { run_id: run.id });
+                            .emit(AutomationEvent::AutomationRunUpdated {
+                                automation_id: automation.id.clone(),
+                                run_id: run.id,
+                            });
                         Ok(AutomationScheduleOutcome {
                             scheduled: true,
                             reason: None,
@@ -1050,6 +1056,7 @@ impl AutomationService {
         let created = self.run_repo.create_run(run).await?;
         self.event_emitter
             .emit(AutomationEvent::AutomationRunUpdated {
+                automation_id: created.automation_id.clone(),
                 run_id: created.id.clone(),
             });
         Ok(created)
@@ -1508,10 +1515,12 @@ impl AutomationService {
         if let Some(run) = created.as_ref() {
             self.event_emitter
                 .emit(AutomationEvent::AutomationRunUpdated {
+                    automation_id: automation.id.clone(),
                     run_id: latest.id.clone(),
                 });
             self.event_emitter
                 .emit(AutomationEvent::AutomationRunUpdated {
+                    automation_id: automation.id.clone(),
                     run_id: run.id.clone(),
                 });
         }

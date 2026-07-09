@@ -57,7 +57,6 @@ import {
   evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationDetail,
-  useAutomationEvents,
 } from "@/hooks/useAutomations";
 import { useAskUserQuestion } from "@/hooks/useAskUserQuestion";
 import { useAgentModels } from "@/hooks/useAgentModels";
@@ -677,7 +676,6 @@ export function AgentsAutomationPanel({
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders({ refreshRuntime: true });
-  useAutomationEvents(automationId);
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
   const providerOptions = useMemo(

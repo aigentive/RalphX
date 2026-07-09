@@ -361,7 +361,7 @@ describe("AgentsAutomationPanel", () => {
     fireEvent.click(screen.getByTestId("agents-automation-open"));
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
-    expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
+    expect(useAutomationEventsMock).not.toHaveBeenCalled();
   });
 
   it("lists every run with its status, newest first", () => {

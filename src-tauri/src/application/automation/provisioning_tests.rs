@@ -270,7 +270,7 @@ fn run_updated_events(events: &[AutomationEvent], run_id: &AutomationRunId) -> V
         .iter()
         .enumerate()
         .filter_map(|(index, event)| match event {
-            AutomationEvent::AutomationRunUpdated { run_id: id } if id == run_id => Some(index),
+            AutomationEvent::AutomationRunUpdated { run_id: id, .. } if id == run_id => Some(index),
             _ => None,
         })
         .collect()
