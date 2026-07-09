@@ -894,6 +894,24 @@ pub trait ChatService: Send + Sync {
         options: SendMessageOptions,
     ) -> Result<SendResult, ChatServiceError>;
 
+    async fn send_task_runtime_bootstrap_message(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message: &str,
+        task_state: &str,
+        project_id: &str,
+    ) -> Result<SendResult, ChatServiceError> {
+        let options = task_runtime_bootstrap_send_options(
+            context_type,
+            context_id,
+            task_state,
+            project_id,
+        );
+        self.send_message(context_type, context_id, message, options)
+            .await
+    }
+
     /// Queue a message to be sent when the current agent run completes
     ///
     /// The message is held in the backend queue and automatically sent
@@ -7682,3 +7700,5 @@ mod chat_service_redaction_tests;
 mod freshness_routing_tests;
 #[cfg(test)]
 mod interactive_runtime_tests;
+#[cfg(test)]
+mod task_runtime_context_tests;

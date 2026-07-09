@@ -1011,6 +1011,83 @@ describe("useConversationTimelineWindow", () => {
     expect(queryClient.getQueryData(chatKeys.conversationTimeline("conv-1"))).toBeUndefined();
   });
 
+  it("does not upsert hidden finalized bootstrap messages into conversation caches", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 1,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [
+          timelinePage([
+            {
+              ...mockMessage1,
+              id: "block:message-1:0",
+              parentMessageId: "message-1",
+              timelineSequence: 7,
+            },
+          ], {
+            totalItemCount: 7,
+            oldestLoadedSequence: 7,
+            newestLoadedSequence: 7,
+          }),
+        ],
+        pageParams: [null],
+      },
+    );
+
+    const hiddenFinalized: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "bootstrap-hidden",
+      role: "user",
+      conversationId: "conv-1",
+      content: "Execute task: task-hidden",
+      metadata: JSON.stringify({
+        hidden_from_ui: true,
+        source: "task_runtime_bootstrap",
+      }),
+      contentBlocks: [{ type: "text", text: "Execute task: task-hidden" }],
+    };
+
+    expect(
+      upsertFinalizedMessageIntoConversationCache(
+        queryClient,
+        "conv-1",
+        hiddenFinalized,
+      ),
+    ).toBe(false);
+    const cachedContents = getCachedConversationMessages(queryClient, "conv-1").map(
+      (message) => message.content,
+    );
+    expect(cachedContents).toContain("Hello");
+    expect(cachedContents).not.toContain("Execute task: task-hidden");
+    const timelineContents =
+      queryClient
+        .getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+          chatKeys.conversationTimeline("conv-1"),
+        )
+        ?.pages[0]?.messages.map((message) => message.content) ?? [];
+    expect(timelineContents).toEqual(["Hello"]);
+  });
+
   it("upserts backend render-ready timeline items without synthesizing sequences", () => {
     const { queryClient } = createWrapperWithClient();
     queryClient.setQueryData(chatKeys.conversation("conv-1"), {

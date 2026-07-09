@@ -1,5 +1,4 @@
 use super::*;
-use crate::application::chat_service::task_runtime_bootstrap_send_options;
 use crate::domain::entities::{GitMode, InternalStatus};
 use crate::domain::state_machine::transition_handler::merge_validation;
 use crate::domain::state_machine::transition_handler::{
@@ -689,22 +688,17 @@ impl<'a> TransitionHandler<'a> {
         project_id_str: &str,
         failure_log: &str,
     ) -> AppResult<()> {
-        let options = task_runtime_bootstrap_send_options(
-            crate::domain::entities::ChatContextType::TaskExecution,
-            task_id_str,
-            task_state,
-            project_id_str,
-        );
         match self
             .machine
             .context
             .services
             .chat_service
-            .send_message(
+            .send_task_runtime_bootstrap_message(
                 crate::domain::entities::ChatContextType::TaskExecution,
                 task_id_str,
                 prompt,
-                options,
+                task_state,
+                project_id_str,
             )
             .await
         {

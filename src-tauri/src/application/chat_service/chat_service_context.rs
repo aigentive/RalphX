@@ -2059,7 +2059,7 @@ fn build_mcp_runtime_context(
     }
 }
 
-fn task_runtime_state_for_context<'a>(
+pub(super) fn task_runtime_state_for_context<'a>(
     context_type: ChatContextType,
     entity_status: Option<&'a str>,
 ) -> Option<&'a str> {
@@ -2072,7 +2072,7 @@ fn task_runtime_state_for_context<'a>(
     }
 }
 
-fn build_task_runtime_context_prompt(
+pub(super) fn build_task_runtime_context_prompt(
     context_type: ChatContextType,
     context_id: &str,
     entity_status: Option<&str>,
