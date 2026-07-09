@@ -218,20 +218,29 @@ async fn automation_run_plan_read_model_for_state(
     run: &AutomationRun,
     state: &AppState,
 ) -> crate::error::AppResult<AutomationRunPlanReadModel> {
+    let parked_plan_artifact_id = run.plan_last_parked_artifact_id.clone();
     let Some(conversation_id) = run.conversation_id.as_ref() else {
-        return Ok(AutomationRunPlanReadModel::default());
+        return Ok(AutomationRunPlanReadModel {
+            plan_artifact_id: parked_plan_artifact_id,
+            ..AutomationRunPlanReadModel::default()
+        });
     };
     let Some(workspace) = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(conversation_id)
         .await?
     else {
-        return Ok(AutomationRunPlanReadModel::default());
+        return Ok(AutomationRunPlanReadModel {
+            plan_artifact_id: parked_plan_artifact_id,
+            ..AutomationRunPlanReadModel::default()
+        });
     };
 
     let open = is_open_automation_run(run.status, run.judge_state);
     let plan_artifact_id =
-        current_plan_artifact_id_for_workspace(&state.ideation_session_repo, &workspace).await?;
+        current_plan_artifact_id_for_workspace(&state.ideation_session_repo, &workspace)
+            .await?
+            .or(parked_plan_artifact_id);
     let approval = if open {
         matching_plan_approval_for_workspace(
             &state.ideation_session_repo,

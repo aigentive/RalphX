@@ -421,6 +421,42 @@ async fn automation_detail_response_exposes_open_run_plan_gate_fields() {
 }
 
 #[tokio::test]
+async fn automation_detail_response_falls_back_to_parked_plan_artifact() {
+    let state = AppState::new_test();
+    let automation = automation();
+    let mut run = automation_run(&automation.id);
+    run.id = AutomationRunId::from_string("run-3");
+    run.run_index = 3;
+    run.status = AutomationRunStatus::AwaitingPlanApproval;
+    run.judge_state = AutomationJudgeState::None;
+    run.prompt_author = AutomationPromptAuthor::Judge;
+    run.conversation_id = Some(ChatConversationId::from_string(
+        "conversation-plan-without-workspace",
+    ));
+    run.plan_last_parked_artifact_id = Some("plan-artifact-parked".to_string());
+
+    let response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation,
+            runs: vec![run],
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let run = &response.runs[0];
+
+    assert!(!run.plan_phase);
+    assert_eq!(
+        run.plan_artifact_id.as_deref(),
+        Some("plan-artifact-parked")
+    );
+    assert!(run.plan_approved_by.is_none());
+    assert!(run.plan_approved_artifact_version.is_none());
+    assert!(run.plan_approved_at.is_none());
+}
+
+#[tokio::test]
 async fn automation_detail_response_keeps_terminal_run_plan_artifact_auditable_only() {
     let state = AppState::new_sqlite_test();
     let automation = automation();

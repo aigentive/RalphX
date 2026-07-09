@@ -87,6 +87,10 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
+import {
+  getAutomationRunFocusOptions,
+  type AutomationRunFocusOptions,
+} from "./agentChatFocus";
 
 interface AgentsAutomationPanelProps {
   automationId: string;
@@ -96,6 +100,7 @@ interface AgentsAutomationPanelProps {
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
 }
 
@@ -459,6 +464,7 @@ function AutomationRunsList({
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
 }) {
   if (runs.length === 0) {
@@ -552,6 +558,7 @@ function AutomationRunsList({
                             automationId,
                             run.id,
                             conversationId,
+                            getAutomationRunFocusOptions(run),
                           )
                         }
                         className="group cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
@@ -1273,6 +1280,7 @@ export function AgentsAutomationPanel({
                     automation.id,
                     planGatePausedRun.id,
                     planGatePausedRun.conversationId,
+                    getAutomationRunFocusOptions(planGatePausedRun),
                   )
                 : undefined
             }

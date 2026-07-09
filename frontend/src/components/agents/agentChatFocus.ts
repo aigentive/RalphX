@@ -1,4 +1,9 @@
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
+import type {
+  AutomationJudgeState,
+  AutomationRun,
+  AutomationRunStatus,
+} from "@/api/automations";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 
 export type AgentsChatFocus =
@@ -16,6 +21,14 @@ export type AgentsChatFocus =
 
 export type AgentsChatFocusType = AgentsChatFocus["type"];
 export type AgentsChatFocusTone = "accent" | "warning";
+
+export interface AutomationRunFocusOptions {
+  runStatus: AutomationRunStatus | null;
+  judgeState: AutomationJudgeState | null;
+  workspaceMode: AgentConversationWorkspaceMode | null;
+  hasPlanArtifact: boolean;
+  hasPullRequest: boolean;
+}
 
 export interface AgentsChatFocusDisplay {
   type: Exclude<AgentsChatFocus["type"], "workspace">;
@@ -106,6 +119,18 @@ export function getAgentChatFocusSwitchOptions({
   }
 
   return options;
+}
+
+export function getAutomationRunFocusOptions(
+  run: AutomationRun,
+): AutomationRunFocusOptions {
+  return {
+    runStatus: run.status,
+    judgeState: run.judgeState,
+    workspaceMode: run.planPhase ? "plan" : null,
+    hasPlanArtifact: Boolean(run.planArtifactId),
+    hasPullRequest: Boolean(run.prNumber || run.prUrl),
+  };
 }
 
 export function latestVerificationChildSessionIdQueryKey(

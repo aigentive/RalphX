@@ -23,6 +23,10 @@ import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
+import type {
+  AgentsChatFocus,
+  AutomationRunFocusOptions,
+} from "./agentChatFocus";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -49,6 +53,10 @@ interface AgentsArtifactPaneRegionProps {
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch: string | null;
   focusedIdeationSessionId: string | null;
+  automationRunFocusTarget: Extract<
+    AgentsChatFocus,
+    { type: "automation_run" }
+  > | null;
   hasAutoOpenArtifacts: boolean;
   artifactWidthCss: string;
   isArtifactResizing: boolean;
@@ -79,6 +87,7 @@ interface AgentsArtifactPaneRegionProps {
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusTaskRuntime: (
@@ -99,6 +108,7 @@ export function AgentsArtifactPaneRegion({
   activeWorkspaceFreshness,
   projectBaseBranch,
   focusedIdeationSessionId,
+  automationRunFocusTarget,
   hasAutoOpenArtifacts,
   artifactWidthCss,
   isArtifactResizing,
@@ -173,6 +183,7 @@ export function AgentsArtifactPaneRegion({
                     activeWorkspaceFreshness={activeWorkspaceFreshness}
                     projectBaseBranch={projectBaseBranch}
                     focusedIdeationSessionId={focusedIdeationSessionId}
+                    automationRunFocusTarget={automationRunFocusTarget}
                     activeTab={artifactState.activeTab}
                     taskMode={artifactState.taskMode}
                     onTabChange={onTabChange}
