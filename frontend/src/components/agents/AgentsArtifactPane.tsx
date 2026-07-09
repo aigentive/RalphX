@@ -111,6 +111,7 @@ import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -401,6 +402,10 @@ interface AgentsArtifactPaneProps {
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusWorkspaceReview?: (conversationId: string) => void;
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   onTaskArtifactSelectionChange?: (taskId: string | null) => void;
   onClose: () => void;
 }
@@ -423,6 +428,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onOpenAutomation,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
+  onFocusTaskRuntime,
   onTaskArtifactSelectionChange,
   onClose,
 }: AgentsArtifactPaneProps) {
@@ -1341,6 +1347,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           publishFocusRequest={publishFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
+          {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
           onOpenReview={handleOpenReview}
@@ -1400,6 +1407,10 @@ type ArtifactContentProps = {
       inProgress: boolean;
     } | null,
   ) => void;
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
   onOpenReview: () => void;
@@ -1449,6 +1460,7 @@ function ArtifactContent({
   publishFocusRequest,
   onFocusVerificationSession: _onFocusVerificationSession,
   onDisplayedVerificationStatusChange,
+  onFocusTaskRuntime,
   verificationState,
   verificationInProgress,
   onOpenReview,
@@ -1657,6 +1669,7 @@ function ArtifactContent({
       mode={taskMode}
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
+      {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
     />
   );
 }
@@ -2379,12 +2392,17 @@ function TaskArtifactSurface({
   mode,
   selectedTaskId,
   onSelectedTaskIdChange,
+  onFocusTaskRuntime,
 }: {
   projectId: string | null;
   sessionId: string;
   mode: AgentTaskArtifactMode;
   selectedTaskId: string | null;
   onSelectedTaskIdChange: (id: string | null) => void;
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
 }) {
   const handleTaskSelect = useCallback(
     (taskId: string) => {
@@ -2410,6 +2428,7 @@ function TaskArtifactSurface({
         backLabel={backLabel}
         onBack={handleCloseTaskDetail}
         constrainContent
+        {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
       />
     </Suspense>
   ) : null;
