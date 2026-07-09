@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
-    TaskId, ValidationCommandResult, ValidationRun, ValidationRunStatus, ValidationRunWithResults,
+    TaskId, ValidationCommandResult, ValidationPurpose, ValidationRun, ValidationRunStatus,
+    ValidationRunWithResults,
 };
 use crate::domain::repositories::ValidationRunRepository;
 use crate::error::AppResult;
@@ -67,12 +68,34 @@ impl ValidationRunRepository for MemoryValidationRunRepository {
         &self,
         task_id: &TaskId,
     ) -> AppResult<Option<ValidationRunWithResults>> {
+        self.latest_run_with_results_for_task_matching(task_id, |_| true)
+            .await
+    }
+
+    async fn latest_non_baseline_run_with_results_for_task(
+        &self,
+        task_id: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        self.latest_run_with_results_for_task_matching(task_id, |run| {
+            run.purpose != ValidationPurpose::Baseline
+        })
+        .await
+    }
+}
+
+impl MemoryValidationRunRepository {
+    async fn latest_run_with_results_for_task_matching(
+        &self,
+        task_id: &TaskId,
+        matches_run: impl Fn(&ValidationRun) -> bool,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
         let run = self
             .runs
             .read()
             .await
             .values()
             .filter(|run| &run.task_id == task_id)
+            .filter(|run| matches_run(run))
             .max_by_key(|run| run.started_at)
             .cloned();
         let Some(run) = run else {
