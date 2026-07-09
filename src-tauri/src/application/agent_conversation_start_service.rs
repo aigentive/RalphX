@@ -19,7 +19,7 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, ChatContextType,
-    ChatConversation, ChatConversationId, ProjectId, TeamIntent,
+    ChatConversation, ChatConversationId, CoordinationMode, ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -91,8 +91,7 @@ pub struct StartAgentConversationInput {
     /// Structured artifact references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
-    /// Optional native team-mode overlay request. Disabled by default until the
-    /// managed-team runtime is authoritative.
+    /// Optional Team request for the Agent conversation.
     pub team_intent: Option<TeamIntent>,
 }
 
@@ -192,6 +191,15 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         validate_review_pr_workspace_source_pull_request(mode, source_pull_request.as_ref())
             .map_err(|error| error.to_string())?;
         let selected_plan_reference = selected_plan_reference(&input.composer_artifact_references)?;
+        let requested_coordination_mode = input
+            .team_intent
+            .as_ref()
+            .map(|intent| intent.coordination_mode);
+        if requested_coordination_mode == Some(CoordinationMode::LegacyClaudeTeam) {
+            return Err(
+                "Legacy Claude team mode is read-only; use Team mode for new writes".to_string(),
+            );
+        }
         let should_create_workspace = agent_mode_should_create_workspace(
             mode,
             source_pull_request.as_ref(),
@@ -280,6 +288,9 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             ChatConversation::new_project(project_id)
         };
         conversation.set_agent_mode(Some(mode));
+        if let Some(coordination_mode) = requested_coordination_mode {
+            conversation.set_coordination_mode(coordination_mode);
+        }
         let should_create_conversation = draft_conversation_id.is_none();
         if let Some(parent_conversation_id) = parent_conversation_id.as_deref() {
             if should_create_conversation {
@@ -443,6 +454,14 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 .update_agent_mode(&conversation.id, Some(mode))
                 .await
                 .map_err(|error| error.to_string())?;
+            if let Some(coordination_mode) = requested_coordination_mode {
+                self.deps
+                    .state
+                    .chat_conversation_repo
+                    .update_coordination_mode(&conversation.id, coordination_mode)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             conversation
         };
         log_start_agent_conversation_phase(

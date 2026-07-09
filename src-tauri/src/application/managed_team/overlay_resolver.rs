@@ -15,6 +15,7 @@ pub struct ResolvedTeamOverlay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeTeamOverlayError {
     Disabled,
+    LegacyReadOnly,
     HarnessUnsupported { harness: AgentHarnessKind },
 }
 
@@ -22,6 +23,7 @@ impl NativeTeamOverlayError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Disabled => "team_mode_disabled",
+            Self::LegacyReadOnly => "legacy_team_read_only",
             Self::HarnessUnsupported { .. } => "harness_unsupported",
         }
     }
@@ -33,6 +35,10 @@ impl fmt::Display for NativeTeamOverlayError {
             Self::Disabled => write!(
                 f,
                 "team_mode_disabled: RX-native team mode is disabled in this build"
+            ),
+            Self::LegacyReadOnly => write!(
+                f,
+                "legacy_team_read_only: legacy Claude team mode is read-only; use Team mode"
             ),
             Self::HarnessUnsupported { harness } => write!(
                 f,
@@ -60,7 +66,7 @@ pub fn validate_native_team_intent(
 fn validate_native_team_intent_with_capabilities(
     team_intent: Option<&TeamIntent>,
     harness: AgentHarnessKind,
-    supports_legacy_team: bool,
+    _supports_legacy_team: bool,
     supports_rx_native_team: bool,
 ) -> Result<Option<ResolvedTeamOverlay>, NativeTeamOverlayError> {
     let Some(team_intent) = team_intent else {
@@ -70,18 +76,15 @@ fn validate_native_team_intent_with_capabilities(
         return Ok(None);
     }
     if team_intent.coordination_mode == CoordinationMode::LegacyClaudeTeam {
-        if !supports_legacy_team {
-            return Err(NativeTeamOverlayError::HarnessUnsupported { harness });
-        }
-        return Ok(Some(ResolvedTeamOverlay {
-            coordination_mode: CoordinationMode::LegacyClaudeTeam,
-            harness,
-        }));
+        return Err(NativeTeamOverlayError::LegacyReadOnly);
     }
     if !supports_rx_native_team {
         return Err(NativeTeamOverlayError::HarnessUnsupported { harness });
     }
-    Err(NativeTeamOverlayError::Disabled)
+    Ok(Some(ResolvedTeamOverlay {
+        coordination_mode: CoordinationMode::RxNativeTeam,
+        harness,
+    }))
 }
 
 #[cfg(test)]
@@ -96,6 +99,13 @@ mod tests {
         assert_eq!(
             disabled.to_string(),
             "team_mode_disabled: RX-native team mode is disabled in this build"
+        );
+
+        let legacy = NativeTeamOverlayError::LegacyReadOnly;
+        assert_eq!(legacy.code(), "legacy_team_read_only");
+        assert_eq!(
+            legacy.to_string(),
+            "legacy_team_read_only: legacy Claude team mode is read-only; use Team mode"
         );
 
         let unsupported = NativeTeamOverlayError::HarnessUnsupported {
@@ -122,25 +132,27 @@ mod tests {
     }
 
     #[test]
-    fn rx_native_team_fails_closed_for_standard_harnesses() {
+    fn rx_native_team_resolves_for_standard_harnesses() {
         let intent = TeamIntent::rx_native(Some(TeamIntentStrategy::Execution));
 
-        assert!(matches!(
-            validate_native_team_intent(Some(&intent), AgentHarnessKind::Claude),
-            Err(NativeTeamOverlayError::HarnessUnsupported {
-                harness: AgentHarnessKind::Claude
+        assert_eq!(
+            validate_native_team_intent(Some(&intent), AgentHarnessKind::Claude).unwrap(),
+            Some(ResolvedTeamOverlay {
+                coordination_mode: CoordinationMode::RxNativeTeam,
+                harness: AgentHarnessKind::Claude,
             })
-        ));
-        assert!(matches!(
-            validate_native_team_intent(Some(&intent), AgentHarnessKind::Codex),
-            Err(NativeTeamOverlayError::HarnessUnsupported {
-                harness: AgentHarnessKind::Codex
+        );
+        assert_eq!(
+            validate_native_team_intent(Some(&intent), AgentHarnessKind::Codex).unwrap(),
+            Some(ResolvedTeamOverlay {
+                coordination_mode: CoordinationMode::RxNativeTeam,
+                harness: AgentHarnessKind::Codex,
             })
-        ));
+        );
     }
 
     #[test]
-    fn rx_native_team_returns_disabled_when_capability_is_present() {
+    fn rx_native_team_rejects_harness_without_capability() {
         let intent = TeamIntent::rx_native(Some(TeamIntentStrategy::Execution));
 
         assert!(matches!(
@@ -148,32 +160,29 @@ mod tests {
                 Some(&intent),
                 AgentHarnessKind::Codex,
                 false,
-                true
+                false
             ),
-            Err(NativeTeamOverlayError::Disabled)
+            Err(NativeTeamOverlayError::HarnessUnsupported {
+                harness: AgentHarnessKind::Codex
+            })
         ));
     }
 
     #[test]
-    fn legacy_claude_team_intent_is_adapter_overlay() {
+    fn legacy_claude_team_intent_is_read_only() {
         let intent = TeamIntent {
             coordination_mode: CoordinationMode::LegacyClaudeTeam,
             strategy: None,
         };
-        let resolved =
-            validate_native_team_intent(Some(&intent), AgentHarnessKind::Claude).unwrap();
 
-        assert_eq!(
-            resolved,
-            Some(ResolvedTeamOverlay {
-                coordination_mode: CoordinationMode::LegacyClaudeTeam,
-                harness: AgentHarnessKind::Claude,
-            })
-        );
+        assert!(matches!(
+            validate_native_team_intent(Some(&intent), AgentHarnessKind::Claude),
+            Err(NativeTeamOverlayError::LegacyReadOnly)
+        ));
     }
 
     #[test]
-    fn legacy_claude_team_rejects_non_legacy_harness() {
+    fn legacy_claude_team_rejects_non_legacy_harness_as_read_only() {
         let intent = TeamIntent {
             coordination_mode: CoordinationMode::LegacyClaudeTeam,
             strategy: None,
@@ -181,9 +190,7 @@ mod tests {
 
         assert!(matches!(
             validate_native_team_intent(Some(&intent), AgentHarnessKind::Codex),
-            Err(NativeTeamOverlayError::HarnessUnsupported {
-                harness: AgentHarnessKind::Codex
-            })
+            Err(NativeTeamOverlayError::LegacyReadOnly)
         ));
     }
 

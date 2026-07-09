@@ -5,7 +5,8 @@ use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation,
-    ChatConversationId, IdeationAnalysisBaseRefKind, InternalStatus, Project, Task,
+    ChatConversationId, CoordinationMode, IdeationAnalysisBaseRefKind, InternalStatus, Project,
+    ProjectId, Task, TeamIntent,
 };
 use crate::domain::repositories::AgentRunRepository;
 use crate::domain::services::{QueuedMessage, RunningAgentKey};
@@ -69,6 +70,35 @@ fn build_runner_with_agent_run_repo(
             &app_state.agent_conversation_workspace_repo,
         ))),
     )
+}
+
+#[test]
+fn startup_resumption_send_options_carries_persisted_team_intent() {
+    let mut conversation = ChatConversation::new_project(ProjectId::from_string(
+        "project-team-resumption".to_string(),
+    ));
+    conversation.set_coordination_mode(CoordinationMode::RxNativeTeam);
+    let options = startup_resumption_send_options(&conversation);
+
+    assert_eq!(options.conversation_id_override, Some(conversation.id));
+    assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
+    assert_eq!(options.caller_context, SendCallerContext::StartupResumption);
+}
+
+#[test]
+fn durable_silent_completion_recovery_send_options_carries_persisted_team_intent() {
+    let mut conversation = ChatConversation::new_project(ProjectId::from_string(
+        "project-team-durable-recovery".to_string(),
+    ));
+    conversation.set_coordination_mode(CoordinationMode::LegacyClaudeTeam);
+    let options = durable_silent_completion_recovery_send_options(
+        &conversation,
+        "{\"source\":\"test\"}".to_string(),
+    );
+
+    assert_eq!(options.conversation_id_override, Some(conversation.id));
+    assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
+    assert_eq!(options.caller_context, SendCallerContext::StartupResumption);
 }
 
 #[tokio::test]

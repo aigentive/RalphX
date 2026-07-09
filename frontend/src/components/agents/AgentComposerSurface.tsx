@@ -39,6 +39,7 @@ import {
 } from "lucide-react";
 
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
+import type { TeamIntent } from "@/api/chat";
 import type { AgentStatus } from "@/stores/chatStore";
 import type { AgentProvider } from "@/stores/agentSessionStore";
 import { Button } from "@/components/ui/button";
@@ -227,6 +228,14 @@ interface ModeFieldConfig {
   testId?: string;
 }
 
+interface TeamFieldConfig {
+  enabled: boolean;
+  onEnabledChange: (enabled: boolean) => void | Promise<unknown>;
+  disabled?: boolean;
+  pending?: boolean;
+  testId?: string;
+}
+
 export interface ChatFocusOption {
   id: string;
   label: string;
@@ -255,6 +264,7 @@ export interface AgentComposerSendOptions {
   projectReferences?: AgentComposerProjectReference[];
   integrationReferences?: AgentComposerIntegrationReference[];
   artifactReferences?: AgentComposerArtifactReference[];
+  teamIntent?: TeamIntent | null;
 }
 
 export interface AgentComposerSlashCommand {
@@ -308,6 +318,7 @@ export interface AgentComposerSurfaceProps {
   initialArtifactReferences?: AgentComposerArtifactReference[];
   onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
+  team?: TeamFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   slashCommands?: AgentComposerSlashCommand[];
   onForkSession?: (() => Promise<unknown> | void) | undefined;
@@ -368,6 +379,7 @@ export function AgentComposerSurface({
   initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
   onIntegrationReferencesChange,
   mode,
+  team,
   chatFocus,
   slashCommands = [],
   onForkSession,
@@ -1340,11 +1352,15 @@ export function AgentComposerSurface({
       const normalizedArtifactReferences = normalizeComposerArtifactReferences([
         ...artifactReferences.values(),
       ]);
+      const teamIntent = team?.enabled
+        ? ({ coordinationMode: "rx_native_team" } satisfies TeamIntent)
+        : null;
       return {
         message: withInternalSkillDirectives,
         ...(projectReferences.length > 0 ||
         normalizedIntegrationReferences.length > 0 ||
-        normalizedArtifactReferences.length > 0
+        normalizedArtifactReferences.length > 0 ||
+        teamIntent
           ? {
               options: {
                 ...(projectReferences.length > 0 ? { projectReferences } : {}),
@@ -1354,6 +1370,7 @@ export function AgentComposerSurface({
                 ...(normalizedArtifactReferences.length > 0
                   ? { artifactReferences: normalizedArtifactReferences }
                   : {}),
+                ...(teamIntent ? { teamIntent } : {}),
               },
             }
           : {}),
@@ -1366,6 +1383,7 @@ export function AgentComposerSurface({
       selectedInternalSkillNames,
       selectedProjectReferenceList,
       skills,
+      team?.enabled,
     ],
   );
 
@@ -1918,10 +1936,13 @@ export function AgentComposerSurface({
               </div>
             )}
 
+            {team && <ComposerTeamSwitch team={team} compact={compact} />}
+
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                "agent-composer-action-button shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                team ? "" : "ml-auto",
                 compact ? "h-8 px-3" : "h-10 px-4",
                 compact
                   ? "min-w-0"
@@ -3086,6 +3107,51 @@ function ComposerRuntimeFastModeControl({
         className="data-[state=checked]:bg-[var(--accent-primary)]"
       />
     </div>
+  );
+}
+
+function ComposerTeamSwitch({
+  team,
+  compact,
+}: {
+  team: TeamFieldConfig;
+  compact: boolean;
+}) {
+  const testId = team.testId ?? "agent-composer-team";
+  const disabled = Boolean(team.disabled || team.pending);
+
+  return (
+    <label
+      className={cn(
+        "ml-auto inline-flex h-8 shrink-0 items-center rounded-full border border-[var(--overlay-faint)] transition-colors duration-150",
+        compact ? "gap-1.5 px-2" : "gap-2 px-2.5",
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+      )}
+      style={{
+        backgroundColor:
+          "color-mix(in srgb, var(--bg-base) 18%, var(--bg-surface) 82%)",
+      }}
+      data-testid={testId}
+    >
+      <span
+        className={cn(
+          "select-none font-medium text-[var(--text-secondary)]",
+          compact ? "text-[0.6875rem]" : "text-[0.75rem]",
+        )}
+      >
+        Team
+      </span>
+      <Switch
+        checked={team.enabled}
+        disabled={disabled}
+        onCheckedChange={(enabled) => {
+          void team.onEnabledChange(enabled);
+        }}
+        aria-label="Team"
+        data-testid={`${testId}-control`}
+        className="data-[state=checked]:bg-[var(--accent-primary)]"
+      />
+    </label>
   );
 }
 

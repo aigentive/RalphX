@@ -60,7 +60,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
-    InternalStatus, MessageRole, ProjectId, TaskId, TeamIntent, TeamMessageTarget,
+    CoordinationMode, InternalStatus, MessageRole, ProjectId, TaskId, TeamIntent,
+    TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -804,6 +805,19 @@ pub(crate) fn codex_fast_mode_service_tier_override(enabled: Option<bool>) -> Op
     })
 }
 
+pub(crate) fn coordination_mode_enables_team(coordination_mode: CoordinationMode) -> bool {
+    matches!(
+        coordination_mode,
+        CoordinationMode::LegacyClaudeTeam | CoordinationMode::RxNativeTeam
+    )
+}
+
+pub(crate) fn team_intent_for_persisted_coordination_mode(
+    coordination_mode: CoordinationMode,
+) -> Option<TeamIntent> {
+    coordination_mode_enables_team(coordination_mode).then(|| TeamIntent::rx_native(None))
+}
+
 // ============================================================================
 // ChatService trait
 // ============================================================================
@@ -1471,39 +1485,66 @@ impl<R: Runtime> AppChatService<R> {
         context_id: &str,
         options: &SendMessageOptions,
     ) -> Result<(ChatConversation, bool), ChatServiceError> {
-        let Some(conversation_id) = options.conversation_id_override else {
-            return chat_service_repository::get_or_create_conversation(
+        let (mut conversation, created) = if let Some(conversation_id) =
+            options.conversation_id_override
+        {
+            let conversation = self
+                .conversation_repo
+                .get_by_id(&conversation_id)
+                .await
+                .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?
+                .ok_or_else(|| {
+                    ChatServiceError::ConversationNotFound(format!(
+                        "Conversation not found: {}",
+                        conversation_id
+                    ))
+                })?;
+
+            if conversation.context_type != context_type || conversation.context_id != context_id {
+                return Err(ChatServiceError::ContextNotFound(format!(
+                    "Conversation {} belongs to {}/{} not {}/{}",
+                    conversation_id,
+                    conversation.context_type,
+                    conversation.context_id,
+                    context_type,
+                    context_id
+                )));
+            }
+
+            (conversation, false)
+        } else {
+            chat_service_repository::get_or_create_conversation(
                 Arc::clone(&self.conversation_repo),
                 context_type,
                 context_id,
             )
-            .await;
+            .await?
         };
 
-        let conversation = self
-            .conversation_repo
-            .get_by_id(&conversation_id)
-            .await
-            .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?
-            .ok_or_else(|| {
-                ChatServiceError::ConversationNotFound(format!(
-                    "Conversation not found: {}",
-                    conversation_id
-                ))
-            })?;
-
-        if conversation.context_type != context_type || conversation.context_id != context_id {
-            return Err(ChatServiceError::ContextNotFound(format!(
-                "Conversation {} belongs to {}/{} not {}/{}",
-                conversation_id,
-                conversation.context_type,
-                conversation.context_id,
-                context_type,
-                context_id
-            )));
+        let requested_coordination_mode = if let Some(team_intent) = options.team_intent.as_ref() {
+            if team_intent.coordination_mode == CoordinationMode::LegacyClaudeTeam {
+                return Err(ChatServiceError::SpawnFailed(
+                    "Legacy Claude team mode is read-only; use Team mode for new writes"
+                        .to_string(),
+                ));
+            }
+            Some(team_intent.coordination_mode)
+        } else if conversation.coordination_mode == CoordinationMode::LegacyClaudeTeam {
+            Some(CoordinationMode::RxNativeTeam)
+        } else {
+            None
+        };
+        if let Some(coordination_mode) = requested_coordination_mode {
+            if conversation.coordination_mode != coordination_mode {
+                self.conversation_repo
+                    .update_coordination_mode(&conversation.id, coordination_mode)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+                conversation.set_coordination_mode(coordination_mode);
+            }
         }
 
-        Ok((conversation, false))
+        Ok((conversation, created))
     }
 
     pub fn with_question_state(mut self, state: Arc<QuestionState>) -> Self {
@@ -5070,6 +5111,19 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             team_mode_val,
             resolved_spawn_settings.effective_harness,
         );
+        if conversation.coordination_mode == CoordinationMode::RxNativeTeam {
+            let team_intent = TeamIntent::rx_native(
+                options
+                    .team_intent
+                    .as_ref()
+                    .and_then(|intent| intent.strategy),
+            );
+            crate::application::managed_team::validate_native_team_intent(
+                Some(&team_intent),
+                resolved_spawn_settings.effective_harness,
+            )
+            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+        }
         if team_mode_val && !runtime_team_mode {
             tracing::info!(
                 %context_type,
@@ -6391,6 +6445,123 @@ mod stale_registry_gate_tests {
 
     fn pid_zero() -> u32 {
         0
+    }
+}
+
+#[cfg(test)]
+mod coordination_mode_send_tests {
+    use crate::application::AppState;
+    use crate::domain::entities::{
+        ChatContextType, ChatConversation, ChatConversationId, CoordinationMode, ProjectId,
+        TeamIntent,
+    };
+
+    use super::SendMessageOptions;
+
+    #[tokio::test]
+    async fn explicit_team_intent_persists_coordination_mode_for_existing_conversation() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-team-send".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should persist");
+        let service = state.build_chat_service();
+
+        let (resolved, created) = service
+            .get_or_create_conversation_for_send(
+                ChatContextType::Project,
+                project_id.as_str(),
+                &SendMessageOptions {
+                    conversation_id_override: Some(conversation.id),
+                    team_intent: Some(TeamIntent::rx_native(None)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("conversation should resolve");
+
+        assert!(!created);
+        assert_eq!(resolved.coordination_mode, CoordinationMode::RxNativeTeam);
+        let stored = state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("conversation should load")
+            .expect("conversation should exist");
+        assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+    }
+
+    #[tokio::test]
+    async fn legacy_coordination_mode_normalizes_to_rx_native_on_next_send() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-legacy-team-send".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_coordination_mode(CoordinationMode::LegacyClaudeTeam);
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let service = state.build_chat_service();
+
+        let (resolved, created) = service
+            .get_or_create_conversation_for_send(
+                ChatContextType::Project,
+                project_id.as_str(),
+                &SendMessageOptions {
+                    conversation_id_override: Some(conversation_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("conversation should resolve");
+
+        assert!(!created);
+        assert_eq!(resolved.coordination_mode, CoordinationMode::RxNativeTeam);
+        let stored = state
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await
+            .expect("conversation should load")
+            .expect("conversation should exist");
+        assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+    }
+
+    #[tokio::test]
+    async fn legacy_team_intent_is_rejected_for_send_persistence() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-legacy-write-send".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should persist");
+        let service = state.build_chat_service();
+
+        let error = service
+            .get_or_create_conversation_for_send(
+                ChatContextType::Project,
+                project_id.as_str(),
+                &SendMessageOptions {
+                    conversation_id_override: Some(ChatConversationId::from_string(
+                        conversation.id.as_str(),
+                    )),
+                    team_intent: Some(TeamIntent {
+                        coordination_mode: CoordinationMode::LegacyClaudeTeam,
+                        strategy: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("legacy team intent should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("Legacy Claude team mode is read-only"));
     }
 }
 

@@ -141,6 +141,42 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("renders the Team switch and reports toggle changes", () => {
+    const onEnabledChange = vi.fn();
+    renderComposer({
+      team: {
+        enabled: false,
+        onEnabledChange,
+        testId: "agent-composer-team",
+      },
+    });
+
+    expect(screen.getByText("Team")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agent-composer-team-control"));
+
+    expect(onEnabledChange).toHaveBeenCalledWith(true);
+  });
+
+  it("sends the Team intent when the switch is enabled", () => {
+    const onSend = vi.fn();
+    renderComposer({
+      onSend,
+      team: {
+        enabled: true,
+        onEnabledChange: vi.fn(),
+        testId: "agent-composer-team",
+      },
+    });
+
+    const textarea = screen.getByLabelText("Message input");
+    fireEvent.change(textarea, { target: { value: "Coordinate this" } });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Coordinate this", {
+      teamIntent: { coordinationMode: "rx_native_team" },
+    });
+  });
+
   it("hides the runtime pill when no model is available to show or select", () => {
     renderComposer({
       model: {

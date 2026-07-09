@@ -483,6 +483,30 @@ describe("AgentsView start conversation", () => {
     invalidateSpy.mockRestore();
   });
 
+  it("starts a new conversation with Team enabled", async () => {
+    mockAgentViewData();
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("agents-start-team-control"));
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "coordinate this implementation" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "coordinate this implementation",
+          teamIntent: { coordinationMode: "rx_native_team" },
+        }),
+      ),
+    );
+  });
+
   it("starts a selected pull request in isolated branch mode by default", async () => {
     const user = userEvent.setup();
     mockAgentViewData();

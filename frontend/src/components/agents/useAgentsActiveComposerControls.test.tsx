@@ -1,11 +1,26 @@
 import { act, renderHook } from "@testing-library/react";
 import type { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AGENT_MODEL_CATALOG } from "@/lib/agent-models";
 
 import type { AgentConversation } from "./agentConversations";
 import { useAgentsActiveComposerControls } from "./useAgentsActiveComposerControls";
+
+const { updateCoordinationModeMock } = vi.hoisted(() => ({
+  updateCoordinationModeMock: vi.fn(),
+}));
+
+vi.mock("@/api/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/chat")>();
+  return {
+    ...actual,
+    chatApi: {
+      ...actual.chatApi,
+      updateAgentConversationCoordinationMode: updateCoordinationModeMock,
+    },
+  };
+});
 
 type ControlsArgs = Parameters<typeof useAgentsActiveComposerControls>[0];
 
@@ -22,6 +37,7 @@ function projectConversation(
     providerSessionId: null,
     providerHarness: null,
     agentMode: "ideation",
+    coordinationMode: "solo",
     title: "Conversation",
     messageCount: 0,
     lastMessageAt: null,
@@ -78,6 +94,11 @@ function controlsArgs(overrides: Partial<ControlsArgs> = {}): ControlsArgs {
 }
 
 describe("useAgentsActiveComposerControls", () => {
+  beforeEach(() => {
+    updateCoordinationModeMock.mockReset();
+    updateCoordinationModeMock.mockResolvedValue(projectConversation());
+  });
+
   it("refetches the active workspace when the mode menu opens", () => {
     const refetchQueries = vi.fn();
     const { result } = renderHook(() =>
@@ -251,6 +272,52 @@ describe("useAgentsActiveComposerControls", () => {
     });
 
     expect(setRuntimeForConversation).not.toHaveBeenCalled();
+  });
+
+  it("enables Team mode for the active project conversation", async () => {
+    const invalidateProjectConversations = vi.fn().mockResolvedValue(undefined);
+    const invalidateQueries = vi.fn().mockResolvedValue(undefined);
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          invalidateProjectConversations,
+          queryClient: {
+            invalidateQueries,
+            refetchQueries: vi.fn(),
+          } as unknown as QueryClient,
+        }),
+      ),
+    );
+
+    await act(async () => {
+      await result.current.handleActiveTeamEnabledChange(true);
+    });
+
+    expect(updateCoordinationModeMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      coordinationMode: "rx_native_team",
+    });
+    expect(invalidateProjectConversations).toHaveBeenCalledWith("project-1");
+    expect(invalidateQueries).toHaveBeenCalled();
+    expect(result.current.updatingTeamConversationId).toBeNull();
+  });
+
+  it("does not update Team mode when the requested state already matches", async () => {
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          activeConversation: projectConversation({
+            coordinationMode: "rx_native_team",
+          }),
+        }),
+      ),
+    );
+
+    await act(async () => {
+      await result.current.handleActiveTeamEnabledChange(true);
+    });
+
+    expect(updateCoordinationModeMock).not.toHaveBeenCalled();
   });
 
   it("normalizes active effort changes against provider-supported efforts", () => {

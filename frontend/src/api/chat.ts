@@ -1641,6 +1641,7 @@ export const chatApi = {
   startAgentConversation,
   forkAgentConversation,
   switchAgentConversationMode,
+  updateAgentConversationCoordinationMode,
   copyAgentConversationPlan,
   importAgentConversationPlan,
   sendAgentMessage,
@@ -1838,6 +1839,11 @@ export interface SwitchAgentConversationModeInput {
 export interface SwitchAgentConversationModeResult {
   conversation: ChatConversation;
   workspace: AgentConversationWorkspace | null;
+}
+
+export interface UpdateAgentConversationCoordinationModeInput {
+  conversationId: string;
+  coordinationMode: CoordinationMode;
 }
 
 export interface CopyAgentConversationPlanInput {
@@ -3628,6 +3634,22 @@ export async function switchAgentConversationMode(
     SwitchAgentConversationModeResponseSchema,
   );
   return transformSwitchAgentConversationModeResponse(raw);
+}
+
+export async function updateAgentConversationCoordinationMode(
+  input: UpdateAgentConversationCoordinationModeInput,
+): Promise<ChatConversation> {
+  const raw = await typedInvoke(
+    "update_agent_conversation_coordination_mode",
+    {
+      input: {
+        conversationId: input.conversationId,
+        coordinationMode: input.coordinationMode,
+      },
+    },
+    ChatConversationResponseSchema,
+  );
+  return transformConversation(raw);
 }
 
 export async function copyAgentConversationPlan(
