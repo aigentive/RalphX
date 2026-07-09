@@ -11,7 +11,9 @@ use crate::application::{
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentLane, AgentLaneSettings, AgentProviderSettings, LogicalEffort,
+};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
     ChatConversationId, ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
@@ -21,6 +23,137 @@ use crate::domain::entities::{
 use crate::domain::repositories::{AgentRunRepository, StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+
+async fn seed_codex_review_lane_with_disabled_claude(state: &AppState, project: &Project) {
+    let claude = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    state
+        .agent_provider_settings_repo
+        .upsert(&claude)
+        .await
+        .expect("seed disabled Claude settings");
+
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    state
+        .agent_provider_settings_repo
+        .upsert(&codex)
+        .await
+        .expect("seed enabled Codex settings");
+
+    let mut codex_reviewer = AgentLaneSettings::new(AgentHarnessKind::Codex);
+    codex_reviewer.model = Some("gpt-5.4".to_string());
+    codex_reviewer.effort = Some(LogicalEffort::High);
+    state
+        .agent_lane_settings_repo
+        .upsert_for_project(
+            project.id.as_str(),
+            AgentLane::ExecutionReviewer,
+            &codex_reviewer,
+        )
+        .await
+        .expect("seed Codex execution reviewer lane");
+}
+
+#[tokio::test]
+#[ignore = "TDD regression: enable after background transition wiring propagates lane/provider repos without AppState"]
+async fn background_review_transition_deps_preserve_codex_lane_without_app_handle() {
+    let state = AppState::new_test();
+    let project = Project::new("Codex review project".to_string(), "/tmp".to_string());
+    seed_codex_review_lane_with_disabled_claude(&state, &project).await;
+
+    let app_handle: Option<tauri::AppHandle<MockRuntime>> = None;
+    let deps = build_runtime_factory_deps(
+        &app_handle,
+        Arc::clone(&state.task_repo),
+        Arc::clone(&state.task_dependency_repo),
+        Arc::clone(&state.project_repo),
+        Arc::clone(&state.artifact_repo),
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.ideation_session_repo),
+        Arc::clone(&state.activity_event_repo),
+        Arc::clone(&state.message_queue),
+        Arc::clone(&state.running_agent_registry),
+        Arc::clone(&state.memory_event_repo),
+        Some(Arc::clone(&state.execution_settings_repo)),
+        None,
+        None,
+    );
+
+    assert!(
+        deps.agent_lane_settings_repo.is_some(),
+        "background execution_complete -> review transition must carry lane settings explicitly when app_handle is unavailable"
+    );
+
+    let resolved = crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+        "ralphx-reviewer",
+        Some(project.id.as_str()),
+        ChatContextType::Review,
+        Some("reviewing"),
+        None,
+        None,
+        deps.agent_lane_settings_repo.as_ref(),
+    )
+    .await;
+
+    assert_eq!(
+        resolved.effective_harness,
+        AgentHarnessKind::Codex,
+        "Review context must preserve execution_reviewer=codex instead of falling back to Claude"
+    );
+}
+
+#[tokio::test]
+#[ignore = "TDD regression: enable after background transition wiring propagates provider settings without AppState"]
+async fn background_review_transition_deps_keep_disabled_claude_gate_without_app_handle() {
+    let state = AppState::new_test();
+    let project = Project::new(
+        "Disabled Claude review project".to_string(),
+        "/tmp".to_string(),
+    );
+    seed_codex_review_lane_with_disabled_claude(&state, &project).await;
+
+    let app_handle: Option<tauri::AppHandle<MockRuntime>> = None;
+    let deps = build_runtime_factory_deps(
+        &app_handle,
+        Arc::clone(&state.task_repo),
+        Arc::clone(&state.task_dependency_repo),
+        Arc::clone(&state.project_repo),
+        Arc::clone(&state.artifact_repo),
+        Arc::clone(&state.chat_message_repo),
+        Arc::clone(&state.chat_attachment_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.ideation_session_repo),
+        Arc::clone(&state.activity_event_repo),
+        Arc::clone(&state.message_queue),
+        Arc::clone(&state.running_agent_registry),
+        Arc::clone(&state.memory_event_repo),
+        Some(Arc::clone(&state.execution_settings_repo)),
+        None,
+        None,
+    );
+    let provider_repo = deps
+        .agent_provider_settings_repo
+        .as_ref()
+        .expect("background review transition must carry provider settings without app_handle");
+
+    let error = crate::application::ensure_provider_spawn_enabled(
+        provider_repo,
+        AgentHarnessKind::Claude,
+        "background_review_transition",
+    )
+    .await
+    .expect_err("disabled Claude must be blocked before any review launch");
+
+    assert!(
+        error.contains("Claude") || error.contains("claude"),
+        "disabled-provider error should identify Claude, got: {error}"
+    );
+}
 
 /// Configurable mock: `get_by_id` returns the stored task (or None).
 struct StubTaskRepo {
