@@ -316,15 +316,36 @@ pub(crate) fn message_metadata_hidden_from_ui(metadata: Option<&str>) -> bool {
         })
 }
 
-pub(crate) fn task_runtime_bootstrap_send_options() -> SendMessageOptions {
+pub(crate) fn task_runtime_bootstrap_metadata(
+    context_type: ChatContextType,
+    task_id: &str,
+    task_state: &str,
+    project_id: &str,
+) -> String {
+    serde_json::json!({
+        "hidden_from_ui": true,
+        "source": "task_runtime_bootstrap",
+        "context_type": context_type.to_string(),
+        "task_id": task_id,
+        "task_state": task_state,
+        "project_id": project_id,
+    })
+    .to_string()
+}
+
+pub(crate) fn task_runtime_bootstrap_send_options(
+    context_type: ChatContextType,
+    task_id: &str,
+    task_state: &str,
+    project_id: &str,
+) -> SendMessageOptions {
     SendMessageOptions {
-        metadata: Some(
-            serde_json::json!({
-                "hidden_from_ui": true,
-                "source": "task_runtime_bootstrap",
-            })
-            .to_string(),
-        ),
+        metadata: Some(task_runtime_bootstrap_metadata(
+            context_type,
+            task_id,
+            task_state,
+            project_id,
+        )),
         ..Default::default()
     }
 }
@@ -6584,7 +6605,12 @@ mod agent_workspace_send_tests {
 
     #[test]
     fn task_runtime_bootstrap_options_hide_user_message_without_recovery_context() {
-        let options = super::task_runtime_bootstrap_send_options();
+        let options = super::task_runtime_bootstrap_send_options(
+            ChatContextType::TaskExecution,
+            "task-bootstrap-hidden",
+            "executing",
+            "project-bootstrap",
+        );
         let metadata = options.metadata.as_deref().expect("metadata");
         let value: serde_json::Value = serde_json::from_str(metadata).expect("metadata json");
         let persisted =
@@ -6593,6 +6619,10 @@ mod agent_workspace_send_tests {
         assert!(super::message_metadata_hidden_from_ui(Some(metadata)));
         assert_eq!(persisted, metadata);
         assert_eq!(value["source"], "task_runtime_bootstrap");
+        assert_eq!(value["context_type"], "task_execution");
+        assert_eq!(value["task_id"], "task-bootstrap-hidden");
+        assert_eq!(value["task_state"], "executing");
+        assert_eq!(value["project_id"], "project-bootstrap");
         assert_eq!(value.get("recovery_context"), None);
     }
 
@@ -6623,7 +6653,12 @@ mod agent_workspace_send_tests {
             )
             .await
             .expect("visible message should queue");
-        let hidden_options = super::task_runtime_bootstrap_send_options();
+        let hidden_options = super::task_runtime_bootstrap_send_options(
+            ChatContextType::TaskExecution,
+            "task-hidden-queued",
+            "executing",
+            "project-hidden",
+        );
         let hidden = service
             .enqueue_pending_send(
                 ChatContextType::TaskExecution,
