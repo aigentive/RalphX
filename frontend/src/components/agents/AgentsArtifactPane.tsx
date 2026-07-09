@@ -2240,7 +2240,9 @@ function AgentPlanPanel({
       ? "Implementation work is attached to this plan."
       : planLifecycleState === "approved"
         ? (planActionHint ??
-          "Choose the next step for this approved plan.")
+          (workspace?.mode === "plan"
+            ? "Choose the next step for this approved plan."
+            : "This approved plan is guiding the current workspace agent."))
         : "Approve this plan before creating proposals or implementation work.";
   const planLifecycleTitle =
     planLifecycleState === "needs_approval"
