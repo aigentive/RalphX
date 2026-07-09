@@ -89,6 +89,30 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
     minimumRowCount?: number;
   }>,
 }));
+const { automationGroupIndexCalls, automationGroupCalls, automationLabels } = vi.hoisted(() => ({
+  automationGroupIndexCalls: [] as Array<{
+    projectIds: string[];
+    archivedOnly: boolean;
+    search: string;
+    publicationStates: string[];
+    pinnedConversationIds: string[];
+    priorityConversationIds?: string[];
+    sort: string;
+  }>,
+  automationGroupCalls: [] as Array<{
+    groupKey: string;
+    projectIds: string[];
+    archivedOnly: boolean;
+    search: string;
+    publicationStates: string[];
+    pinnedConversationIds: string[];
+    priorityConversationIds?: string[];
+    sort: string;
+    minimumRowCount?: number;
+    enabled?: boolean;
+  }>,
+  automationLabels: new Map<string, string>(),
+}));
 const { latestProjectOrderData } = vi.hoisted(() => ({
   latestProjectOrderData: { current: null as string[] | null },
 }));
@@ -609,6 +633,134 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         isLoading: projectResult?.isLoading,
       });
     },
+    useAgentSidebarAutomationGroupIndex: ({
+      projectIds,
+      archivedOnly,
+      search,
+      publicationStates,
+      pinnedConversationIds,
+      priorityConversationIds,
+      sort,
+    }: {
+      projectIds: string[];
+      archivedOnly: boolean;
+      search: string;
+      publicationStates: string[];
+      pinnedConversationIds: string[];
+      priorityConversationIds?: string[];
+      sort: string;
+    }) => {
+      automationGroupIndexCalls.push({
+        projectIds,
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        priorityConversationIds,
+        sort,
+      });
+      const rows = buildGroupResult({
+        projectIds,
+        groupKey: "automation-index",
+        groupLabel: "Automations",
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        priorityConversationIds,
+        sort,
+      }).group.rows;
+      const groups = new Map<string, { key: string; label: string; total: number }>();
+      for (const row of rows) {
+        const key = row.conversation.automationId ?? "__standalone__";
+        const label =
+          key === "__standalone__"
+            ? "Standalone"
+            : automationLabels.get(key) ?? key;
+        groups.set(key, {
+          key,
+          label,
+          total: (groups.get(key)?.total ?? 0) + 1,
+        });
+      }
+      return {
+        data: Array.from(groups.values()).map((group) => ({
+          ...group,
+          offset: 0,
+          limit: 1,
+          hasMore: group.total > 1,
+          rows: [],
+        })),
+        isLoading: false,
+        isSuccess: true,
+        isFetching: false,
+        error: null,
+        refetch: vi.fn(),
+      };
+    },
+    useAgentSidebarAutomationGroup: ({
+      groupKey,
+      projectIds,
+      archivedOnly,
+      search,
+      publicationStates,
+      pinnedConversationIds,
+      priorityConversationIds,
+      sort,
+      minimumRowCount,
+      enabled = true,
+    }: {
+      groupKey: string;
+      projectIds: string[];
+      archivedOnly: boolean;
+      search: string;
+      publicationStates: string[];
+      pinnedConversationIds: string[];
+      priorityConversationIds?: string[];
+      sort: string;
+      minimumRowCount?: number;
+      enabled?: boolean;
+    }) => {
+      automationGroupCalls.push({
+        groupKey,
+        projectIds,
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        priorityConversationIds,
+        sort,
+        minimumRowCount,
+        enabled,
+      });
+      const label =
+        groupKey === "__standalone__"
+          ? "Standalone"
+          : automationLabels.get(groupKey) ?? groupKey;
+      const result = buildGroupResult({
+        projectIds,
+        groupKey,
+        groupLabel: label,
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        priorityConversationIds,
+        sort,
+      });
+      return {
+        ...result,
+        group: {
+          ...result.group,
+          rows: result.group.rows.filter(
+            (row) => (row.conversation.automationId ?? "__standalone__") === groupKey
+          ),
+          total: result.group.rows.filter(
+            (row) => (row.conversation.automationId ?? "__standalone__") === groupKey
+          ).length,
+        },
+      };
+    },
     useProjectGroupLatestOrder: () => ({
       data: latestProjectOrderData.current,
       isLoading: false,
@@ -760,6 +912,9 @@ describe("AgentsSidebar", () => {
     workspacesByProject.clear();
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
+    automationGroupIndexCalls.length = 0;
+    automationGroupCalls.length = 0;
+    automationLabels.clear();
     prTemplateDialogCalls.length = 0;
     latestProjectOrderData.current = null;
     virtuosoMockState.dimensionsByTestId.clear();
@@ -2235,7 +2390,7 @@ describe("AgentsSidebar", () => {
     );
   });
 
-  it("renders Filters then Sort toolbar controls", async () => {
+  it("renders Group, Filters, Sort toolbar controls with grouping outside Filters", async () => {
     const user = userEvent.setup();
     conversationsByProject.set("project-1", {
       data: [],
@@ -2255,12 +2410,18 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filter-toolbar").getAttribute("style")).toContain(
       "background-color: var(--bg-surface)",
     );
+    expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Group");
     expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
       "aria-label",
       "Sort projects: Latest"
     );
+    expect(
+      screen.getByTestId("agents-group-trigger").compareDocumentPosition(
+        screen.getByTestId("agents-filters-trigger")
+      )
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(
       screen.getByTestId("agents-filters-trigger").compareDocumentPosition(
         screen.getByTestId("agents-sort-trigger")
@@ -2269,13 +2430,32 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
-    expect(screen.getByTestId("agents-filter-group-by")).toHaveTextContent("Project");
+    expect(screen.queryByTestId("agents-filter-group-by")).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Project" })).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByTestId("agents-group-trigger"));
+    expect(screen.getByTestId("agents-group-popover")).toHaveTextContent("Project");
+    expect(screen.getByTestId("agents-group-popover")).toHaveTextContent(
+      "Publication state"
+    );
+    expect(screen.getByTestId("agents-group-popover")).toHaveTextContent("Automations");
     await user.click(screen.getByRole("radio", { name: "Publication state" }));
-    expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
-      "aria-label",
-      "Sort conversations: Latest"
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
+        "aria-label",
+        "Sort conversations: Latest"
+      )
+    );
+    await user.click(screen.getByRole("radio", { name: "Automations" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
+        "aria-label",
+        "Sort automations: Latest"
+      )
     );
 
+    await user.click(screen.getByTestId("agents-filters-trigger"));
     await user.click(
       screen.getByTestId("agents-filter-projects-section-trigger")
     );
@@ -2556,7 +2736,7 @@ describe("AgentsSidebar", () => {
 
     renderSidebar([project()]);
 
-    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByTestId("agents-group-trigger"));
     await user.click(screen.getByRole("radio", { name: "Publication state" }));
 
     expect(getSessionRowOrder()).toEqual([
@@ -3332,7 +3512,7 @@ describe("AgentsSidebar", () => {
     ).toContain("color: var(--accent-primary)");
   });
 
-  it("groups conversations by publication state when selected in Filters", async () => {
+  it("groups conversations by publication state when selected in Group", async () => {
     const user = userEvent.setup();
     const merged = conversation({ id: "conversation-merged", title: "Merged run" });
     const closed = conversation({ id: "conversation-closed", title: "Closed run" });
@@ -3359,10 +3539,10 @@ describe("AgentsSidebar", () => {
 
     renderSidebar([project()]);
 
-    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByTestId("agents-group-trigger"));
     await user.click(screen.getByRole("radio", { name: "Publication state" }));
 
-    const activeButton = screen.getByTestId("agents-publication-row-active");
+    const activeButton = await screen.findByTestId("agents-publication-row-active");
     const mergedButton = screen.getByTestId("agents-publication-row-merged");
     const closedButton = screen.getByTestId("agents-publication-row-closed");
     const mergedRow = within(mergedButton);
@@ -3399,6 +3579,112 @@ describe("AgentsSidebar", () => {
       ])
     );
     expect(screen.queryByTestId("agents-project-row-project-1")).not.toBeInTheDocument();
+  });
+
+  it("groups conversations by automation with existing row interactions", async () => {
+    const user = userEvent.setup();
+    const onSelectConversation = vi.fn();
+    const automationLabel =
+      "Nightly release automation with a long label that should truncate cleanly";
+    automationLabels.set("automation-release", automationLabel);
+    const automationConversation = conversation({
+      id: "conversation-automation-release",
+      title: "Release automation setup",
+      automationId: "automation-release",
+    });
+    const standaloneConversation = conversation({
+      id: "conversation-standalone",
+      title: "Standalone planning",
+      createdAt: "2026-04-22T09:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [automationConversation, standaloneConversation],
+      total: 2,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "automation",
+      sidebarPublicationStateFilters: ["active"],
+    });
+
+    renderSidebar([project()], { onSelectConversation });
+
+    const automationRow = screen.getByTestId(
+      "agents-automation-row-automation-release"
+    );
+    const automationGroup = within(automationRow);
+    expect(automationGroup.getByText(automationLabel)).toHaveClass(
+      "min-w-0",
+      "truncate"
+    );
+    expect(automationGroup.getByText("1")).toHaveClass("agents-project-count");
+    expect(screen.getByTestId("agents-session-conversation-automation-release"))
+      .toBeInTheDocument();
+    expect(screen.queryByTestId("agents-session-conversation-standalone"))
+      .not.toBeInTheDocument();
+    expect(automationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          groupKey: "automation-release",
+          enabled: true,
+        }),
+        expect.objectContaining({
+          groupKey: "__standalone__",
+          enabled: false,
+        }),
+      ])
+    );
+
+    await user.click(screen.getByTestId("agents-automation-row-__standalone__"));
+    expect(screen.getByTestId("agents-session-conversation-standalone"))
+      .toBeInTheDocument();
+    expect(automationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          groupKey: "__standalone__",
+          enabled: true,
+        }),
+      ])
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-session-conversation-automation-release"))
+        .not.toBeInTheDocument()
+    );
+
+    await user.click(screen.getByText("Standalone planning"));
+    expect(onSelectConversation).toHaveBeenCalledWith(
+      "project-1",
+      standaloneConversation
+    );
+    expect(automationGroupIndexCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectIds: ["project-1"],
+          archivedOnly: false,
+          publicationStates: ["active"],
+          sort: "latest",
+        }),
+      ])
+    );
+    expect(automationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          groupKey: "automation-release",
+          projectIds: ["project-1"],
+          publicationStates: ["active"],
+          sort: "latest",
+        }),
+        expect.objectContaining({
+          groupKey: "__standalone__",
+          projectIds: ["project-1"],
+          publicationStates: ["active"],
+          sort: "latest",
+        }),
+      ])
+    );
   });
 
   it("remembers publication-state scroll when switching open groups", async () => {

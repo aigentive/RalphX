@@ -3848,7 +3848,8 @@ async fn filter_agent_list_visible_conversations(
         if conversation.automation_run_id.is_some() {
             continue;
         }
-        if conversation.parent_conversation_id.is_none()
+        if conversation.context_type != ChatContextType::Project
+            || conversation.parent_conversation_id.is_none()
             || state
                 .agent_conversation_workspace_repo
                 .get_by_conversation_id(&conversation.id)
@@ -9953,6 +9954,7 @@ mod tests {
         ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
         IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
         PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        TaskId,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
@@ -15757,6 +15759,40 @@ mod tests {
         assert!(
             !conversation_ids.contains(&embedded_child.id.as_str()),
             "embedded child conversations without workspaces should stay hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_list_filter_keeps_task_runtime_child_conversations() {
+        let state = AppState::new_test();
+        let task_id = TaskId::from_string("task-runtime-visible".to_string());
+        let parent = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_task_execution(task_id.clone()))
+            .await
+            .expect("parent task runtime conversation should be created");
+
+        let mut child = ChatConversation::new_task_execution(task_id);
+        child.parent_conversation_id = Some(parent.id.as_str().to_string());
+        let child = state
+            .chat_conversation_repo
+            .create(child)
+            .await
+            .expect("child task runtime conversation should be created");
+
+        let filtered =
+            filter_agent_list_visible_conversations(&state, vec![child.clone(), parent.clone()])
+                .await
+                .expect("shared list filter should run");
+        let filtered_ids = filtered
+            .iter()
+            .map(|conversation| conversation.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            filtered_ids,
+            vec![child.id.as_str(), parent.id.as_str()],
+            "task runtime attempts should stay visible even when parented"
         );
     }
 
