@@ -37,6 +37,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
 import type { Task } from "@/types/task";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
+import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
@@ -552,6 +553,23 @@ const workspace = (
   ...overrides,
 });
 
+const publishedPrSupervisionWorkspace = (
+  overrides: Partial<AgentConversationWorkspace> = {},
+): AgentConversationWorkspace =>
+  workspace({
+    mode: "edit",
+    publicationPrNumber: 90,
+    publicationPrUrl: "https://github.com/mock/project/pull/90",
+    publicationPrStatus: "open",
+    publicationPushStatus: "pushed",
+    prAutofixEnabled: true,
+    prAutoMergeDesired: true,
+    prAutoMergeCurrent: true,
+    prSupervisionStatus: "monitoring",
+    updatedAt: "2026-04-23T09:00:00Z",
+    ...overrides,
+  });
+
 const workspaceFreshness = (
   overrides: Partial<AgentConversationWorkspaceFreshness> = {},
 ): AgentConversationWorkspaceFreshness => ({
@@ -991,6 +1009,33 @@ function renderPane(
       </TooltipProvider>
     </QueryClientProvider>,
   );
+}
+
+function renderPublishPanelForWorkspaceRerender(
+  initialWorkspace: AgentConversationWorkspace | null,
+  queryClient: QueryClient = createTestQueryClient(),
+) {
+  const pane = (paneWorkspace: AgentConversationWorkspace | null) => (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <div className="h-[480px]">
+          <AgentPublishPanel
+            workspace={paneWorkspace}
+            conversationTitle="Agent conversation"
+            onPublishWorkspace={vi.fn()}
+            isPublishingWorkspace={false}
+          />
+        </div>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+  const result = render(pane(initialWorkspace));
+  return {
+    ...result,
+    rerenderWorkspace: (nextWorkspace: AgentConversationWorkspace | null) => {
+      result.rerender(pane(nextWorkspace));
+    },
+  };
 }
 
 function artifactTabIds(tabRow: HTMLElement): string[] {
@@ -3261,6 +3306,132 @@ describe("AgentsArtifactPane", () => {
     expect(
       screen.getByRole("switch", { name: "GitHub auto-merge" }),
     ).not.toBeChecked();
+  });
+
+  it("clears the PR supervision result override when refreshed workspace data matches it", async () => {
+    const initialWorkspace = publishedPrSupervisionWorkspace();
+    const settledWorkspace = publishedPrSupervisionWorkspace({
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting_for_checks",
+    });
+    setWorkspacePrSupervisionMock.mockResolvedValueOnce(settledWorkspace);
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialWorkspace);
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+        "Waiting for checks",
+      ),
+    );
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).not.toBeChecked();
+
+    rerenderWorkspace(settledWorkspace);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).not.toBeChecked(),
+    );
+
+    rerenderWorkspace(initialWorkspace);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).toBeChecked(),
+    );
+    expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+      "Monitoring PR",
+    );
+  });
+
+  it("clears the PR supervision result override when refreshed workspace data advances", async () => {
+    const initialWorkspace = publishedPrSupervisionWorkspace();
+    const settledWorkspace = publishedPrSupervisionWorkspace({
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting_for_checks",
+    });
+    setWorkspacePrSupervisionMock.mockResolvedValueOnce(settledWorkspace);
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialWorkspace);
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+        "Waiting for checks",
+      ),
+    );
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).not.toBeChecked();
+
+    rerenderWorkspace(
+      publishedPrSupervisionWorkspace({
+        updatedAt: "2026-04-23T09:01:00Z",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).toBeChecked(),
+    );
+    expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+      "Monitoring PR",
+    );
+  });
+
+  it("clears the PR supervision result override when switching workspaces", async () => {
+    const initialWorkspace = publishedPrSupervisionWorkspace();
+    const settledWorkspace = publishedPrSupervisionWorkspace({
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting_for_checks",
+    });
+    setWorkspacePrSupervisionMock.mockResolvedValueOnce(settledWorkspace);
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialWorkspace);
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).not.toBeChecked(),
+    );
+
+    rerenderWorkspace(
+      publishedPrSupervisionWorkspace({
+        conversationId: "conversation-2",
+        publicationPrNumber: 91,
+        publicationPrUrl: "https://github.com/mock/project/pull/91",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).toBeChecked(),
+    );
+    expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+      "conversation-1",
+      {
+        autoFixEnabled: true,
+        autoMergeDesired: false,
+        autoMergeMethod: "squash",
+      },
+    );
   });
 
   it("surfaces object-shaped backend reasons when PR supervision updates fail", async () => {
