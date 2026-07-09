@@ -42,6 +42,9 @@ const {
   finalizeAutomationMock,
   triggerAutomationRunNowMock,
   openUrlMock,
+  toastErrorMock,
+  toastInfoMock,
+  toastSuccessMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
   getPlanComplexityAssessmentMock: vi.fn(),
@@ -65,12 +68,23 @@ const {
   finalizeAutomationMock: vi.fn(),
   triggerAutomationRunNowMock: vi.fn(),
   openUrlMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
+  toastSuccessMock: vi.fn(),
 }));
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: toastErrorMock,
+    info: toastInfoMock,
+    success: toastSuccessMock,
+  },
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -1386,14 +1400,60 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     expect(screen.getByTestId("agents-automation-composer-cta-hint")).toHaveTextContent(
-      "Ready to run",
+      "Run available",
     );
     fireEvent.click(screen.getByTestId("agents-automation-composer-cta-run"));
 
     await waitFor(() =>
       expect(triggerAutomationRunNowMock).toHaveBeenCalledWith("automation-7"),
     );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation run queued");
     expect(finalizeAutomationMock).not.toHaveBeenCalled();
+  });
+
+  it("reports automation Run CTA backend refusal as info", async () => {
+    triggerAutomationRunNowMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "latest run is not ready",
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        automation: {
+          id: "automation-7",
+          status: "active",
+          firstRunPrompt: "Update dependencies",
+          goalPrompt: "Keep dependencies current",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          runMode: "edit",
+          baseRefKind: "project_default",
+          baseRef: "",
+          completionSignal: "pr_merged",
+          goalItemsJson:
+            '[{"id":"phase-1","title":"Update dependencies","status":"pending"}]',
+        },
+        runs: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agents-automation-composer-cta-run"));
+
+    await waitFor(() =>
+      expect(triggerAutomationRunNowMock).toHaveBeenCalledWith("automation-7"),
+    );
+    expect(toastInfoMock).toHaveBeenCalledWith("latest run is not ready");
+    expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
   it("refreshes the automation artifact after accepting a chat automation proposal", async () => {

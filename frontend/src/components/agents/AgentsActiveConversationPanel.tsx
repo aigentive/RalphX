@@ -2096,9 +2096,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     try {
       const schedule = await automationsApi.triggerRunNow(automationConfigId);
       invalidateAutomationQueries(queryClient, automationConfigId);
-      toast.success(
-        schedule.scheduled ? "Automation run queued" : schedule.reason ?? "Automation run requested",
-      );
+      if (schedule.scheduled) {
+        toast.success("Automation run queued");
+      } else {
+        toast.info(schedule.reason ?? "Automation run was not scheduled");
+      }
     } catch (err) {
       console.error("Failed to run automation:", err);
       toast.error(err instanceof Error ? err.message : "Failed to run automation");
@@ -2656,7 +2658,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       compactHintOverride={
                         automationSetupDetail?.automation.status === "draft"
                           ? "Ready for approval"
-                          : "Ready to run"
+                          : "Run available"
                       }
                     />
                   )}

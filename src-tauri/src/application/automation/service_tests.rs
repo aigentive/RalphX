@@ -2800,11 +2800,20 @@ async fn service_run_now_reports_all_unscheduled_readiness_reasons() {
         ))
         .await
         .unwrap();
-    let not_ready = service
+    let replacement = service
         .trigger_run_now(&active_with_cancelled.id)
         .await
         .unwrap();
-    assert_eq!(not_ready.reason.as_deref(), Some("latest run is not ready"));
+    assert!(replacement.scheduled);
+    assert_eq!(replacement.reason, None);
+    let replacement_run = run_repo
+        .latest_for_automation(&active_with_cancelled.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement_run.run_index, 2);
+    assert_eq!(replacement_run.status, AutomationRunStatus::Pending);
+    assert_eq!(replacement_run.run_prompt, "Run 1 prompt");
 
     let active_missing_verdict = automation("automation-missing-verdict", AutomationStatus::Active);
     automation_repo

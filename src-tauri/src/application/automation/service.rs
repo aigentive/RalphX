@@ -597,6 +597,22 @@ impl AutomationService {
             )));
         }
 
+        if latest.status == AutomationRunStatus::Cancelled {
+            self.create_run(CreateAutomationRunInput {
+                automation_id: automation.id.clone(),
+                run_prompt: latest.run_prompt.clone(),
+                prompt_author: latest.prompt_author,
+                base_ref_kind: latest.base_ref_kind.clone(),
+                base_ref_used: latest.base_ref_used.clone(),
+                base_from_run_id: latest.base_from_run_id.clone(),
+            })
+            .await?;
+            return Ok(AutomationRunNowAction::Outcome(AutomationScheduleOutcome {
+                scheduled: true,
+                reason: None,
+            }));
+        }
+
         if !is_signal_terminal_automation_run(latest.status) {
             return Ok(AutomationRunNowAction::Outcome(schedule_not_scheduled(
                 "latest run is not ready",

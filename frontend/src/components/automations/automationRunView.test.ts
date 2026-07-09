@@ -223,6 +223,13 @@ describe("automationRunView", () => {
   });
 
   it("uses status-neutral PR copy for cancelled runs", () => {
+    const view = getAutomationRunView(
+      automation(),
+      run({ status: "cancelled", judgeState: "none" }),
+    );
+
+    expect(view.judgeLabel).toBeNull();
+    expect(view.stageLabel).toBe("Cancelled");
     expect(
       describeAutomationRunPrState(
         run({ status: "cancelled", judgeState: "none", prNumber: 593 }),

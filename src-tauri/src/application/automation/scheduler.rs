@@ -1978,17 +1978,32 @@ impl AutomationScheduler {
             return Ok(());
         };
 
-        let agent_status = self
+        let latest_agent_run = self
             .latest_agent_run_for_current_phase(conversation_id, run)
-            .await?
-            .map(|agent_run| agent_run.status);
+            .await?;
 
-        match agent_status {
+        let latest_agent_run_is_restart_orphan =
+            latest_agent_run.as_ref().is_some_and(|agent_run| {
+                agent_run.status == AgentRunStatus::Cancelled
+                    && agent_run.error_message.as_deref()
+                        == Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART)
+            });
+
+        match latest_agent_run.as_ref().map(|agent_run| agent_run.status) {
             Some(AgentRunStatus::Failed) => {
                 self.fail_running_run(
                     run,
                     "agent_failed",
                     "Automation run agent failed during the planning phase",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Cancelled) if latest_agent_run_is_restart_orphan => {
+                self.observe_recoverable_plan_phase_running_run(
+                    run,
+                    conversation_id,
+                    true,
                     summary,
                 )
                 .await?;
@@ -2012,63 +2027,16 @@ impl AutomationScheduler {
                 }
             }
             Some(AgentRunStatus::Completed) => {
-                let plan_artifact_id =
-                    current_plan_artifact_id_for_workspace(&self.ideation_session_repo, workspace)
-                        .await?;
-                if plan_artifact_id.is_some() {
-                    if self
-                        .transition_service
-                        .transition_run_status(
-                            &run.id,
-                            AutomationRunStatus::Running,
-                            AutomationRunStatus::AwaitingPlanApproval,
-                            None,
-                            None,
-                        )
-                        .await?
-                    {
-                        let baseline_changed = refresh_plan_park_baseline(
-                            &self.transition_service,
-                            &self.run_repo,
-                            run,
-                            plan_artifact_id.clone(),
-                        )
-                        .await?;
-                        let parked_run = self
-                            .run_repo
-                            .get_by_id(&run.id)
-                            .await?
-                            .unwrap_or_else(|| run.clone());
-                        if automation.plan_deep_verification
-                            && matching_plan_approval_for_workspace(
-                                &self.ideation_session_repo,
-                                &self.plan_approval_repo,
-                                workspace,
-                            )
-                            .await?
-                            .is_none()
-                        {
-                            let verification_gate = self
-                                .build_plan_verification_gate(
-                                    automation,
-                                    workspace,
-                                    plan_artifact_id.as_deref(),
-                                    baseline_changed,
-                                )
-                                .await;
-                            if automation.plan_approval_mode
-                                == AutomationPlanApprovalMode::Automatic
-                            {
-                                self.observe_automatic_plan_judge(
-                                    automation,
-                                    &parked_run,
-                                    &verification_gate,
-                                    summary,
-                                )
-                                .await?;
-                            }
-                        }
-                    }
+                if self
+                    .park_run_at_plan_approval_if_artifact_exists(
+                        automation,
+                        run,
+                        workspace,
+                        AutomationRunStatus::Running,
+                        summary,
+                    )
+                    .await?
+                {
                     return Ok(());
                 }
 
@@ -2076,28 +2044,109 @@ impl AutomationScheduler {
                     .await?;
             }
             Some(AgentRunStatus::Running) | None => {
-                if running_run_has_exceeded(run, self.config.max_run_duration) {
-                    self.fail_running_run(
-                        run,
-                        "timeout",
-                        "Automation run exceeded max_run_duration_secs",
-                        summary,
+                self.observe_recoverable_plan_phase_running_run(
+                    run,
+                    conversation_id,
+                    latest_agent_run.is_none(),
+                    summary,
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn observe_recoverable_plan_phase_running_run(
+        &self,
+        run: &AutomationRun,
+        conversation_id: &ChatConversationId,
+        should_redeliver_plan_reminder: bool,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if running_run_has_exceeded(run, self.config.max_run_duration) {
+            self.fail_running_run(
+                run,
+                "timeout",
+                "Automation run exceeded max_run_duration_secs",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+        if should_redeliver_plan_reminder {
+            self.redeliver_plan_reminder_after_crashed_resume(run, conversation_id, summary)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn park_run_at_plan_approval_if_artifact_exists(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        workspace: &AgentConversationWorkspace,
+        from_status: AutomationRunStatus,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<bool> {
+        let plan_artifact_id =
+            current_plan_artifact_id_for_workspace(&self.ideation_session_repo, workspace).await?;
+        if plan_artifact_id.is_none() {
+            return Ok(false);
+        }
+
+        if self
+            .transition_service
+            .transition_run_status(
+                &run.id,
+                from_status,
+                AutomationRunStatus::AwaitingPlanApproval,
+                None,
+                None,
+            )
+            .await?
+        {
+            let baseline_changed = refresh_plan_park_baseline(
+                &self.transition_service,
+                &self.run_repo,
+                run,
+                plan_artifact_id.clone(),
+            )
+            .await?;
+            let parked_run = self
+                .run_repo
+                .get_by_id(&run.id)
+                .await?
+                .unwrap_or_else(|| run.clone());
+            if automation.plan_deep_verification
+                && matching_plan_approval_for_workspace(
+                    &self.ideation_session_repo,
+                    &self.plan_approval_repo,
+                    workspace,
+                )
+                .await?
+                .is_none()
+            {
+                let verification_gate = self
+                    .build_plan_verification_gate(
+                        automation,
+                        workspace,
+                        plan_artifact_id.as_deref(),
+                        baseline_changed,
                     )
-                    .await?;
-                    return Ok(());
-                }
-                if agent_status.is_none() {
-                    self.redeliver_plan_reminder_after_crashed_resume(
-                        run,
-                        conversation_id,
+                    .await;
+                if automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic {
+                    self.observe_automatic_plan_judge(
+                        automation,
+                        &parked_run,
+                        &verification_gate,
                         summary,
                     )
                     .await?;
                 }
             }
         }
-
-        Ok(())
+        Ok(true)
     }
 
     async fn latest_agent_run_for_current_phase(

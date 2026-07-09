@@ -188,6 +188,9 @@ export function getAutomationRunJudgeLabel(run: AutomationRun | null): string | 
   if (!run) {
     return null;
   }
+  if (run.status === "cancelled") {
+    return null;
+  }
   switch (run.judgeState) {
     case "none":
       return "Judge pending";
