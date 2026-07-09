@@ -1803,6 +1803,38 @@ describe("useChat", () => {
     );
   });
 
+  it("passes Team intent through send message options", async () => {
+    const mockResult = {
+      responseText: "AI response",
+      toolCalls: [],
+      claudeSessionId: "claude-session-123",
+      conversationId: "conv-1",
+    };
+    vi.mocked(chatApi.sendAgentMessage).mockResolvedValueOnce(mockResult);
+    vi.mocked(chatApi.listConversations).mockResolvedValueOnce([]);
+    vi.mocked(chatApi.getAgentRunStatus).mockResolvedValueOnce(null);
+
+    const { result } = renderHook(() => useChat(ideationContext), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current.sendMessage.mutateAsync({
+        content: "New Team message",
+        teamIntent: { coordinationMode: "rx_native_team" },
+      });
+    });
+
+    expect(chatApi.sendAgentMessage).toHaveBeenCalledWith(
+      "ideation",
+      "session-1",
+      "New Team message",
+      undefined,
+      undefined,
+      { teamIntent: { coordinationMode: "rx_native_team" } },
+    );
+  });
+
   it("optimistically adds a sent user message to an existing conversation before backend hydration", async () => {
     let resolveSend!: (value: {
       conversationId: string;

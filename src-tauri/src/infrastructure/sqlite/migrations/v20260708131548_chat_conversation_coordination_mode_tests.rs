@@ -58,6 +58,12 @@ fn accepts_rx_native_team_values_and_rejects_invalid_values() {
         [],
     )
     .unwrap();
+    conn.execute(
+        "INSERT INTO chat_conversations (id, context_type, context_id, coordination_mode)
+         VALUES ('conv-legacy', 'project', 'project-1', 'legacy_claude_team')",
+        [],
+    )
+    .unwrap();
 
     let result = conn.execute(
         "INSERT INTO chat_conversations (id, context_type, context_id, coordination_mode)

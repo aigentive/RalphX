@@ -19,7 +19,7 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, ChatContextType,
-    ChatConversation, ChatConversationId, CoordinationMode, ProjectId, TeamIntent,
+    ChatConversation, ChatConversationId, ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -195,11 +195,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .team_intent
             .as_ref()
             .map(|intent| intent.coordination_mode);
-        if requested_coordination_mode == Some(CoordinationMode::LegacyClaudeTeam) {
-            return Err(
-                "Legacy Claude team mode is read-only; use Team mode for new writes".to_string(),
-            );
-        }
         let should_create_workspace = agent_mode_should_create_workspace(
             mode,
             source_pull_request.as_ref(),

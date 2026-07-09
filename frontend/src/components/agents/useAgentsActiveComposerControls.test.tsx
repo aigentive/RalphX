@@ -7,8 +7,15 @@ import { AGENT_MODEL_CATALOG } from "@/lib/agent-models";
 import type { AgentConversation } from "./agentConversations";
 import { useAgentsActiveComposerControls } from "./useAgentsActiveComposerControls";
 
-const { updateCoordinationModeMock } = vi.hoisted(() => ({
+const { toastErrorMock, updateCoordinationModeMock } = vi.hoisted(() => ({
+  toastErrorMock: vi.fn(),
   updateCoordinationModeMock: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: toastErrorMock,
+  },
 }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -95,6 +102,7 @@ function controlsArgs(overrides: Partial<ControlsArgs> = {}): ControlsArgs {
 
 describe("useAgentsActiveComposerControls", () => {
   beforeEach(() => {
+    toastErrorMock.mockReset();
     updateCoordinationModeMock.mockReset();
     updateCoordinationModeMock.mockResolvedValue(projectConversation());
   });
@@ -318,6 +326,41 @@ describe("useAgentsActiveComposerControls", () => {
     });
 
     expect(updateCoordinationModeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not update Team mode without an active project conversation", async () => {
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          activeConversation: null,
+          selectedConversationId: null,
+        }),
+      ),
+    );
+
+    await act(async () => {
+      await result.current.handleActiveTeamEnabledChange(true);
+    });
+
+    expect(updateCoordinationModeMock).not.toHaveBeenCalled();
+  });
+
+  it("clears Team mode pending state and reports update failures", async () => {
+    updateCoordinationModeMock.mockRejectedValue(new Error("Team update failed"));
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(controlsArgs()),
+    );
+
+    await act(async () => {
+      await result.current.handleActiveTeamEnabledChange(true);
+    });
+
+    expect(updateCoordinationModeMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      coordinationMode: "rx_native_team",
+    });
+    expect(toastErrorMock).toHaveBeenCalledWith("Team update failed");
+    expect(result.current.updatingTeamConversationId).toBeNull();
   });
 
   it("normalizes active effort changes against provider-supported efforts", () => {
