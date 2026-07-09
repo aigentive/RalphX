@@ -591,6 +591,52 @@ describe("useChatPanelContext", () => {
       expect(mockStore.setActiveConversation).not.toHaveBeenCalled();
     });
 
+    it("treats null history override as an explicit no-transcript selection", async () => {
+      mockStore.activeConversationIds["review:task-1"] = "stale-review-conv";
+
+      const { result } = renderHook(
+        (props) => useChatPanelContext(props),
+        {
+          wrapper,
+          initialProps: {
+            projectId: "project-1",
+            ideationSessionId: undefined,
+            selectedTaskId: "task-1",
+            isExecutionMode: false,
+            isReviewMode: true,
+            isMergeMode: false,
+            isHistoryMode: true,
+            overrideConversationId: null,
+          },
+        }
+      );
+
+      expect(result.current.activeConversationId).toBeNull();
+      await waitFor(() => {
+        expect(mockStore.setActiveConversation).toHaveBeenCalledWith(
+          "review:task-1",
+          null
+        );
+      });
+
+      mockStore.setActiveConversation.mockClear();
+
+      act(() => {
+        result.current.autoSelectConversation({
+          data: [
+            {
+              id: "new-review-conv",
+              lastMessageAt: "2026-02-11T12:00:00Z",
+              createdAt: "2026-02-11T11:00:00Z",
+            },
+          ],
+          isLoading: false,
+        });
+      });
+
+      expect(mockStore.setActiveConversation).not.toHaveBeenCalled();
+    });
+
     it("should not auto-select over an explicit conversation override outside history mode", async () => {
       const { result } = renderHook(
         (props) => useChatPanelContext(props),

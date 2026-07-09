@@ -83,4 +83,8 @@ export const StateTransitionResponseSchemaRaw = z.object({
   conversation_id: z.string().nullish(),
   /** Agent run ID for the specific execution within the conversation */
   agent_run_id: z.string().nullish(),
+  /** Optional runtime context type for the associated transcript */
+  context_type: z.string().nullish(),
+  /** Optional stable transition identity */
+  transition_id: z.string().nullish(),
 });

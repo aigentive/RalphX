@@ -330,6 +330,9 @@ export function IntegratedChatPanel({
   const taskHistoryState = useUiStore((s) => s.taskHistoryState);
   const isHistoryMode = !!taskHistoryState;
   const hasHistoryConversation = !!taskHistoryState?.conversationId;
+  const historyConversationOverride = isHistoryMode
+    ? (taskHistoryState?.conversationId ?? null)
+    : conversationIdOverride;
 
   // Get task data from React Query (useTasks) which has full task data
   const { data: tasks = EMPTY_TASKS } = useTasks(projectId, {
@@ -375,7 +378,7 @@ export function IntegratedChatPanel({
   const mergeKey = selectedTaskId ? buildStoreKey("merge", selectedTaskId) : "";
   const mergeAgentRunning = useChatStore(selectIsAgentRunning(mergeKey));
   const forcedTaskRuntimeContext = selectedTaskId
-    ? taskRuntimeContextTypeOverride
+    ? taskHistoryState?.contextType ?? taskRuntimeContextTypeOverride
     : undefined;
 
   // Execution states: worker agent is running (only when NOT in ideation mode)
@@ -443,8 +446,7 @@ export function IntegratedChatPanel({
     isMergeMode,
     isHistoryMode,
     // Pass history mode overrides for conversation selection
-    overrideConversationId:
-      conversationIdOverride ?? taskHistoryState?.conversationId,
+    overrideConversationId: historyConversationOverride,
     storeContextKeyOverride,
     overrideAgentRunId: taskHistoryState?.agentRunId,
     isVisible,

@@ -417,6 +417,35 @@ describe("IntegratedChatPanel", () => {
       );
     });
 
+    it("does not borrow a parent conversation override for history stages without transcripts", () => {
+      act(() => {
+        useUiStore.setState({
+          taskHistoryState: {
+            status: "reviewing",
+            timestamp: "2026-07-07T10:30:00Z",
+            contextType: "review",
+            hasConversation: false,
+          },
+        });
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            conversationIdOverride="workspace-conversation"
+          />
+        </TestWrapper>
+      );
+
+      expect(mockUseChatPanelContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isHistoryMode: true,
+          overrideConversationId: null,
+        }),
+      );
+    });
+
     it("observes all chrome below the transcript so any sibling height change can update transcript layout", async () => {
       const observedTargets: Element[] = [];
       const resizeCallbacks: ResizeObserverCallback[] = [];
