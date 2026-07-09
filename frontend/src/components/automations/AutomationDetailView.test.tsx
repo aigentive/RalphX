@@ -1059,7 +1059,7 @@ describe("AutomationDetailView", () => {
     );
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.getAllByText("Stopped").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("current_branch")).toBeInTheDocument();
     expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Phase 1")).toBeInTheDocument();

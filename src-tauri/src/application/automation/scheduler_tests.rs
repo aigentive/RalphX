@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
@@ -20,12 +21,17 @@ use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
 use super::scheduler::{
-    load_spec_attachment, AutomationJudgeInvocation, AutomationJudgeInvocationOutput,
-    AutomationJudgeInvoker, AutomationPlanJudgeInvocation, AutomationPlanJudgeInvocationOutput,
-    AutomationPlanJudgeInvoker, AutomationScheduler, AutomationSchedulerConfig,
-    AutomationSchedulerRegistry, AutomationSignalChecker,
+    automation_judge_lease_expires_at, load_spec_attachment, spawn_automation_judge_task,
+    AutomationJudgeInvocation, AutomationJudgeInvocationOutput, AutomationJudgeInvoker,
+    AutomationPlanJudgeInvocation, AutomationPlanJudgeInvocationOutput, AutomationPlanJudgeInvoker,
+    AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
+    AutomationSignalChecker,
 };
-use super::transition::NoopAutomationEventEmitter;
+use super::service::{AutomationRunNowAction, AutomationService};
+use super::transition::{
+    AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
+    NoopAutomationEventEmitter,
+};
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_enable_failure_summary, AUTO_MERGE_ENABLE_WARNING_CODE,
@@ -71,6 +77,23 @@ impl AutomationRunStarter for RecordingStarter {
         Ok(AutomationRunStartOutcome {
             branch_name: Some("ralphx/automation-run-1".to_string()),
         })
+    }
+}
+
+#[derive(Default)]
+struct RecordingAutomationEventEmitter {
+    events: Mutex<Vec<AutomationEvent>>,
+}
+
+impl RecordingAutomationEventEmitter {
+    fn events(&self) -> Vec<AutomationEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl AutomationEventEmitter for RecordingAutomationEventEmitter {
+    fn emit(&self, event: AutomationEvent) {
+        self.events.lock().unwrap().push(event);
     }
 }
 
@@ -267,6 +290,18 @@ impl RecordingJudgeInvoker {
             calls: Mutex::new(Vec::new()),
             responses: Mutex::new(VecDeque::from(
                 outputs.into_iter().map(Ok).collect::<Vec<_>>(),
+            )),
+        }
+    }
+
+    fn with_errors(errors: Vec<&str>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(
+                errors
+                    .into_iter()
+                    .map(|error| Err(error.to_string()))
+                    .collect::<Vec<_>>(),
             )),
         }
     }
@@ -1290,6 +1325,41 @@ async fn wait_for_latest_judge_state(
     panic!("timed out waiting for judge state {expected:?}");
 }
 
+fn run_updated_event_count(
+    emitter: &RecordingAutomationEventEmitter,
+    automation_id: &AutomationId,
+    run_id: &AutomationRunId,
+) -> usize {
+    emitter
+        .events()
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AutomationEvent::AutomationRunUpdated {
+                    automation_id: event_automation_id,
+                    run_id: event_run_id,
+                } if event_automation_id == automation_id && event_run_id == run_id
+            )
+        })
+        .count()
+}
+
+async fn wait_for_run_updated_event_count(
+    emitter: &RecordingAutomationEventEmitter,
+    automation_id: &AutomationId,
+    run_id: &AutomationRunId,
+    expected: usize,
+) {
+    for _ in 0..100 {
+        if run_updated_event_count(emitter, automation_id, run_id) >= expected {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {expected} run update events");
+}
+
 async fn wait_for_latest_plan_judge_state(
     run_repo: &MemoryAutomationRunRepository,
     automation_id: &AutomationId,
@@ -1322,6 +1392,16 @@ async fn wait_for_plan_judge_call_count(plan_judge: &RecordingPlanJudgeInvoker, 
         sleep(Duration::from_millis(10)).await;
     }
     panic!("timed out waiting for {expected} plan judge calls");
+}
+
+async fn wait_for_judge_call_count(judge: &RecordingJudgeInvoker, expected: usize) {
+    for _ in 0..100 {
+        if judge.call_count() == expected {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {expected} judge calls");
 }
 
 fn reviewing_verification_snapshot(generation: i32) -> VerificationRunSnapshot {
@@ -5895,15 +5975,9 @@ async fn automation_scheduler_sweep_forward_fills_active_running_goal_progress()
         ))
         .await
         .unwrap();
-    run_repo
-        .create_run(automation_run(
-            "run-1",
-            &automation_id,
-            AutomationRunStatus::Running,
-            None,
-        ))
-        .await
-        .unwrap();
+    let run = automation_run("run-1", &automation_id, AutomationRunStatus::Running, None);
+    let run_id = run.id.clone();
+    run_repo.create_run(run).await.unwrap();
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -5923,6 +5997,23 @@ async fn automation_scheduler_sweep_forward_fills_active_running_goal_progress()
     assert_eq!(
         item_status(stored.goal_items_json.as_deref().unwrap(), "item-2"),
         "in_progress"
+    );
+    let run_after_repair = run_repo.get_by_id(&run_id).await.unwrap().unwrap();
+
+    let second_summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(second_summary.active_with_runs, 1);
+    assert_eq!(
+        automation_repo
+            .get_by_id(&automation_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        stored
+    );
+    assert_eq!(
+        run_repo.get_by_id(&run_id).await.unwrap().unwrap(),
+        run_after_repair
     );
 }
 
@@ -6098,6 +6189,191 @@ async fn automation_scheduler_detaches_judge_without_blocking_other_signal_check
 }
 
 #[tokio::test]
+async fn automation_run_now_spawned_judge_failure_emits_run_update() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    let run_id = run.id.clone();
+    run_repo.create_run(run).await.unwrap();
+    let emitter = Arc::new(RecordingAutomationEventEmitter::default());
+    let event_emitter: Arc<dyn AutomationEventEmitter> = emitter.clone();
+    let artifact_repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+    let service = AutomationService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        event_emitter.clone(),
+        artifact_repo,
+    );
+    let transition_service =
+        AutomationTransitionService::new(automation_repo.clone(), run_repo.clone(), event_emitter);
+    let action = service
+        .trigger_run_now_action(&automation_id)
+        .await
+        .unwrap();
+    let AutomationRunNowAction::StartJudge {
+        automation,
+        runs,
+        run,
+    } = action
+    else {
+        panic!("run now should dispatch judge");
+    };
+    let automation = *automation;
+    let run = *run;
+    let config = AutomationSchedulerConfig::default();
+    let judge_lease_expires_at = automation_judge_lease_expires_at(config.judge_timeout);
+    assert!(transition_service
+        .transition_judge_state(
+            &run.id,
+            run.judge_state,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeTransitionGuard::Dispatch,
+            None,
+            None,
+            Some(judge_lease_expires_at),
+            None,
+        )
+        .await
+        .unwrap());
+    let judge = Arc::new(RecordingJudgeInvoker::with_errors(vec![
+        "judge transport failed",
+    ]));
+
+    spawn_automation_judge_task(
+        service,
+        transition_service,
+        judge.clone(),
+        config,
+        automation,
+        runs,
+        run,
+        judge_lease_expires_at,
+    );
+
+    let latest =
+        wait_for_latest_judge_state(&run_repo, &automation_id, AutomationJudgeState::Failed).await;
+    assert!(latest
+        .error_detail
+        .as_deref()
+        .unwrap()
+        .contains("judge transport failed"));
+    wait_for_run_updated_event_count(&emitter, &automation_id, &run_id, 2).await;
+    assert_eq!(judge.call_count(), 1);
+}
+
+#[tokio::test]
+async fn automation_run_now_spawned_judge_stale_failure_emits_nothing_after_dispatch() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    let run_id = run.id.clone();
+    run_repo.create_run(run).await.unwrap();
+    let emitter = Arc::new(RecordingAutomationEventEmitter::default());
+    let event_emitter: Arc<dyn AutomationEventEmitter> = emitter.clone();
+    let artifact_repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+    let service = AutomationService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        event_emitter.clone(),
+        artifact_repo,
+    );
+    let transition_service =
+        AutomationTransitionService::new(automation_repo.clone(), run_repo.clone(), event_emitter);
+    let action = service
+        .trigger_run_now_action(&automation_id)
+        .await
+        .unwrap();
+    let AutomationRunNowAction::StartJudge {
+        automation,
+        runs,
+        run,
+    } = action
+    else {
+        panic!("run now should dispatch judge");
+    };
+    let automation = *automation;
+    let run = *run;
+    let config = AutomationSchedulerConfig::default();
+    let stale_lease_expires_at = automation_judge_lease_expires_at(config.judge_timeout);
+    assert!(transition_service
+        .transition_judge_state(
+            &run.id,
+            run.judge_state,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeTransitionGuard::Dispatch,
+            None,
+            None,
+            Some(stale_lease_expires_at),
+            None,
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        run_updated_event_count(&emitter, &automation_id, &run_id),
+        1
+    );
+    let replacement_lease_expires_at = stale_lease_expires_at + chrono::Duration::minutes(1);
+    assert!(run_repo
+        .compare_and_swap_judge_state(
+            &run.id,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeTransitionGuard::Dispatch,
+            None,
+            None,
+            Some(replacement_lease_expires_at),
+            None,
+        )
+        .await
+        .unwrap());
+    let judge = Arc::new(RecordingJudgeInvoker::with_errors(vec![
+        "stale judge transport failed",
+    ]));
+
+    spawn_automation_judge_task(
+        service,
+        transition_service,
+        judge.clone(),
+        config,
+        automation,
+        runs,
+        run,
+        stale_lease_expires_at,
+    );
+
+    wait_for_judge_call_count(&judge, 1).await;
+    sleep(Duration::from_millis(20)).await;
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.judge_state, AutomationJudgeState::InProgress);
+    assert_eq!(
+        latest.judge_lease_expires_at,
+        Some(replacement_lease_expires_at)
+    );
+    assert_eq!(
+        run_updated_event_count(&emitter, &automation_id, &run_id),
+        1
+    );
+}
+
+#[tokio::test]
 async fn automation_scheduler_retries_invalid_judge_output_once_then_pauses() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(
@@ -6208,6 +6484,64 @@ async fn automation_scheduler_marks_stale_in_progress_judge_failed() {
     assert_eq!(
         latest.error_detail.as_deref(),
         Some("Automation judge exceeded judge_timeout_secs")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_marks_legacy_null_lease_in_progress_judge_failed() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run.judge_state = AutomationJudgeState::InProgress;
+    run.judge_lease_expires_at = None;
+    run.updated_at = Utc::now() - chrono::Duration::minutes(2);
+    run_repo.create_run(run).await.unwrap();
+    let config = AutomationSchedulerConfig {
+        judge_timeout: Duration::from_secs(60),
+        ..AutomationSchedulerConfig::default()
+    };
+    let judge = Arc::new(RecordingJudgeInvoker::default());
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        judge.clone(),
+        config,
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judge_failures, 1);
+    assert_eq!(summary.paused_automations, 1);
+    assert_eq!(judge.call_count(), 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.judge_state, AutomationJudgeState::Failed);
+    assert_eq!(
+        latest.error_detail.as_deref(),
+        Some("Automation judge exceeded judge_timeout_secs with legacy null lease")
+    );
+    let automation = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Paused);
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some("judge_failed")
     );
 }
 

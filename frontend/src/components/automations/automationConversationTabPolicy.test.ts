@@ -89,13 +89,40 @@ describe("getAutomationConversationTabPolicy", () => {
         availability: baseAvailability,
       }).defaultTab,
     ).toBe("pr");
+    expect(
+      getAutomationConversationTabPolicy({
+        surface: "run",
+        runStatus: "completed",
+        judgeState: "none",
+        workspaceMode: "edit",
+        availability: baseAvailability,
+      }).defaultTab,
+    ).toBe("pr");
   });
 
-  it("defaults implementing and terminal runs to automation", () => {
+  it("defaults implementing, failed-judge, and terminal runs to automation", () => {
     expect(
       getAutomationConversationTabPolicy({
         surface: "run",
         runStatus: "running",
+        judgeState: "none",
+        workspaceMode: "edit",
+        availability: baseAvailability,
+      }).defaultTab,
+    ).toBe("automation");
+    expect(
+      getAutomationConversationTabPolicy({
+        surface: "run",
+        runStatus: "merged",
+        judgeState: "failed",
+        workspaceMode: "edit",
+        availability: baseAvailability,
+      }).defaultTab,
+    ).toBe("automation");
+    expect(
+      getAutomationConversationTabPolicy({
+        surface: "run",
+        runStatus: "agent_failed",
         judgeState: "none",
         workspaceMode: "edit",
         availability: baseAvailability,
@@ -110,6 +137,18 @@ describe("getAutomationConversationTabPolicy", () => {
         availability: baseAvailability,
       }).defaultTab,
     ).toBe("automation");
+  });
+
+  it("keeps terminal runs with authored plans plan-tab enabled", () => {
+    const policy = getAutomationConversationTabPolicy({
+      surface: "run",
+      runStatus: "cancelled",
+      judgeState: "none",
+      workspaceMode: "edit",
+      availability: baseAvailability,
+    });
+
+    expect(policy.tabs).toContainEqual({ id: "plan", enabled: true });
   });
 
   it("keeps setup conversations on the broader tab set", () => {

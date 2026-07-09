@@ -341,16 +341,23 @@ impl AutomationTransitionService {
                 to: to.as_str().to_string(),
             });
         }
-        if from == AutomationJudgeState::InProgress
-            && matches!(
-                to,
-                AutomationJudgeState::Done | AutomationJudgeState::Failed
-            )
-            && !matches!(guard, AutomationJudgeTransitionGuard::Settle(_))
-        {
-            return Err(AppError::Validation(
-                "judge settle transitions require the dispatch lease".to_string(),
-            ));
+        if from == AutomationJudgeState::InProgress {
+            let guard_allows_settle = match to {
+                AutomationJudgeState::Done => {
+                    matches!(guard, AutomationJudgeTransitionGuard::Settle(_))
+                }
+                AutomationJudgeState::Failed => matches!(
+                    guard,
+                    AutomationJudgeTransitionGuard::Settle(_)
+                        | AutomationJudgeTransitionGuard::LegacyNullLease
+                ),
+                _ => true,
+            };
+            if !guard_allows_settle {
+                return Err(AppError::Validation(
+                    "judge settle transitions require the dispatch lease".to_string(),
+                ));
+            }
         }
 
         let automation_id = self.automation_id_for_run(id).await?;

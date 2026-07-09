@@ -67,6 +67,7 @@ export interface AgentAutomationRunFocusRequest {
   workspaceMode: AgentConversationWorkspaceMode | null;
   hasPlanArtifact: boolean;
   hasPullRequest: boolean;
+  seededTab: AgentArtifactTab;
   requestId: number;
 }
 

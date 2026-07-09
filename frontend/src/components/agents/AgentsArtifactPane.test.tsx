@@ -2020,6 +2020,39 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not render the Plan start panel for automation run conversations", async () => {
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "awaiting_plan_approval",
+            planArtifactId: "plan-artifact-1",
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+    );
+
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    );
+
+    expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-artifact-content-plan")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
+    expect(screen.getByText("No ideation run attached")).toBeInTheDocument();
+  });
+
   it("keeps the empty Plan tab visible when Review is also available", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({

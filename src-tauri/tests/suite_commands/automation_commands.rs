@@ -10,9 +10,9 @@ use ralphx_lib::commands::automation_commands::{
 use ralphx_lib::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
     AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, Project, ProjectId,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, Project, ProjectId,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::process::Command;
 use tauri::Manager;
 
@@ -160,6 +160,16 @@ fn continue_verdict(next_prompt: &str) -> String {
     .to_string()
 }
 
+fn json_contains_key(value: &Value, key: &str) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.contains_key(key) || map.values().any(|child| json_contains_key(child, key))
+        }
+        Value::Array(items) => items.iter().any(|child| json_contains_key(child, key)),
+        _ => false,
+    }
+}
+
 #[tokio::test]
 async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_controls() {
     let app = automation_command_app();
@@ -268,6 +278,59 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
     )
     .await
     .expect("terminal automation should delete");
+}
+
+#[tokio::test]
+async fn list_endpoint_zero_gate_joins() {
+    let app = automation_command_app();
+    let automation = active_automation("automation-list-no-gate-joins");
+    app.state::<AppState>()
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .expect("automation should persist");
+    let mut plan_gate_trap = automation_run(
+        "run-plan-gate-trap",
+        &automation.id,
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    plan_gate_trap.conversation_id = Some(ChatConversationId::from_string(
+        "conversation-plan-gate-trap".to_string(),
+    ));
+    app.state::<AppState>()
+        .automation_run_repo
+        .create_run(plan_gate_trap)
+        .await
+        .expect("run should persist");
+
+    let listed = list_automations(
+        Some(ListAutomationsInput {
+            project_id: Some(" project-1 ".to_string()),
+        }),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("list should succeed");
+
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, automation.id.as_str());
+    let response_json = serde_json::to_value(&listed).expect("list serializes");
+    for forbidden_key in [
+        "runs",
+        "usage",
+        "plan_phase",
+        "plan_artifact_id",
+        "plan_approved_by",
+        "plan_approved_artifact_version",
+        "plan_approved_at",
+    ] {
+        assert!(
+            !json_contains_key(&response_json, forbidden_key),
+            "list response unexpectedly included detail/gate field {forbidden_key}"
+        );
+    }
 }
 
 #[tokio::test]

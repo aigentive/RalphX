@@ -6,7 +6,8 @@ import type { AutomationGoalItem } from "./automationGoalItems";
 import { AutomationRunPhaseChip } from "./AutomationRunPhaseChip";
 import { AutomationRunPrLink } from "./AutomationRunPrLink";
 import {
-  AUTOMATION_RUN_STATUS_LABELS,
+  getAutomationRunJudgeLabel,
+  getAutomationRunStatusLabel,
   getAutomationRunView,
 } from "./automationRunView";
 
@@ -24,7 +25,7 @@ interface AutomationRunStatusHeaderProps {
   testId?: string;
 }
 
-function StatusPill({ label }: { label: string }) {
+function StatusPill({ label, testId }: { label: string; testId?: string }) {
   return (
     <span
       className="inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold"
@@ -35,6 +36,7 @@ function StatusPill({ label }: { label: string }) {
         borderWidth: "1px",
         color: "var(--text-secondary)",
       }}
+      {...(testId ? { "data-testid": testId } : {})}
     >
       {label}
     </span>
@@ -54,6 +56,10 @@ export function AutomationRunStatusHeader({
 }: AutomationRunStatusHeaderProps) {
   const view = automation && run ? getAutomationRunView(automation, run) : null;
   if (density === "banner") {
+    const statusLabel = view?.statusLabel ?? (run ? getAutomationRunStatusLabel(run) : null);
+    const judgeLabel = view?.judgeLabel ?? (run ? getAutomationRunJudgeLabel(run) : null);
+    const stageLabel = view?.stageLabel ?? null;
+    const prLabel = showPr && view ? view.pr.value : null;
     return (
       <div
         className={cn("flex items-start gap-2 rounded-md px-3 py-2 text-xs", className)}
@@ -71,7 +77,35 @@ export function AutomationRunStatusHeader({
           style={{ color: "var(--accent-primary)" }}
           aria-hidden="true"
         />
-        <span>{message ?? "Automation run conversation is read-only."}</span>
+        <span className="min-w-0 space-y-2">
+          <span>{message ?? "Automation run conversation is read-only."}</span>
+          {statusLabel ? (
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <StatusPill
+                label={statusLabel}
+                {...(testId ? { testId: `${testId}-status` } : {})}
+              />
+              {judgeLabel ? (
+                <StatusPill
+                  label={judgeLabel}
+                  {...(testId ? { testId: `${testId}-judge` } : {})}
+                />
+              ) : null}
+              {stageLabel ? (
+                <StatusPill
+                  label={stageLabel}
+                  {...(testId ? { testId: `${testId}-stage` } : {})}
+                />
+              ) : null}
+              {prLabel ? (
+                <StatusPill
+                  label={prLabel}
+                  {...(testId ? { testId: `${testId}-pr` } : {})}
+                />
+              ) : null}
+            </span>
+          ) : null}
+        </span>
       </div>
     );
   }
@@ -81,7 +115,10 @@ export function AutomationRunStatusHeader({
   }
 
   const phaseItem = view?.isOpen ? activeGoalItem : null;
-  const stageLabel = view?.isOpen ? view.stageLabel : null;
+  const stageLabel = view?.stageLabel ?? null;
+  const statusLabel = view?.statusLabel ?? getAutomationRunStatusLabel(run);
+  const judgeLabel = view?.judgeLabel ?? getAutomationRunJudgeLabel(run);
+  const prLabel = showPr && view ? view.pr.value : null;
   return (
     <span
       className={cn(
@@ -94,9 +131,28 @@ export function AutomationRunStatusHeader({
       <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
         Run {run.runIndex}
       </span>
-      <StatusPill label={AUTOMATION_RUN_STATUS_LABELS[run.status]} />
-      <StatusPill label={`Judge ${run.judgeState}`} />
-      {stageLabel ? <StatusPill label={stageLabel} /> : null}
+      <StatusPill
+        label={statusLabel}
+        {...(testId ? { testId: `${testId}-status` } : {})}
+      />
+      {judgeLabel ? (
+        <StatusPill
+          label={judgeLabel}
+          {...(testId ? { testId: `${testId}-judge` } : {})}
+        />
+      ) : null}
+      {stageLabel ? (
+        <StatusPill
+          label={stageLabel}
+          {...(testId ? { testId: `${testId}-stage` } : {})}
+        />
+      ) : null}
+      {prLabel ? (
+        <StatusPill
+          label={prLabel}
+          {...(testId ? { testId: `${testId}-pr` } : {})}
+        />
+      ) : null}
       {phaseItem ? (
         <AutomationRunPhaseChip
           item={phaseItem}

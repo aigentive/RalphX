@@ -12,3 +12,5 @@ export {
   latestRunHoldsGoalAuthority,
   latestRun,
 } from "./automationRunView";
+
+export type { AutomationRunStatusTone } from "./automationRunView";

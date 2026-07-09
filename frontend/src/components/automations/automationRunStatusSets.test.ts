@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { AutomationRunStatusSchema } from "@/api/automations.schemas";
+import {
+  AutomationJudgeStateSchema,
+  AutomationRunStatusSchema,
+} from "@/api/automations.schemas";
 import {
   OPEN_AUTOMATION_RUN_STATUSES,
+  OPEN_JUDGE_PENDING_STATES,
   SIGNAL_TERMINAL_AUTOMATION_RUN_STATUSES,
   TERMINAL_AUTOMATION_RUN_STATUSES,
 } from "./automationRunStatusSets";
@@ -29,10 +33,26 @@ describe("automation run status sets", () => {
     ]);
 
     expect(covered).toEqual(allStatuses);
-    expect(closedStatuses).toEqual(["completed"]);
+    expect(closedStatuses).toEqual([]);
+    expect(SIGNAL_TERMINAL_AUTOMATION_RUN_STATUSES).toContain("completed");
     expect(OPEN_AUTOMATION_RUN_STATUSES).toContain("awaiting_plan_approval");
     expect(TERMINAL_AUTOMATION_RUN_STATUSES).not.toContain(
       "awaiting_plan_approval",
     );
+  });
+
+  it("keeps open judge-pending states narrower than the full judge enum", () => {
+    expect(OPEN_JUDGE_PENDING_STATES).toEqual([
+      "none",
+      "in_progress",
+      "failed",
+    ]);
+    expect(AutomationJudgeStateSchema.options).toEqual([
+      "none",
+      "in_progress",
+      "done",
+      "failed",
+      "skipped",
+    ]);
   });
 });

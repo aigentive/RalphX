@@ -828,6 +828,85 @@ describe("AgentsAutomationPanel", () => {
     );
   });
 
+  it("makes run status pills clickable for any status with a conversation and inert without one", () => {
+    const onFocusAutomationRun = vi.fn();
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-running",
+            runIndex: 4,
+            status: "running",
+            conversationId: "conversation-running",
+            prNumber: null,
+            prUrl: null,
+          }),
+          automationRunFixture({
+            id: "run-agent-failed",
+            runIndex: 3,
+            status: "agent_failed",
+            conversationId: "conversation-agent-failed",
+            prNumber: null,
+            prUrl: null,
+          }),
+          automationRunFixture({
+            id: "run-terminal",
+            runIndex: 2,
+            status: "merged",
+            judgeState: "done",
+            conversationId: "conversation-terminal",
+          }),
+          automationRunFixture({
+            id: "run-without-conversation",
+            runIndex: 1,
+            status: "running",
+            conversationId: null,
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({ onFocusAutomationRun });
+
+    for (const runIndex of [4, 3, 2]) {
+      const row = screen.getByTestId(`agents-automation-run-${runIndex}`);
+      expect(
+        within(row).getByRole("button", { name: "Open run conversation" }),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId(`agents-automation-run-${runIndex}-status`));
+    }
+
+    expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
+      1,
+      "automation-1",
+      "run-running",
+      "conversation-running",
+    );
+    expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
+      2,
+      "automation-1",
+      "run-agent-failed",
+      "conversation-agent-failed",
+    );
+    expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
+      3,
+      "automation-1",
+      "run-terminal",
+      "conversation-terminal",
+    );
+
+    const inertRow = screen.getByTestId("agents-automation-run-1");
+    expect(
+      within(inertRow).queryByRole("button", { name: "Open run conversation" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agents-automation-run-1-status"));
+    expect(onFocusAutomationRun).toHaveBeenCalledTimes(3);
+  });
+
   it("labels parked runs with pending judge revisions", () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import {
@@ -26,6 +26,8 @@ import {
 import type { ChatConversation } from "@/types/chat-conversation";
 import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
+import { seedAgentArtifactTab } from "./agentArtifactState";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
 import { useAgentsSelectionModel } from "./useAgentsSelectionModel";
@@ -178,7 +180,7 @@ function defaultAutomationRunFocusTab(
       hasPlanArtifact: request.hasPlanArtifact,
       hasPullRequest: request.hasPullRequest,
     },
-  }).defaultTab;
+  }).defaultTab as AgentArtifactTab;
 }
 
 export function useAgentsViewController({
@@ -266,12 +268,14 @@ export function useAgentsViewController({
     showArchived,
     storedSelectedConversationId,
   });
+  const automationRunFocusSeededConversationRef = useRef<string | null>(null);
   useEffect(() => {
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
     setPublishFocusRequest(null);
     setTaskArtifactFocusRequest(null);
     setSelectedTaskArtifactId(null);
+    automationRunFocusSeededConversationRef.current = null;
   }, [selectedConversationId]);
   const externalTaskArtifactFocusRequest = useAgentSessionStore((state) =>
     selectedConversationId
@@ -840,16 +844,21 @@ export function useAgentsViewController({
       externalAutomationRunFocusRequest.conversationId,
     );
 
-    const hasArtifactSeed = Object.prototype.hasOwnProperty.call(
-      useAgentSessionStore.getState().artifactByConversationId,
-      selectedConversationId,
-    );
-    if (!hasArtifactSeed) {
-      openArtifactTab(
+    const seededTab =
+      externalAutomationRunFocusRequest.seededTab ??
+      defaultAutomationRunFocusTab(externalAutomationRunFocusRequest);
+    const optimisticArtifactState =
+      useAgentArtifactUiStore.getState().artifactByConversationId[
+        selectedConversationId
+      ] ?? null;
+    if (!optimisticArtifactState || optimisticArtifactState.activeTab === seededTab) {
+      seedAgentArtifactTab(
         selectedConversationId,
-        defaultAutomationRunFocusTab(externalAutomationRunFocusRequest),
+        seededTab,
+        hasAutoOpenArtifactsWithReview,
       );
     }
+    automationRunFocusSeededConversationRef.current = selectedConversationId;
 
     useAgentSessionStore
       .getState()
@@ -863,7 +872,7 @@ export function useAgentsViewController({
     activeConversation?.automationRunId,
     externalAutomationRunFocusRequest,
     handleFocusAutomationRun,
-    openArtifactTab,
+    hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   ]);
   useEffect(() => {
@@ -872,7 +881,8 @@ export function useAgentsViewController({
       activeConversation?.agentMode !== "automation" ||
       !activeConversation.automationId ||
       chatFocus.type === "automation_run" ||
-      externalAutomationRunFocusRequest
+      externalAutomationRunFocusRequest ||
+      automationRunFocusSeededConversationRef.current === selectedConversationId
     ) {
       return;
     }

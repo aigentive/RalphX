@@ -20,6 +20,9 @@ pub struct AutomationRunPublicationMetadata {
 pub enum AutomationJudgeTransitionGuard {
     Dispatch,
     Settle(DateTime<Utc>),
+    /// Legacy escape for pre-token InProgress rows. Matches only NULL leases;
+    /// switch to a dedicated judge_dispatch_id column iff lease renewal is ever added.
+    LegacyNullLease,
 }
 
 #[async_trait]

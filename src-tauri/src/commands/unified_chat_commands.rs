@@ -25,16 +25,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
 
+use crate::application::agent_conversation_archive::{
+    archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
+};
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
-use crate::application::agent_conversation_mode_switch::{
-    automation_run_mode_locked_error_message, is_automation_run_mode_switch_locked,
-};
 #[doc(hidden)]
 pub use crate::application::agent_conversation_mode_switch::AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE;
-use crate::application::agent_conversation_archive::{
-    archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
+use crate::application::agent_conversation_mode_switch::{
+    automation_run_mode_locked_error_message, is_automation_run_mode_switch_locked,
 };
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
@@ -114,13 +114,13 @@ use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-    AgentRunId, AgentRunStatus,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
-    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-    InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
-    CoordinationMode, TeamIntent, TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
+    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
+    TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -3124,8 +3124,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     if conversation.context_type != ChatContextType::Project {
         return Err("Only project agent conversations can change mode".to_string());
     }
-    if initiator == ModeSwitchInitiator::User
-        && is_automation_run_mode_switch_locked(&conversation)
+    if initiator == ModeSwitchInitiator::User && is_automation_run_mode_switch_locked(&conversation)
     {
         return Err(automation_run_mode_locked_error_message());
     }
@@ -9952,9 +9951,8 @@ mod tests {
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         create_agent_conversation, emit_agent_conversation_fork_events,
         ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
-        filter_agent_list_visible_conversations,
-        fork_agent_conversation, fork_agent_conversation_response_for_state,
-        fork_terminal_agent_conversation_for_send,
+        filter_agent_list_visible_conversations, fork_agent_conversation,
+        fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
         get_agent_conversation_runtime_index_for_app_state,
         get_agent_conversation_runtime_statuses_for_app_state,
         get_agent_conversation_summary_for_app_state,
@@ -10031,8 +10029,7 @@ mod tests {
         ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
         IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
         PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
-        TaskId,
-        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -11938,10 +11935,7 @@ mod tests {
             DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
         );
         assert_eq!(response.pr_auto_merge_current, Some(false));
-        assert_eq!(
-            response.pr_supervision_status.as_deref(),
-            Some("disabled")
-        );
+        assert_eq!(response.pr_supervision_status.as_deref(), Some("disabled"));
         assert!(response
             .pr_supervision_summary
             .as_deref()
@@ -14582,7 +14576,12 @@ mod tests {
             .expect("linked plan worktree should resolve");
         git(
             &repo_path,
-            &["merge-base", "--is-ancestor", &main_sha, &plan_branch.branch_name],
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &main_sha,
+                &plan_branch.branch_name,
+            ],
         );
         assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
         assert_eq!(git(&repo_path, &["status", "--short"]), "");
@@ -16650,10 +16649,7 @@ mod tests {
         assert_ne!(persisted.branch_name, "feature/source-pr");
         assert!(persisted.branch_name.contains("/agent-"));
         assert_eq!(persisted.publication_pr_number, None);
-        assert_eq!(
-            persisted.publication_pr_url.as_deref(),
-            None
-        );
+        assert_eq!(persisted.publication_pr_url.as_deref(), None);
         assert_eq!(persisted.publication_pr_status.as_deref(), None);
         assert_eq!(
             persisted

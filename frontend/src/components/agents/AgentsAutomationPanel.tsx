@@ -36,13 +36,11 @@ import {
 } from "@/components/ui/tooltip";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
-  describeAutomationRunPrState,
   describeAutomationDeleteConsequences,
-  describeAutomationStage,
   describeRunFailure,
-  isAutomationRunCancellable,
-  isOpenAutomationRun,
+  getAutomationRunView,
   latestRun,
+  type AutomationRunStatusTone,
 } from "@/components/automations/automationStage";
 import {
   AUTOMATION_PHASES_LABEL,
@@ -223,44 +221,18 @@ function formatRunSummary(run: AutomationRun | null, maxRuns: number): string {
   return `${run.runIndex} of ${maxRuns}`;
 }
 
-const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
-  pending: "Running",
-  provisioning: "Running",
-  running: "Running",
-  awaiting_plan_approval: "Awaiting plan approval",
-  published: "Running",
-  completed: "Completed",
-  merged: "Merged",
-  pr_closed: "PR closed",
-  agent_failed: "Agent failed",
-  cancelled: "Cancelled",
-};
-
 /** Tone color token for a run-status pill — success / warning / error / neutral. */
-function runStatusToneClass(status: AutomationRun["status"]): string {
-  if (["running", "published", "merged", "completed"].includes(status)) {
-    return "text-[var(--status-success)]";
+function runStatusToneClass(tone: AutomationRunStatusTone): string {
+  switch (tone) {
+    case "success":
+      return "text-[var(--status-success)]";
+    case "warning":
+      return "text-[var(--status-warning)]";
+    case "error":
+      return "text-[var(--status-error)]";
+    case "neutral":
+      return "text-[var(--text-secondary)]";
   }
-  if (["awaiting_plan_approval", "agent_failed", "pr_closed"].includes(status)) {
-    return "text-[var(--status-warning)]";
-  }
-  if (status === "cancelled") {
-    return "text-[var(--status-error)]";
-  }
-  return "text-[var(--text-secondary)]";
-}
-
-function runStatusLabel(run: AutomationRun): string {
-  if (run.status === "awaiting_plan_approval") {
-    if (run.planJudgeState === "in_progress") {
-      return "Judging plan";
-    }
-    if (run.planRevisionPending) {
-      return "Revision pending";
-    }
-    return "Awaiting plan approval";
-  }
-  return RUN_STATUS_LABELS[run.status];
 }
 
 /** Secondary line for a run row: PR link text or the prompt author. */
@@ -469,6 +441,7 @@ function AutomationPlanGateSettings({
  * automation.
  */
 function AutomationRunsList({
+  automation,
   automationId,
   runs,
   activeGoalItem,
@@ -476,6 +449,7 @@ function AutomationRunsList({
   cancelingRunId,
   onFocusAutomationRun,
 }: {
+  automation: Automation;
   automationId: string;
   runs: AutomationRun[];
   activeGoalItem: AutomationGoalItem | null;
@@ -498,8 +472,9 @@ function AutomationRunsList({
   return (
     <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
       {ordered.map((run) => {
-        const phaseItem = isOpenAutomationRun(run) ? activeGoalItem : null;
-        const isCancellable = isAutomationRunCancellable(run);
+        const runView = getAutomationRunView(automation, run);
+        const phaseItem = runView.isOpen ? activeGoalItem : null;
+        const isCancellable = runView.isCancellable;
         const isCanceling = cancelingRunId === run.id;
         const conversationId = run.conversationId;
         const canOpenRun = Boolean(conversationId && onFocusAutomationRun);
@@ -509,7 +484,7 @@ function AutomationRunsList({
             className={cn(
               "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
               canOpenRun && "group-hover:underline",
-              runStatusToneClass(run.status),
+              runStatusToneClass(runView.statusTone),
             )}
             style={{
               backgroundColor: "var(--bg-surface)",
@@ -518,7 +493,7 @@ function AutomationRunsList({
               borderWidth: "1px",
             }}
           >
-            {runStatusLabel(run)}
+            {runView.statusLabel}
           </span>
         );
         return (
@@ -1040,9 +1015,10 @@ export function AgentsAutomationPanel({
   const { automation, runs } = detail.data;
   const displayName = automationDisplayName(automation, conversationTitle);
   const run = latestRun(runs);
+  const runView = getAutomationRunView(automation, run);
   const goalItems = parseAutomationGoalItems(automation.goalItemsJson);
   const activeGoalItem = findInProgressAutomationGoalItemFromItems(goalItems);
-  const stage = describeAutomationStage(automation, run);
+  const stage = runView.stageLabel;
   const failureReason = describeRunFailure(run);
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
@@ -1121,7 +1097,11 @@ export function AgentsAutomationPanel({
         <SummaryRow label="Model" value={formatModel(automation)} />
         <SummaryRow label="Base" value={formatBase(automation)} />
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
-        <SummaryRow label="Current PR" value={describeAutomationRunPrState(run)} />
+        <SummaryRow
+          label={runView.pr.rowLabel}
+          value={runView.pr.value}
+          testId="agents-automation-pr"
+        />
       </div>
 
       <DetailSection title="Runs" testId="agents-automation-runs">
@@ -1135,6 +1115,7 @@ export function AgentsAutomationPanel({
           />
         ) : null}
         <AutomationRunsList
+          automation={automation}
           automationId={automation.id}
           runs={runs}
           activeGoalItem={activeGoalItem}

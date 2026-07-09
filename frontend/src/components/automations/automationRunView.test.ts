@@ -1,6 +1,13 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import type { Automation, AutomationRun } from "@/api/automations";
+import type {
+  Automation,
+  AutomationRun,
+  AutomationJudgeState,
+  AutomationRunStatus,
+} from "@/api/automations";
 import {
   describeAutomationRunPrState,
   getAutomationRunView,
@@ -90,7 +97,41 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
   };
 }
 
+function collectSourceFiles(dir: string, files: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      collectSourceFiles(path, files);
+      continue;
+    }
+    if (/\.(ts|tsx)$/.test(entry) && !entry.includes(".test.")) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
 describe("automationRunView", () => {
+  const openStatuses: AutomationRunStatus[] = [
+    "pending",
+    "provisioning",
+    "running",
+    "awaiting_plan_approval",
+    "published",
+  ];
+  const signalTerminalStatuses: AutomationRunStatus[] = [
+    "merged",
+    "pr_closed",
+    "agent_failed",
+    "completed",
+  ];
+  const judgePendingStates: AutomationJudgeState[] = [
+    "none",
+    "in_progress",
+    "failed",
+  ];
+
   it("mirrors goal authority independently from open-run semantics", () => {
     expect(
       latestRunHoldsGoalAuthority(run({ status: "merged", judgeState: "done" })),
@@ -128,9 +169,57 @@ describe("automationRunView", () => {
         isCancellable: true,
         holdsGoalAuthority: true,
         composerReadOnly: true,
+        statusLabel: "Running",
+        statusTone: "success",
+        judgeLabel: "Judge pending",
         stageLabel: "Run 1 planning",
+        pr: {
+          rowLabel: "Current PR",
+          value: "Running",
+        },
       }),
     );
+  });
+
+  it("keeps selector invariants in lockstep across status and judge-state pairs", () => {
+    const statuses: AutomationRunStatus[] = [
+      "pending",
+      "provisioning",
+      "running",
+      "awaiting_plan_approval",
+      "published",
+      "completed",
+      "merged",
+      "pr_closed",
+      "agent_failed",
+      "cancelled",
+    ];
+    const judgeStates: AutomationJudgeState[] = [
+      "none",
+      "in_progress",
+      "done",
+      "failed",
+      "skipped",
+    ];
+
+    for (const status of statuses) {
+      for (const judgeState of judgeStates) {
+        const view = getAutomationRunView(
+          automation(),
+          run({ status, judgeState, prNumber: 593 }),
+        );
+        const expectedOpen =
+          openStatuses.includes(status) ||
+          (signalTerminalStatuses.includes(status) &&
+            judgePendingStates.includes(judgeState));
+
+        expect(view.isOpen).toBe(expectedOpen);
+        expect(view.pr.rowLabel).toBe(expectedOpen ? "Current PR" : "Last PR");
+        if (status === "cancelled") {
+          expect(view.stageLabel).not.toBe("Waiting for judge");
+        }
+      }
+    }
   });
 
   it("uses status-neutral PR copy for cancelled runs", () => {
@@ -142,5 +231,17 @@ describe("automationRunView", () => {
     expect(
       describeAutomationRunPrState(run({ status: "published", prNumber: 593 })),
     ).toBe("Current PR #593");
+  });
+
+  it("keeps components from calling describeAutomationStage directly", () => {
+    const allowedFiles = new Set([
+      join(process.cwd(), "src/components/automations/automationRunView.ts"),
+      join(process.cwd(), "src/components/automations/automationStage.ts"),
+    ]);
+    const offenders = collectSourceFiles(join(process.cwd(), "src/components"))
+      .filter((path) => !allowedFiles.has(path))
+      .filter((path) => readFileSync(path, "utf8").includes("describeAutomationStage"));
+
+    expect(offenders).toEqual([]);
   });
 });

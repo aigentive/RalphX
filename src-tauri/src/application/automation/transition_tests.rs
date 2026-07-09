@@ -112,26 +112,51 @@ fn run(id: &str, status: AutomationRunStatus, judge_state: AutomationJudgeState)
     }
 }
 
+fn collect_rs_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_rs_files(&path, files);
+            continue;
+        }
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+}
+
 #[test]
 fn production_automation_transition_services_use_shared_event_emitter_factory() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let commands =
-        std::fs::read_to_string(manifest_dir.join("src/commands/automation_commands.rs")).unwrap();
-    let delete =
-        std::fs::read_to_string(manifest_dir.join("src/application/automation/delete.rs")).unwrap();
-    let api =
-        std::fs::read_to_string(manifest_dir.join("src/application/automation/api.rs")).unwrap();
+    let api_path = manifest_dir.join("src/application/automation/api.rs");
+    let mut source_files = Vec::new();
+    collect_rs_files(&manifest_dir.join("src"), &mut source_files);
+    let offenders: Vec<_> = source_files
+        .iter()
+        .filter(|path| !path.ends_with("transition.rs"))
+        .filter(|path| {
+            !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_tests.rs"))
+        })
+        .filter(|path| **path != api_path)
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains("NoopAutomationEventEmitter")
+        })
+        .collect();
 
     assert!(
-        !commands.contains("NoopAutomationEventEmitter"),
-        "automation commands must use the shared transition-service factory"
-    );
-    assert!(
-        !delete.contains("NoopAutomationEventEmitter"),
-        "automation delete must use the shared transition-service factory"
+        offenders.is_empty(),
+        "NoopAutomationEventEmitter construction must stay in the API fallback; offenders: {offenders:?}"
     );
     assert_eq!(
-        api.matches("Arc::new(NoopAutomationEventEmitter)").count(),
+        std::fs::read_to_string(api_path)
+            .unwrap()
+            .matches("Arc::new(NoopAutomationEventEmitter)")
+            .count(),
         1,
         "automation API should own the single Noop event-emitter fallback"
     );

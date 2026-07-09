@@ -1715,7 +1715,13 @@ function ArtifactContent({
     if ((isLoading && attachedSessionId) || isPlanLoading) {
       return <EmptyArtifactState title="Loading attached run..." />;
     }
-    if (!planArtifact && canStartPlan && conversationId && projectId) {
+    if (
+      !planArtifact &&
+      canStartPlan &&
+      !isAutomationRunConversation &&
+      conversationId &&
+      projectId
+    ) {
       return (
         <AgentPlanStartPanel
           conversationId={conversationId}

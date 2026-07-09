@@ -28,8 +28,8 @@ import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
   describeAutomationDeleteConsequences,
   describeAutomationRunPrState,
-  describeAutomationStage,
   describeRunFailure,
+  getAutomationRunView,
   isAutomationDeletable,
   isOpenAutomationRun,
   latestRun,
@@ -710,7 +710,11 @@ const RunTimelineItem = memo(function RunTimelineItem({
             <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
               PR
             </div>
-            <div className="mt-1" style={{ color: "var(--text-secondary)" }}>
+            <div
+              className="mt-1"
+              style={{ color: "var(--text-secondary)" }}
+              data-testid={`automation-run-${run.id}-pr-state`}
+            >
               {run.prNumber || run.prUrl
                 ? describeAutomationRunPrState(run)
                 : "Not published"}
@@ -925,9 +929,10 @@ export function AutomationDetailView({
   // user is allowed to trigger even with a run still open, so don't block it.
   const openRun = isOpenAutomationRun(latest) ? latest : null;
   const activeRun = automation.status === "active" ? openRun : null;
-  const liveStageLabel = activeRun ? describeAutomationStage(automation, activeRun) : null;
+  const activeRunView = activeRun ? getAutomationRunView(automation, activeRun) : null;
+  const liveStageLabel = activeRunView?.stageLabel ?? null;
   const runNowBlockedReason = activeRun
-    ? `${describeAutomationStage(automation, activeRun)} — wait for it to finish before running again`
+    ? `${liveStageLabel} — wait for it to finish before running again`
     : automation.status === "draft"
       ? "Approve the automation before running it"
       : isAutomationTerminal(automation.status)

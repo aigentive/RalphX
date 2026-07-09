@@ -10,9 +10,10 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceSetupMode,
 };
 use crate::application::automation::api::{
-    automation_detail_response_for_state, automation_service_for_state,
-    automation_transition_service_for_state, AutomationDetailResponse, AutomationResponse,
-    AutomationRunResponse, AutomationScheduleResponse, CreateAutomationDraftResponse,
+    automation_detail_response_for_state, automation_run_response_for_state,
+    automation_service_for_state, automation_transition_service_for_state,
+    AutomationDetailResponse, AutomationResponse, AutomationRunResponse,
+    AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
 use crate::application::automation::delete::delete_automation_with_archive;
 use crate::application::automation::scheduler::{
@@ -399,10 +400,12 @@ pub async fn cancel_automation_run(
 ) -> Result<AutomationRunResponse, String> {
     let id = parse_automation_id(&input.id)?;
     let run_id = parse_automation_run_id(&input.run_id)?;
-    automation_service(&state)
+    let run = automation_service(&state)
         .cancel_run(&id, &run_id)
         .await
-        .map(AutomationRunResponse::from)
+        .map_err(|error| error.to_string())?;
+    automation_run_response_for_state(run, state.inner())
+        .await
         .map_err(|error| error.to_string())
 }
 

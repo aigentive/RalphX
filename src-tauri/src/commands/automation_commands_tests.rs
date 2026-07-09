@@ -9,8 +9,8 @@ use super::automation_commands::{
     AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
 use crate::application::automation::api::{
-    automation_detail_response_for_state, AutomationResponse, AutomationRunResponse,
-    AutomationScheduleResponse,
+    automation_detail_response_for_state, automation_run_response_for_state, AutomationResponse,
+    AutomationRunResponse, AutomationScheduleResponse,
 };
 use crate::application::automation::service::{AutomationDetail, AutomationScheduleOutcome};
 use crate::application::AppState;
@@ -464,6 +464,53 @@ async fn automation_detail_response_keeps_terminal_run_plan_artifact_auditable_o
     assert!(run.plan_approved_by.is_none());
     assert!(run.plan_approved_artifact_version.is_none());
     assert!(run.plan_approved_at.is_none());
+}
+
+#[tokio::test]
+async fn automation_cancel_run_response_keeps_plan_artifact_auditable() {
+    let state = AppState::new_sqlite_test();
+    let mut automation = automation();
+    automation.status = AutomationStatus::Active;
+    let conversation_id = ChatConversationId::from_string("conversation-plan-cancelled");
+    let mut run = automation_run(&automation.id);
+    run.status = AutomationRunStatus::Running;
+    run.judge_state = AutomationJudgeState::None;
+    run.conversation_id = Some(conversation_id.clone());
+
+    state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+    state
+        .automation_run_repo
+        .create_run(run.clone())
+        .await
+        .unwrap();
+    link_run_to_plan_session(
+        &state,
+        &automation,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Plan,
+        Some("plan-artifact-1"),
+    )
+    .await;
+
+    let cancelled = automation_service(&state)
+        .cancel_run(&automation.id, &run.id)
+        .await
+        .unwrap();
+    let response = automation_run_response_for_state(cancelled, &state)
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, "cancelled");
+    assert_eq!(
+        response.plan_artifact_id.as_deref(),
+        Some("plan-artifact-1")
+    );
+    assert!(!response.plan_phase);
+    assert!(response.plan_approved_by.is_none());
 }
 
 #[tokio::test]

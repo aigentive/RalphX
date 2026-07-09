@@ -100,6 +100,27 @@ describe("AutomationRunTaskLedger", () => {
     expect(listConversationTasksMock).toHaveBeenCalledTimes(2);
   });
 
+  it("widens running poll cadence after repeated identical refetches", async () => {
+    vi.useFakeTimers();
+    listConversationTasksMock.mockResolvedValue([task()]);
+
+    renderLedger("running");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
+
+    for (let index = 0; index < 41; index += 1) {
+      await vi.advanceTimersByTimeAsync(2_500);
+    }
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(42);
+
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(42);
+
+    await vi.advanceTimersByTimeAsync(12_500);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(43);
+  });
+
   it("slows down running polls after repeated unchanged responses", () => {
     expect(automationRunTaskLedgerRefetchInterval("running", 39)).toBe(2_500);
     expect(automationRunTaskLedgerRefetchInterval("running", 40)).toBe(15_000);

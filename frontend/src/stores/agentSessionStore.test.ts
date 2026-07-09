@@ -483,6 +483,7 @@ describe("agentSessionStore", () => {
         workspaceMode: "plan",
         hasPlanArtifact: true,
         hasPullRequest: false,
+        seededTab: "plan",
       });
       let state = useAgentSessionStore.getState();
       expect(state.automationRunFocusRequestByConversationId["setup-conversation-1"]).toEqual({
@@ -495,6 +496,7 @@ describe("agentSessionStore", () => {
         workspaceMode: "plan",
         hasPlanArtifact: true,
         hasPullRequest: false,
+        seededTab: "plan",
         requestId: 1,
       });
 
@@ -508,6 +510,7 @@ describe("agentSessionStore", () => {
         workspaceMode: null,
         hasPlanArtifact: false,
         hasPullRequest: true,
+        seededTab: "pr",
       });
       state = useAgentSessionStore.getState();
       expect(state.automationRunFocusRequestByConversationId["setup-conversation-1"]).toMatchObject({

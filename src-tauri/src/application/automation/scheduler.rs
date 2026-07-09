@@ -1458,6 +1458,7 @@ impl AutomationScheduler {
                     };
                     summary.leased_automations += 1;
 
+                    let mut should_sweep_goal_items = false;
                     match self.service.get_automation_detail(&automation.id).await {
                         Ok(detail) if detail.runs.is_empty() => {
                             summary.active_without_runs += 1;
@@ -1500,6 +1501,25 @@ impl AutomationScheduler {
                                         "Automation scheduler failed to observe latest run"
                                     );
                                 }
+                                match run_could_need_goal_item_sweep(
+                                    &detail.automation,
+                                    latest_run,
+                                    true,
+                                ) {
+                                    Ok(true) => {
+                                        should_sweep_goal_items = true;
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => {
+                                        summary.automation_errors += 1;
+                                        tracing::warn!(
+                                            automation_id = %detail.automation.id,
+                                            run_id = %latest_run.id,
+                                            error = %error,
+                                            "Automation scheduler failed to pre-screen goal item sweep"
+                                        );
+                                    }
+                                }
                             }
                         }
                         Err(error) => {
@@ -1511,14 +1531,17 @@ impl AutomationScheduler {
                             );
                         }
                     }
-                    if let Err(error) = self.sweep_goal_item_consistency(&automation.id, true).await
-                    {
-                        summary.automation_errors += 1;
-                        tracing::warn!(
-                            automation_id = %automation.id,
-                            error = %error,
-                            "Automation scheduler failed to sweep automation goal items"
-                        );
+                    if should_sweep_goal_items {
+                        if let Err(error) =
+                            self.sweep_goal_item_consistency(&automation.id, true).await
+                        {
+                            summary.automation_errors += 1;
+                            tracing::warn!(
+                                automation_id = %automation.id,
+                                error = %error,
+                                "Automation scheduler failed to sweep automation goal items"
+                            );
+                        }
                     }
                 }
                 AutomationStatus::Paused
@@ -2673,6 +2696,11 @@ impl AutomationScheduler {
             )
             .await?
         {
+            tracing::debug!(
+                run_id = %run.id,
+                conversation_id = %conversation_id,
+                "Skipped automation plan approval delivery because run status changed"
+            );
             return Ok(());
         }
 
@@ -2718,6 +2746,11 @@ impl AutomationScheduler {
             )
             .await?
         {
+            tracing::debug!(
+                run_id = %run.id,
+                conversation_id = %conversation_id,
+                "Skipped automation plan revision delivery because run status changed"
+            );
             return Ok(());
         }
 
@@ -2841,6 +2874,15 @@ impl AutomationScheduler {
                         summary,
                     )
                     .await?;
+                } else {
+                    self.mark_legacy_null_lease_judge_failed(
+                        automation,
+                        run,
+                        "Automation judge exceeded judge_timeout_secs with legacy null lease"
+                            .to_string(),
+                        summary,
+                    )
+                    .await?;
                 }
             }
             AutomationJudgeState::InProgress | AutomationJudgeState::Skipped => {}
@@ -2871,22 +2913,8 @@ impl AutomationScheduler {
             .await?
         {
             summary.judge_failures += 1;
-            if self
-                .transition_service
-                .transition_automation_status(
-                    &automation.id,
-                    AutomationStatus::Active,
-                    AutomationStatus::Paused,
-                    Some("judge_failed".to_string()),
-                    Some(detail),
-                )
-                .await?
-            {
-                summary.paused_automations += 1;
-                self.service
-                    .sync_goal_items_for_closed_run_without_successor(&automation.id)
-                    .await;
-            }
+            self.pause_automation_after_judge_failed(automation, detail, summary)
+                .await?;
         } else {
             tracing::warn!(
                 automation_id = %automation.id,
@@ -2894,6 +2922,70 @@ impl AutomationScheduler {
                 lease_expires_at = %judge_lease_expires_at.to_rfc3339(),
                 "Discarded automation judge failure because judge state or lease changed"
             );
+        }
+        Ok(())
+    }
+
+    async fn mark_legacy_null_lease_judge_failed(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: String,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        tracing::warn!(
+            automation_id = %automation.id,
+            run_id = %run.id,
+            "Timing out legacy automation judge with null lease token"
+        );
+        if self
+            .transition_service
+            .transition_judge_state(
+                &run.id,
+                AutomationJudgeState::InProgress,
+                AutomationJudgeState::Failed,
+                AutomationJudgeTransitionGuard::LegacyNullLease,
+                None,
+                None,
+                None,
+                Some(detail.clone()),
+            )
+            .await?
+        {
+            summary.judge_failures += 1;
+            self.pause_automation_after_judge_failed(automation, detail, summary)
+                .await?;
+        } else {
+            tracing::warn!(
+                automation_id = %automation.id,
+                run_id = %run.id,
+                "Discarded legacy automation judge failure because judge state or lease changed"
+            );
+        }
+        Ok(())
+    }
+
+    async fn pause_automation_after_judge_failed(
+        &self,
+        automation: &Automation,
+        detail: String,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some("judge_failed".to_string()),
+                Some(detail),
+            )
+            .await?
+        {
+            summary.paused_automations += 1;
+            self.service
+                .sync_goal_items_for_closed_run_without_successor(&automation.id)
+                .await;
         }
         Ok(())
     }
@@ -3382,6 +3474,32 @@ fn auto_merge_enable_warning_from_workspace(
         return None;
     }
     Some(summary.to_string())
+}
+
+fn run_could_need_goal_item_sweep(
+    automation: &Automation,
+    latest_run: &AutomationRun,
+    allow_forward_fill: bool,
+) -> AppResult<bool> {
+    let plan_gate_paused = automation.status == AutomationStatus::Paused
+        && is_plan_gate_pause_reason(automation.paused_reason_code.as_deref());
+    if !plan_gate_paused && !latest_run_holds_goal_authority(latest_run) {
+        return revert_in_progress_goal_items_to_pending(automation.goal_items_json.as_deref())
+            .map(|repair| repair.is_some());
+    }
+    if allow_forward_fill
+        && automation.status == AutomationStatus::Active
+        && matches!(
+            latest_run.status,
+            AutomationRunStatus::Running
+                | AutomationRunStatus::AwaitingPlanApproval
+                | AutomationRunStatus::Published
+        )
+    {
+        return mark_current_goal_item_in_progress(automation.goal_items_json.as_deref())
+            .map(|repair| repair.is_some());
+    }
+    Ok(false)
 }
 
 pub(crate) fn spawn_automation_judge_task(

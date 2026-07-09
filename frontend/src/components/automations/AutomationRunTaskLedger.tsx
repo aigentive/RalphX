@@ -141,7 +141,7 @@ export function AutomationRunTaskLedger({
     }
     lastFingerprintRef.current = fingerprint;
     unchangedResponsesRef.current = 0;
-  }, [query.data]);
+  }, [query.data, query.dataUpdatedAt]);
 
   const { taskCount, activeTasks, doneCount, droppedCount } = useMemo(() => {
     const tasks = query.data ?? [];

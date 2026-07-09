@@ -778,10 +778,15 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         if run.judge_state != from {
             return Ok(false);
         }
-        if let AutomationJudgeTransitionGuard::Settle(expected_lease) = guard {
-            if run.judge_lease_expires_at != Some(expected_lease) {
-                return Ok(false);
+        let guard_matches = match guard {
+            AutomationJudgeTransitionGuard::Dispatch => true,
+            AutomationJudgeTransitionGuard::Settle(expected_lease) => {
+                run.judge_lease_expires_at == Some(expected_lease)
             }
+            AutomationJudgeTransitionGuard::LegacyNullLease => run.judge_lease_expires_at.is_none(),
+        };
+        if !guard_matches {
+            return Ok(false);
         }
         let clear_judge_verdict =
             judge_transition_clears_verdict(to, judge_verdict_json.as_deref());

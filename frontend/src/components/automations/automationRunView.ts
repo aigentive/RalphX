@@ -1,5 +1,6 @@
 import type { Automation, AutomationRun } from "@/api/automations";
 import {
+  OPEN_JUDGE_PENDING_STATE_SET,
   OPEN_AUTOMATION_RUN_STATUS_SET,
   SIGNAL_TERMINAL_AUTOMATION_RUN_STATUS_SET,
 } from "./automationRunStatusSets";
@@ -37,6 +38,8 @@ export const AUTOMATION_RUN_STATUS_LABELS: Record<AutomationRun["status"], strin
   agent_failed: "Agent failed",
   cancelled: "Cancelled",
 };
+
+export type AutomationRunStatusTone = "success" | "warning" | "error" | "neutral";
 
 /**
  * Whether an automation can be deleted. Delete is allowed only from terminal or
@@ -114,7 +117,7 @@ export function isOpenAutomationRun(run: AutomationRun | null): run is Automatio
   }
   return (
     SIGNAL_TERMINAL_AUTOMATION_RUN_STATUS_SET.has(run.status) &&
-    ["none", "in_progress", "failed"].includes(run.judgeState)
+    OPEN_JUDGE_PENDING_STATE_SET.has(run.judgeState)
   );
 }
 
@@ -147,12 +150,80 @@ export function isAutomationRunComposerReadOnly(run: AutomationRun | null): bool
   return latestRunHoldsGoalAuthority(run);
 }
 
+export function getAutomationRunStatusLabel(run: AutomationRun | null): string {
+  if (!run) {
+    return "No run";
+  }
+  if (run.status === "awaiting_plan_approval") {
+    if (run.planJudgeState === "in_progress") {
+      return "Judging plan";
+    }
+    if (run.planRevisionPending) {
+      return "Revision pending";
+    }
+    return "Awaiting plan approval";
+  }
+  return AUTOMATION_RUN_STATUS_LABELS[run.status];
+}
+
+export function getAutomationRunStatusTone(
+  run: AutomationRun | null,
+): AutomationRunStatusTone {
+  if (!run) {
+    return "neutral";
+  }
+  if (["running", "published", "merged", "completed"].includes(run.status)) {
+    return "success";
+  }
+  if (["awaiting_plan_approval", "agent_failed", "pr_closed"].includes(run.status)) {
+    return "warning";
+  }
+  if (run.status === "cancelled") {
+    return "error";
+  }
+  return "neutral";
+}
+
+export function getAutomationRunJudgeLabel(run: AutomationRun | null): string | null {
+  if (!run) {
+    return null;
+  }
+  switch (run.judgeState) {
+    case "none":
+      return "Judge pending";
+    case "in_progress":
+      return "Judging";
+    case "done":
+      return "Judge done";
+    case "failed":
+      return "Judge failed";
+    case "skipped":
+      return "Judge skipped";
+  }
+}
+
+export interface AutomationRunPrView {
+  rowLabel: "Current PR" | "Last PR";
+  value: string;
+}
+
+function getAutomationRunPrView(run: AutomationRun | null): AutomationRunPrView {
+  return {
+    rowLabel: run && isOpenAutomationRun(run) ? "Current PR" : "Last PR",
+    value: describeAutomationRunPrState(run),
+  };
+}
+
 export interface AutomationRunView {
   isOpen: boolean;
   isCancellable: boolean;
   holdsGoalAuthority: boolean;
   composerReadOnly: boolean;
+  statusLabel: string;
+  statusTone: AutomationRunStatusTone;
+  judgeLabel: string | null;
   stageLabel: string;
+  pr: AutomationRunPrView;
 }
 
 export function getAutomationRunView(
@@ -164,7 +235,11 @@ export function getAutomationRunView(
     isCancellable: isAutomationRunCancellable(run),
     holdsGoalAuthority: latestRunHoldsGoalAuthority(run),
     composerReadOnly: isAutomationRunComposerReadOnly(run),
+    statusLabel: getAutomationRunStatusLabel(run),
+    statusTone: getAutomationRunStatusTone(run),
+    judgeLabel: getAutomationRunJudgeLabel(run),
     stageLabel: describeAutomationStage(automation, run),
+    pr: getAutomationRunPrView(run),
   };
 }
 

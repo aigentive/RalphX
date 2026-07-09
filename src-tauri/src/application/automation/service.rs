@@ -718,7 +718,11 @@ impl AutomationService {
                             reason: None,
                         })
                     }
-                    None => Ok(schedule_not_scheduled("judge already started")),
+                    None => Ok(schedule_not_scheduled(if skip_failed_judge {
+                        "not skipped: judge redispatched"
+                    } else {
+                        "judge already started"
+                    })),
                 }
             }
             SuccessorReadiness::NotScheduled(outcome) => {

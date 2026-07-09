@@ -1051,11 +1051,11 @@ describe("AgentsActiveConversationPanel", () => {
     });
 
     expect(screen.getByTestId("agents-automation-run-readonly-banner")).toHaveTextContent(
-      "Automation run conversations are read-only until the run reaches a terminal state.",
+      "Automation run conversations are read-only while the automation is working on this run.",
     );
     expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("true");
     expect(screen.getByTestId("workspace-composer-disabled-reason")).toHaveTextContent(
-      "Automation run conversations are read-only until the run reaches a terminal state.",
+      "Automation run conversations are read-only while the automation is working on this run.",
     );
   });
 

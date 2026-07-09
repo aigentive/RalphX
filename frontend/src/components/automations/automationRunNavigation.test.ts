@@ -15,6 +15,7 @@ const {
   projectSelectMock,
   requestAutomationRunFocusMock,
   selectConversationMock,
+  seedAgentArtifactTabMock,
   setActiveConversationMock,
   setArtifactTabMock,
   setCurrentViewMock,
@@ -28,11 +29,16 @@ const {
   projectSelectMock: vi.fn(),
   requestAutomationRunFocusMock: vi.fn(),
   selectConversationMock: vi.fn(),
+  seedAgentArtifactTabMock: vi.fn(),
   setActiveConversationMock: vi.fn(),
   setArtifactTabMock: vi.fn(),
   setCurrentViewMock: vi.fn(),
   setFocusedProjectMock: vi.fn(),
   toastErrorMock: vi.fn(),
+}));
+
+vi.mock("@/components/agents/agentArtifactState", () => ({
+  seedAgentArtifactTab: seedAgentArtifactTabMock,
 }));
 
 vi.mock("@/api/automations", () => ({
@@ -217,7 +223,11 @@ describe("requestAutomationRunOpen", () => {
       "project:project-1",
       "setup-conversation-1",
     );
-    expect(setArtifactTabMock).toHaveBeenCalledWith("setup-conversation-1", "plan");
+    expect(seedAgentArtifactTabMock).toHaveBeenCalledWith(
+      "setup-conversation-1",
+      "plan",
+      false,
+    );
     expect(requestAutomationRunFocusMock).toHaveBeenCalledWith(
       "setup-conversation-1",
       expect.objectContaining({
@@ -227,8 +237,41 @@ describe("requestAutomationRunOpen", () => {
         runStatus: "awaiting_plan_approval",
         hasPlanArtifact: true,
         hasPullRequest: false,
+        seededTab: "plan",
       }),
     );
+  });
+
+  it("lets a parked run seed Plan over a stale persisted Automation tab", async () => {
+    artifactByConversationId["setup-conversation-1"] = {
+      isOpen: true,
+      activeTab: "automation",
+      taskMode: "graph",
+    };
+
+    await requestAutomationRunOpen(queryClient(), {
+      projectId: "project-1",
+      automationId: "automation-1",
+      runId: "run-1",
+      conversationId: "run-conversation-1",
+      setupConversationId: "setup-conversation-1",
+      runStatus: "awaiting_plan_approval",
+      judgeState: "none",
+      planPhase: false,
+      planArtifactId: "plan-artifact-1",
+      prNumber: null,
+    });
+
+    expect(seedAgentArtifactTabMock).toHaveBeenCalledWith(
+      "setup-conversation-1",
+      "plan",
+      false,
+    );
+    expect(requestAutomationRunFocusMock).toHaveBeenCalledWith(
+      "setup-conversation-1",
+      expect.objectContaining({ seededTab: "plan" }),
+    );
+    expect(setArtifactTabMock).not.toHaveBeenCalled();
   });
 
   it("paints the Agents shell before resolving automation detail for popover targets", async () => {

@@ -32,9 +32,9 @@ import {
   type AutomationRun,
 } from "@/api/automations";
 import {
-  OPEN_AUTOMATION_RUN_STATUS_SET,
-} from "@/components/automations/automationRunStatusSets";
-import { isAutomationRunComposerReadOnly } from "@/components/automations/automationStage";
+  getAutomationRunView,
+  isAutomationRunComposerReadOnly,
+} from "@/components/automations/automationStage";
 import { AutomationRunStatusHeader } from "@/components/automations/AutomationRunStatusHeader";
 import { verificationApi } from "@/api/verification";
 import {
@@ -595,17 +595,11 @@ function PlanComposerCtaRow({
   );
 }
 
-function formatAutomationRunStatus(status: AutomationRun["status"]): string {
-  if (status === "awaiting_plan_approval") {
-    return "Awaiting plan approval";
-  }
-  if (OPEN_AUTOMATION_RUN_STATUS_SET.has(status)) {
-    return "Running";
-  }
-  return status
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+function formatAutomationRunStatus(
+  automation: Automation,
+  run: AutomationRun,
+): string {
+  return getAutomationRunView(automation, run).statusLabel;
 }
 
 function hasPersistedAutomationPhaseSpec(goalItemsJson: string | null): boolean {
@@ -649,17 +643,22 @@ function isAutomationApprovalReady(automation: Automation): boolean {
   return false;
 }
 
-function hasOpenAutomationRun(runs: readonly AutomationRun[]): boolean {
-  return runs.some((run) => OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status));
+function hasOpenAutomationRun(
+  automation: Automation,
+  runs: readonly AutomationRun[],
+): boolean {
+  return runs.some((run) => getAutomationRunView(automation, run).isOpen);
 }
 
 function AutomationRunsWidget({
   automationId,
+  automation,
   runs,
   currentRunId,
   onOpenRun,
 }: {
   automationId: string;
+  automation: Automation;
   runs: readonly AutomationRun[];
   currentRunId: string | null;
   onOpenRun: (automationId: string, run: AutomationRun) => void;
@@ -726,7 +725,7 @@ function AutomationRunsWidget({
                 className="min-w-0 truncate"
                 style={{ color: "var(--text-muted)" }}
               >
-                {formatAutomationRunStatus(run.status)}
+                {formatAutomationRunStatus(automation, run)}
               </span>
             </button>
           );
@@ -1077,7 +1076,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeAutomationRunId &&
     (!automationRun ||
       isAutomationRunComposerReadOnly(automationRun))
-      ? "Automation run conversations are read-only until the run reaches a terminal state."
+      ? "Automation run conversations are read-only while the automation is working on this run."
       : null;
   // Automation SETUP conversation: automationId present, no run yet. Editable —
   // the user configures the automation by chatting with the setup agent. Mutually
@@ -2128,7 +2127,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     if (
       automation.status === "active" &&
-      !hasOpenAutomationRun(automationSetupDetail.runs)
+      !hasOpenAutomationRun(automation, automationSetupDetail.runs)
     ) {
       return [
         {
@@ -2623,7 +2622,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   />
                   {automationSetupConversationId && automationSetupDetail && (
                     <AutomationRunsWidget
-                      automationId={automationSetupConversationId}
+                      automationId={automationSetupDetail.automation.id}
+                      automation={automationSetupDetail.automation}
                       runs={automationSetupDetail.runs}
                       currentRunId={activeAutomationRunId}
                       onOpenRun={handleOpenAutomationRun}
@@ -2655,6 +2655,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   )}
                   {automationRunReadOnlyReason && (
                     <AutomationRunStatusHeader
+                      automation={automationSetupDetail?.automation ?? null}
                       run={automationRun ?? null}
                       density="banner"
                       message={automationRunReadOnlyReason}

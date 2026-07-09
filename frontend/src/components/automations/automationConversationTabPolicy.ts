@@ -92,8 +92,8 @@ function isJudgeSettlingStatus(
   return (
     (runStatus === "merged" ||
       runStatus === "pr_closed" ||
-      runStatus === "agent_failed") &&
-    (judgeState === "none" || judgeState === "in_progress" || judgeState === "failed")
+      runStatus === "completed") &&
+    (judgeState === "none" || judgeState === "in_progress")
   );
 }
 

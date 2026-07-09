@@ -19,6 +19,9 @@ use crate::domain::repositories::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
+const JUDGE_SUCCESSOR_SIGNAL_TERMINAL_STATUS_SQL_LIST: &str =
+    "'merged', 'pr_closed', 'agent_failed', 'completed'";
+
 pub struct SqliteAutomationRepository {
     db: DbConnection,
 }
@@ -1092,9 +1095,10 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         error_detail: Option<String>,
     ) -> AppResult<bool> {
         let id = id.as_str().to_string();
-        let expected_lease = match guard {
-            AutomationJudgeTransitionGuard::Dispatch => None,
-            AutomationJudgeTransitionGuard::Settle(lease) => Some(lease.to_rfc3339()),
+        let (guard_kind, expected_lease) = match guard {
+            AutomationJudgeTransitionGuard::Dispatch => ("dispatch", None),
+            AutomationJudgeTransitionGuard::Settle(lease) => ("settle", Some(lease.to_rfc3339())),
+            AutomationJudgeTransitionGuard::LegacyNullLease => ("legacy_null_lease", None),
         };
         let clear_judge_verdict = i64::from(judge_transition_clears_verdict(
             to,
@@ -1102,6 +1106,8 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         ));
         self.db
             .run(move |conn| {
+                // The lease token is the dispatch guard today; switch this CAS to a
+                // dedicated judge_dispatch_id column iff lease renewal is ever added.
                 let affected = conn.execute(
                     "UPDATE automation_runs
                      SET judge_state = ?1,
@@ -1121,7 +1127,11 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                          updated_at = ?8
                      WHERE id = ?9
                        AND judge_state = ?10
-                       AND (?11 IS NULL OR judge_lease_expires_at = ?11)",
+                       AND (
+                           ?11 = 'dispatch'
+                           OR (?11 = 'settle' AND judge_lease_expires_at = ?12)
+                           OR (?11 = 'legacy_null_lease' AND judge_lease_expires_at IS NULL)
+                       )",
                     params![
                         to.as_str(),
                         clear_judge_verdict,
@@ -1133,6 +1143,7 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         Utc::now().to_rfc3339(),
                         id,
                         from.as_str(),
+                        guard_kind,
                         expected_lease,
                     ],
                 )?;
@@ -1349,30 +1360,31 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         let automation_id = automation_id.as_str().to_string();
         let previous_run_id = previous_run_id.as_str().to_string();
         let to_insert = successor.clone();
+        let guard_sql = format!(
+            "SELECT 1
+             FROM automation_runs
+             WHERE id = ?1
+               AND automation_id = ?2
+               AND judge_state = 'done'
+               AND status IN ({JUDGE_SUCCESSOR_SIGNAL_TERMINAL_STATUS_SQL_LIST})
+               AND run_index = (
+                   SELECT MAX(run_index)
+                   FROM automation_runs
+                   WHERE automation_id = ?2
+               )
+               AND EXISTS (
+                   SELECT 1
+                   FROM automations
+                   WHERE id = ?2
+                     AND status = 'active'
+               )"
+        );
         self.db
             .run_transaction(move |conn| {
                 let guard = conn
-                    .query_row(
-                        "SELECT 1
-                         FROM automation_runs
-                         WHERE id = ?1
-                           AND automation_id = ?2
-                           AND judge_state = 'done'
-                           AND status IN ('merged', 'pr_closed', 'agent_failed', 'completed')
-                           AND run_index = (
-                               SELECT MAX(run_index)
-                               FROM automation_runs
-                               WHERE automation_id = ?2
-                           )
-                           AND EXISTS (
-                               SELECT 1
-                               FROM automations
-                               WHERE id = ?2
-                                 AND status = 'active'
-                           )",
-                        params![previous_run_id, automation_id],
-                        |_| Ok(()),
-                    )
+                    .query_row(&guard_sql, params![previous_run_id, automation_id], |_| {
+                        Ok(())
+                    })
                     .optional()?;
                 if guard.is_none() {
                     return Ok(None);
@@ -1401,29 +1413,32 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         let automation_id = automation_id.as_str().to_string();
         let previous_run_id = previous_run_id.as_str().to_string();
         let to_insert = successor.clone();
+        let update_sql = format!(
+            "UPDATE automation_runs
+             SET judge_state = 'skipped',
+                 judge_lease_expires_at = NULL,
+                 error_detail = NULL,
+                 updated_at = ?1
+             WHERE id = ?2
+               AND automation_id = ?3
+               AND judge_state IN ('none', 'failed')
+               AND status IN ({JUDGE_SUCCESSOR_SIGNAL_TERMINAL_STATUS_SQL_LIST})
+               AND run_index = (
+                   SELECT MAX(run_index)
+                   FROM automation_runs
+                   WHERE automation_id = ?3
+               )
+               AND EXISTS (
+                   SELECT 1
+                   FROM automations
+                   WHERE id = ?3
+                     AND status = 'active'
+               )"
+        );
         self.db
             .run_transaction(move |conn| {
                 let affected = conn.execute(
-                    "UPDATE automation_runs
-                     SET judge_state = 'skipped',
-                         judge_lease_expires_at = NULL,
-                         error_detail = NULL,
-                         updated_at = ?1
-                     WHERE id = ?2
-                       AND automation_id = ?3
-                       AND judge_state IN ('none', 'failed')
-                       AND status IN ('merged', 'pr_closed', 'agent_failed', 'completed')
-                       AND run_index = (
-                           SELECT MAX(run_index)
-                           FROM automation_runs
-                           WHERE automation_id = ?3
-                       )
-                       AND EXISTS (
-                           SELECT 1
-                           FROM automations
-                           WHERE id = ?3
-                             AND status = 'active'
-                       )",
+                    &update_sql,
                     params![Utc::now().to_rfc3339(), previous_run_id, automation_id],
                 )?;
                 if affected == 0 {

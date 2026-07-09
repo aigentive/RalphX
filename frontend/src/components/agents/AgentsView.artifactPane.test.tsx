@@ -266,7 +266,7 @@ describe("AgentsView artifact pane", () => {
       conversation({
         agentMode: "automation",
         automationId: "automation-1",
-        automationRunId: "run-1",
+        automationRunId: null,
       })
     );
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));

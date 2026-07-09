@@ -9,10 +9,14 @@ import {
 } from "@/api/automations";
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
 import { automationKeys } from "@/hooks/useAutomations";
-import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import {
+  useAgentSessionStore,
+  type AgentArtifactTab,
+} from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
+import { seedAgentArtifactTab } from "@/components/agents/agentArtifactState";
 import { getAutomationConversationTabPolicy } from "./automationConversationTabPolicy";
 
 export interface AutomationRunOpenTarget {
@@ -150,7 +154,7 @@ function fetchAutomationDetail(
 
 function defaultTabForResolvedTarget(
   target: ResolvedAutomationRunOpenTarget,
-) {
+): AgentArtifactTab {
   return getAutomationConversationTabPolicy({
     surface: "run",
     runStatus: target.runStatus,
@@ -160,15 +164,12 @@ function defaultTabForResolvedTarget(
       hasPlanArtifact: target.hasPlanArtifact,
       hasPullRequest: target.hasPullRequest,
     },
-  }).defaultTab;
+  }).defaultTab as AgentArtifactTab;
 }
 
 function applyResolvedRunFocus(target: ResolvedAutomationRunOpenTarget) {
   const agentSession = useAgentSessionStore.getState();
-  const hadArtifactSeed = Object.prototype.hasOwnProperty.call(
-    agentSession.artifactByConversationId,
-    target.setupConversationId,
-  );
+  const seededTab = defaultTabForResolvedTarget(target);
 
   agentSession.selectConversation(target.projectId, target.setupConversationId);
   agentSession.requestAutomationRunFocus(target.setupConversationId, {
@@ -181,14 +182,9 @@ function applyResolvedRunFocus(target: ResolvedAutomationRunOpenTarget) {
     workspaceMode: target.workspaceMode,
     hasPlanArtifact: target.hasPlanArtifact,
     hasPullRequest: target.hasPullRequest,
+    seededTab,
   });
-
-  if (!hadArtifactSeed) {
-    agentSession.setArtifactTab(
-      target.setupConversationId,
-      defaultTabForResolvedTarget(target),
-    );
-  }
+  seedAgentArtifactTab(target.setupConversationId, seededTab, false);
 
   useChatStore
     .getState()

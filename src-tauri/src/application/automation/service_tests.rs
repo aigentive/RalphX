@@ -2732,6 +2732,36 @@ async fn service_skip_judge_loses_cleanly_when_scheduler_started_judge() {
 }
 
 #[tokio::test]
+async fn service_skip_judge_loses_cleanly_when_failed_judge_was_redispatched() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let mut paused = automation("automation-1", AutomationStatus::Paused);
+    paused.paused_reason_code = Some("judge_failed".to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    let run = automation_run(
+        "run-1",
+        &paused.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Failed,
+    );
+    let run_repo = Arc::new(SkipJudgeLosesRunRepository::new(vec![run.clone()]));
+    let service = AutomationService::new(
+        automation_repo,
+        run_repo,
+        Arc::new(NoopAutomationEventEmitter),
+        Arc::new(RecordingArtifactRepository::default()),
+    );
+
+    let outcome = service.skip_judge(&paused.id, &run.id).await.unwrap();
+
+    assert!(!outcome.scheduled);
+    assert_eq!(
+        outcome.reason.as_deref(),
+        Some("not skipped: judge redispatched")
+    );
+}
+
+#[tokio::test]
 async fn service_run_now_reports_all_unscheduled_readiness_reasons() {
     let (service, automation_repo, run_repo) =
         service_with_emitter(Arc::new(NoopAutomationEventEmitter));

@@ -199,12 +199,19 @@ async fn automation_run_responses_for_state(
 ) -> crate::error::AppResult<Vec<AutomationRunResponse>> {
     let mut responses = Vec::with_capacity(runs.len());
     for run in runs {
-        let plan = automation_run_plan_read_model_for_state(&run, state).await?;
-        responses.push(AutomationRunResponse::from_run_with_plan_read_model(
-            run, plan,
-        ));
+        responses.push(automation_run_response_for_state(run, state).await?);
     }
     Ok(responses)
+}
+
+pub(crate) async fn automation_run_response_for_state(
+    run: AutomationRun,
+    state: &AppState,
+) -> crate::error::AppResult<AutomationRunResponse> {
+    let plan = automation_run_plan_read_model_for_state(&run, state).await?;
+    Ok(AutomationRunResponse::from_run_with_plan_read_model(
+        run, plan,
+    ))
 }
 
 async fn automation_run_plan_read_model_for_state(
