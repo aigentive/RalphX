@@ -663,13 +663,19 @@ impl AgentConversationWorkspacePublishTarget {
     }
 }
 
+fn unsupported_agent_workspace_publish_mode_error(action: &str) -> String {
+    format!(
+        "Only edit, plan, and linked ideation workspaces with linked plan branches can be {action}"
+    )
+}
+
 #[doc(hidden)]
 pub(crate) async fn resolve_agent_workspace_publish_target(
     state: &AppState,
     project: &Project,
     workspace: &AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspacePublishTarget, String> {
-    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+    if workspace.is_linked_ideation_plan_workspace() {
         let plan_branch_id = workspace.linked_plan_branch_id.as_ref().ok_or_else(|| {
             "Ideation workspace without a linked plan branch cannot use publish actions".to_string()
         })?;
@@ -692,11 +698,24 @@ pub(crate) async fn resolve_agent_workspace_publish_target(
         });
     }
 
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        return Err(
+            "Ideation workspace without a linked plan branch cannot use publish actions"
+                .to_string(),
+        );
+    }
+
     if workspace.is_execution_owned() {
         return Err(
             "This agent conversation workspace is owned by an execution plan and cannot be directly updated"
                 .to_string(),
         );
+    }
+
+    if !workspace.is_standalone_publish_workspace() {
+        return Err(unsupported_agent_workspace_publish_mode_error(
+            "updated or published",
+        ));
     }
 
     let worktree_path = resolve_valid_agent_conversation_workspace_path(project, workspace)
@@ -4902,11 +4921,10 @@ async fn get_agent_conversation_workspace_local_freshness(
         );
     }
 
-    if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err(
-            "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
-                .to_string(),
-        );
+    if !workspace.is_standalone_publish_workspace() {
+        return Err(unsupported_agent_workspace_publish_mode_error(
+            "inspected for freshness",
+        ));
     }
 
     let phase_started_at = Instant::now();
@@ -5046,11 +5064,10 @@ async fn get_agent_conversation_workspace_freshness_for_state(
             ),
         );
     }
-    if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err(
-            "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
-                .to_string(),
-        );
+    if !workspace.is_standalone_publish_workspace() {
+        return Err(unsupported_agent_workspace_publish_mode_error(
+            "inspected for freshness",
+        ));
     }
 
     let (worktree_path, base_resolution) = tokio::join!(
@@ -6419,14 +6436,16 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await;
     }
 
-    if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err("Only Edit-mode agent conversations can be directly published".to_string());
-    }
     if workspace.is_execution_owned() {
         return Err(
             "This agent conversation workspace is owned by an execution plan and cannot be directly published"
                 .to_string(),
         );
+    }
+    if !workspace.is_standalone_publish_workspace() {
+        return Err(unsupported_agent_workspace_publish_mode_error(
+            "directly published",
+        ));
     }
     if workspace.has_terminal_publication_pr_status() {
         return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
@@ -13026,6 +13045,25 @@ mod tests {
         workspace
     }
 
+    async fn set_workspace_mode(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+        mode: AgentConversationWorkspaceMode,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.mode = mode;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace mode should update")
+    }
+
     async fn seed_current_passing_workspace_review(
         state: &AppState,
         conversation_id: &ChatConversationId,
@@ -14012,6 +14050,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_workspace_freshness_reports_base_ahead() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "plan-freshness-base-ahead",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        use_main_as_publish_base(&state, &conversation_id).await;
+        set_workspace_mode(
+            &state,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Plan,
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        let main_sha = commit_file(&repo_path, "base-fix.txt", "base fix\n", "base fix");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("plan workspace freshness should load");
+
+        assert_eq!(response.freshness_scope, "full");
+        assert_eq!(response.base_status, "valid");
+        assert_eq!(response.target_ref, "main");
+        assert_eq!(response.target_base_commit, main_sha);
+        assert!(response.is_base_ahead);
+    }
+
+    #[tokio::test]
     async fn workspace_freshness_command_caches_local_summary_after_first_lookup() {
         let (_temp, state, conversation_id, _github) = setup_publish_command_state(
             "freshness-local-cache",
@@ -14171,6 +14247,104 @@ mod tests {
             response.workspace.base_commit.as_deref(),
             Some(release_sha.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn update_plan_workspace_from_base_updates_standalone_branch() {
+        let (temp, state, conversation_id, github) = setup_publish_command_state(
+            "plan-update-base",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        use_main_as_publish_base(&state, &conversation_id).await;
+        set_workspace_mode(
+            &state,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Plan,
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        let main_sha = commit_file(&repo_path, "base-fix.txt", "base fix\n", "base fix");
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                branch_mode: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("plan workspace should update from base");
+
+        assert!(response.updated);
+        assert_eq!(response.target_ref, "main");
+        assert_eq!(response.base_commit, main_sha);
+        assert_eq!(response.workspace.mode, "plan");
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("refreshed")
+        );
+        assert_eq!(github.state().push_branch_calls, 0);
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("publication events should load");
+        assert!(events
+            .iter()
+            .any(|event| { event.step == "updated_from_base" && event.status == "succeeded" }));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_base_rejects_non_publish_modes() {
+        let execution_state = Arc::new(ExecutionState::new());
+        for (suffix, mode) in [
+            ("chat", AgentConversationWorkspaceMode::Chat),
+            ("review-pr", AgentConversationWorkspaceMode::ReviewPr),
+            ("automation", AgentConversationWorkspaceMode::Automation),
+        ] {
+            let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+                &format!("update-rejects-{suffix}"),
+                true,
+                None,
+                Arc::new(MockGithubService::new()),
+            )
+            .await;
+            set_workspace_mode(&state, &conversation_id, mode).await;
+
+            let error = update_agent_conversation_workspace_from_base_for_app_state(
+                &state,
+                &execution_state,
+                None,
+                conversation_id.clone(),
+                AgentConversationWorkspaceBaseSelection {
+                    kind: None,
+                    branch_mode: None,
+                    base_ref: None,
+                    display_name: None,
+                    source_pull_request: None,
+                },
+            )
+            .await
+            .expect_err("non-publish workspace modes should reject base updates");
+
+            assert!(
+                error.contains("Only edit, plan, and linked ideation workspaces"),
+                "unexpected rejection for {mode:?}: {error}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -14869,6 +15043,146 @@ mod tests {
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
         assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn publish_plan_workspace_allows_direct_publish() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "plan-direct-publish",
+            true,
+            Some(990),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should update");
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        use_main_as_publish_base(&state, &conversation_id).await;
+        let workspace = set_workspace_mode(
+            &state,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Plan,
+        )
+        .await;
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "plan mode implementation\n",
+        )
+        .expect("workspace change should be written");
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client);
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let response = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect("plan workspace direct publish should succeed");
+        state
+            .pr_poller_registry
+            .stop_agent_workspace_polling(&conversation_id);
+
+        assert_eq!(response.workspace.mode, "plan");
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(github.state().push_branch_calls, 1);
+        assert_eq!(github.state().update_pr_base_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn standalone_publish_actions_reject_execution_owned_plan_workspace() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "execution-owned-plan-update",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = set_workspace_mode(
+            &state,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Plan,
+        )
+        .await;
+        workspace.linked_plan_branch_id = Some(PlanBranchId::new());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace ownership should update");
+        let execution_state = Arc::new(ExecutionState::new());
+        let update_error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                branch_mode: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect_err("execution-owned plan workspace should reject base update");
+        assert!(update_error.contains("owned by an execution plan"));
+
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "execution-owned-plan-publish",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = set_workspace_mode(
+            &state,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Plan,
+        )
+        .await;
+        workspace.linked_plan_branch_id = Some(PlanBranchId::new());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace ownership should update");
+        let publish_error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id,
+            false,
+        )
+        .await
+        .expect_err("execution-owned plan workspace should reject direct publish");
+        assert!(publish_error.contains("owned by an execution plan"));
     }
 
     #[tokio::test]

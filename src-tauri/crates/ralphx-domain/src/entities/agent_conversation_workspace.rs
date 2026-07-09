@@ -719,6 +719,22 @@ impl AgentConversationWorkspace {
         self.linked_plan_branch_id.is_some()
     }
 
+    pub fn is_standalone_publish_workspace(&self) -> bool {
+        matches!(
+            self.mode,
+            AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan
+        ) && !self.is_execution_owned()
+    }
+
+    pub fn is_linked_ideation_plan_workspace(&self) -> bool {
+        self.mode == AgentConversationWorkspaceMode::Ideation
+            && self.linked_plan_branch_id.is_some()
+    }
+
+    pub fn is_publish_capable_workspace(&self) -> bool {
+        self.is_standalone_publish_workspace() || self.is_linked_ideation_plan_workspace()
+    }
+
     pub fn has_terminal_publication_pr_status(&self) -> bool {
         is_terminal_publication_pr_status(self.publication_pr_status.as_deref())
     }
@@ -963,6 +979,62 @@ mod publication_status_helpers_tests {
         assert!(!ws.is_execution_owned());
         ws.linked_plan_branch_id = Some(PlanBranchId::new());
         assert!(ws.is_execution_owned());
+    }
+
+    #[test]
+    fn standalone_publish_workspace_matches_edit_and_plan_only_without_execution_link() {
+        for mode in [
+            AgentConversationWorkspaceMode::Chat,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::Ideation,
+            AgentConversationWorkspaceMode::ReviewPr,
+            AgentConversationWorkspaceMode::Automation,
+        ] {
+            let mut ws = workspace();
+            ws.mode = mode;
+            assert_eq!(
+                ws.is_standalone_publish_workspace(),
+                matches!(
+                    mode,
+                    AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan
+                )
+            );
+        }
+
+        let mut ws = workspace();
+        ws.mode = AgentConversationWorkspaceMode::Plan;
+        ws.linked_plan_branch_id = Some(PlanBranchId::new());
+        assert!(!ws.is_standalone_publish_workspace());
+    }
+
+    #[test]
+    fn linked_ideation_plan_workspace_requires_ideation_mode_and_plan_branch() {
+        let mut ws = workspace();
+        ws.mode = AgentConversationWorkspaceMode::Ideation;
+        assert!(!ws.is_linked_ideation_plan_workspace());
+
+        ws.linked_plan_branch_id = Some(PlanBranchId::new());
+        assert!(ws.is_linked_ideation_plan_workspace());
+
+        ws.mode = AgentConversationWorkspaceMode::Plan;
+        assert!(!ws.is_linked_ideation_plan_workspace());
+    }
+
+    #[test]
+    fn publish_capable_workspace_accepts_standalone_or_linked_ideation_only() {
+        let mut ws = workspace();
+        assert!(ws.is_publish_capable_workspace());
+
+        ws.mode = AgentConversationWorkspaceMode::Plan;
+        assert!(ws.is_publish_capable_workspace());
+
+        ws.mode = AgentConversationWorkspaceMode::Chat;
+        assert!(!ws.is_publish_capable_workspace());
+
+        ws.mode = AgentConversationWorkspaceMode::Ideation;
+        ws.linked_plan_branch_id = Some(PlanBranchId::new());
+        assert!(ws.is_publish_capable_workspace());
     }
 
     #[test]
