@@ -13,6 +13,7 @@ import {
   type ForkAgentConversationResult,
 } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
@@ -909,6 +910,7 @@ function renderPanel(
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
     onFocusIdeationSession: vi.fn(),
+    onFocusIdeationSessionForConversation: vi.fn(),
     onFocusWorkspaceReview: vi.fn(),
     onFocusVerificationSession: vi.fn(),
     onFocusTaskRuntime: vi.fn(),
@@ -956,6 +958,7 @@ describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     eventSubscribers.clear();
+    useChatStore.setState({ activeConversationIds: {} });
     useAgentSessionStore.setState({ artifactByConversationId: {} });
     useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
     composerQuestionModeRef.current = undefined;
@@ -2619,6 +2622,56 @@ describe("AgentsActiveConversationPanel", () => {
       "ideation",
       promotedWorkspace,
     );
+  });
+
+  it("focuses the linked ideation chat and pins the returned conversation from the composer CTA row", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
+    sendAgentMessageMock.mockResolvedValue({
+      conversationId: "ideation-conversation-1",
+      agentRunId: "run-proposals",
+      isNewConversation: true,
+      wasQueued: false,
+      queuedAsPending: false,
+      queuedMessageId: null,
+    });
+    const promotedWorkspace = {
+      ...workspace(),
+      mode: "ideation" as const,
+      linkedIdeationSessionId: "planning-session-1",
+    };
+    switchAgentConversationModeMock.mockResolvedValue({
+      workspace: promotedWorkspace,
+    });
+    const onFocusIdeationSessionForConversation = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onFocusIdeationSessionForConversation,
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    await user.click(
+      within(row).getByRole("button", { name: /Create Proposals/i }),
+    );
+
+    await waitFor(() =>
+      expect(onFocusIdeationSessionForConversation).toHaveBeenCalledWith(
+        "conversation-1",
+        "planning-session-1",
+      ),
+    );
+    expect(
+      useChatStore.getState().activeConversationIds["session:planning-session-1"],
+    ).toBe("ideation-conversation-1");
   });
 
   it("shows and disables composer plan CTAs while the recommendation check is running", async () => {

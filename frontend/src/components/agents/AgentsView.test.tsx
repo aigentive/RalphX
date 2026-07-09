@@ -2,6 +2,7 @@ import {
   fireAgentViewEvent,
   getAgentsViewTestMocks,
   mockAgentViewData,
+  mockAgentSidebarData,
   mockSessionWithData,
   mockSidebarBreakpoint,
   renderAgentsView,
@@ -30,6 +31,7 @@ const {
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
   updateWorkspaceFromBaseMock,
+  useProjectAgentConversationsMock,
   useConversationMock,
 } = getAgentsViewTestMocks();
 
@@ -584,6 +586,82 @@ describe("AgentsView", () => {
       expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
         "data-conversation-id-override",
         "conversation-1",
+      );
+    });
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-ideation-session-id",
+      "",
+    );
+  });
+
+  it("ignores a stale proposal focus request after another conversation is selected", async () => {
+    const firstConversation = conversation({
+      id: "conversation-1",
+      agentMode: "plan",
+      title: "Plan conversation",
+    });
+    const secondConversation = conversation({
+      id: "conversation-2",
+      agentMode: "edit",
+      title: "Current conversation",
+    });
+    const conversations = [firstConversation, secondConversation];
+    mockAgentViewData(firstConversation);
+    mockAgentSidebarData(conversations);
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: conversations,
+      conversations,
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useConversationMock.mockImplementation((conversationId: string | null) => {
+      const current = conversations.find((item) => item.id === conversationId);
+      return {
+        data: current ? { conversation: current, messages: [] } : null,
+        isLoading: false,
+      };
+    });
+    getAgentConversationWorkspaceMock.mockImplementation(
+      async (conversationId: string) =>
+        conversationWorkspace({
+          conversationId,
+          mode: conversationId === "conversation-1" ? "plan" : "edit",
+          linkedIdeationSessionId:
+            conversationId === "conversation-1" ? "session-1" : "session-2",
+        }),
+    );
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-2": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+    const secondConversationRow = await screen.findByTestId(
+      "agents-session-conversation-2",
+    );
+    fireEvent.click(within(secondConversationRow).getAllByRole("button")[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "conversation-2",
+      );
+    });
+
+    fireEvent.click(await screen.findByTestId("mock-focus-stale-proposals-session"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "conversation-2",
       );
     });
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(

@@ -130,8 +130,8 @@ import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-  PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
+import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -782,6 +782,10 @@ interface AgentsActiveConversationPanelProps {
     workspace: AgentConversationWorkspace | null
   ) => void;
   onFocusIdeationSession: (sessionId: string) => void;
+  onFocusIdeationSessionForConversation: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusVerificationSession: (
     parentSessionId: string,
@@ -844,6 +848,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onConversationModeSwitched,
   onFocusIdeationSession,
+  onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
@@ -1741,47 +1746,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     setIsCreatingPlanProposals(true);
     try {
-      const shouldPromoteWorkspace =
-        activeWorkspace?.mode !== "ideation" &&
-        activeWorkspace?.linkedIdeationSessionId === planApprovalSessionId &&
-        Boolean(activeWorkspace?.conversationId);
-
-      if (shouldPromoteWorkspace && activeWorkspace?.conversationId) {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: activeWorkspace.conversationId,
-          mode: "ideation",
-        });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(activeWorkspace.conversationId),
-            result.workspace,
-          );
-        }
-        onConversationModeSwitched(
-          activeWorkspace.conversationId,
-          "ideation",
-          result.workspace ?? null,
-        );
-        void invalidateWorkspaceQueries(
-          queryClient,
-          activeWorkspace.conversationId,
-        );
-      } else if (
-        activeWorkspace?.conversationId &&
-        activeWorkspace.linkedIdeationSessionId === planApprovalSessionId
-      ) {
-        onConversationModeSwitched(
-          activeWorkspace.conversationId,
-          "ideation",
-          activeWorkspace,
-        );
-      }
-
-      await chatApi.sendAgentMessage(
-        "ideation",
-        planApprovalSessionId,
-        PLAN_TO_PROPOSALS_REQUEST,
-      );
+      await activateAgentPlanProposals({
+        sessionId: planApprovalSessionId,
+        workspace: activeWorkspace,
+        queryClient,
+        canPromoteWorkspace: true,
+        onConversationModeSwitched,
+        onFocusIdeationSessionForConversation,
+      });
       toast.success("Proposal creation requested");
     } catch (err) {
       console.error("Failed to create proposals:", err);
@@ -1793,6 +1765,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace,
     canCreatePlanProposals,
     onConversationModeSwitched,
+    onFocusIdeationSessionForConversation,
     planApprovalSessionId,
     queryClient,
   ]);
