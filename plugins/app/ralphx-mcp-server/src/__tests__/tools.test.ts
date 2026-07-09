@@ -82,6 +82,8 @@ function toolsByAgent(): Record<string, string[]> {
 
 type SchemaProperty = {
   type?: string;
+  description?: string;
+  enum?: string[];
   items?: { type?: string };
 };
 
@@ -405,6 +407,21 @@ describe('tool input schemas', () => {
     });
     expect(tool!.inputSchema.required ?? []).not.toContain('add_depends_on');
     expect(tool!.inputSchema.required ?? []).not.toContain('add_blocks');
+  });
+
+  it('keeps run_task_validation focused on post-change evidence while baseline stays diagnostic', () => {
+    const tool = getAllTools().find((candidate) => candidate.name === 'run_task_validation');
+    expect(tool, 'run_task_validation tool').toBeDefined();
+
+    expect(tool!.description).toContain('authoritative post-change validation evidence');
+    expect(tool!.description).toContain('purpose=baseline');
+    expect(tool!.description).toContain('explicit diagnostics');
+    expect(tool!.description).not.toContain('baseline/final validation commands');
+
+    const properties = inputSchemaProperties('run_task_validation');
+    expect(properties.purpose.enum).toContain('baseline');
+    expect(properties.purpose.description).toContain('Baseline is for explicit diagnostics');
+    expect(properties.purpose.description).not.toContain('normal first step');
   });
 });
 
