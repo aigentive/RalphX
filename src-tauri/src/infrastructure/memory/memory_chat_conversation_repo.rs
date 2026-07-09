@@ -9,7 +9,7 @@ use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, ChatContextType,
     ChatConversation, ChatConversationId, ConversationAttributionBackfillState,
-    ConversationAttributionBackfillSummary,
+    ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
 use crate::error::AppResult;
@@ -235,6 +235,18 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         let mut convos = self.conversations.write().await;
         if let Some(conversation) = convos.get_mut(id) {
             conversation.set_agent_mode(mode);
+        }
+        Ok(())
+    }
+
+    async fn update_coordination_mode(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.set_coordination_mode(mode);
         }
         Ok(())
     }

@@ -536,6 +536,7 @@ vi.mock("./AgentComposerSurface", () => ({
     model,
     effort,
     mode,
+    team,
     showHelperText,
     isReadOnly,
     sendDisabledReason,
@@ -561,6 +562,12 @@ vi.mock("./AgentComposerSurface", () => ({
         disabled?: boolean;
         disabledReason?: string;
       }>;
+    };
+    team?: {
+      enabled: boolean;
+      disabled?: boolean;
+      pending?: boolean;
+      onEnabledChange: (enabled: boolean) => void | Promise<unknown>;
     };
     showHelperText?: boolean;
     isReadOnly?: boolean;
@@ -610,6 +617,17 @@ vi.mock("./AgentComposerSurface", () => ({
             );
           })}
         </div>
+      )}
+      {team && (
+        <button
+          type="button"
+          data-testid="agents-conversation-team-control"
+          disabled={team.disabled || team.pending}
+          aria-pressed={team.enabled}
+          onClick={() => void team.onEnabledChange(!team.enabled)}
+        >
+          Team
+        </button>
       )}
       <button
         type="button"
@@ -714,6 +732,7 @@ function projectConversation(): AgentConversation {
     providerSessionId: null,
     providerHarness: null,
     agentMode: "ideation",
+    coordinationMode: "solo",
     title: "Conversation",
     messageCount: 0,
     lastMessageAt: null,
@@ -903,6 +922,7 @@ function renderPanel(
     },
     onActiveConversationModeChange: vi.fn(),
     onActiveConversationModeMenuOpen: vi.fn(),
+    onActiveTeamEnabledChange: vi.fn(),
     onActiveEffortChange: vi.fn(),
     onActiveModelChange: vi.fn(),
     onActiveProviderChange: vi.fn(),
@@ -930,6 +950,7 @@ function renderPanel(
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn(),
     switchingConversationModeId: null,
+    updatingTeamConversationId: null,
     terminalArchivedReason: null,
     terminalUnavailableReason: null,
     ...overrides,
@@ -2319,6 +2340,23 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(onActiveConversationModeMenuOpen).toHaveBeenCalledTimes(1);
     expect(onActiveConversationModeChange).toHaveBeenCalledWith("edit");
+  });
+
+  it("lets the workspace composer enable Team for the active conversation", async () => {
+    const user = userEvent.setup();
+    const onActiveTeamEnabledChange = vi.fn();
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), coordinationMode: "solo" },
+      onActiveTeamEnabledChange,
+    });
+
+    const teamSwitch = screen.getByTestId("agents-conversation-team-control");
+    expect(teamSwitch).toHaveTextContent("Team");
+
+    await user.click(teamSwitch);
+
+    expect(onActiveTeamEnabledChange).toHaveBeenCalledWith(true);
   });
 
   it("keeps the mode picker enabled while the agent is waiting for input", async () => {

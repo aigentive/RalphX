@@ -6,8 +6,8 @@ use uuid::Uuid;
 use crate::agents::{AgentHarnessKind, ProviderSessionRef};
 
 use super::{
-    AgentConversationWorkspaceMode, AutomationId, AutomationRunId, DelegatedSessionId,
-    IdeationSessionId, ProjectId, TaskId,
+    AgentConversationWorkspaceMode, AutomationId, AutomationRunId, CoordinationMode,
+    DelegatedSessionId, IdeationSessionId, ProjectId, TaskId,
 };
 
 /// Unique identifier for a chat conversation
@@ -228,6 +228,8 @@ pub struct ChatConversation {
     pub provider_profile: Option<String>,
     /// Current project-agent mode for Agents conversations.
     pub agent_mode: Option<AgentConversationWorkspaceMode>,
+    /// Conversation-level team coordination state.
+    pub coordination_mode: CoordinationMode,
     /// Automation that owns this setup or run conversation.
     pub automation_id: Option<AutomationId>,
     /// Automation run that owns this run conversation.
@@ -270,6 +272,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -301,6 +304,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -332,6 +336,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -363,6 +368,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -395,6 +401,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -426,6 +433,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -457,6 +465,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
             title: None,
@@ -533,6 +542,11 @@ impl ChatConversation {
 
     pub fn set_agent_mode(&mut self, mode: Option<AgentConversationWorkspaceMode>) {
         self.agent_mode = mode;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_coordination_mode(&mut self, mode: CoordinationMode) {
+        self.coordination_mode = mode;
         self.updated_at = Utc::now();
     }
 

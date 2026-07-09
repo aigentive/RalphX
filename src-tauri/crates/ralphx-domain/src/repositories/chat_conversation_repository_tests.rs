@@ -2,7 +2,7 @@ use super::*;
 use crate::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
-    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary, CoordinationMode,
     IdeationSessionId,
 };
 use std::sync::Arc;
@@ -192,6 +192,14 @@ impl ChatConversationRepository for MockChatConversationRepository {
         &self,
         _id: &ChatConversationId,
         _mode: Option<AgentConversationWorkspaceMode>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_coordination_mode(
+        &self,
+        _id: &ChatConversationId,
+        _mode: CoordinationMode,
     ) -> AppResult<()> {
         Ok(())
     }

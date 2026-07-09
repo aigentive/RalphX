@@ -26,6 +26,7 @@ import {
   type ConversationTimelinePageResponse,
   type SendAgentMessageOptions,
   type SendAgentMessageResult,
+  type TeamIntent,
 } from "@/api/chat";
 import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import {
@@ -83,6 +84,7 @@ type SendMessageVariables = {
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
+  teamIntent?: TeamIntent | null;
 };
 
 type SendMessageMutationContext = {
@@ -1190,13 +1192,16 @@ export function useChat(
       composerArtifactReferences,
       composerProjectReferences,
       composerIntegrationReferences,
+      teamIntent,
     }) => {
       const sendOptions =
         composerProjectReferences?.length ||
         composerIntegrationReferences?.length ||
-        composerArtifactReferences?.length
+        composerArtifactReferences?.length ||
+        teamIntent
           ? {
               ...options?.sendOptions,
+              ...(teamIntent ? { teamIntent } : {}),
               ...(composerProjectReferences?.length
                 ? { composerProjectReferences }
                 : {}),

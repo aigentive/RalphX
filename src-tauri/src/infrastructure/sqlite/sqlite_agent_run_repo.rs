@@ -27,7 +27,7 @@ fn parse_datetime(s: &str) -> DateTime<Utc> {
 
 use crate::domain::entities::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatContextType,
-    ChatConversation, ChatConversationId, InterruptedConversation,
+    ChatConversation, ChatConversationId, CoordinationMode, InterruptedConversation,
 };
 
 /// Map a SQLite row to an AgentRun (expects columns: id, conversation_id, status,
@@ -466,6 +466,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         c.provider_harness as conv_provider_harness,
                         c.upstream_provider as conv_upstream_provider,
                         c.provider_profile as conv_provider_profile,
+                        c.coordination_mode as conv_coordination_mode,
                         c.title,
                         c.message_count,
                         c.last_message_at,
@@ -523,6 +524,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         let upstream_provider: Option<String> =
                             row.get("conv_upstream_provider")?;
                         let provider_profile: Option<String> = row.get("conv_provider_profile")?;
+                        let coordination_mode = row
+                            .get::<_, Option<String>>("conv_coordination_mode")
+                            .ok()
+                            .flatten()
+                            .and_then(|value| value.parse::<CoordinationMode>().ok())
+                            .unwrap_or_default();
                         let conv_created_at_str: String = row.get("conv_created_at")?;
                         let conv_updated_at_str: String = row.get("conv_updated_at")?;
                         let last_message_at_str: Option<String> = row.get("last_message_at")?;
@@ -538,6 +545,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             upstream_provider,
                             provider_profile,
                             agent_mode: None,
+                            coordination_mode,
                             automation_id: None,
                             automation_run_id: None,
                             title: row.get("title")?,

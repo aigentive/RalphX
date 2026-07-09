@@ -29,7 +29,8 @@ use crate::application::team_state_tracker::{
     TeamMessageType, TeamStateTracker, TeammateCost, TeammateStatus,
 };
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, MessageRole,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    CoordinationMode, MessageRole,
 };
 use crate::domain::repositories::{ChatConversationRepository, ChatMessageRepository};
 use crate::infrastructure::agents::claude::{
@@ -104,6 +105,7 @@ pub fn start_teammate_stream<R: Runtime>(
                     upstream_provider: None,
                     provider_profile: None,
                     agent_mode: None,
+                    coordination_mode: CoordinationMode::Solo,
                     automation_id: None,
                     automation_run_id: None,
                     title: Some(format!("Teammate: {}", teammate_name)),
@@ -1047,7 +1049,6 @@ pub fn start_teammate_stream<R: Runtime>(
     }.instrument(span))
 }
 
-
 /// Extract usage tokens from a `"type": "assistant"` event's `message.usage` field.
 ///
 /// Claude Code emits assistant events with cumulative usage per-message:
@@ -1064,15 +1065,19 @@ fn extract_assistant_usage(
     total_input: &mut u64,
     total_output: &mut u64,
 ) -> bool {
-    let usage = raw
-        .get("message")
-        .and_then(|m| m.get("usage"));
+    let usage = raw.get("message").and_then(|m| m.get("usage"));
     let Some(usage) = usage else {
         return false;
     };
 
-    let input = usage.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
-    let output = usage.get("output_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+    let input = usage
+        .get("input_tokens")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
 
     // Only update if the new cumulative values exceed current totals.
     // Assistant usage is cumulative within a turn — later messages have higher counts.
