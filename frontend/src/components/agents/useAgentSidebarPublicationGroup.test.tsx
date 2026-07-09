@@ -6,6 +6,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSidebarConversationGroupsResponse } from "@/api/chat";
 import {
   AGENT_SIDEBAR_GROUP_PAGE_SIZE,
+  agentSidebarConversationKeys,
+  useAgentSidebarAutomationGroup,
+  useAgentSidebarAutomationGroupIndex,
   useAgentSidebarProjectGroup,
   useAgentSidebarPublicationGroup,
 } from "./useAgentSidebarPublicationGroup";
@@ -134,6 +137,143 @@ describe("useAgentSidebarPublicationGroup", () => {
         offsets: { active: 0 },
         projectIds: ["project-1"],
         publicationStates: ["active"],
+      })
+    );
+  });
+
+  it("partitions automation group keys by group key, filters, pinned ids, priority ids, and sort", () => {
+    expect(
+      agentSidebarConversationKeys.automationIndex(
+        ["project-1"],
+        true,
+        " Build ",
+        ["active"],
+        ["pinned-1"],
+        ["priority-1"],
+        "za"
+      )
+    ).toEqual([
+      "agents",
+      "sidebar-conversations",
+      "automation",
+      "index",
+      "projects",
+      ["project-1"],
+      "archived",
+      true,
+      "search",
+      "build",
+      "states",
+      ["active"],
+      "pinned",
+      ["pinned-1"],
+      "priority",
+      ["priority-1"],
+      "sort",
+      "za",
+    ]);
+    expect(
+      agentSidebarConversationKeys.automationGroup(
+        "automation-1",
+        ["project-1"],
+        true,
+        " Build ",
+        ["active"],
+        ["pinned-1"],
+        ["priority-1"],
+        "za"
+      )
+    ).toEqual([
+      "agents",
+      "sidebar-conversations",
+      "automation",
+      "automation-1",
+      "projects",
+      ["project-1"],
+      "archived",
+      true,
+      "search",
+      "build",
+      "states",
+      ["active"],
+      "pinned",
+      ["pinned-1"],
+      "priority",
+      ["priority-1"],
+      "sort",
+      "za",
+    ]);
+  });
+
+  it("requests one row per automation group for the dynamic group index", async () => {
+    listAgentSidebarConversations.mockResolvedValueOnce(responseForGroup("automation-1"));
+
+    const { result } = renderHook(
+      () =>
+        useAgentSidebarAutomationGroupIndex({
+          projectIds: ["project-1", "project-2"],
+          archivedOnly: true,
+          search: " release ",
+          publicationStates: ["active", "merged"],
+          pinnedConversationIds: ["pinned-1"],
+          priorityConversationIds: ["priority-1"],
+          sort: "az",
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data?.[0]?.key).toBe("automation-1");
+    expect(listAgentSidebarConversations).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupBy: "automation",
+        limitPerGroup: 1,
+        projectIds: ["project-1", "project-2"],
+        includeArchived: true,
+        archivedOnly: true,
+        search: "release",
+        publicationStates: ["active", "merged"],
+        pinnedConversationIds: ["pinned-1"],
+        priorityConversationIds: ["priority-1"],
+        sort: "az",
+      })
+    );
+  });
+
+  it("requests per-automation group pages with stable backend group keys", async () => {
+    listAgentSidebarConversations.mockResolvedValueOnce(responseForGroup("automation-1"));
+
+    const { result } = renderHook(
+      () =>
+        useAgentSidebarAutomationGroup({
+          groupKey: "automation-1",
+          projectIds: ["project-1", "project-2"],
+          archivedOnly: true,
+          search: " release ",
+          publicationStates: ["active", "merged"],
+          pinnedConversationIds: ["pinned-1"],
+          priorityConversationIds: ["priority-1"],
+          sort: "za",
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(listAgentSidebarConversations).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupBy: "automation",
+        limitPerGroup: 8,
+        offsets: { "automation-1": 0 },
+        projectIds: ["project-1", "project-2"],
+        includeArchived: true,
+        archivedOnly: true,
+        search: "release",
+        publicationStates: ["active", "merged"],
+        pinnedConversationIds: ["pinned-1"],
+        priorityConversationIds: ["priority-1"],
+        sort: "za",
       })
     );
   });

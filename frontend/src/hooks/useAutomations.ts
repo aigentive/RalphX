@@ -13,6 +13,8 @@ import type {
 } from "@/api/automations";
 import { useEventBus } from "@/providers/EventProvider";
 
+import { agentSidebarConversationKeys } from "./agentSidebarConversationKeys";
+
 export const automationKeys = {
   all: ["automations"] as const,
   lists: () => [...automationKeys.all, "list"] as const,
@@ -58,6 +60,9 @@ export function evictDeletedAutomation(
   automationId?: string | null,
 ) {
   void queryClient.invalidateQueries({ queryKey: automationKeys.lists() });
+  void queryClient.invalidateQueries({
+    queryKey: agentSidebarConversationKeys.all,
+  });
   if (automationId) {
     queryClient.removeQueries({
       queryKey: automationKeys.detail(automationId),
@@ -70,6 +75,9 @@ export function invalidateAutomationQueries(
   automationId?: string | null,
 ) {
   void queryClient.invalidateQueries({ queryKey: automationKeys.lists() });
+  void queryClient.invalidateQueries({
+    queryKey: agentSidebarConversationKeys.all,
+  });
   if (automationId) {
     void queryClient.invalidateQueries({
       queryKey: automationKeys.detail(automationId),
