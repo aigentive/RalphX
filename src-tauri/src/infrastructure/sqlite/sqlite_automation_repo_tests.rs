@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
@@ -868,6 +868,46 @@ async fn sqlite_run_repo_round_trips_and_updates_plan_gate_fields() {
 }
 
 #[tokio::test]
+async fn sqlite_run_repo_status_cas_with_agent_phase_started_at_uses_observed_phase() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let run = run(
+        "run-1",
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let observed_phase_started_at = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+
+    assert!(run_repo
+        .compare_and_swap_status_with_agent_phase_started_at(
+            &run.id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            AutomationRunStatus::Running,
+            observed_phase_started_at,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let updated = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(updated.status, AutomationRunStatus::Running);
+    assert_eq!(
+        updated.agent_phase_started_at,
+        Some(observed_phase_started_at)
+    );
+}
+
+#[tokio::test]
 async fn sqlite_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
     let (_db, project_id, automation_repo, run_repo) = setup_repos();
     automation_repo
@@ -906,7 +946,10 @@ async fn sqlite_plan_judge_cas_rejects_wrong_from_without_mutating_fields() {
         unchanged.plan_judge_state,
         AutomationPlanJudgeState::InProgress
     );
-    assert_eq!(unchanged.plan_judge_lease_expires_at, Some(lease_expires_at));
+    assert_eq!(
+        unchanged.plan_judge_lease_expires_at,
+        Some(lease_expires_at)
+    );
     assert_eq!(
         unchanged.plan_judge_verdict_json.as_deref(),
         Some(r#"{"decision":"revise"}"#)
@@ -950,7 +993,10 @@ async fn sqlite_plan_judge_dispatch_sets_lease_and_preserves_stored_verdict() {
         dispatched.plan_judge_state,
         AutomationPlanJudgeState::InProgress
     );
-    assert_eq!(dispatched.plan_judge_lease_expires_at, Some(lease_expires_at));
+    assert_eq!(
+        dispatched.plan_judge_lease_expires_at,
+        Some(lease_expires_at)
+    );
     assert_eq!(
         dispatched.plan_judge_verdict_json.as_deref(),
         Some(r#"{"decision":"revise"}"#)

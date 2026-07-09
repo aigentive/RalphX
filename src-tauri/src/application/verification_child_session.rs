@@ -1,9 +1,10 @@
-use crate::application::chat_service::ChatService;
+use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::harness_runtime_registry::default_verification_max_rounds;
 use crate::application::verification_event_emitters::{
     emit_verification_started, emit_verification_status_changed,
 };
 use crate::application::AppState;
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     build_child_session, ChatContextType, ChildSessionDraftInput, IdeationSession,
     IdeationSessionId, IdeationSessionStatus, SessionLink, SessionPurpose, SessionRelationship,
@@ -178,6 +179,7 @@ pub async fn spawn_verification_agent<S, F>(
     state: &AppState,
     session_id: &IdeationSessionId,
     generation: i32,
+    provider_harness: Option<AgentHarnessKind>,
     disabled_specialists: &[String],
     chat_service_for_session: F,
 ) -> VerificationAgentSpawnOutcome
@@ -204,6 +206,7 @@ where
         session_id,
         &description,
         &title,
+        provider_harness,
         disabled_specialists,
         chat_service_for_session,
     )
@@ -238,6 +241,7 @@ pub async fn spawn_verification_child_session<S, F>(
     parent_session_id: &IdeationSessionId,
     description: &str,
     title: &str,
+    provider_harness: Option<AgentHarnessKind>,
     disabled_specialists: &[String],
     chat_service_for_session: F,
 ) -> AppResult<VerificationChildSessionSpawnOutcome>
@@ -310,7 +314,10 @@ where
             ChatContextType::Ideation,
             &child_session_str,
             effective_description.as_str(),
-            Default::default(),
+            SendMessageOptions {
+                harness_override: provider_harness,
+                ..Default::default()
+            },
         )
         .await
     {
@@ -374,4 +381,179 @@ where
         orchestration_triggered,
         pending_initial_prompt,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::application::chat_service::{
+        AgentRunningState, ChatConversationWithMessages, ChatServiceError, SendMessageOptions,
+        SendResult,
+    };
+    use crate::domain::agents::AgentHarnessKind;
+    use crate::domain::entities::{
+        AgentRun, ChatConversation, ChatConversationId, IdeationSession, ProjectId,
+    };
+    use crate::domain::services::QueuedMessage;
+
+    #[derive(Clone, Default)]
+    struct RecordingVerificationChatService {
+        sent_options: Arc<Mutex<Vec<SendMessageOptions>>>,
+    }
+
+    impl RecordingVerificationChatService {
+        async fn sent_options(&self) -> Vec<SendMessageOptions> {
+            self.sent_options.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl ChatService for RecordingVerificationChatService {
+        async fn send_message(
+            &self,
+            _context_type: ChatContextType,
+            context_id: &str,
+            _message: &str,
+            options: SendMessageOptions,
+        ) -> Result<SendResult, ChatServiceError> {
+            self.sent_options.lock().await.push(options);
+            Ok(SendResult {
+                conversation_id: context_id.to_string(),
+                agent_run_id: "agent-run-1".to_string(),
+                ..Default::default()
+            })
+        }
+
+        async fn queue_message(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+            _content: &str,
+            _client_id: Option<&str>,
+        ) -> Result<QueuedMessage, ChatServiceError> {
+            panic!("queue_message is not used by verification child spawn tests")
+        }
+
+        async fn get_queued_messages(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+        ) -> Result<Vec<QueuedMessage>, ChatServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_queued_message(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+            _message_id: &str,
+        ) -> Result<bool, ChatServiceError> {
+            Ok(false)
+        }
+
+        async fn send_queued_message_now(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+            _message_id: &str,
+        ) -> Result<SendResult, ChatServiceError> {
+            panic!("send_queued_message_now is not used by verification child spawn tests")
+        }
+
+        async fn get_or_create_conversation(
+            &self,
+            _context_type: ChatContextType,
+            context_id: &str,
+        ) -> Result<(ChatConversation, bool), ChatServiceError> {
+            Ok((
+                ChatConversation::new_ideation(IdeationSessionId::from_string(context_id)),
+                true,
+            ))
+        }
+
+        async fn get_conversation_with_messages(
+            &self,
+            _conversation_id: &ChatConversationId,
+        ) -> Result<Option<ChatConversationWithMessages>, ChatServiceError> {
+            Ok(None)
+        }
+
+        async fn list_conversations(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+        ) -> Result<Vec<ChatConversation>, ChatServiceError> {
+            Ok(Vec::new())
+        }
+
+        async fn get_active_run(
+            &self,
+            _conversation_id: &ChatConversationId,
+        ) -> Result<Option<AgentRun>, ChatServiceError> {
+            Ok(None)
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+
+        async fn stop_agent(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+        ) -> Result<bool, ChatServiceError> {
+            Ok(false)
+        }
+
+        async fn is_agent_running(
+            &self,
+            _context_type: ChatContextType,
+            _context_id: &str,
+        ) -> bool {
+            false
+        }
+
+        async fn get_agent_running_states(
+            &self,
+            _context_type: ChatContextType,
+            _context_ids: &[String],
+        ) -> HashMap<String, AgentRunningState> {
+            HashMap::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_verification_child_session_forwards_provider_harness_override() {
+        let state = AppState::new_test();
+        let parent = IdeationSession::builder()
+            .project_id(ProjectId::from_string("project-1".to_string()))
+            .build();
+        let parent_id = parent.id.clone();
+        state.ideation_session_repo.create(parent).await.unwrap();
+        let chat_service = RecordingVerificationChatService::default();
+        let captured = chat_service.clone();
+
+        let outcome = spawn_verification_child_session(
+            &state,
+            &parent_id,
+            "Run verification",
+            "Verifier",
+            Some(AgentHarnessKind::Codex),
+            &[],
+            |_| chat_service,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.orchestration_triggered);
+        let options = captured.sent_options().await;
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].harness_override, Some(AgentHarnessKind::Codex));
+    }
 }

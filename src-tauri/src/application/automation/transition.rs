@@ -197,6 +197,40 @@ impl AutomationTransitionService {
         Ok(changed)
     }
 
+    pub async fn transition_run_status_with_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        agent_phase_started_at: DateTime<Utc>,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        if !automation_run_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let changed = self
+            .run_repo
+            .compare_and_swap_status_with_agent_phase_started_at(
+                id,
+                from,
+                to,
+                agent_phase_started_at,
+                error_code,
+                error_detail,
+            )
+            .await?;
+        if changed {
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+        }
+        Ok(changed)
+    }
+
     pub async fn transition_run_status_clearing_plan_pending_instructions(
         &self,
         id: &AutomationRunId,

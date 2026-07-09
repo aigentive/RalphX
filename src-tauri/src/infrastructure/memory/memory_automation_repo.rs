@@ -424,6 +424,48 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn compare_and_swap_status_with_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        agent_phase_started_at: chrono::DateTime<Utc>,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(position) = runs.iter().position(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if runs[position].status != from {
+            return Ok(false);
+        }
+        let mut updated = runs[position].clone();
+        let now = Utc::now();
+        updated.status = to;
+        updated.error_code = error_code;
+        updated.error_detail = error_detail;
+        updated.agent_phase_started_at = Some(agent_phase_started_at);
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
+        if Self::has_conflicting_open_run(&runs, &updated) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        runs[position] = updated;
+        Ok(true)
+    }
+
     async fn compare_and_swap_status_clearing_plan_pending_instructions(
         &self,
         id: &AutomationRunId,

@@ -668,6 +668,56 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn compare_and_swap_status_with_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        agent_phase_started_at: DateTime<Utc>,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let agent_phase_started_at = agent_phase_started_at.to_rfc3339();
+                let terminal = matches!(
+                    to,
+                    AutomationRunStatus::Merged
+                        | AutomationRunStatus::Completed
+                        | AutomationRunStatus::PrClosed
+                        | AutomationRunStatus::AgentFailed
+                        | AutomationRunStatus::Cancelled
+                );
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET status = ?1,
+                         error_code = ?2,
+                         error_detail = ?3,
+                         finished_at = CASE
+                             WHEN ?4 = 1 THEN COALESCE(finished_at, ?5)
+                             ELSE finished_at
+                         END,
+                         agent_phase_started_at = ?6,
+                         updated_at = ?5
+                     WHERE id = ?7 AND status = ?8",
+                    params![
+                        to.as_str(),
+                        error_code,
+                        error_detail,
+                        if terminal { 1_i64 } else { 0_i64 },
+                        now,
+                        agent_phase_started_at,
+                        id,
+                        from.as_str(),
+                    ],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
     async fn compare_and_swap_status_clearing_plan_pending_instructions(
         &self,
         id: &AutomationRunId,

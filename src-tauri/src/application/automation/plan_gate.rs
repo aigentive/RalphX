@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AutomationPlanJudgeState, AutomationRun, ChatConversationId,
     IdeationSessionId, VerificationStatus,
@@ -12,6 +13,8 @@ use crate::domain::repositories::{
     PlanArtifactApproval, PlanArtifactApprovalRepository,
 };
 use crate::error::AppResult;
+
+use super::transition::AutomationTransitionService;
 
 pub(crate) const AUTOMATION_PLAN_REMINDER_PROMPT: &str = r#"The automation run is still in its planning phase. Continue from the current context, write the run plan artifact with the scope, files to inspect or change, approach, risks, and how it advances the current goal item, then end the turn. Do not begin implementation in this turn."#;
 pub(crate) const PLAN_JUDGE_FAILED_PAUSED_REASON_CODE: &str = "plan_judge_failed";
@@ -39,6 +42,7 @@ pub trait AutomationRunResumer: Send + Sync {
 pub struct AutomationPlanVerificationStartRequest {
     pub session_id: IdeationSessionId,
     pub artifact_id: String,
+    pub provider_harness: Option<AgentHarnessKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +173,7 @@ pub(crate) async fn clear_plan_phase_publication_metadata(
 }
 
 pub(crate) async fn refresh_plan_park_baseline(
+    transition_service: &AutomationTransitionService,
     run_repo: &Arc<dyn AutomationRunRepository>,
     run: &AutomationRun,
     plan_artifact_id: Option<String>,
@@ -184,10 +189,13 @@ pub(crate) async fn refresh_plan_park_baseline(
     run_repo
         .set_plan_revision_round(&run.id, next_round)
         .await?;
+    run_repo
+        .set_plan_pending_instructions(&run.id, None)
+        .await?;
 
     if run.plan_judge_state != AutomationPlanJudgeState::None {
-        run_repo
-            .compare_and_swap_plan_judge_state(
+        transition_service
+            .transition_plan_judge_state(
                 &run.id,
                 run.plan_judge_state,
                 AutomationPlanJudgeState::None,

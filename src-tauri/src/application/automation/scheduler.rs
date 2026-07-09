@@ -842,7 +842,7 @@ impl AutomationPlanJudgeTask {
                         &run.id,
                         AutomationPlanJudgeState::InProgress,
                         AutomationPlanJudgeState::Done,
-                        None,
+                        Some(parsed.verdict_json.clone()),
                         None,
                     )
                     .await?
@@ -887,6 +887,15 @@ impl AutomationPlanJudgeTask {
                             detail,
                             "Discarding automation plan judge approval because the plan changed before approval write"
                         );
+                        self.transition_service
+                            .transition_plan_judge_state(
+                                &run.id,
+                                AutomationPlanJudgeState::Done,
+                                AutomationPlanJudgeState::None,
+                                None,
+                                None,
+                            )
+                            .await?;
                     }
                     Err(error) => return Err(error),
                 }
@@ -1871,6 +1880,7 @@ impl AutomationScheduler {
                         .await?
                     {
                         let baseline_changed = refresh_plan_park_baseline(
+                            &self.transition_service,
                             &self.run_repo,
                             run,
                             plan_artifact_id.clone(),
@@ -2172,6 +2182,10 @@ impl AutomationScheduler {
                     .start_verification(AutomationPlanVerificationStartRequest {
                         session_id: session_id.clone(),
                         artifact_id: artifact_id.to_string(),
+                        provider_harness: AgentHarnessKind::from_str(
+                            automation.provider_harness.trim(),
+                        )
+                        .ok(),
                     })
                     .await
                 {
@@ -2361,11 +2375,18 @@ impl AutomationScheduler {
         };
 
         if self.resumer.is_agent_running(conversation_id).await? {
+            let agent_phase_started_at = self
+                .agent_run_repo
+                .get_active_for_conversation(conversation_id)
+                .await?
+                .map(|agent_run| agent_run.started_at)
+                .unwrap_or_else(Utc::now);
             self.transition_service
-                .transition_run_status(
+                .transition_run_status_with_agent_phase_started_at(
                     &run.id,
                     AutomationRunStatus::AwaitingPlanApproval,
                     AutomationRunStatus::Running,
+                    agent_phase_started_at,
                     None,
                     None,
                 )
@@ -2375,8 +2396,13 @@ impl AutomationScheduler {
 
         let plan_artifact_id =
             current_plan_artifact_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
-        let baseline_changed =
-            refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id.clone()).await?;
+        let baseline_changed = refresh_plan_park_baseline(
+            &self.transition_service,
+            &self.run_repo,
+            run,
+            plan_artifact_id.clone(),
+        )
+        .await?;
         let run = self
             .run_repo
             .get_by_id(&run.id)
@@ -2513,7 +2539,7 @@ impl AutomationScheduler {
         self.resumer.switch_to_edit(conversation_id).await?;
         if !self
             .transition_service
-            .transition_run_status(
+            .transition_run_status_clearing_plan_pending_instructions(
                 &run.id,
                 AutomationRunStatus::AwaitingPlanApproval,
                 AutomationRunStatus::Running,

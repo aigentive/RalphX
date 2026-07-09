@@ -1,9 +1,9 @@
 use super::{
     automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
-    judge_is_transition_allowed, judge_transition_clears_verdict, AutomationContextRefKind,
-    AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
-    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRunId, AutomationRunStatus,
-    AutomationStatus,
+    judge_is_transition_allowed, judge_transition_clears_verdict, plan_judge_is_transition_allowed,
+    AutomationContextRefKind, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRunId,
+    AutomationRunStatus, AutomationStatus,
 };
 
 #[test]
@@ -214,6 +214,32 @@ fn judge_lifecycle_transition_matrix_matches_spec() {
                 judge_is_transition_allowed(from, to),
                 allowed.contains(&(from, to)),
                 "unexpected judge transition {from:?} -> {to:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn plan_judge_lifecycle_transition_matrix_matches_spec() {
+    use AutomationPlanJudgeState::*;
+
+    let states = [None, InProgress, Done, Failed];
+    let allowed = [
+        (None, InProgress),
+        (InProgress, Done),
+        (InProgress, Failed),
+        (InProgress, None),
+        (Done, Failed),
+        (Done, None),
+        (Failed, None),
+    ];
+
+    for from in states {
+        for to in states {
+            assert_eq!(
+                plan_judge_is_transition_allowed(from, to),
+                allowed.contains(&(from, to)),
+                "unexpected plan judge transition {from:?} -> {to:?}"
             );
         }
     }

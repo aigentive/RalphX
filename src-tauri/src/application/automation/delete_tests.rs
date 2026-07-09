@@ -4,19 +4,24 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 
 use crate::application::automation::delete::delete_automation_with_archive;
+use crate::application::plan_artifact_approval::{
+    DbPlanArtifactApprovalWriter, PlanArtifactApprovalWriter,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
     AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project, ProjectId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationSettingsPatch, AutomationConfigPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationSettingsPatch, PlanApprovalActor,
+    PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
 use crate::tests::mock_github_service::MockGithubService;
 
 fn project(temp: &tempfile::TempDir) -> Project {
@@ -125,6 +130,24 @@ async fn setup_state() -> (tempfile::TempDir, AppState, ProjectId, Arc<MockGithu
     (temp, state, project_id, github)
 }
 
+/// SQLite-backed artifact/session state for tests that need durable plan-gate cleanup.
+async fn setup_state_sqlite() -> (
+    tempfile::TempDir,
+    AppState,
+    ProjectId,
+    Arc<MockGithubService>,
+) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = project(&temp);
+    let project_id = project.id.clone();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let mut state = AppState::new_sqlite_test();
+    state.github_service = Some(github_trait);
+    state.project_repo.create(project).await.expect("project");
+    (temp, state, project_id, github)
+}
+
 /// Persist a project conversation bound to an automation (and optionally a run).
 async fn seed_conversation(
     state: &AppState,
@@ -146,6 +169,59 @@ async fn seed_conversation(
         .await
         .expect("conversation persisted");
     created.id
+}
+
+async fn seed_plan_artifact_chain(state: &AppState, prefix: &str) -> (ArtifactId, ArtifactId) {
+    let mut first = Artifact::new_inline(
+        "Run Plan",
+        ArtifactType::Specification,
+        format!("{prefix} version 1"),
+        "assistant",
+    );
+    first.id = ArtifactId::from_string(format!("{prefix}-v1"));
+    first.metadata.version = 1;
+    let first = state.artifact_repo.create(first).await.unwrap();
+
+    let mut second = Artifact::new_inline(
+        "Run Plan",
+        ArtifactType::Specification,
+        format!("{prefix} version 2"),
+        "assistant",
+    );
+    second.id = ArtifactId::from_string(format!("{prefix}-v2"));
+    second.metadata.version = 2;
+    let second = state
+        .artifact_repo
+        .create_with_previous_version(second, first.id.clone())
+        .await
+        .unwrap();
+
+    (first.id, second.id)
+}
+
+async fn seed_plan_workspace(
+    state: &AppState,
+    project_id: &ProjectId,
+    conversation_id: &ChatConversationId,
+    session_id: crate::domain::entities::IdeationSessionId,
+) {
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/automation-plan".to_string(),
+        "/tmp/ralphx-automation-plan".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session_id);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -216,6 +292,93 @@ async fn delete_archives_setup_and_run_conversations() {
         .await
         .unwrap()
         .is_empty());
+    drop(temp);
+}
+
+#[tokio::test]
+async fn delete_cleans_plan_gate_sessions_approvals_and_artifact_chains_for_each_run() {
+    let (temp, state, project_id, _github) = setup_state_sqlite().await;
+    let stopped = automation("automation-stopped", &project_id, AutomationStatus::Stopped);
+    state.automation_repo.create(stopped.clone()).await.unwrap();
+    let approval_writer = DbPlanArtifactApprovalWriter::new(state.db.clone());
+    let approval_repo = SqlitePlanArtifactApprovalRepository::new(state.db.clone());
+    let mut session_ids = Vec::new();
+    let mut artifact_ids = Vec::new();
+
+    for index in 1..=2 {
+        let mut run = run_with_judge(
+            &format!("run-{index}"),
+            &stopped.id,
+            AutomationJudgeState::Done,
+            None,
+        );
+        run.run_index = index;
+        state
+            .automation_run_repo
+            .create_run(run.clone())
+            .await
+            .unwrap();
+        let conversation_id =
+            seed_conversation(&state, &project_id, &stopped.id, Some(&run.id), false).await;
+        let (first_artifact_id, latest_artifact_id) =
+            seed_plan_artifact_chain(&state, &format!("run-{index}-plan")).await;
+        artifact_ids.push(first_artifact_id);
+        artifact_ids.push(latest_artifact_id.clone());
+        let session = IdeationSession::builder()
+            .project_id(project_id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .plan_artifact_id(latest_artifact_id.clone())
+            .build();
+        let session_id = session.id.clone();
+        state.ideation_session_repo.create(session).await.unwrap();
+        seed_plan_workspace(&state, &project_id, &conversation_id, session_id.clone()).await;
+        approval_writer
+            .approve_current_plan_artifact(
+                session_id.clone(),
+                Some(latest_artifact_id.as_str().to_string()),
+                PlanApprovalActor::Judge,
+            )
+            .await
+            .unwrap();
+        session_ids.push(session_id);
+    }
+
+    delete_automation_with_archive(&state, &stopped.id)
+        .await
+        .expect("delete succeeds");
+
+    for session_id in session_ids {
+        assert!(state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(approval_repo
+            .get_by_session(&session_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    for artifact_id in artifact_ids {
+        let archived = state
+            .artifact_repo
+            .get_by_id(&artifact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            archived.archived_at.is_some(),
+            "plan artifact {} should be archived",
+            artifact_id.as_str()
+        );
+    }
+    assert!(state
+        .automation_repo
+        .get_by_id(&stopped.id)
+        .await
+        .unwrap()
+        .is_none());
     drop(temp);
 }
 

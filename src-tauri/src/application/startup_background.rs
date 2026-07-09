@@ -228,6 +228,7 @@ impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
         request: AutomationPlanVerificationStartRequest,
     ) -> AppResult<AutomationPlanVerificationStartOutcome> {
         let session_id = request.session_id;
+        let provider_harness = request.provider_harness;
         self.state
             .ideation_session_repo
             .set_verification_confirmation_status(
@@ -296,9 +297,14 @@ impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
             });
         };
 
-        let spawn = spawn_verification_agent(&self.state, &session_id, generation, &[], |_| {
-            self.chat_service()
-        })
+        let spawn = spawn_verification_agent(
+            &self.state,
+            &session_id,
+            generation,
+            provider_harness,
+            &[],
+            |_| self.chat_service(),
+        )
         .await;
         if spawn.spawned {
             Ok(AutomationPlanVerificationStartOutcome::Started { generation })

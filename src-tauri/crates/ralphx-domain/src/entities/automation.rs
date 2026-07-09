@@ -502,6 +502,9 @@ pub fn plan_judge_is_transition_allowed(
             AutomationPlanJudgeState::InProgress,
             AutomationPlanJudgeState::Failed
         ) | (
+            AutomationPlanJudgeState::InProgress,
+            AutomationPlanJudgeState::None
+        ) | (
             AutomationPlanJudgeState::Done,
             AutomationPlanJudgeState::Failed
         ) | (

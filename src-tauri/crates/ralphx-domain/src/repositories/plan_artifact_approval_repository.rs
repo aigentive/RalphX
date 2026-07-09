@@ -41,4 +41,6 @@ pub trait PlanArtifactApprovalRepository: Send + Sync {
         &self,
         session_id: &IdeationSessionId,
     ) -> AppResult<Option<PlanArtifactApproval>>;
+
+    async fn delete_by_session(&self, session_id: &IdeationSessionId) -> AppResult<usize>;
 }

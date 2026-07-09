@@ -14,6 +14,7 @@ pub(crate) async fn create_verification_child_session(
         &parent_id,
         description,
         title,
+        None,
         disabled_specialists,
         |created_session| build_ideation_chat_service(state, created_session),
     )

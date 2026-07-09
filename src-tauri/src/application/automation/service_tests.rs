@@ -629,6 +629,20 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn compare_and_swap_status_with_agent_phase_started_at(
+        &self,
+        _id: &AutomationRunId,
+        _from: AutomationRunStatus,
+        _to: AutomationRunStatus,
+        _agent_phase_started_at: chrono::DateTime<Utc>,
+        _error_code: Option<String>,
+        _error_detail: Option<String>,
+    ) -> crate::error::AppResult<bool> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn compare_and_swap_status_clearing_plan_pending_instructions(
         &self,
         _id: &AutomationRunId,

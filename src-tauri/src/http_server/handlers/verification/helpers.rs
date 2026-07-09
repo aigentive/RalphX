@@ -15,6 +15,7 @@ pub async fn spawn_verification_agent(
         &state.app_state,
         session_id,
         generation,
+        None,
         disabled_specialists,
         |created_session| {
             crate::http_server::handlers::session_linking::build_ideation_chat_service(

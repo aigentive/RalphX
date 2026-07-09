@@ -56,4 +56,14 @@ impl PlanArtifactApprovalRepository for MemoryPlanArtifactApprovalRepository {
             .get(session_id.as_str())
             .cloned())
     }
+
+    async fn delete_by_session(&self, session_id: &IdeationSessionId) -> AppResult<usize> {
+        Ok(self
+            .approvals
+            .write()
+            .unwrap()
+            .remove(session_id.as_str())
+            .map(|_| 1)
+            .unwrap_or(0))
+    }
 }

@@ -757,6 +757,9 @@ pub fn build_codex_exec_resume_args(
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
     }
+    if !capabilities.supports_resume_subcommand {
+        return Err("Codex CLI does not advertise the resume subcommand".to_string());
+    }
 
     let mut args = vec![
         "exec".to_string(),

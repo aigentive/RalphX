@@ -451,6 +451,30 @@ fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
 }
 
 #[test]
+fn build_codex_exec_resume_args_requires_resume_capability() {
+    let mut capabilities = full_codex_capabilities();
+    capabilities.supports_resume_subcommand = false;
+
+    let error =
+        build_codex_exec_resume_args(&capabilities, "session-123", &CodexExecCliConfig::default())
+            .expect_err("old Codex CLIs without resume support must not build resume args");
+
+    assert!(error.contains("resume subcommand"));
+}
+
+#[test]
+fn build_codex_exec_resume_args_uses_resume_when_supported() {
+    let args = build_codex_exec_resume_args(
+        &full_codex_capabilities(),
+        "session-123",
+        &CodexExecCliConfig::default(),
+    )
+    .expect("build codex resume args");
+
+    assert_eq!(&args[..3], ["exec", "resume", "session-123"]);
+}
+
+#[test]
 fn build_codex_exec_resume_args_enables_fast_service_tier() {
     let args = build_codex_exec_resume_args(
         &full_codex_capabilities(),

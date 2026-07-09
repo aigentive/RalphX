@@ -50,4 +50,17 @@ impl PlanArtifactApprovalRepository for SqlitePlanArtifactApprovalRepository {
             })
             .await
     }
+
+    async fn delete_by_session(&self, session_id: &IdeationSessionId) -> AppResult<usize> {
+        let session_id_value = session_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM plan_artifact_approvals WHERE session_id = ?1",
+                    [session_id_value],
+                )
+                .map_err(AppError::from)
+            })
+            .await
+    }
 }
