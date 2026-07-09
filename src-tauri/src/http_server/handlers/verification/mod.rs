@@ -6,11 +6,9 @@ use axum::{
 use tracing::error;
 
 use crate::domain::entities::{
-    IdeationSessionId, ProjectId, VerificationConfirmationStatus, VerificationStatus,
+    IdeationSessionId, ProjectId, VerificationConfirmationStatus,
 };
-use crate::application::verification_event_emitters::{emit_verification_started, emit_verification_status_changed};
 use crate::error::AppError;
-use crate::infrastructure::sqlite::SqliteIdeationSessionRepository as SessionRepo;
 
 use super::super::types::{
     AutoAcceptVerificationRequest, ConfirmVerificationRequest, ConfirmationStatusResponse,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import {
@@ -10,6 +10,8 @@ import {
   type ConversationListPageResponse,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { getAutomationConversationTabPolicy } from "@/components/automations/automationConversationTabPolicy";
 import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
@@ -17,12 +19,15 @@ import { useEventBus } from "@/providers/EventProvider";
 import {
   useAgentSessionStore,
   type AgentArtifactTab,
+  type AgentAutomationRunFocusRequest,
   type AgentRuntimeSelection,
   type AgentTaskArtifactFocusRequest,
 } from "@/stores/agentSessionStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
+import { seedAgentArtifactTab } from "./agentArtifactState";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
 import { useAgentsSelectionModel } from "./useAgentsSelectionModel";
@@ -163,6 +168,21 @@ function lifecyclePayloadOwnsWorkspaceReviewQuery(
   );
 }
 
+function defaultAutomationRunFocusTab(
+  request: AgentAutomationRunFocusRequest,
+): AgentArtifactTab {
+  return getAutomationConversationTabPolicy({
+    surface: "run",
+    runStatus: request.runStatus,
+    judgeState: request.judgeState,
+    workspaceMode: request.workspaceMode,
+    availability: {
+      hasPlanArtifact: request.hasPlanArtifact,
+      hasPullRequest: request.hasPullRequest,
+    },
+  }).defaultTab as AgentArtifactTab;
+}
+
 export function useAgentsViewController({
   projectId,
   onCreateProject,
@@ -209,11 +229,11 @@ export function useAgentsViewController({
   const { data: projects = [], isLoading: isLoadingProjects } = useProjects();
   const { registry: modelRegistry } = useAgentModels();
   const {
-    clearAgentConversationSelection,
+    clearAgentConversationSelection: clearStoredAgentConversationSelection,
     focusedProjectId,
     lastRuntimeByProjectId,
     runtimeByConversationId,
-    selectConversation,
+    selectConversation: selectStoredConversation,
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
@@ -223,6 +243,18 @@ export function useAgentsViewController({
   } = useAgentsSessionBindings({
     setOptimisticSelectedConversationId,
   });
+  const selectedConversationIdRef = useRef<string | null>(null);
+  const selectConversation = useCallback(
+    (projectId: string, conversationId: string) => {
+      selectedConversationIdRef.current = conversationId;
+      selectStoredConversation(projectId, conversationId);
+    },
+    [selectStoredConversation],
+  );
+  const clearAgentConversationSelection = useCallback(() => {
+    selectedConversationIdRef.current = null;
+    clearStoredAgentConversationSelection();
+  }, [clearStoredAgentConversationSelection]);
   const {
     setTerminalChatDockElement,
     setTerminalPanelDockElement,
@@ -248,16 +280,27 @@ export function useAgentsViewController({
     showArchived,
     storedSelectedConversationId,
   });
+  const automationRunFocusSeededConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
   useEffect(() => {
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
     setPublishFocusRequest(null);
     setTaskArtifactFocusRequest(null);
     setSelectedTaskArtifactId(null);
+    automationRunFocusSeededConversationRef.current = null;
   }, [selectedConversationId]);
   const externalTaskArtifactFocusRequest = useAgentSessionStore((state) =>
     selectedConversationId
       ? state.taskArtifactFocusRequestByConversationId[selectedConversationId] ??
+        null
+      : null,
+  );
+  const externalAutomationRunFocusRequest = useAgentSessionStore((state) =>
+    selectedConversationId
+      ? state.automationRunFocusRequestByConversationId[selectedConversationId] ??
         null
       : null,
   );
@@ -276,6 +319,15 @@ export function useAgentsViewController({
         : { type: "ideation", sessionId },
     );
   }, []);
+  const handleFocusIdeationSessionForConversation = useCallback(
+    (conversationId: string, sessionId: string) => {
+      if (selectedConversationIdRef.current !== conversationId) {
+        return;
+      }
+      handleFocusIdeationSession(sessionId);
+    },
+    [handleFocusIdeationSession],
+  );
   const handleFocusVerificationSession = useCallback(
     (parentSessionId: string, childSessionId: string) => {
       const nextFocus: Extract<AgentsChatFocus, { type: "verification" }> = {
@@ -773,9 +825,88 @@ export function useAgentsViewController({
   });
   useEffect(() => {
     if (
+      !activeConversation?.automationId ||
+      !activeConversation.automationRunId ||
+      chatFocus.type === "automation_run"
+    ) {
+      return;
+    }
+
+    void requestAutomationRunOpen(
+      queryClient,
+      {
+        projectId: activeConversation.projectId,
+        automationId: activeConversation.automationId,
+        runId: activeConversation.automationRunId,
+        conversationId: activeConversation.id,
+      },
+      { fallback: "clear-selection" },
+    );
+  }, [
+    activeConversation?.automationId,
+    activeConversation?.automationRunId,
+    activeConversation?.id,
+    activeConversation?.projectId,
+    chatFocus.type,
+    queryClient,
+  ]);
+  useEffect(() => {
+    if (
+      !externalAutomationRunFocusRequest ||
       !selectedConversationId ||
       activeConversation?.agentMode !== "automation" ||
-      !activeConversation.automationId
+      activeConversation.automationId !==
+        externalAutomationRunFocusRequest.automationId ||
+      activeConversation.automationRunId
+    ) {
+      return;
+    }
+
+    handleFocusAutomationRun(
+      externalAutomationRunFocusRequest.automationId,
+      externalAutomationRunFocusRequest.runId,
+      externalAutomationRunFocusRequest.conversationId,
+    );
+
+    const seededTab =
+      externalAutomationRunFocusRequest.seededTab ??
+      defaultAutomationRunFocusTab(externalAutomationRunFocusRequest);
+    const optimisticArtifactState =
+      useAgentArtifactUiStore.getState().artifactByConversationId[
+        selectedConversationId
+      ] ?? null;
+    if (!optimisticArtifactState || optimisticArtifactState.activeTab === seededTab) {
+      seedAgentArtifactTab(
+        selectedConversationId,
+        seededTab,
+        hasAutoOpenArtifactsWithReview,
+      );
+    }
+    automationRunFocusSeededConversationRef.current = selectedConversationId;
+
+    useAgentSessionStore
+      .getState()
+      .clearAutomationRunFocusRequest(
+        selectedConversationId,
+        externalAutomationRunFocusRequest.requestId,
+      );
+  }, [
+    activeConversation?.agentMode,
+    activeConversation?.automationId,
+    activeConversation?.automationRunId,
+    externalAutomationRunFocusRequest,
+    handleFocusAutomationRun,
+    hasAutoOpenArtifactsWithReview,
+    selectedConversationId,
+  ]);
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      activeConversation?.agentMode !== "automation" ||
+      !activeConversation.automationId ||
+      chatFocus.type === "automation_run" ||
+      externalAutomationRunFocusRequest ||
+      automationRunFocusSeededConversationRef.current === selectedConversationId
     ) {
       return;
     }
@@ -783,6 +914,8 @@ export function useAgentsViewController({
   }, [
     activeConversation?.agentMode,
     activeConversation?.automationId,
+    chatFocus.type,
+    externalAutomationRunFocusRequest,
     openArtifactTab,
     selectedConversationId,
   ]);
@@ -1291,6 +1424,8 @@ export function useAgentsViewController({
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusIdeationSessionForConversation:
+        handleFocusIdeationSessionForConversation,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
@@ -1352,7 +1487,11 @@ export function useAgentsViewController({
       taskArtifactFocusRequest,
       terminalArchivedReason,
       terminalUnavailableReason,
+      onConversationModeSwitched: handleConversationModeSwitched,
+      onFocusAutomationRun: handleFocusAutomationRun,
       onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusIdeationSessionForConversation:
+        handleFocusIdeationSessionForConversation,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusTaskRuntime: handleFocusTaskRuntime,
       ...(onOpenAutomation ? { onOpenAutomation } : {}),

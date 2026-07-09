@@ -7,6 +7,7 @@ pub mod agent_conversation_fork;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
+pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
@@ -67,6 +68,7 @@ pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod permission_state;
 pub(crate) mod plan_complexity_assessment;
+pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_reference_import;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
@@ -126,6 +128,7 @@ pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
 pub mod validation_service;
+pub mod verification_child_session;
 pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
@@ -259,6 +262,8 @@ pub use validation_service::{
 pub use webhook_service::WebhookService;
 
 #[cfg(test)]
+mod agent_conversation_mode_switch_tests;
+#[cfg(test)]
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
@@ -323,6 +328,8 @@ mod session_namer_agent_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]
+mod startup_background_tests;
+#[cfg(test)]
 mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
@@ -334,6 +341,8 @@ mod ticketing_cache_invalidator_tests;
 mod pull_request_detail_tests;
 #[cfg(test)]
 mod ticketing_pr_summary_tests;
+#[cfg(test)]
+mod verification_child_session_tests;
 #[cfg(test)]
 mod verification_event_emitters_tests;
 #[cfg(test)]

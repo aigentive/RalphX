@@ -41,12 +41,18 @@ describe("mockAutomationsApi", () => {
         name: "Renamed",
         maxRuns: 9,
         maxConsecutiveFailures: 2,
+        planApprovalMode: "automatic",
+        prMergeMode: "automatic",
+        planDeepVerification: true,
       }),
     ).resolves.toMatchObject({
       id: "automation-7",
       name: "Renamed",
       maxRuns: 9,
       maxConsecutiveFailures: 2,
+      planApprovalMode: "automatic",
+      prMergeMode: "automatic",
+      planDeepVerification: true,
     });
   });
 

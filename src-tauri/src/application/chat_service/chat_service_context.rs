@@ -3458,7 +3458,13 @@ pub async fn build_codex_resume_command(
     )?;
     let codex_config =
         build_codex_cli_config(working_directory, resolved_spawn_settings, config_overrides);
-    match provider_resume_mode_for_session(AgentHarnessKind::Codex, session_id) {
+    let resume_mode = match provider_resume_mode_for_session(AgentHarnessKind::Codex, session_id) {
+        ProviderResumeMode::Resume if !capabilities.supports_resume_subcommand => {
+            ProviderResumeMode::Recovery
+        }
+        mode => mode,
+    };
+    match resume_mode {
         ProviderResumeMode::Resume => {
             let resume_prompt = build_resume_initial_prompt(
                 context_type,
@@ -3910,6 +3916,57 @@ Commands:
   exec        Run Codex non-interactively [aliases: e]
   mcp         Manage external MCP servers for Codex
   resume      Resume a previous interactive session
+
+Options:
+  -c, --config <key=value>
+  -m, --model <MODEL>
+  -s, --sandbox <SANDBOX_MODE>
+      --search
+      --add-dir <DIR>
+EOF
+  exit 0
+fi
+if [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  cat <<'EOF'
+Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]
+
+Options:
+  -c, --config <key=value>
+  -m, --model <MODEL>
+  -s, --sandbox <SANDBOX_MODE>
+      --add-dir <DIR>
+      --json
+  -C, --cd <DIR>
+      --skip-git-repo-check
+EOF
+  exit 0
+fi
+exit 0
+"#;
+
+        write_test_file(&script_path, script);
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod script");
+        script_path
+    }
+
+    fn make_fake_codex_cli_without_resume(temp: &TempDir) -> PathBuf {
+        let script_path = temp.path().join("codex-no-resume");
+        let script = r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "codex-cli 0.110.0"
+  exit 0
+fi
+if [ "$1" = "--help" ]; then
+  cat <<'EOF'
+Codex CLI
+
+Commands:
+  exec        Run Codex non-interactively [aliases: e]
+  mcp         Manage external MCP servers for Codex
 
 Options:
   -c, --config <key=value>
@@ -5680,6 +5737,62 @@ exit 0
             spawnable_env_value(spawnable, "RALPHX_CONVERSATION_ID").as_deref(),
             Some(conversation_id)
         );
+    }
+
+    #[tokio::test]
+    async fn codex_project_noninteractive_resume_without_resume_capability_uses_recovery_exec() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let provider_session_id = "codex-old-cli-session";
+        write_test_file(
+            &provider_home.join(".codex").join("session_index.jsonl"),
+            &format!(r#"{{"id":"{provider_session_id}"}}"#),
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let cli_path = make_fake_codex_cli_without_resume(&temp);
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("codex-project-old-resume".to_string());
+
+        let command = build_resume_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            ChatContextType::Project,
+            project_id.as_str(),
+            "continue from an old Codex CLI",
+            Some(agent_names::AGENT_GENERAL_WORKER),
+            None,
+            temp.path(),
+            provider_session_id,
+            Some(project_id.as_str()),
+            &[],
+            None,
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("old Codex CLI should fall back to recovery exec");
+
+        let args = command.spawnable.get_args_for_test();
+        assert_eq!(args.first().map(String::as_str), Some("exec"));
+        assert_ne!(args.get(1).map(String::as_str), Some("resume"));
     }
 
     #[tokio::test]

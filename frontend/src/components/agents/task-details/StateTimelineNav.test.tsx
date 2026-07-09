@@ -3,7 +3,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -52,6 +52,73 @@ const t4 = "2026-07-07T10:20:00Z";
 const t5 = "2026-07-07T10:25:00Z";
 const t6 = "2026-07-07T10:30:00Z";
 
+function restoreHTMLElementProperty(
+  property: string,
+  descriptor: PropertyDescriptor | undefined,
+) {
+  if (descriptor) {
+    Object.defineProperty(HTMLElement.prototype, property, descriptor);
+  } else {
+    Reflect.deleteProperty(HTMLElement.prototype, property);
+  }
+}
+
+function installTimelineViewportMetrics({
+  scrollWidth,
+  clientWidth,
+  scrollLeft = 0,
+}: {
+  scrollWidth: number;
+  clientWidth: number;
+  scrollLeft?: number;
+}) {
+  const scrollWidthDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "scrollWidth",
+  );
+  const clientWidthDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "clientWidth",
+  );
+  const scrollLeftDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "scrollLeft",
+  );
+
+  const isTimelineViewport = (element: HTMLElement) =>
+    element.getAttribute("data-testid") === "timeline-scroll-viewport";
+
+  Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+    configurable: true,
+    get() {
+      return isTimelineViewport(this) ? scrollWidth : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get() {
+      return isTimelineViewport(this) ? clientWidth : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollLeft", {
+    configurable: true,
+    get() {
+      return isTimelineViewport(this) ? scrollLeft : 0;
+    },
+    set(value: number) {
+      if (isTimelineViewport(this)) {
+        scrollLeft = value;
+      }
+    },
+  });
+
+  return () => {
+    restoreHTMLElementProperty("scrollWidth", scrollWidthDescriptor);
+    restoreHTMLElementProperty("clientWidth", clientWidthDescriptor);
+    restoreHTMLElementProperty("scrollLeft", scrollLeftDescriptor);
+  };
+}
+
 describe("Agents StateTimelineNav", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -86,6 +153,199 @@ describe("Agents StateTimelineNav", () => {
     expect(screen.getByTestId("timeline-badge-merged")).toHaveTextContent(
       "Merge attempt 1",
     );
+  });
+
+  it("shows overflow controls and secondary chat metadata for a clipped mixed timeline", async () => {
+    const restoreViewportMetrics = installTimelineViewportMetrics({
+      scrollWidth: 960,
+      clientWidth: 320,
+    });
+
+    try {
+      mockUseTaskStateTransitions.mockReturnValue({
+        data: [
+          makeTransition("executing", t0, { conversationId: "exec-1" }),
+          makeTransition("reviewing", t1),
+          makeTransition("re_executing", t2, { conversationId: "exec-2" }),
+          makeTransition("review_passed", t3),
+          makeTransition("pending_merge", t4),
+          makeTransition("merged", t5, { conversationId: "merge-1" }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+
+      renderWithProviders(
+        <StateTimelineNav
+          taskId="task-1"
+          currentStatus="merged"
+          onStateSelect={vi.fn()}
+        />,
+      );
+
+      expect(
+        await screen.findByRole("button", { name: "Scroll history left" }),
+      ).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Scroll history right" }),
+      ).not.toBeDisabled();
+
+      const executionBadge = screen.getByTestId("timeline-badge-executing");
+      expect(within(executionBadge).getByTestId("timeline-badge-label")).toHaveTextContent(
+        "Execution attempt 1",
+      );
+      expect(
+        within(executionBadge).getByTestId("timeline-badge-chat-meta"),
+      ).toHaveTextContent("Chat available");
+
+      const reviewBadge = screen.getByTestId("timeline-badge-reviewing");
+      expect(within(reviewBadge).getByTestId("timeline-badge-label")).toHaveTextContent(
+        "Review attempt 1",
+      );
+      expect(
+        within(reviewBadge).getByTestId("timeline-badge-chat-meta"),
+      ).toHaveTextContent("No chat");
+    } finally {
+      restoreViewportMetrics();
+    }
+  });
+
+  it("scrolls clipped history in both directions", () => {
+    vi.useFakeTimers();
+    const restoreViewportMetrics = installTimelineViewportMetrics({
+      scrollWidth: 960,
+      clientWidth: 320,
+      scrollLeft: 320,
+    });
+    const scrollByDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollBy",
+    );
+    const scrollBy = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollBy", {
+      configurable: true,
+      value: scrollBy,
+    });
+
+    try {
+      mockUseTaskStateTransitions.mockReturnValue({
+        data: [
+          makeTransition("executing", t0, { conversationId: "exec-1" }),
+          makeTransition("reviewing", t1),
+          makeTransition("re_executing", t2, { conversationId: "exec-2" }),
+          makeTransition("review_passed", t3),
+          makeTransition("pending_merge", t4),
+          makeTransition("merged", t5, { conversationId: "merge-1" }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+
+      renderWithProviders(
+        <StateTimelineNav
+          taskId="task-1"
+          currentStatus="merged"
+          onStateSelect={vi.fn()}
+        />,
+      );
+
+      const leftButton = screen.getByRole("button", {
+        name: "Scroll history left",
+      });
+      const rightButton = screen.getByRole("button", {
+        name: "Scroll history right",
+      });
+
+      expect(leftButton).not.toBeDisabled();
+      expect(rightButton).not.toBeDisabled();
+
+      fireEvent.click(rightButton);
+      expect(scrollBy).toHaveBeenCalledWith({ left: 224, behavior: "smooth" });
+
+      fireEvent.click(leftButton);
+      expect(scrollBy).toHaveBeenLastCalledWith({
+        left: -224,
+        behavior: "smooth",
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+    } finally {
+      restoreHTMLElementProperty("scrollBy", scrollByDescriptor);
+      restoreViewportMetrics();
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to window resize events when ResizeObserver is unavailable", () => {
+    const restoreViewportMetrics = installTimelineViewportMetrics({
+      scrollWidth: 960,
+      clientWidth: 320,
+    });
+    const resizeObserverDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "ResizeObserver",
+    );
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      mockUseTaskStateTransitions.mockReturnValue({
+        data: [
+          makeTransition("executing", t0, { conversationId: "exec-1" }),
+          makeTransition("reviewing", t1),
+          makeTransition("re_executing", t2, { conversationId: "exec-2" }),
+          makeTransition("review_passed", t3),
+          makeTransition("pending_merge", t4),
+          makeTransition("merged", t5, { conversationId: "merge-1" }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+
+      const { unmount } = renderWithProviders(
+        <StateTimelineNav
+          taskId="task-1"
+          currentStatus="merged"
+          onStateSelect={vi.fn()}
+        />,
+      );
+
+      const resizeHandler = addEventListener.mock.calls.find(
+        ([eventName]) => eventName === "resize",
+      )?.[1];
+      expect(resizeHandler).toEqual(expect.any(Function));
+
+      act(() => {
+        (resizeHandler as EventListener)(new Event("resize"));
+      });
+
+      unmount();
+
+      expect(removeEventListener).toHaveBeenCalledWith(
+        "resize",
+        resizeHandler,
+      );
+    } finally {
+      addEventListener.mockRestore();
+      removeEventListener.mockRestore();
+      if (resizeObserverDescriptor) {
+        Object.defineProperty(
+          globalThis,
+          "ResizeObserver",
+          resizeObserverDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
+      restoreViewportMetrics();
+    }
   });
 
   it("keeps a normal merge flow on one merge attempt", () => {

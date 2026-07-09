@@ -37,6 +37,7 @@ import { verificationApi } from "@/api/verification";
 import {
   chatApi,
   type AgentConversationPlanSeedResult,
+  type AgentConversationWorkspaceMode,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type AgentConversationRuntimeStatus,
@@ -79,6 +80,7 @@ import {
   useVerificationStatus,
   verificationStatusKey,
 } from "@/hooks/useVerificationStatus";
+import { useAutomationDetail } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import type { Artifact } from "@/types/artifact";
 import type {
@@ -126,10 +128,14 @@ import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
-  PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
+import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { agentConversationKeys } from "./useProjectAgentConversations";
+import {
+  getAutomationConversationTabPolicy,
+  type AutomationConversationPolicyTab,
+} from "@/components/automations/automationConversationTabPolicy";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 
@@ -341,6 +347,47 @@ const PR_TAB = {
   icon: GitPullRequestArrow,
 };
 
+type VisibleArtifactTab = {
+  id: AgentArtifactTab;
+  label: string;
+  icon: ElementType;
+  enabled: boolean;
+  disabledReason?: string | undefined;
+};
+
+function visibleTab(
+  tab: Omit<VisibleArtifactTab, "enabled" | "disabledReason">,
+): VisibleArtifactTab {
+  return { ...tab, enabled: true };
+}
+
+function baseTabDefinition(id: AgentArtifactTab): Omit<
+  VisibleArtifactTab,
+  "enabled" | "disabledReason"
+> {
+  const tab = [
+    ...ARTIFACT_TABS,
+    REVIEW_TAB,
+    AUTOMATION_TAB,
+    PUBLISH_TAB,
+    JIRA_TAB,
+    LINEAR_TAB,
+    GRANOLA_TAB,
+    PR_TAB,
+  ].find((candidate) => candidate.id === id);
+  return tab ?? AUTOMATION_TAB;
+}
+
+function visibleTabFromPolicy(
+  policyTab: AutomationConversationPolicyTab,
+): VisibleArtifactTab {
+  return {
+    ...baseTabDefinition(policyTab.id),
+    enabled: policyTab.enabled,
+    disabledReason: policyTab.disabledReason,
+  };
+}
+
 const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
 
 function workspaceHasPullRequest(
@@ -399,6 +446,20 @@ interface AgentsArtifactPaneProps {
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   onOpenAutomation?: (automationId: string) => void;
+  onConversationModeSwitched?: (
+    conversationId: string,
+    mode: AgentConversationWorkspaceMode,
+    workspace: AgentConversationWorkspace | null
+  ) => void;
+  onFocusIdeationSessionForConversation?: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusWorkspaceReview?: (conversationId: string) => void;
@@ -426,6 +487,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   publishFocusRequest = null,
   taskFocusRequest = null,
   onOpenAutomation,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
+  onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
   onFocusTaskRuntime,
@@ -747,6 +811,43 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
   const automationId = conversation?.automationId ?? null;
+  const isAutomationRunConversation = Boolean(conversation?.automationRunId);
+  const automationDetailQuery = useAutomationDetail(automationId, {
+    enabled: Boolean(isAutomationRunConversation && automationId),
+  });
+  const focusedAutomationRun = useMemo(() => {
+    const runId = conversation?.automationRunId ?? null;
+    if (!runId) {
+      return null;
+    }
+    return (
+      automationDetailQuery.data?.runs.find((run) => run.id === runId) ?? null
+    );
+  }, [automationDetailQuery.data?.runs, conversation?.automationRunId]);
+  const automationRunTabPolicy = useMemo(
+    () =>
+      getAutomationConversationTabPolicy({
+        surface: "run",
+        runStatus: focusedAutomationRun?.status ?? null,
+        judgeState: focusedAutomationRun?.judgeState ?? null,
+        workspaceMode: workspace?.mode ?? null,
+        availability: {
+          hasPlanArtifact: Boolean(focusedAutomationRun?.planArtifactId),
+          hasPullRequest: Boolean(
+            focusedAutomationRun?.prNumber || focusedAutomationRun?.prUrl,
+          ),
+          canStartPlan: false,
+        },
+      }),
+    [
+      focusedAutomationRun?.judgeState,
+      focusedAutomationRun?.planArtifactId,
+      focusedAutomationRun?.prNumber,
+      focusedAutomationRun?.prUrl,
+      focusedAutomationRun?.status,
+      workspace?.mode,
+    ],
+  );
   const conversationIssuesQuery =
     useAgentConversationIssues(issueConversationId);
   const hasConversationIssues = hasOpenAgentConversationIssues(
@@ -788,22 +889,29 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
-  const visibleTabs = useMemo(
-    () => [
-      ...ARTIFACT_TABS.filter((tab) =>
-        availableArtifactTabIds.includes(tab.id),
-      ),
-      ...(automationId ? [AUTOMATION_TAB] : []),
-      ...(showPullRequestTab ? [PR_TAB] : []),
-      ...(showJiraTab ? [JIRA_TAB] : []),
-      ...(showLinearTab ? [LINEAR_TAB] : []),
-      ...(showGranolaTab ? [GRANOLA_TAB] : []),
-      ...(availableArtifactTabIds.includes("review") ? [REVIEW_TAB] : []),
-      ...(showPublishTab ? [PUBLISH_TAB] : []),
-    ],
+  const visibleTabs = useMemo<VisibleArtifactTab[]>(
+    () =>
+      isAutomationRunConversation
+        ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
+        : [
+            ...ARTIFACT_TABS.filter((tab) =>
+              availableArtifactTabIds.includes(tab.id),
+            ).map(visibleTab),
+            ...(automationId ? [visibleTab(AUTOMATION_TAB)] : []),
+            ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
+            ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
+            ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+            ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
+            ...(availableArtifactTabIds.includes("review")
+              ? [visibleTab(REVIEW_TAB)]
+              : []),
+            ...(showPublishTab ? [visibleTab(PUBLISH_TAB)] : []),
+          ],
     [
       availableArtifactTabIds,
       automationId,
+      automationRunTabPolicy.tabs,
+      isAutomationRunConversation,
       showGranolaTab,
       showJiraTab,
       showLinearTab,
@@ -811,8 +919,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showPullRequestTab,
     ],
   );
-  const fallbackActiveTab =
-    automationId && conversation?.agentMode === "automation"
+  const requestedFallbackActiveTab =
+    isAutomationRunConversation
+      ? automationRunTabPolicy.defaultTab
+      : automationId && conversation?.agentMode === "automation"
       ? "automation"
       : workspaceReviewContext?.shouldShowTab || reviewArtifactId
         ? "review"
@@ -831,14 +941,21 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     : visibleTabs.some((tab) => tab.id === "review")
                       ? "review"
                       : "plan";
+  const fallbackActiveTab =
+    visibleTabs.find(
+      (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
+    )?.id ??
+    visibleTabs.find((tab) => tab.enabled)?.id ??
+    "automation";
   const shouldPreferAutomationOverPlan =
     activeTab === "plan" &&
     automationId &&
     conversation?.agentMode === "automation" &&
+    !isAutomationRunConversation &&
     visibleTabs.some((tab) => tab.id === "automation");
   const effectiveActiveTab = shouldPreferAutomationOverPlan
     ? "automation"
-    : visibleTabs.some((tab) => tab.id === activeTab)
+    : visibleTabs.some((tab) => tab.id === activeTab && tab.enabled)
       ? activeTab
       : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
@@ -1097,7 +1214,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         }}
       >
         <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
-          {visibleTabs.map(({ id, label, icon: Icon }) => {
+          {visibleTabs.map(({ id, label, icon: Icon, enabled, disabledReason }) => {
             const isActive = effectiveActiveTab === id;
             const count = id === "tasks" ? visibleImplementationTaskCount : 0;
 
@@ -1122,11 +1239,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               tabStatusColor = reviewTabStatusColor;
             }
 
-            return (
+            const tabButton = (
               <button
                 key={id}
                 type="button"
+                aria-disabled={enabled ? undefined : "true"}
                 onClick={() => {
+                  if (!enabled) {
+                    return;
+                  }
                   if (
                     id === "tasks" &&
                     effectiveActiveTab === "tasks" &&
@@ -1144,6 +1265,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 className={cn(
                   "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[0.75rem] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
                   id === "tasks" ? "hidden xl:flex" : "",
+                  !enabled ? "cursor-not-allowed opacity-60" : "",
                 )}
                 style={{
                   color: isActive ? "var(--text-primary)" : "var(--text-muted)",
@@ -1191,6 +1313,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 )}
               </button>
             );
+            if (!enabled && disabledReason) {
+              return (
+                <Tooltip key={id}>
+                  <TooltipTrigger asChild>{tabButton}</TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs">
+                    {disabledReason}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            }
+            return tabButton;
           })}
         </div>
 
@@ -1293,7 +1426,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           conversationTitle={conversation?.title ?? null}
           automationId={automationId}
+          isAutomationRunConversation={isAutomationRunConversation}
           {...(onOpenAutomation ? { onOpenAutomation } : {})}
+          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
@@ -1333,6 +1468,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
           publishFocusRequest={publishFocusRequest}
+          onConversationModeSwitched={onConversationModeSwitched}
+          onFocusIdeationSessionForConversation={
+            onFocusIdeationSessionForConversation
+          }
           onFocusVerificationSession={onFocusVerificationSession}
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
@@ -1357,7 +1496,13 @@ type ArtifactContentProps = {
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
   automationId: string | null;
+  isAutomationRunConversation: boolean;
   onOpenAutomation?: (automationId: string) => void;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
   projectBaseBranch: string | null;
   isLoading: boolean;
   attachedSessionId: string | null;
@@ -1387,6 +1532,16 @@ type ArtifactContentProps = {
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  onConversationModeSwitched:
+    | ((
+        conversationId: string,
+        mode: AgentConversationWorkspaceMode,
+        workspace: AgentConversationWorkspace | null
+      ) => void)
+    | undefined;
+  onFocusIdeationSessionForConversation:
+    | ((conversationId: string, sessionId: string) => void)
+    | undefined;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onDisplayedVerificationStatusChange: (
@@ -1416,7 +1571,9 @@ function ArtifactContent({
   activeWorkspaceFreshness,
   conversationTitle,
   automationId,
+  isAutomationRunConversation,
   onOpenAutomation,
+  onFocusAutomationRun,
   projectBaseBranch,
   isLoading,
   attachedSessionId,
@@ -1446,6 +1603,8 @@ function ArtifactContent({
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onFocusVerificationSession: _onFocusVerificationSession,
   onDisplayedVerificationStatusChange,
   onFocusTaskRuntime,
@@ -1488,6 +1647,7 @@ function ArtifactContent({
           automationId={automationId}
           conversationTitle={conversationTitle}
           {...(onOpenAutomation ? { onOpenAutomation } : {})}
+          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
         />
       </Suspense>
     );
@@ -1583,7 +1743,13 @@ function ArtifactContent({
     if ((isLoading && attachedSessionId) || isPlanLoading) {
       return <EmptyArtifactState title="Loading attached run..." />;
     }
-    if (!planArtifact && canStartPlan && conversationId && projectId) {
+    if (
+      !planArtifact &&
+      canStartPlan &&
+      !isAutomationRunConversation &&
+      conversationId &&
+      projectId
+    ) {
       return (
         <AgentPlanStartPanel
           conversationId={conversationId}
@@ -1607,6 +1773,7 @@ function ArtifactContent({
         session={session}
         sessionTitle={sessionTitle}
         planArtifact={planArtifact}
+        isAutomationRunConversation={isAutomationRunConversation}
         isPlanLoading={isPlanLoading}
         proposals={proposals}
         dependencyGraph={dependencyGraph}
@@ -1615,6 +1782,10 @@ function ArtifactContent({
         onPlanUpdated={onPlanUpdated}
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
+        onConversationModeSwitched={onConversationModeSwitched}
+        onFocusIdeationSessionForConversation={
+          onFocusIdeationSessionForConversation
+        }
         onOpenVerification={onOpenVerification}
         onOpenTasks={onOpenTasks}
       />
@@ -1675,6 +1846,7 @@ function AgentPlanPanel({
   session,
   sessionTitle,
   planArtifact,
+  isAutomationRunConversation,
   isPlanLoading,
   proposals,
   dependencyGraph,
@@ -1683,6 +1855,8 @@ function AgentPlanPanel({
   onPlanUpdated,
   verificationState,
   verificationInProgress,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
   onOpenVerification,
   onOpenTasks,
 }: {
@@ -1691,6 +1865,7 @@ function AgentPlanPanel({
   session: IdeationSession | null;
   sessionTitle: string | null;
   planArtifact: Artifact | null;
+  isAutomationRunConversation: boolean;
   isPlanLoading: boolean;
   proposals: TaskProposal[];
   dependencyGraph: DependencyGraphResponse | null;
@@ -1699,6 +1874,16 @@ function AgentPlanPanel({
   onPlanUpdated: (updatedPlan: Artifact) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
+  onConversationModeSwitched:
+    | ((
+        conversationId: string,
+        mode: AgentConversationWorkspaceMode,
+        workspace: AgentConversationWorkspace | null
+      ) => void)
+    | undefined;
+  onFocusIdeationSessionForConversation:
+    | ((conversationId: string, sessionId: string) => void)
+    | undefined;
   onOpenVerification: () => void;
   onOpenTasks: () => void;
 }) {
@@ -1784,36 +1969,27 @@ function AgentPlanPanel({
   const handleCreateProposals = useCallback(async () => {
     if (!session) return;
     try {
-      const shouldPromoteWorkspace =
-        session.sessionFlow === "planning" &&
-        workspace?.mode !== "ideation" &&
-        workspace?.linkedIdeationSessionId === session.id &&
-        Boolean(workspace.conversationId);
-
-      if (shouldPromoteWorkspace && workspace?.conversationId) {
-        const result = await chatApi.switchAgentConversationMode({
-          conversationId: workspace.conversationId,
-          mode: "ideation",
-        });
-        if (result.workspace) {
-          queryClient.setQueryData(
-            agentWorkspaceKeys.workspace(workspace.conversationId),
-            result.workspace,
-          );
-        }
-        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
-      }
-
-      await chatApi.sendAgentMessage(
-        "ideation",
-        session.id,
-        PLAN_TO_PROPOSALS_REQUEST,
-      );
+      await activateAgentPlanProposals({
+        sessionId: session.id,
+        workspace,
+        queryClient,
+        canPromoteWorkspace: session.sessionFlow === "planning",
+        ...(onConversationModeSwitched ? { onConversationModeSwitched } : {}),
+        ...(onFocusIdeationSessionForConversation
+          ? { onFocusIdeationSessionForConversation }
+          : {}),
+      });
     } catch (err) {
       console.error("Failed to create proposals:", err);
       toast.error("Failed to request proposal creation");
     }
-  }, [queryClient, session, workspace]);
+  }, [
+    onConversationModeSwitched,
+    onFocusIdeationSessionForConversation,
+    queryClient,
+    session,
+    workspace,
+  ]);
 
   const isPlanningSession = session?.sessionFlow === "planning";
   const isOwnedCurrentPlan = Boolean(
@@ -1844,6 +2020,8 @@ function AgentPlanPanel({
     planApprovalStatus === "draft";
   const canShowApprovedPlanActions =
     canShowPlanModeControls && !isImplementingPlanDirectly;
+  const canShowManualPlanContinuationActions =
+    canShowApprovedPlanActions && !isAutomationRunConversation;
   const isPlanVerificationSatisfied =
     verificationState === "verified" ||
     verificationState === "imported_verified";
@@ -1852,11 +2030,11 @@ function AgentPlanPanel({
     isOwnedCurrentPlan &&
     !isPlanVerificationSatisfied;
   const canCreateProposals =
-    canShowApprovedPlanActions &&
+    canShowManualPlanContinuationActions &&
     session !== null &&
     (!isPlanningSession || isPlanApproved);
   const canImplementDirectly = Boolean(
-    canShowApprovedPlanActions &&
+    canShowManualPlanContinuationActions &&
     isOwnedCurrentPlan &&
     isPlanApproved &&
     session?.projectId &&
@@ -1875,7 +2053,7 @@ function AgentPlanPanel({
       session &&
       isOwnedCurrentPlan &&
       isPlanApproved &&
-      canShowApprovedPlanActions,
+      canShowManualPlanContinuationActions,
     ),
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
@@ -2240,7 +2418,9 @@ function AgentPlanPanel({
       ? "Implementation work is attached to this plan."
       : planLifecycleState === "approved"
         ? (planActionHint ??
-          "Choose the next step for this approved plan.")
+          (workspace?.mode === "plan"
+            ? "Choose the next step for this approved plan."
+            : "This approved plan is guiding the current workspace agent."))
         : "Approve this plan before creating proposals or implementation work.";
   const planLifecycleTitle =
     planLifecycleState === "needs_approval"
@@ -2290,6 +2470,20 @@ function AgentPlanPanel({
                 })}
               />
             )}
+            {isAutomationRunConversation ? (
+              <div
+                className="rounded-md px-3 py-2 text-xs"
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderColor: "var(--border-default)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                RalphX continues this run automatically after approval.
+              </div>
+            ) : null}
             <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
               <LazyPlanDisplay
                 plan={planArtifact}
@@ -2299,9 +2493,8 @@ function AgentPlanPanel({
                 onBodyModeChange={setPlanBodyMode}
                 onEdit={() => setIsEditing(true)}
                 onExport={() => setExportDialogOpen(true)}
-                {...(planReferenceSessionId && {
-                  onStartNewConversationWithPlan:
-                    handleStartNewConversationWithPlan,
+                {...(planReferenceSessionId && !isAutomationRunConversation && {
+                  onStartNewConversationWithPlan: handleStartNewConversationWithPlan,
                 })}
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}

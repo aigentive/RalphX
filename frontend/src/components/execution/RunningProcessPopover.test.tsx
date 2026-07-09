@@ -72,6 +72,8 @@ function createMockWorkspaceSession(
   return {
     conversationId: "workspace-1",
     projectId: "project-1",
+    automationId: null,
+    automationRunId: null,
     title: "Workspace Agent",
     elapsedSeconds: 90,
     model: "gpt-5.5",
@@ -660,7 +662,50 @@ describe("RunningProcessPopover", () => {
       fireEvent.click(screen.getByTestId("workspace-card-conversation-123"));
 
       expect(onOpenChange).toHaveBeenCalledWith(false);
-      expect(onNavigateToWorkspace).toHaveBeenCalledWith("project-456", "conversation-123");
+      expect(onNavigateToWorkspace).toHaveBeenCalledWith(
+        "project-456",
+        "conversation-123",
+        workspace,
+      );
+    });
+
+    it("passes automation run metadata when a running workspace row belongs to a run", () => {
+      const onOpenChange = vi.fn();
+      const onNavigateToWorkspace = vi.fn();
+      const workspace = createMockWorkspaceSession({
+        conversationId: "run-conversation-123",
+        projectId: "project-456",
+        automationId: "automation-789",
+        automationRunId: "run-101",
+        title: "Automation run",
+      });
+      render(
+        <RunningProcessPopover
+          processes={[]}
+          workspaceSessions={[workspace]}
+          lanes={mockLanes}
+          capacity={mockCapacity}
+          maxConcurrent={8}
+          open={true}
+          onOpenChange={onOpenChange}
+          onPauseProcess={vi.fn()}
+          onStopProcess={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onNavigateToWorkspace={onNavigateToWorkspace}
+          initialTab="workspaces"
+        >
+          <button>Trigger</button>
+        </RunningProcessPopover>
+      );
+
+      fireEvent.click(screen.getByTestId("workspace-card-run-conversation-123"));
+
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(onNavigateToWorkspace).toHaveBeenCalledWith(
+        "project-456",
+        "run-conversation-123",
+        workspace,
+      );
     });
   });
 

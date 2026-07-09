@@ -16,6 +16,7 @@ import {
   resolveExecutionTaskAgentWorkspace,
   type ExecutionBarTaskNavigationTarget,
 } from "@/components/execution/executionTaskNavigation";
+import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { AppTopBar, KanbanSplitLayout, LeftNavRail } from "@/components/layout";
 import { PermissionDialog } from "@/components/PermissionDialog";
 import { IdeationView, ProposalEditModal, FinalizeConfirmationDialog, VerificationConfirmDialog } from "@/components/Ideation";
@@ -81,6 +82,7 @@ import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
+import type { RunningWorkspaceSession } from "@/api/running-processes";
 import { githubApi } from "@/api/github";
 import { granolaApi, type GranolaNoteDetail, type GranolaNoteSummary } from "@/api/granola";
 import { tasksApi } from "@/api/tasks";
@@ -901,12 +903,37 @@ function AppContent() {
     await handleSelectSession(sessionId);
   }, [setCurrentView, handleSelectSession]);
 
-  const handleNavigateToWorkspace = useCallback((projectId: string, conversationId: string) => {
+  const handleOpenAutomationDetail = useCallback((automationId: string) => {
+    setSelectedAutomationId(automationId);
+    setCurrentView("automations");
+  }, [setCurrentView]);
+
+  const handleNavigateToWorkspace = useCallback((
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession,
+  ) => {
+    if (session?.automationId && session.automationRunId) {
+      void requestAutomationRunOpen(
+        queryClient,
+        {
+          projectId,
+          automationId: session.automationId,
+          runId: session.automationRunId,
+          conversationId,
+        },
+        {
+          fallback: "detail",
+          onOpenAutomationDetail: handleOpenAutomationDetail,
+        },
+      );
+      return;
+    }
     setFocusedAgentProject(projectId);
     useAgentSessionStore.getState().selectConversation(projectId, conversationId);
     useChatStore.getState().setActiveConversation(`project:${projectId}`, conversationId);
     setCurrentView("agents");
-  }, [setCurrentView, setFocusedAgentProject]);
+  }, [handleOpenAutomationDetail, setCurrentView, setFocusedAgentProject]);
 
   const handleNavigateToExecutionTask = useCallback(
     (target: ExecutionBarTaskNavigationTarget) => {
@@ -937,10 +964,19 @@ function AppContent() {
     [setCurrentView, setFocusedAgentProject],
   );
 
-  const handleOpenAutomationDetail = useCallback((automationId: string) => {
-    setSelectedAutomationId(automationId);
-    setCurrentView("automations");
-  }, [setCurrentView]);
+  const handleNavigateToAutomationRun = useCallback(
+    (target: Parameters<typeof requestAutomationRunOpen>[1]) => {
+      void requestAutomationRunOpen(
+        queryClient,
+        target,
+        {
+          fallback: "detail",
+          onOpenAutomationDetail: handleOpenAutomationDetail,
+        },
+      );
+    },
+    [handleOpenAutomationDetail],
+  );
 
   const createAutomationDraft = useCreateAutomationDraft();
   const handleNewAutomation = useCallback(() => {
@@ -1369,6 +1405,7 @@ function AppContent() {
                         onSelectedAutomationChange={setSelectedAutomationId}
                         onNewAutomation={handleNewAutomation}
                         onOpenRunConversation={handleNavigateToWorkspace}
+                        onOpenAutomationRun={handleNavigateToAutomationRun}
                       />
                     </Suspense>
                   )

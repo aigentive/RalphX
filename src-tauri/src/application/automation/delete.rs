@@ -1,19 +1,20 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::Utc;
 
 use crate::application::agent_conversation_archive::archive_agent_conversation_for_state;
-use crate::application::automation::api::automation_service_for_state;
-use crate::application::automation::transition::{
-    AutomationEventEmitter, AutomationTransitionService, NoopAutomationEventEmitter,
-    TauriAutomationEventEmitter,
+use crate::application::automation::api::{
+    automation_service_for_state, automation_transition_service_for_state,
 };
+use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::AppState;
 use crate::domain::entities::{
-    ArtifactId, AutomationId, AutomationJudgeState, AutomationStatus, IdeationAnalysisBaseRefKind,
+    ArtifactId, AutomationId, AutomationJudgeState, AutomationStatus, ChatConversation,
+    IdeationAnalysisBaseRefKind, IdeationSessionFlow,
 };
+use crate::domain::repositories::PlanArtifactApprovalRepository;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
 
 /// Archive an automation's durable history and hard-delete its bookkeeping rows.
 ///
@@ -99,8 +100,11 @@ pub async fn delete_automation_with_archive(state: &AppState, id: &AutomationId)
     // `list_by_automation_id` re-returns archived rows on retry, and `archive()`
     // itself is a no-op on re-run, but stop-agent / close-PR side effects would
     // still fire — so filter archived rows out here (critic G8).
-    let conversations = state.chat_conversation_repo.list_by_automation_id(id).await?;
-    for conversation in conversations {
+    let conversations = state
+        .chat_conversation_repo
+        .list_by_automation_id(id)
+        .await?;
+    for conversation in &conversations {
         if conversation.archived_at.is_some() {
             continue;
         }
@@ -113,6 +117,7 @@ pub async fn delete_automation_with_archive(state: &AppState, id: &AutomationId)
                 ))
             })?;
     }
+    cleanup_plan_gate_artifacts_for_run_conversations(state, id, &conversations).await?;
 
     // Archive the linked spec artifact — never hard-deleted; it is versioned and
     // may be `derived_from`-linked (E8). Warn + continue on failure.
@@ -146,6 +151,102 @@ pub async fn delete_automation_with_archive(state: &AppState, id: &AutomationId)
     // `AutomationDeleted` (the row-delete core owns the event so `project_id` is
     // captured before the row is gone).
     automation_service_for_state(state).delete(id).await
+}
+
+async fn cleanup_plan_gate_artifacts_for_run_conversations(
+    state: &AppState,
+    automation_id: &AutomationId,
+    conversations: &[ChatConversation],
+) -> AppResult<()> {
+    let approval_repo = SqlitePlanArtifactApprovalRepository::new(state.db.clone());
+    for conversation in conversations
+        .iter()
+        .filter(|conversation| conversation.automation_run_id.is_some())
+    {
+        let Some(workspace) = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await?
+        else {
+            continue;
+        };
+        let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+            continue;
+        };
+        let Some(session) = state.ideation_session_repo.get_by_id(session_id).await? else {
+            approval_repo.delete_by_session(session_id).await?;
+            continue;
+        };
+        if session.session_flow != IdeationSessionFlow::Planning {
+            continue;
+        }
+        if let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() {
+            archive_plan_artifact_chain(
+                state,
+                automation_id,
+                session_id.as_str(),
+                plan_artifact_id,
+            )
+            .await;
+        }
+        approval_repo.delete_by_session(session_id).await?;
+        state.ideation_session_repo.delete(session_id).await?;
+    }
+    Ok(())
+}
+
+async fn archive_plan_artifact_chain(
+    state: &AppState,
+    automation_id: &AutomationId,
+    session_id: &str,
+    plan_artifact_id: &ArtifactId,
+) {
+    let latest_id = match state
+        .artifact_repo
+        .resolve_latest_artifact_id(plan_artifact_id)
+        .await
+    {
+        Ok(latest_id) => latest_id,
+        Err(error) => {
+            tracing::warn!(
+                automation_id = automation_id.as_str(),
+                session_id,
+                plan_artifact_id = plan_artifact_id.as_str(),
+                error = %error,
+                "delete_automation_with_archive: failed to resolve latest plan artifact; archiving known artifact"
+            );
+            plan_artifact_id.clone()
+        }
+    };
+
+    let artifact_ids = match state.artifact_repo.get_version_history(&latest_id).await {
+        Ok(history) if !history.is_empty() => {
+            history.into_iter().map(|summary| summary.id).collect()
+        }
+        Ok(_) => vec![latest_id],
+        Err(error) => {
+            tracing::warn!(
+                automation_id = automation_id.as_str(),
+                session_id,
+                plan_artifact_id = plan_artifact_id.as_str(),
+                error = %error,
+                "delete_automation_with_archive: failed to read plan artifact version chain; archiving known artifact"
+            );
+            vec![plan_artifact_id.clone()]
+        }
+    };
+
+    for artifact_id in artifact_ids {
+        if let Err(error) = state.artifact_repo.archive(&artifact_id).await {
+            tracing::warn!(
+                automation_id = automation_id.as_str(),
+                session_id,
+                plan_artifact_id = artifact_id.as_str(),
+                error = %error,
+                "delete_automation_with_archive: failed to archive plan artifact; continuing"
+            );
+        }
+    }
 }
 
 /// Best-effort deletion of an automation's origin base branch. Never fails the
@@ -199,13 +300,5 @@ async fn cleanup_automation_remote_base_branch(
 }
 
 fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
-    let event_emitter: Arc<dyn AutomationEventEmitter> = match state.app_handle.as_ref() {
-        Some(app_handle) => Arc::new(TauriAutomationEventEmitter::new(app_handle.clone())),
-        None => Arc::new(NoopAutomationEventEmitter),
-    };
-    AutomationTransitionService::new(
-        state.automation_repo.clone(),
-        state.automation_run_repo.clone(),
-        event_emitter,
-    )
+    automation_transition_service_for_state(state)
 }

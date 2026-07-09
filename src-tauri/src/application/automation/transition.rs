@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
-    judge_is_transition_allowed, AutomationId, AutomationJudgeState, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ProjectId,
+    judge_is_transition_allowed, plan_judge_is_transition_allowed, AutomationId,
+    AutomationJudgeState, AutomationPlanJudgeState, AutomationRunId, AutomationRunStatus,
+    AutomationStatus, ProjectId,
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
 use crate::error::{AppError, AppResult};
@@ -22,6 +24,7 @@ pub enum AutomationEvent {
         automation_id: AutomationId,
     },
     AutomationRunUpdated {
+        automation_id: AutomationId,
         run_id: AutomationRunId,
     },
     AutomationDeleted {
@@ -71,6 +74,9 @@ struct AutomationUpdatedPayload {
 
 #[derive(Clone, Debug, Serialize)]
 struct AutomationRunUpdatedPayload {
+    automation_id: String,
+    #[serde(rename = "automationId")]
+    automation_id_camel: String,
     run_id: String,
     #[serde(rename = "runId")]
     run_id_camel: String,
@@ -97,11 +103,17 @@ impl AutomationEventEmitter for TauriAutomationEventEmitter {
                 };
                 let _ = self.app_handle.emit(AUTOMATION_UPDATED_EVENT, payload);
             }
-            AutomationEvent::AutomationRunUpdated { run_id } => {
-                let id = run_id.as_str().to_string();
+            AutomationEvent::AutomationRunUpdated {
+                automation_id,
+                run_id,
+            } => {
+                let automation_id = automation_id.as_str().to_string();
+                let run_id = run_id.as_str().to_string();
                 let payload = AutomationRunUpdatedPayload {
-                    run_id: id.clone(),
-                    run_id_camel: id,
+                    automation_id: automation_id.clone(),
+                    automation_id_camel: automation_id,
+                    run_id: run_id.clone(),
+                    run_id_camel: run_id,
                 };
                 let _ = self.app_handle.emit(AUTOMATION_RUN_UPDATED_EVENT, payload);
             }
@@ -140,6 +152,24 @@ impl AutomationTransitionService {
             automation_repo,
             run_repo,
             event_emitter,
+        }
+    }
+
+    async fn automation_id_for_run(&self, id: &AutomationRunId) -> AppResult<Option<AutomationId>> {
+        Ok(self
+            .run_repo
+            .get_by_id(id)
+            .await?
+            .map(|run| run.automation_id))
+    }
+
+    fn emit_run_updated(&self, automation_id: Option<AutomationId>, run_id: &AutomationRunId) {
+        if let Some(automation_id) = automation_id {
+            self.event_emitter
+                .emit(AutomationEvent::AutomationRunUpdated {
+                    automation_id,
+                    run_id: run_id.clone(),
+                });
         }
     }
 
@@ -185,13 +215,111 @@ impl AutomationTransitionService {
             });
         }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status(id, from, to, error_code, error_detail)
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
+        }
+        Ok(changed)
+    }
+
+    pub async fn transition_run_status_with_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        if !automation_run_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let automation_id = self.automation_id_for_run(id).await?;
+        let changed = self
+            .run_repo
+            .compare_and_swap_status_with_merge_metadata(
+                id,
+                from,
+                to,
+                merge_commit_sha,
+                pr_merged_at,
+            )
+            .await?;
+        if changed {
+            self.emit_run_updated(automation_id, id);
+        }
+        Ok(changed)
+    }
+
+    pub async fn transition_run_status_with_agent_phase_started_at(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        agent_phase_started_at: DateTime<Utc>,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        if !automation_run_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let automation_id = self.automation_id_for_run(id).await?;
+        let changed = self
+            .run_repo
+            .compare_and_swap_status_with_agent_phase_started_at(
+                id,
+                from,
+                to,
+                agent_phase_started_at,
+                error_code,
+                error_detail,
+            )
+            .await?;
+        if changed {
+            self.emit_run_updated(automation_id, id);
+        }
+        Ok(changed)
+    }
+
+    pub async fn transition_run_status_clearing_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        if !automation_run_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let automation_id = self.automation_id_for_run(id).await?;
+        let changed = self
+            .run_repo
+            .compare_and_swap_status_clearing_plan_pending_instructions(
+                id,
+                from,
+                to,
+                error_code,
+                error_detail,
+            )
+            .await?;
+        if changed {
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }
@@ -201,6 +329,7 @@ impl AutomationTransitionService {
         id: &AutomationRunId,
         from: AutomationJudgeState,
         to: AutomationJudgeState,
+        guard: AutomationJudgeTransitionGuard,
         judge_verdict_json: Option<String>,
         judge_model_id: Option<String>,
         judge_lease_expires_at: Option<DateTime<Utc>>,
@@ -212,13 +341,33 @@ impl AutomationTransitionService {
                 to: to.as_str().to_string(),
             });
         }
+        if from == AutomationJudgeState::InProgress {
+            let guard_allows_settle = match to {
+                AutomationJudgeState::Done => {
+                    matches!(guard, AutomationJudgeTransitionGuard::Settle(_))
+                }
+                AutomationJudgeState::Failed => matches!(
+                    guard,
+                    AutomationJudgeTransitionGuard::Settle(_)
+                        | AutomationJudgeTransitionGuard::LegacyNullLease
+                ),
+                _ => true,
+            };
+            if !guard_allows_settle {
+                return Err(AppError::Validation(
+                    "judge settle transitions require the dispatch lease".to_string(),
+                ));
+            }
+        }
 
+        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_judge_state(
                 id,
                 from,
                 to,
+                guard,
                 judge_verdict_json,
                 judge_model_id,
                 judge_lease_expires_at,
@@ -226,8 +375,39 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.event_emitter
-                .emit(AutomationEvent::AutomationRunUpdated { run_id: id.clone() });
+            self.emit_run_updated(automation_id, id);
+        }
+        Ok(changed)
+    }
+
+    pub async fn transition_plan_judge_state(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationPlanJudgeState,
+        to: AutomationPlanJudgeState,
+        plan_judge_verdict_json: Option<String>,
+        plan_judge_lease_expires_at: Option<DateTime<Utc>>,
+    ) -> AppResult<bool> {
+        if !plan_judge_is_transition_allowed(from, to) {
+            return Err(AppError::InvalidTransition {
+                from: from.as_str().to_string(),
+                to: to.as_str().to_string(),
+            });
+        }
+
+        let automation_id = self.automation_id_for_run(id).await?;
+        let changed = self
+            .run_repo
+            .compare_and_swap_plan_judge_state(
+                id,
+                from,
+                to,
+                plan_judge_verdict_json,
+                plan_judge_lease_expires_at,
+            )
+            .await?;
+        if changed {
+            self.emit_run_updated(automation_id, id);
         }
         Ok(changed)
     }

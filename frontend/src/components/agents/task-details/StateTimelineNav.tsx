@@ -9,9 +9,9 @@
  * - Premium badge styling per status
  */
 
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTaskStateTransitions } from "@/hooks/useTaskStateTransitions";
-import { Loader2, History, ChevronRight } from "lucide-react";
+import { Loader2, History, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -117,6 +117,12 @@ interface TimelineBadgeProps {
   onClick: () => void;
 }
 
+interface TimelineScrollState {
+  canScrollLeft: boolean;
+  canScrollRight: boolean;
+  hasOverflow: boolean;
+}
+
 function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
   const config = STATUS_CONFIG[entry.status];
   const isActive = isSelected || entry.isCurrent;
@@ -125,7 +131,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
   const glowInnerRef = resolveTimelineTint(config.color, 30);
   const glowOuterRef = resolveTimelineTint(config.color, 20);
   const dotGlowRef = resolveTimelineTint(config.color, 40);
-  const transcriptLabel = entry.hasConversation ? "Chat" : "No chat";
+  const transcriptLabel = entry.hasConversation ? "Chat available" : "No chat";
 
   return (
     <Tooltip delayDuration={200}>
@@ -141,7 +147,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
           data-context-type={entry.contextType}
           data-has-conversation={entry.hasConversation}
           aria-label={`${entry.label}${entry.hasConversation ? ", transcript available" : ", no transcript recorded"}`}
-          className="group relative flex items-center gap-2 px-3 py-1.5 rounded-full transition-all duration-200"
+          className="group relative flex min-h-[3rem] min-w-[8.5rem] shrink-0 items-start gap-2 rounded-lg px-3 py-2 text-left transition-all duration-200"
           style={{
             backgroundColor: isActive ? bgRef : "transparent",
             boxShadow: isSelected
@@ -151,7 +157,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
         >
           {/* Status dot */}
           <div
-            className="relative w-2 h-2 rounded-full shrink-0 transition-transform duration-200 group-hover:scale-125"
+            className="relative mt-1 w-2 h-2 rounded-full shrink-0 transition-transform duration-200 group-hover:scale-125"
             style={{
               backgroundColor: colorRef,
               boxShadow: isActive ? `0 0 8px ${dotGlowRef}` : undefined,
@@ -169,25 +175,28 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
             )}
           </div>
 
-          {/* Label */}
-          <span
-            className="text-[0.6875rem] font-semibold tracking-tight transition-colors duration-200"
-            style={{
-              color: isActive ? colorRef : withAlpha("var(--text-primary)", 45),
-            }}
-          >
-            {entry.label}
-          </span>
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span
+              data-testid="timeline-badge-label"
+              className="text-[0.6875rem] font-semibold leading-tight tracking-tight transition-colors duration-200"
+              style={{
+                color: isActive ? colorRef : withAlpha("var(--text-primary)", 45),
+              }}
+            >
+              {entry.label}
+            </span>
 
-          <span
-            className="text-[0.5625rem] font-semibold uppercase"
-            style={{
-              color: entry.hasConversation
-                ? withAlpha(colorRef, 78)
-                : withAlpha("var(--text-primary)", 30),
-            }}
-          >
-            {transcriptLabel}
+            <span
+              data-testid="timeline-badge-chat-meta"
+              className="text-[0.5625rem] font-semibold uppercase leading-none"
+              style={{
+                color: entry.hasConversation
+                  ? withAlpha(colorRef, 78)
+                  : withAlpha("var(--text-primary)", 30),
+              }}
+            >
+              {transcriptLabel}
+            </span>
           </span>
         </button>
       </TooltipTrigger>
@@ -224,6 +233,48 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
             </span>
           )}
         </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+interface TimelineScrollButtonProps {
+  direction: "left" | "right";
+  disabled: boolean;
+  onClick: () => void;
+}
+
+function TimelineScrollButton({
+  direction,
+  disabled,
+  onClick,
+}: TimelineScrollButtonProps) {
+  const isLeft = direction === "left";
+  const label = isLeft ? "Scroll history left" : "Scroll history right";
+  const Icon = isLeft ? ChevronLeft : ChevronRight;
+
+  return (
+    <Tooltip delayDuration={200}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          disabled={disabled}
+          onClick={onClick}
+          data-testid={`timeline-scroll-${direction}`}
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-default disabled:opacity-35"
+          style={{
+            backgroundColor: disabled ? "transparent" : "var(--overlay-faint)",
+            color: disabled
+              ? withAlpha("var(--text-primary)", 28)
+              : withAlpha("var(--text-primary)", 70),
+          }}
+        >
+          <Icon className="h-3.5 w-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={8}>
+        {label}
       </TooltipContent>
     </Tooltip>
   );
@@ -508,10 +559,71 @@ export function StateTimelineNav({
   selectedState,
 }: StateTimelineNavProps) {
   const { data: transitions, isLoading, error } = useTaskStateTransitions(taskId);
+  const timelineViewportRef = useRef<HTMLDivElement | null>(null);
+  const [scrollState, setScrollState] = useState<TimelineScrollState>({
+    canScrollLeft: false,
+    canScrollRight: false,
+    hasOverflow: false,
+  });
 
   const timelineEntries = useMemo((): TimelineEntry[] => {
     return buildTimelineEntries(transitions, currentStatus);
   }, [transitions, currentStatus]);
+
+  const updateScrollState = useCallback(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+    const nextState: TimelineScrollState = {
+      hasOverflow: maxScrollLeft > 1,
+      canScrollLeft: viewport.scrollLeft > 1,
+      canScrollRight: viewport.scrollLeft < maxScrollLeft - 1,
+    };
+
+    setScrollState((previous) =>
+      previous.hasOverflow === nextState.hasOverflow &&
+      previous.canScrollLeft === nextState.canScrollLeft &&
+      previous.canScrollRight === nextState.canScrollRight
+        ? previous
+        : nextState
+    );
+  }, []);
+
+  useEffect(() => {
+    updateScrollState();
+    const viewport = timelineViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateScrollState);
+      return () => window.removeEventListener("resize", updateScrollState);
+    }
+
+    const resizeObserver = new ResizeObserver(updateScrollState);
+    resizeObserver.observe(viewport);
+    return () => resizeObserver.disconnect();
+  }, [timelineEntries.length, selectedState, updateScrollState]);
+
+  const scrollTimeline = useCallback(
+    (direction: "left" | "right") => {
+      const viewport = timelineViewportRef.current;
+      if (!viewport) {
+        return;
+      }
+      const distance = Math.max(160, viewport.clientWidth * 0.7);
+      viewport.scrollBy({
+        left: direction === "left" ? -distance : distance,
+        behavior: "smooth",
+      });
+      window.setTimeout(updateScrollState, 250);
+    },
+    [updateScrollState]
+  );
 
   // Handle badge click
   const handleBadgeClick = (entry: TimelineEntry) => {
@@ -582,7 +694,7 @@ export function StateTimelineNav({
     <TooltipProvider delayDuration={200}>
       <div
         data-testid="state-timeline-nav"
-        className="flex items-center gap-1 px-4 py-3 overflow-x-auto"
+        className="flex min-w-0 items-center gap-2 px-4 py-3"
         style={{
           backgroundColor: withAlpha("var(--bg-base)", 60),
           backdropFilter: "blur(40px) saturate(150%)",
@@ -601,36 +713,62 @@ export function StateTimelineNav({
           </span>
         </div>
 
-        {/* Timeline entries */}
-        {timelineEntries.map((entry, index) => {
-          const isConnectorActive =
-            selectedState === null || (selectedIndex !== -1 && index < selectedIndex);
-          const nextEntry = timelineEntries[index + 1];
+        {scrollState.hasOverflow && (
+          <TimelineScrollButton
+            direction="left"
+            disabled={!scrollState.canScrollLeft}
+            onClick={() => scrollTimeline("left")}
+          />
+        )}
 
-          return (
-            <div key={`${entry.status}-${entry.timestamp}`} className="flex items-center">
-              <TimelineBadge
-                entry={entry}
-                isSelected={
-                  selectedState?.status === entry.status &&
-                  selectedState?.timestamp === entry.timestamp
-                }
-                onClick={() => handleBadgeClick(entry)}
-              />
-              {nextEntry && (
-                <TimelineConnector
-                  isActive={isConnectorActive}
-                  color={resolveTimelineColor(STATUS_CONFIG[entry.status].color)}
+        {/* Timeline entries */}
+        <div
+          ref={timelineViewportRef}
+          data-testid="timeline-scroll-viewport"
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain"
+          onScroll={updateScrollState}
+        >
+          {timelineEntries.map((entry, index) => {
+            const isConnectorActive =
+              selectedState === null || (selectedIndex !== -1 && index < selectedIndex);
+            const nextEntry = timelineEntries[index + 1];
+
+            return (
+              <div
+                key={`${entry.status}-${entry.timestamp}`}
+                className="flex shrink-0 items-center"
+              >
+                <TimelineBadge
+                  entry={entry}
+                  isSelected={
+                    selectedState?.status === entry.status &&
+                    selectedState?.timestamp === entry.timestamp
+                  }
+                  onClick={() => handleBadgeClick(entry)}
                 />
-              )}
-            </div>
-          );
-        })}
+                {nextEntry && (
+                  <TimelineConnector
+                    isActive={isConnectorActive}
+                    color={resolveTimelineColor(STATUS_CONFIG[entry.status].color)}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {scrollState.hasOverflow && (
+          <TimelineScrollButton
+            direction="right"
+            disabled={!scrollState.canScrollRight}
+            onClick={() => scrollTimeline("right")}
+          />
+        )}
 
         {/* Viewing historical state indicator */}
         {selectedState && (
           <div
-            className="ml-auto pl-3 flex items-center gap-2"
+            className="shrink-0 pl-3 flex items-center gap-2"
             style={{ borderLeft: "1px solid var(--border-subtle)" }}
           >
             <span className="text-[0.625rem] font-medium text-text-primary/40">

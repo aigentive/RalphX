@@ -114,6 +114,14 @@ fn built_in_registry_exposes_expected_defaults_for_each_provider() {
         "gpt-5.4-mini"
     );
     assert_eq!(
+        plan_judge_model_for_provider(AgentHarnessKind::Claude),
+        "sonnet"
+    );
+    assert_eq!(
+        plan_judge_model_for_provider(AgentHarnessKind::Codex),
+        "gpt-5.4"
+    );
+    assert_eq!(
         default_effort_for_provider(AgentHarnessKind::Claude),
         LogicalEffort::Medium
     );

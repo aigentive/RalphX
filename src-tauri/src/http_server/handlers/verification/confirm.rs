@@ -49,20 +49,12 @@ pub async fn confirm_verification(
     }
 
     // Run transaction: verify session exists + trigger auto-verify
-    let sid_clone = session_id_str.clone();
-    let (session_id, maybe_generation) = state
-        .app_state
-        .db
-        .run_transaction(move |conn| {
-            let sid = IdeationSessionId::from_string(sid_clone);
-            // Ensure session exists
-            let _session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
-                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
-
-            let generation = SessionRepo::trigger_auto_verify_sync(conn, sid.as_str())?;
-
-            Ok((sid, generation))
-        })
+    let session_id = IdeationSessionId::from_string(session_id_str.clone());
+    let maybe_generation =
+        crate::application::verification_child_session::trigger_auto_verify_generation(
+            &state.app_state,
+            &session_id,
+        )
         .await
         .map_err(|e| {
             error!("confirm_verification transaction failed: {}", e);

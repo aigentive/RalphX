@@ -12,11 +12,14 @@ const {
   resumeAutomationMock,
   stopAutomationMock,
   deleteAutomationMock,
+  cancelRunMock,
+  updateSettingsMock,
   updateAutomationSetupMock,
   sendAgentMessageMock,
   useAskUserQuestionMock,
   submitAutomationSetupAnswerMock,
   useArtifactMock,
+  openExternalUrlMock,
   toastSuccessMock,
   toastErrorMock,
 } = vi.hoisted(() => ({
@@ -26,11 +29,14 @@ const {
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
+  cancelRunMock: vi.fn(),
+  updateSettingsMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   useAskUserQuestionMock: vi.fn(),
   submitAutomationSetupAnswerMock: vi.fn(),
   useArtifactMock: vi.fn(),
+  openExternalUrlMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
 }));
@@ -44,6 +50,10 @@ vi.mock("sonner", () => ({
     success: toastSuccessMock,
     error: toastErrorMock,
   },
+}));
+
+vi.mock("@/lib/open-external", () => ({
+  openExternalUrl: (...args: unknown[]) => openExternalUrlMock(...args),
 }));
 
 vi.mock("@/components/agents/agentDeferredFrame", () => ({
@@ -138,6 +148,8 @@ vi.mock("@/api/automations", async (importOriginal) => {
       resume: (...args: unknown[]) => resumeAutomationMock(...args),
       stop: (...args: unknown[]) => stopAutomationMock(...args),
       delete: (...args: unknown[]) => deleteAutomationMock(...args),
+      cancelRun: (...args: unknown[]) => cancelRunMock(...args),
+      updateSettings: (...args: unknown[]) => updateSettingsMock(...args),
       setupAgent: {
         ...actual.automationsApi.setupAgent,
         updateAutomation: (...args: unknown[]) =>
@@ -171,6 +183,9 @@ const automationFixture = (
     '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
   chainMode: "merged_base",
   completionSignal: "pr_merged",
+  planApprovalMode: "manual",
+  prMergeMode: "manual",
+  planDeepVerification: false,
   maxRuns: 25,
   maxConsecutiveFailures: 3,
   firstRunPrompt: "Build the shared context model in a scoped PR.",
@@ -189,6 +204,14 @@ const automationRunFixture = (
   status: "published",
   judgeState: "none",
   judgeLeaseExpiresAt: null,
+  planJudgeState: "none",
+  planRevisionRound: 0,
+  planRevisionPending: false,
+  planPhase: false,
+  planArtifactId: null,
+  planApprovedBy: null,
+  planApprovedArtifactVersion: null,
+  planApprovedAt: null,
   conversationId: "conversation-1",
   runPrompt: "Continue the release automation.",
   promptAuthor: "judge",
@@ -232,7 +255,27 @@ const automationDetailFixture = (
   ...overrides,
 });
 
-function renderPanel(onOpenAutomation: ((automationId: string) => void) | null = vi.fn()) {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function renderPanel({
+  onOpenAutomation = vi.fn(),
+  onFocusAutomationRun,
+}: {
+  onOpenAutomation?: ((automationId: string) => void) | null;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -242,6 +285,7 @@ function renderPanel(onOpenAutomation: ((automationId: string) => void) | null =
       <AgentsAutomationPanel
         automationId="automation-1"
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
+        {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
       />
     </QueryClientProvider>,
   );
@@ -261,6 +305,8 @@ describe("AgentsAutomationPanel", () => {
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
     deleteAutomationMock.mockResolvedValue(undefined);
+    cancelRunMock.mockResolvedValue(automationRunFixture({ status: "cancelled" }));
+    updateSettingsMock.mockResolvedValue(automationFixture({ maxRuns: 8 }));
     updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
     sendAgentMessageMock.mockResolvedValue({
       conversationId: "conversation-setup",
@@ -284,6 +330,7 @@ describe("AgentsAutomationPanel", () => {
       isLoading: false,
       isError: false,
     });
+    openExternalUrlMock.mockReset().mockResolvedValue(undefined);
   });
 
   it("shows automation summary controls and opens the automation detail", () => {
@@ -293,7 +340,7 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByText("Release automation")).toBeInTheDocument();
     expect(screen.getByText("Approved")).toBeInTheDocument();
     expect(screen.getByText("3 of 25")).toBeInTheDocument();
-    expect(screen.getByText("PR #593 · Running")).toBeInTheDocument();
+    expect(screen.getByText("Current PR #593")).toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-goal")).toHaveTextContent(
       "Ship the remaining release tasks.",
     );
@@ -319,7 +366,634 @@ describe("AgentsAutomationPanel", () => {
     fireEvent.click(screen.getByTestId("agents-automation-open"));
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
-    expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
+    expect(useAutomationEventsMock).not.toHaveBeenCalled();
+  });
+
+  it("lists every run with its status, newest first", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-1",
+            runIndex: 1,
+            status: "merged",
+            prNumber: 100,
+            prUrl: "https://github.com/aigentive/ralphx.app/pull/100",
+          }),
+          automationRunFixture({
+            id: "run-2",
+            runIndex: 2,
+            status: "agent_failed",
+            prNumber: null,
+            prUrl: null,
+            errorCode: "timeout",
+          }),
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "running",
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const list = screen.getByTestId("agents-automation-runs-list");
+    expect(list).toBeInTheDocument();
+    // Newest run (#3) renders first.
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows[0]).toHaveAttribute("data-testid", "agents-automation-run-3");
+    expect(rows[2]).toHaveAttribute("data-testid", "agents-automation-run-1");
+    // Each run shows its status label; the failed run surfaces its error code.
+    expect(within(rows[0]!).getByText("Running")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Agent failed")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Failed: timeout")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("Merged")).toBeInTheDocument();
+    const prLink = within(rows[2]!).getByRole("button", {
+      name: "Open PR #100 in browser",
+    });
+    expect(prLink).toHaveTextContent("PR #100");
+    expect(within(rows[0]!).queryByRole("button", { name: /Open PR #/ })).not.toBeInTheDocument();
+    expect(within(rows[1]!).queryByRole("button", { name: /Open PR #/ })).not.toBeInTheDocument();
+
+    fireEvent.click(prLink);
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/100",
+    );
+  });
+
+  it("renders URL-only run pull request links", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-url-only",
+            runIndex: 1,
+            prNumber: null,
+            prUrl: "https://github.com/aigentive/ralphx.app/pull/preview",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const prLink = screen.getByRole("button", {
+      name: "Open PR in browser",
+    });
+    expect(prLink).toHaveTextContent("PR");
+
+    fireEvent.click(prLink);
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith(
+      "https://github.com/aigentive/ralphx.app/pull/preview",
+    );
+  });
+
+  it("shows the current phase chip on open run rows only", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          goalItemsJson: JSON.stringify([
+            {
+              id: "phase-1",
+              title: "Finish the scheduler handoff",
+              status: "in_progress",
+            },
+            { id: "phase-2", title: "Document rollout", status: "pending" },
+          ]),
+        }),
+        runs: [
+          automationRunFixture({
+            id: "run-open",
+            runIndex: 4,
+            status: "running",
+            prNumber: null,
+          }),
+          automationRunFixture({
+            id: "run-terminal",
+            runIndex: 3,
+            status: "merged",
+            judgeState: "done",
+            prNumber: 103,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const openRun = screen.getByTestId("agents-automation-run-4");
+    expect(
+      within(openRun).getByTestId("agents-automation-run-4-phase"),
+    ).toHaveTextContent("Finish the scheduler handoff");
+
+    const terminalRun = screen.getByTestId("agents-automation-run-3");
+    expect(
+      within(terminalRun).queryByTestId("agents-automation-run-3-phase"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show a run-row phase chip when no goal item is in progress", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          goalItemsJson: JSON.stringify([
+            { id: "phase-1", title: "Pending work", status: "pending" },
+          ]),
+        }),
+        runs: [
+          automationRunFixture({
+            id: "run-open",
+            runIndex: 4,
+            status: "running",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      within(screen.getByTestId("agents-automation-run-4")).queryByTestId(
+        "agents-automation-run-4-phase",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces automatic merge enable warnings on published run rows", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-4",
+            runIndex: 4,
+            status: "published",
+            prNumber: 104,
+            errorCode: "auto_merge_enable_failed",
+            errorDetail:
+              "GitHub auto-merge could not be enabled yet: branch protection blocks it",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      screen.getByTestId("agents-automation-run-4-warning"),
+    ).toHaveTextContent("branch protection blocks it");
+  });
+
+  it("cancels an open run from the runs list, leaving terminal runs uncancellable", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-2",
+            runIndex: 2,
+            status: "agent_failed",
+            prNumber: null,
+            errorCode: "timeout",
+          }),
+          automationRunFixture({
+            id: "run-4",
+            runIndex: 4,
+            status: "running",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    // Terminal (failed) run has no Cancel action.
+    expect(
+      screen.queryByTestId("agents-automation-run-2-cancel"),
+    ).not.toBeInTheDocument();
+    // Open (running) run can be canceled.
+    const cancelButton = screen.getByTestId("agents-automation-run-4-cancel");
+    fireEvent.click(cancelButton);
+
+    await waitFor(() =>
+      expect(cancelRunMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        runId: "run-4",
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Run canceled"),
+    );
+  });
+
+  it("shows an empty runs state when no runs exist", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({ runs: [] }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-runs")).toHaveTextContent(
+      "No runs yet.",
+    );
+    expect(
+      screen.queryByTestId("agents-automation-runs-list"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("extends the run budget from a paused, budget-exhausted automation", async () => {
+    // 4/4 runs used, paused because the budget is exhausted.
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "paused",
+          pausedReasonCode: "judge_stopped_unmet",
+          maxRuns: 4,
+        }),
+        runs: [
+          automationRunFixture({ id: "run-1", runIndex: 1, status: "merged" }),
+          automationRunFixture({ id: "run-2", runIndex: 2, status: "agent_failed" }),
+          automationRunFixture({ id: "run-3", runIndex: 3, status: "agent_failed" }),
+          automationRunFixture({ id: "run-4", runIndex: 4, status: "agent_failed" }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const input = screen.getByLabelText("Max runs");
+    expect(input).toHaveValue(4);
+    // Cannot save the unchanged value.
+    expect(screen.getByTestId("agents-automation-max-runs-save")).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.click(screen.getByTestId("agents-automation-max-runs-save"));
+
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        maxRuns: 8,
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Max runs updated"),
+    );
+  });
+
+  it("updates plan approval, PR merge, and deep verification settings", async () => {
+    updateSettingsMock.mockResolvedValue(
+      automationFixture({
+        planApprovalMode: "automatic",
+        prMergeMode: "automatic",
+        planDeepVerification: true,
+      }),
+    );
+
+    renderPanel();
+
+    expect(
+      screen.getByRole("option", { name: "Automatic (judge)" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-settings")).toHaveTextContent(
+      "Adversarially verify each run plan before it can be approved.",
+    );
+
+    fireEvent.change(screen.getByTestId("agents-automation-plan-approval-mode"), {
+      target: { value: "automatic" },
+    });
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        planApprovalMode: "automatic",
+      }),
+    );
+
+    fireEvent.change(screen.getByTestId("agents-automation-pr-merge-mode"), {
+      target: { value: "automatic" },
+    });
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        prMergeMode: "automatic",
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-plan-deep-verification"));
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        planDeepVerification: true,
+      }),
+    );
+  });
+
+  it("keeps changed settings visible while the save is still pending", async () => {
+    const pendingUpdate = deferred<Automation>();
+    updateSettingsMock.mockReturnValue(pendingUpdate.promise);
+
+    renderPanel();
+
+    const planApprovalSelect = screen.getByTestId(
+      "agents-automation-plan-approval-mode",
+    ) as HTMLSelectElement;
+    const prMergeSelect = screen.getByTestId(
+      "agents-automation-pr-merge-mode",
+    ) as HTMLSelectElement;
+    const deepVerificationSwitch = screen.getByTestId(
+      "agents-automation-plan-deep-verification",
+    );
+
+    expect(planApprovalSelect).toHaveValue("manual");
+
+    fireEvent.change(planApprovalSelect, {
+      target: { value: "automatic" },
+    });
+
+    expect(planApprovalSelect).toHaveValue("automatic");
+    expect(planApprovalSelect).toBeDisabled();
+    expect(prMergeSelect).not.toBeDisabled();
+    expect(deepVerificationSwitch).not.toBeDisabled();
+
+    pendingUpdate.resolve(
+      automationFixture({ planApprovalMode: "automatic" }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation settings updated"),
+    );
+  });
+
+  it("shows the stacked-chain merge-mode failure reason", async () => {
+    updateSettingsMock.mockRejectedValue(
+      new Error(
+        "automation_stacked_auto_merge_unsupported: automatic PR merge is not supported for stacked PR chains",
+      ),
+    );
+
+    renderPanel();
+
+    fireEvent.change(screen.getByTestId("agents-automation-pr-merge-mode"), {
+      target: { value: "automatic" },
+    });
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Stacked PR chains require manual merge.",
+      ),
+    );
+  });
+
+  it("disables automatic PR merge for stacked-chain automations", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          chainMode: "pr_head_stacked",
+          prMergeMode: "manual",
+        }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-pr-merge-mode")).toBeDisabled();
+    expect(screen.getByTestId("agents-automation-settings")).toHaveTextContent(
+      "Stacked PR chains require manual merge",
+    );
+  });
+
+  it("shows the parked run pill, allows cancel, and opens the run conversation synchronously", () => {
+    const onFocusAutomationRun = vi.fn();
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "awaiting_plan_approval",
+            planJudgeState: "in_progress",
+            conversationId: "conversation-run-3",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({ onFocusAutomationRun });
+
+    expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
+      "Judging plan",
+    );
+    expect(
+      within(screen.getByTestId("agents-automation-run-3-status")).getByText(
+        "Judging plan",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Awaiting plan approval")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-run-3-cancel")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open run conversation")).toHaveClass(
+      "cursor-pointer",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-run-3-status"));
+
+    expect(onFocusAutomationRun).toHaveBeenCalledWith(
+      "automation-1",
+      "run-3",
+      "conversation-run-3",
+    );
+  });
+
+  it("makes run status pills clickable for any status with a conversation and inert without one", () => {
+    const onFocusAutomationRun = vi.fn();
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-running",
+            runIndex: 4,
+            status: "running",
+            conversationId: "conversation-running",
+            prNumber: null,
+            prUrl: null,
+          }),
+          automationRunFixture({
+            id: "run-agent-failed",
+            runIndex: 3,
+            status: "agent_failed",
+            conversationId: "conversation-agent-failed",
+            prNumber: null,
+            prUrl: null,
+          }),
+          automationRunFixture({
+            id: "run-terminal",
+            runIndex: 2,
+            status: "merged",
+            judgeState: "done",
+            conversationId: "conversation-terminal",
+          }),
+          automationRunFixture({
+            id: "run-without-conversation",
+            runIndex: 1,
+            status: "running",
+            conversationId: null,
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({ onFocusAutomationRun });
+
+    for (const runIndex of [4, 3, 2]) {
+      const row = screen.getByTestId(`agents-automation-run-${runIndex}`);
+      expect(
+        within(row).getByRole("button", { name: "Open run conversation" }),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId(`agents-automation-run-${runIndex}-status`));
+    }
+
+    expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
+      1,
+      "automation-1",
+      "run-running",
+      "conversation-running",
+    );
+    expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
+      2,
+      "automation-1",
+      "run-agent-failed",
+      "conversation-agent-failed",
+    );
+    expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
+      3,
+      "automation-1",
+      "run-terminal",
+      "conversation-terminal",
+    );
+
+    const inertRow = screen.getByTestId("agents-automation-run-1");
+    expect(
+      within(inertRow).queryByRole("button", { name: "Open run conversation" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agents-automation-run-1-status"));
+    expect(onFocusAutomationRun).toHaveBeenCalledTimes(3);
+  });
+
+  it("labels parked runs with pending judge revisions", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "awaiting_plan_approval",
+            planRevisionPending: true,
+            conversationId: "conversation-run-3",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByText("Revision pending")).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "plan_judge_failed",
+      "Plan judge failed — review and approve the plan to resume this automation.",
+    ],
+    [
+      "plan_revision_exhausted",
+      "Plan revision limit reached — review and approve the plan to resume this automation.",
+    ],
+  ])(
+    "deep-links %s plan-gate pause banners to the parked run conversation",
+    (pausedReasonCode, pausedCopy) => {
+      const onFocusAutomationRun = vi.fn();
+      useAutomationDetailMock.mockReturnValue({
+        data: automationDetailFixture({
+          automation: automationFixture({
+            status: "paused",
+            pausedReasonCode,
+            pausedReasonDetail: "Judge could not parse the verdict.",
+          }),
+          runs: [
+            automationRunFixture({
+              id: "run-3",
+              runIndex: 3,
+              status: "awaiting_plan_approval",
+              conversationId: "conversation-run-3",
+              prNumber: null,
+            }),
+          ],
+        }),
+        isLoading: false,
+        isError: false,
+      });
+
+      renderPanel({ onFocusAutomationRun });
+
+      expect(screen.getByTestId("agents-automation-plan-gate-paused")).toHaveTextContent(
+        `${pausedCopy} Judge could not parse the verdict.`,
+      );
+
+      fireEvent.click(screen.getByTestId("agents-automation-plan-gate-open"));
+
+      expect(onFocusAutomationRun).toHaveBeenCalledWith(
+        "automation-1",
+        "run-3",
+        "conversation-run-3",
+      );
+    },
+  );
+
+  it("hides the max runs editor while the automation is active", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "active" }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-automation-max-runs"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the linked spec name and preview in the Spec section", () => {
@@ -625,7 +1299,8 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
 
     expect(screen.getByText("Paused")).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
+    // "Running" appears both in the Current PR summary and the runs list row.
+    expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-resume")).toBeInTheDocument();
 
@@ -731,7 +1406,7 @@ describe("AgentsAutomationPanel", () => {
       isError: false,
     });
 
-    renderPanel(null);
+    renderPanel({ onOpenAutomation: null });
 
     expect(screen.getByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("0 of 3")).toBeInTheDocument();

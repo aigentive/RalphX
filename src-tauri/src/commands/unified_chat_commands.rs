@@ -31,6 +31,11 @@ use crate::application::agent_conversation_archive::{
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
+#[doc(hidden)]
+pub use crate::application::agent_conversation_mode_switch::AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE;
+use crate::application::agent_conversation_mode_switch::{
+    automation_run_mode_locked_error_message, is_automation_run_mode_switch_locked,
+};
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
 };
@@ -90,6 +95,10 @@ use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
     PublishBranchFreshnessStatus, PublishFailureClass,
+};
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
+    AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
@@ -3066,19 +3075,22 @@ pub async fn switch_agent_conversation_mode_for_state(
         input,
         state,
         ModeSwitchRunningAgentPolicy::Reject,
+        ModeSwitchInitiator::User,
     )
     .await
 }
 
 #[doc(hidden)]
-pub(crate) async fn switch_agent_conversation_mode_for_state_allowing_running(
+pub async fn switch_agent_conversation_mode_for_state_allowing_running(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
+    initiator: ModeSwitchInitiator,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     switch_agent_conversation_mode_for_state_with_running_policy(
         input,
         state,
         ModeSwitchRunningAgentPolicy::Allow,
+        initiator,
     )
     .await
 }
@@ -3093,8 +3105,15 @@ pub async fn switch_agent_conversation_mode_for_state_stopping_running_agent(
         input,
         state,
         ModeSwitchRunningAgentPolicy::StopWithService(chat_service),
+        ModeSwitchInitiator::User,
     )
     .await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeSwitchInitiator {
+    User,
+    System,
 }
 
 #[derive(Clone, Copy)]
@@ -3108,6 +3127,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
     running_agent_policy: ModeSwitchRunningAgentPolicy<'_>,
+    initiator: ModeSwitchInitiator,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
@@ -3131,6 +3151,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         .ok_or_else(|| format!("Conversation not found: {}", conversation_id))?;
     if conversation.context_type != ChatContextType::Project {
         return Err("Only project agent conversations can change mode".to_string());
+    }
+    if initiator == ModeSwitchInitiator::User && is_automation_run_mode_switch_locked(&conversation)
+    {
+        return Err(automation_run_mode_locked_error_message());
     }
 
     let running_key = RunningAgentKey::new(
@@ -4253,10 +4277,8 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                     .update_pr_auto_merge_state(
                         conversation_id,
                         Some(false),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be enabled yet: {error}"
-                        )),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_enable_failure_summary(&error)),
                     )
                     .await
                     .map_err(|e| e.to_string())?;
@@ -4287,10 +4309,8 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 .update_pr_auto_merge_state(
                     conversation_id,
                     Some(true),
-                    Some("waiting"),
-                    Some(&format!(
-                        "GitHub auto-merge could not be disabled yet: {error}"
-                    )),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&auto_merge_disable_failure_summary(&error)),
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -4646,7 +4666,7 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
                     .update_pr_auto_merge_state(
                         &conversation_id,
                         refreshed_for_sync.pr_auto_merge_current,
-                        Some("waiting"),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
                         Some(&format!(
                             "GitHub auto-merge state could not be refreshed while pausing Auto Publish: {error}"
                         )),
@@ -6328,7 +6348,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                     .update_pr_auto_merge_state(
                         &refreshed.conversation_id,
                         Some(false),
-                        Some("waiting"),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
                         Some(&format!(
                             "GitHub auto-merge state could not be refreshed yet: {error}"
                         )),
@@ -6993,7 +7013,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                     .update_pr_auto_merge_state(
                         &refreshed.conversation_id,
                         Some(false),
-                        Some("waiting"),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
                         Some(&format!(
                             "GitHub auto-merge state could not be refreshed yet: {error}"
                         )),
@@ -10055,7 +10075,7 @@ mod tests {
         AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
         AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
         CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
-        ForkAgentConversationResponse, SwitchAgentConversationModeInput,
+        ForkAgentConversationResponse, ModeSwitchInitiator, SwitchAgentConversationModeInput,
         UpdateAgentConversationCoordinationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
@@ -12082,10 +12102,7 @@ mod tests {
             DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
         );
         assert_eq!(response.pr_auto_merge_current, Some(false));
-        assert_eq!(
-            response.pr_supervision_status.as_deref(),
-            Some("disabled")
-        );
+        assert_eq!(response.pr_supervision_status.as_deref(), Some("disabled"));
         assert!(response
             .pr_supervision_summary
             .as_deref()
@@ -16906,6 +16923,7 @@ mod tests {
                 base_source_pull_request: None,
             },
             &state,
+            ModeSwitchInitiator::User,
         )
         .await
         .expect("accepted proposal switch should bypass running guard");

@@ -187,6 +187,11 @@ const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
         "automation-judge",
         "ralphx-automation-judge",
     ),
+    (
+        "ralphx-automation-plan-judge",
+        "automation-plan-judge",
+        "ralphx-automation-plan-judge",
+    ),
     ("ralphx-review-history", "review_history", "review-history"),
     (
         "ralphx-project-analyzer",
@@ -268,6 +273,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
     "ralphx-automation-judge",
+    "ralphx-automation-plan-judge",
     "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
@@ -295,6 +301,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
     "ralphx-automation-judge",
+    "ralphx-automation-plan-judge",
     "ralphx-automation-setup",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
@@ -401,6 +408,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-workspace-reviewer",
     "ralphx-automation-setup",
     "ralphx-automation-judge",
+    "ralphx-automation-plan-judge",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -719,6 +727,13 @@ fn codex_runtime_features_load_from_harness_metadata() {
         workspace_reviewer.runtime_features.get("shell_tool"),
         Some(&false),
         "workspace reviewer should disable Codex shell_tool declaratively"
+    );
+
+    let general_worker = load_canonical_codex_metadata(&root, "ralphx-general-worker");
+    assert_eq!(
+        general_worker.runtime_features.get("shell_tool"),
+        Some(&true),
+        "general worker should declare Codex metadata instead of falling back to default"
     );
 }
 

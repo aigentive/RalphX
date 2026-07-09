@@ -36,6 +36,9 @@ harnesses:
         - Edit
         - Bash
         - LSP
+  codex:
+    runtime_features:
+      shell_tool: true
 delegation:
   allowed_targets:
     - ralphx-general-explorer

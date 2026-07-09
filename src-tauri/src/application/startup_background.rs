@@ -5,11 +5,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::application::agent_conversation_mode_switch::system_switch_automation_run_to_edit;
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
 };
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
+};
+use crate::application::automation::plan_gate::{
+    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
+    AutomationPlanVerificationStarter, AutomationRunResumer,
 };
 use crate::application::automation::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
@@ -17,16 +22,29 @@ use crate::application::automation::provisioning::{
 use crate::application::automation::scheduler::{
     global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
     GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
+    HarnessAutomationPlanJudgeInvoker,
 };
 use crate::application::automation::transition::TauriAutomationEventEmitter;
+use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
+use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
+use crate::application::verification_child_session::{
+    repair_blank_orphaned_verification_generation, spawn_verification_agent,
+    trigger_auto_verify_generation,
+};
 use crate::application::{AppState, TeamService};
 use crate::commands::ExecutionState;
+use crate::domain::entities::{
+    ChatContextType, ChatConversationId, VerificationConfirmationStatus, VerificationStatus,
+};
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
     TaskRepository,
 };
+use crate::domain::services::load_effective_verification_status;
+use crate::error::{AppError, AppResult};
+use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
 use crate::utils::backend_endpoint::backend_http_port;
 use tauri::Manager;
@@ -58,6 +76,18 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn automation_run_starter_for_test(
+    state: AppState,
+) -> AgentConversationAutomationRunStarter<tauri::test::MockRuntime> {
+    AgentConversationAutomationRunStarter::new(
+        state,
+        Arc::new(ExecutionState::new()),
+        None,
+        crate::testing::create_mock_app_handle(),
+    )
+}
+
 #[async_trait]
 impl<R: tauri::Runtime + 'static> AutomationRunStarter
     for AgentConversationAutomationRunStarter<R>
@@ -81,6 +111,277 @@ impl<R: tauri::Runtime + 'static> AutomationRunStarter
             branch_name: result.workspace.map(|workspace| workspace.branch_name),
         })
     }
+}
+
+pub struct AgentConversationAutomationRunResumer<R: tauri::Runtime + 'static> {
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle<R>,
+}
+
+impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunResumer<R> {
+    pub fn new(
+        state: AppState,
+        execution_state: Arc<ExecutionState>,
+        app_handle: tauri::AppHandle<R>,
+    ) -> Self {
+        Self {
+            state,
+            execution_state,
+            app_handle,
+        }
+    }
+
+    fn chat_service(&self) -> crate::application::AppChatService<R> {
+        let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
+        build_chat_service_from_deps(
+            Some(self.app_handle.clone()),
+            Some(Arc::clone(&self.execution_state)),
+            &chat_deps,
+        )
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn automation_run_resumer_for_test(
+    state: AppState,
+) -> AgentConversationAutomationRunResumer<tauri::test::MockRuntime> {
+    AgentConversationAutomationRunResumer::new(
+        state,
+        Arc::new(ExecutionState::new()),
+        crate::testing::create_mock_app_handle(),
+    )
+}
+
+#[async_trait]
+impl<R: tauri::Runtime + 'static> AutomationRunResumer
+    for AgentConversationAutomationRunResumer<R>
+{
+    async fn is_agent_running(&self, conversation_id: &ChatConversationId) -> AppResult<bool> {
+        let context_id = conversation_id.as_str();
+        Ok(self
+            .chat_service()
+            .is_agent_running(ChatContextType::Project, &context_id)
+            .await)
+    }
+
+    async fn launches_paused(&self) -> AppResult<bool> {
+        Ok(self.execution_state.is_paused())
+    }
+
+    async fn switch_to_edit(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        system_switch_automation_run_to_edit(conversation_id, &self.state).await?;
+        Ok(())
+    }
+
+    async fn resume_with_prompt(
+        &self,
+        conversation_id: &ChatConversationId,
+        prompt: &str,
+    ) -> AppResult<()> {
+        let chat_service = self.chat_service();
+        resume_automation_run_with_prompt_via_chat_service(
+            &self.state,
+            &chat_service,
+            conversation_id,
+            prompt,
+        )
+        .await
+    }
+}
+
+pub struct AgentConversationAutomationPlanVerificationStarter<R: tauri::Runtime + 'static> {
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle<R>,
+}
+
+impl<R: tauri::Runtime + 'static> AgentConversationAutomationPlanVerificationStarter<R> {
+    pub fn new(
+        state: AppState,
+        execution_state: Arc<ExecutionState>,
+        app_handle: tauri::AppHandle<R>,
+    ) -> Self {
+        Self {
+            state,
+            execution_state,
+            app_handle,
+        }
+    }
+
+    fn chat_service(&self) -> impl ChatService {
+        let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
+        build_chat_service_from_deps(
+            Some(self.app_handle.clone()),
+            Some(Arc::clone(&self.execution_state)),
+            &chat_deps,
+        )
+    }
+}
+
+#[async_trait]
+impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
+    for AgentConversationAutomationPlanVerificationStarter<R>
+{
+    async fn start_verification(
+        &self,
+        request: AutomationPlanVerificationStartRequest,
+    ) -> AppResult<AutomationPlanVerificationStartOutcome> {
+        let session_id = request.session_id;
+        let provider_harness = request.provider_harness;
+        self.state
+            .ideation_session_repo
+            .set_verification_confirmation_status(
+                &session_id,
+                Some(VerificationConfirmationStatus::Accepted),
+            )
+            .await?;
+
+        let session = self
+            .state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Planning session {} not found",
+                    session_id.as_str()
+                ))
+            })?;
+
+        repair_blank_orphaned_verification_generation(&self.state, &session).await?;
+
+        if session
+            .plan_artifact_id
+            .as_ref()
+            .is_none_or(|artifact_id| artifact_id.as_str() != request.artifact_id)
+        {
+            return Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                detail: format!(
+                    "current planning session artifact does not match parked artifact {}",
+                    request.artifact_id
+                ),
+            });
+        }
+
+        let (status, in_progress) =
+            load_effective_verification_status(self.state.ideation_session_repo.as_ref(), &session)
+                .await?;
+        if in_progress || status == VerificationStatus::Reviewing {
+            return Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress {
+                generation: session.verification_generation,
+            });
+        }
+
+        let maybe_generation = trigger_auto_verify_generation(&self.state, &session_id).await?;
+
+        let Some(generation) = maybe_generation else {
+            let Some((status, in_progress)) = self
+                .state
+                .ideation_session_repo
+                .get_verification_status(&session_id)
+                .await?
+            else {
+                return Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                    detail: "verification trigger did not update a known session".to_string(),
+                });
+            };
+            if in_progress || status == VerificationStatus::Reviewing {
+                return Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress {
+                    generation: session.verification_generation,
+                });
+            }
+            return Ok(AutomationPlanVerificationStartOutcome::AlreadyTerminal {
+                generation: session.verification_generation,
+                status,
+            });
+        };
+
+        let spawn = spawn_verification_agent(
+            &self.state,
+            &session_id,
+            generation,
+            provider_harness,
+            &[],
+            |_| self.chat_service(),
+        )
+        .await;
+        if spawn.spawned {
+            Ok(AutomationPlanVerificationStartOutcome::Started { generation })
+        } else {
+            Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                detail: spawn.failure_detail.unwrap_or_else(|| {
+                    "verification agent failed to spawn for an unknown reason".to_string()
+                }),
+            })
+        }
+    }
+}
+
+pub(crate) async fn resume_automation_run_with_prompt_via_chat_service<S: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &S,
+    conversation_id: &ChatConversationId,
+    prompt: &str,
+) -> AppResult<()> {
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "automation run conversation {} not found",
+                conversation_id
+            ))
+        })?;
+    if conversation.context_type != ChatContextType::Project {
+        return Err(AppError::Validation(format!(
+            "automation run conversation {} is not project-backed",
+            conversation_id
+        )));
+    }
+
+    let runtime_context_id = conversation_id.as_str();
+    let result = chat_service
+        .send_message(
+            ChatContextType::Project,
+            &conversation.context_id,
+            prompt,
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id.clone()),
+                caller_context: SendCallerContext::StartupResumption,
+                ..SendMessageOptions::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("automation plan gate send failed: {error}"))
+        })?;
+
+    if result.was_queued {
+        if let Some(queued_message_id) = result.queued_message_id.as_deref() {
+            if let Err(error) = chat_service
+                .delete_queued_message(
+                    ChatContextType::Project,
+                    &runtime_context_id,
+                    queued_message_id,
+                )
+                .await
+            {
+                warn!(
+                    conversation_id = conversation_id.as_str(),
+                    queued_message_id,
+                    error = %error,
+                    "Failed to purge queued automation plan gate prompt"
+                );
+            }
+        }
+        return Err(AppError::Infrastructure(
+            "automation plan gate send was queued instead of spawning".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 pub async fn recover_memory_archive_jobs_on_startup(
@@ -152,14 +453,26 @@ pub fn spawn_automation_scheduler(
         .map(|state| state.inner().clone());
     let starter = Arc::new(AgentConversationAutomationRunStarter::new(
         state.clone(),
-        execution_state,
+        Arc::clone(&execution_state),
         team_service,
+        app_handle.clone(),
+    ));
+    let resumer = Arc::new(AgentConversationAutomationRunResumer::new(
+        state.clone(),
+        Arc::clone(&execution_state),
         app_handle.clone(),
     ));
     let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
         state.github_service.clone(),
     ));
     let judge_invoker = Arc::new(HarnessAutomationJudgeInvoker::new(state.clone()));
+    let plan_judge_invoker = Arc::new(HarnessAutomationPlanJudgeInvoker::new(state.clone()));
+    let plan_verification_starter =
+        Arc::new(AgentConversationAutomationPlanVerificationStarter::new(
+            state.clone(),
+            Arc::clone(&execution_state),
+            app_handle.clone(),
+        ));
     let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
 
     let scheduler = AutomationScheduler::new(
@@ -168,9 +481,15 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.agent_run_repo),
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.ideation_session_repo),
+        Arc::new(SqlitePlanArtifactApprovalRepository::new(state.db.clone())),
+        Arc::new(DbPlanArtifactApprovalWriter::new(state.db.clone())),
         starter,
+        resumer,
         signal_checker,
         judge_invoker,
+        plan_judge_invoker,
+        plan_verification_starter,
         event_emitter,
         Arc::clone(&state.artifact_repo),
         registry,
@@ -202,6 +521,7 @@ pub fn spawn_automation_scheduler(
                         successor_runs = summary.successor_runs,
                         signal_check_errors = summary.signal_check_errors,
                         paused_automations = summary.paused_automations,
+                        resumed_automations = summary.resumed_automations,
                         completed_automations = summary.completed_automations,
                         provisioning_errors = summary.provisioning_errors,
                         automation_errors = summary.automation_errors,
@@ -400,46 +720,4 @@ pub fn spawn_recovery_queue_processor(
     tauri::async_runtime::spawn(async move {
         recovery_processor.run().await;
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-    use crate::domain::entities::ChatConversationId;
-    use crate::error::AppError;
-
-    #[tokio::test]
-    async fn automation_run_starter_validates_request_before_runtime_start() {
-        let starter = AgentConversationAutomationRunStarter::new(
-            AppState::new_test(),
-            Arc::new(ExecutionState::new()),
-            None,
-            crate::testing::create_mock_app_handle(),
-        );
-        let request = AutomationRunStartRequest {
-            project_id: "project-1".to_string(),
-            conversation_id: ChatConversationId::from_string(
-                "11111111-1111-4111-8111-111111111111",
-            ),
-            run_prompt: "Run the automation".to_string(),
-            provider_harness: "codex".to_string(),
-            model_id: "gpt-5.4".to_string(),
-            logical_effort: Some("impossible".to_string()),
-            run_mode: "edit".to_string(),
-            base_ref_kind: "local_branch".to_string(),
-            base_ref: "main".to_string(),
-            base_display_name: Some("main".to_string()),
-            base_source_pull_request_json: None,
-            composer_project_references: Vec::new(),
-            composer_integration_references: Vec::new(),
-            composer_artifact_references: Vec::new(),
-            automation_context: None,
-        };
-
-        let error = starter.start_run(request).await.unwrap_err();
-
-        assert!(matches!(error, AppError::Validation(message) if message.contains("impossible")));
-    }
 }

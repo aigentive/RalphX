@@ -2,16 +2,21 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use serde_json::Value;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer;
 
 use super::provisioning::{
     AutomationRunProvisioner, AutomationRunStartOutcome, AutomationRunStartRequest,
-    AutomationRunStarter,
+    AutomationRunStarter, AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK,
 };
-use super::transition::NoopAutomationEventEmitter;
+use super::transition::{AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter};
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
-    AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
     AutomationRunStatus, AutomationStatus, ChatContextType, IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{
@@ -50,6 +55,9 @@ fn automation(id: &str) -> Automation {
         goal_items_json: None,
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: AutomationPlanApprovalMode::Manual,
+        pr_merge_mode: AutomationPrMergeMode::Manual,
+        plan_deep_verification: false,
         max_runs: 25,
         max_consecutive_failures: 3,
         first_run_prompt: Some("Build the first PR".to_string()),
@@ -69,6 +77,14 @@ fn run(automation_id: AutomationId) -> AutomationRun {
         status: AutomationRunStatus::Pending,
         judge_state: AutomationJudgeState::None,
         judge_lease_expires_at: None,
+        plan_judge_state: AutomationPlanJudgeState::None,
+        plan_judge_lease_expires_at: None,
+        plan_judge_verdict_json: None,
+        plan_revision_round: 0,
+        plan_reminder_count: 0,
+        plan_pending_instructions: None,
+        plan_last_parked_artifact_id: None,
+        agent_phase_started_at: None,
         conversation_id: None,
         run_prompt: "Build the first PR".to_string(),
         prompt_author: AutomationPromptAuthor::SetupAgent,
@@ -100,6 +116,7 @@ fn run(automation_id: AutomationId) -> AutomationRun {
 #[derive(Clone)]
 struct RecordingStarter {
     requests: Arc<Mutex<Vec<AutomationRunStartRequest>>>,
+    invoked_at: Arc<Mutex<Vec<chrono::DateTime<chrono::Utc>>>>,
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
 }
 
@@ -107,12 +124,17 @@ impl RecordingStarter {
     fn new(workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>) -> Self {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
+            invoked_at: Arc::new(Mutex::new(Vec::new())),
             workspace_repo,
         }
     }
 
     fn requests(&self) -> Vec<AutomationRunStartRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn invoked_at(&self) -> Vec<chrono::DateTime<chrono::Utc>> {
+        self.invoked_at.lock().unwrap().clone()
     }
 }
 
@@ -122,11 +144,16 @@ impl AutomationRunStarter for RecordingStarter {
         &self,
         request: AutomationRunStartRequest,
     ) -> AppResult<AutomationRunStartOutcome> {
+        self.invoked_at.lock().unwrap().push(chrono::Utc::now());
         self.requests.lock().unwrap().push(request.clone());
+        let workspace_mode = request
+            .run_mode
+            .parse::<AgentConversationWorkspaceMode>()
+            .unwrap_or(AgentConversationWorkspaceMode::Edit);
         let workspace = AgentConversationWorkspace::new(
             request.conversation_id.clone(),
             ProjectId::from_string(request.project_id.clone()),
-            AgentConversationWorkspaceMode::Edit,
+            workspace_mode,
             IdeationAnalysisBaseRefKind::LocalBranch,
             request.base_ref.clone(),
             request.base_display_name.clone(),
@@ -151,6 +178,102 @@ impl AutomationRunStarter for FailingStarter {
     ) -> AppResult<AutomationRunStartOutcome> {
         Err(AppError::Validation("starter failed".to_string()))
     }
+}
+
+#[derive(Default)]
+struct RecordingEmitter {
+    events: Mutex<Vec<AutomationEvent>>,
+}
+
+impl RecordingEmitter {
+    fn events(&self) -> Vec<AutomationEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl AutomationEventEmitter for RecordingEmitter {
+    fn emit(&self, event: AutomationEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+struct CapturingWarnLayer {
+    captured: Arc<Mutex<Vec<String>>>,
+}
+
+impl<S: tracing::Subscriber> Layer<S> for CapturingWarnLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() > tracing::Level::WARN {
+            return;
+        }
+
+        struct MessageVisitor(String);
+
+        impl tracing::field::Visit for MessageVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "message" {
+                    self.0 = value.to_string();
+                }
+            }
+
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+
+        let mut visitor = MessageVisitor(String::new());
+        event.record(&mut visitor);
+        if !visitor.0.is_empty() {
+            self.captured.lock().unwrap().push(visitor.0);
+        }
+    }
+}
+
+fn goal_item_status(goal_items_json: &str, id: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(goal_items_json).ok()?;
+    value.as_array()?.iter().find_map(|item| {
+        let item = item.as_object()?;
+        (item.get("id").and_then(Value::as_str) == Some(id))
+            .then(|| {
+                item.get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .flatten()
+    })
+}
+
+fn automation_updated_events(
+    events: &[AutomationEvent],
+    automation_id: &AutomationId,
+) -> Vec<usize> {
+    events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            AutomationEvent::AutomationUpdated { automation_id: id } if id == automation_id => {
+                Some(index)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn run_updated_events(events: &[AutomationEvent], run_id: &AutomationRunId) -> Vec<usize> {
+    events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match event {
+            AutomationEvent::AutomationRunUpdated { run_id: id, .. } if id == run_id => Some(index),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -193,12 +316,15 @@ fn automation_run_start_request_maps_to_manual_start_input() {
     let input = request.into_start_input().unwrap();
 
     assert_eq!(input.project_id, "project-1");
-    assert_eq!(input.content, "Build the first PR");
+    assert_eq!(
+        input.content,
+        format!("{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\nBuild the first PR")
+    );
     assert_eq!(input.conversation_id.as_deref(), Some(conversation_id));
     assert_eq!(input.provider_harness.as_deref(), Some("codex"));
     assert_eq!(input.model_override.as_deref(), Some("gpt-5.4"));
     assert_eq!(input.logical_effort, Some(LogicalEffort::High));
-    assert_eq!(input.mode.as_deref(), Some("edit"));
+    assert_eq!(input.mode.as_deref(), Some("plan"));
     assert_eq!(input.base_ref_kind.as_deref(), Some("local_branch"));
     assert_eq!(input.base_branch_mode.as_deref(), Some("isolated"));
     assert_eq!(input.base_ref.as_deref(), Some("feature/base"));
@@ -247,7 +373,10 @@ fn automation_run_start_request_injects_spec_reference_and_context_when_spec_lin
     let input = request.into_start_input().unwrap();
     assert_eq!(input.composer_artifact_references.len(), 1);
     assert_eq!(input.composer_artifact_references[0].kind, "spec");
-    assert!(input.content.starts_with("<automation_context>"));
+    assert!(input
+        .content
+        .starts_with(AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK));
+    assert!(input.content.contains("<automation_context>"));
     assert!(input.content.contains("Migrate every module"));
     assert!(input.content.contains("Build the first PR"));
 }
@@ -271,7 +400,10 @@ fn automation_run_start_request_has_no_spec_reference_or_context_when_unlinked()
 
     let input = request.into_start_input().unwrap();
     assert!(input.composer_artifact_references.is_empty());
-    assert_eq!(input.content, "Build the first PR");
+    assert_eq!(
+        input.content,
+        format!("{AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK}\nBuild the first PR")
+    );
 }
 
 #[test]
@@ -350,9 +482,452 @@ fn automation_run_start_request_drops_source_pr_after_run_one() {
 }
 
 #[tokio::test]
+async fn provision_first_run_marks_current_goal_item_in_progress_and_emits_automation_update() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Finished","status":"done"},{"id":"item-2","title":"Active","status":"pending"},{"id":"item-3","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_first_run(&automation)
+        .await
+        .unwrap()
+        .expect("first run should be provisioned");
+
+    assert_eq!(started.status, AutomationRunStatus::Running);
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored
+        .goal_items_json
+        .as_deref()
+        .expect("goal items should remain persisted");
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-1").as_deref(),
+        Some("done")
+    );
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-2").as_deref(),
+        Some("in_progress")
+    );
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-3").as_deref(),
+        Some("pending")
+    );
+
+    let events = event_emitter.events();
+    let automation_events = automation_updated_events(&events, &automation.id);
+    assert_eq!(automation_events.len(), 1);
+    let running_event = run_updated_events(&events, &started.id)
+        .into_iter()
+        .max()
+        .expect("running transition should emit a run update");
+    assert!(
+        automation_events[0] > running_event,
+        "goal-item update event should follow the accepted Running transition: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn provision_pending_successor_run_marks_current_goal_item_in_progress() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Finished","status":"skipped"},{"id":"item-2","title":"Successor work","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut pending = run(automation.id.clone());
+    pending.id = AutomationRunId::from_string("run-2");
+    pending.run_index = 2;
+    pending.base_from_run_id = Some(AutomationRunId::from_string("run-1"));
+    run_repo.create_run(pending.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_pending_run(&automation, &pending)
+        .await
+        .unwrap()
+        .expect("successor run should be provisioned");
+
+    assert_eq!(started.status, AutomationRunStatus::Running);
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-2").as_deref(),
+        Some("in_progress")
+    );
+    assert_eq!(
+        automation_updated_events(&event_emitter.events(), &automation.id).len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn provision_pending_run_does_not_rewrite_already_in_progress_goal_item() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Active","status":"in_progress"},{"id":"item-2","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let before = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist before provisioning");
+    let mut pending = run(automation.id.clone());
+    pending.id = AutomationRunId::from_string("run-2");
+    pending.run_index = 2;
+    run_repo.create_run(pending.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_pending_run(&automation, &pending)
+        .await
+        .unwrap()
+        .expect("pending run should be provisioned");
+
+    assert_eq!(started.status, AutomationRunStatus::Running);
+    let after = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist after provisioning");
+    assert_eq!(after.goal_items_json, before.goal_items_json);
+    assert_eq!(after.updated_at, before.updated_at);
+    assert!(
+        automation_updated_events(&event_emitter.events(), &automation.id).is_empty(),
+        "already in-progress goal item should not emit an automation update"
+    );
+}
+
+#[tokio::test]
+async fn provision_goal_item_sync_self_reverts_when_run_closed_after_mark() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Race target","status":"pending"},{"id":"item-2","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut cancelled = run(automation.id.clone());
+    cancelled.status = AutomationRunStatus::Cancelled;
+    run_repo.create_run(cancelled.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    provisioner
+        .sync_current_goal_item_started(&automation.id, &cancelled.id)
+        .await;
+
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-1").as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-2").as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        automation_updated_events(&event_emitter.events(), &automation.id).len(),
+        2,
+        "stale mark should be followed by a self-revert update"
+    );
+}
+
+#[tokio::test]
+async fn provision_goal_item_sync_self_reverts_when_judge_failed_loses_goal_authority() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Race target","status":"pending"},{"id":"item-2","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut failed = run(automation.id.clone());
+    failed.status = AutomationRunStatus::AgentFailed;
+    failed.judge_state = AutomationJudgeState::Failed;
+    run_repo.create_run(failed.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    provisioner
+        .sync_current_goal_item_started(&automation.id, &failed.id)
+        .await;
+
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-1").as_deref(),
+        Some("pending")
+    );
+    assert_eq!(
+        automation_updated_events(&event_emitter.events(), &automation.id).len(),
+        2,
+        "judge-failed terminal run should be followed by a self-revert update"
+    );
+}
+
+#[tokio::test]
+async fn provision_goal_item_sync_keeps_completed_judge_settled_goal_authority() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Race target","status":"pending"},{"id":"item-2","title":"Later","status":"pending"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut completed = run(automation.id.clone());
+    completed.status = AutomationRunStatus::Completed;
+    completed.judge_state = AutomationJudgeState::Done;
+    run_repo.create_run(completed.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    provisioner
+        .sync_current_goal_item_started(&automation.id, &completed.id)
+        .await;
+
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist");
+    let goal_items_json = stored.goal_items_json.as_deref().unwrap();
+    assert_eq!(
+        goal_item_status(goal_items_json, "item-1").as_deref(),
+        Some("in_progress")
+    );
+    assert_eq!(
+        automation_updated_events(&event_emitter.events(), &automation.id).len(),
+        1,
+        "goal-authoritative terminal run should keep the started item update"
+    );
+}
+
+#[tokio::test]
+async fn provision_first_run_does_not_rewrite_when_all_goal_items_are_terminal() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"Finished","status":"done"},{"id":"item-2","title":"Dropped","status":"skipped"}]"#
+            .to_string(),
+    );
+    automation_repo.create(automation.clone()).await.unwrap();
+    let before = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist before provisioning");
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_first_run(&automation)
+        .await
+        .unwrap()
+        .expect("first run should still be provisioned");
+
+    assert_eq!(started.status, AutomationRunStatus::Running);
+    let after = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should exist after provisioning");
+    assert_eq!(after.goal_items_json, before.goal_items_json);
+    assert_eq!(after.updated_at, before.updated_at);
+    assert!(
+        automation_updated_events(&event_emitter.events(), &automation.id).is_empty(),
+        "terminal goal items should not emit an automation update"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provision_first_run_skips_malformed_goal_items_json_but_starts_and_warns() {
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let subscriber = tracing_subscriber::registry().with(CapturingWarnLayer {
+        captured: Arc::clone(&captured),
+    });
+    let _guard = subscriber.set_default();
+
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let event_emitter = Arc::new(RecordingEmitter::default());
+    let mut automation = automation("automation-1");
+    automation.goal_items_json = Some("not-json".to_string());
+    automation_repo.create(automation.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        event_emitter.clone(),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_first_run(&automation)
+        .await
+        .unwrap()
+        .expect("malformed goal items should not block provisioning");
+
+    assert_eq!(started.status, AutomationRunStatus::Running);
+    let stored = automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should remain persisted");
+    assert_eq!(stored.goal_items_json.as_deref(), Some("not-json"));
+    assert!(
+        automation_updated_events(&event_emitter.events(), &automation.id).is_empty(),
+        "malformed goal items should not emit an automation update"
+    );
+    assert!(
+        captured
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.contains("Failed to sync automation goal item progress")),
+        "expected malformed goal-items warning, got {:?}",
+        captured.lock().unwrap()
+    );
+}
+
+#[tokio::test]
 async fn provision_first_run_noops_or_rejects_when_not_ready() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -398,7 +973,9 @@ async fn provision_first_run_noops_or_rejects_when_not_ready() {
 #[tokio::test]
 async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial_publish() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -448,7 +1025,7 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     assert_eq!(conversation.automation_run_id, Some(started.id.clone()));
     assert_eq!(
         conversation.agent_mode,
-        Some(AgentConversationWorkspaceMode::Edit)
+        Some(AgentConversationWorkspaceMode::Plan)
     );
     assert_eq!(conversation.title.as_deref(), Some("Large migration run 1"));
 
@@ -457,12 +1034,14 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         .await
         .unwrap()
         .expect("fake starter should create workspace");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
     assert!(workspace.auto_publish_initial_pr_enabled);
 
     let requests = starter.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].conversation_id, *conversation_id);
     assert_eq!(requests[0].run_prompt, "Build the first PR");
+    assert_eq!(requests[0].run_mode, "plan");
     assert_eq!(requests[0].provider_harness, "codex");
     assert_eq!(requests[0].model_id, "gpt-5.4");
     assert_eq!(requests[0].base_ref_kind, "local_branch");
@@ -482,12 +1061,56 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         .expect("latest run should exist");
     assert_eq!(latest.id, started.id);
     assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert_eq!(latest.run_prompt, "Build the first PR");
+}
+
+#[tokio::test]
+async fn provision_first_run_phase_basis_never_postdates_agent_spawn() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let automation = automation("automation-1");
+    automation_repo.create(automation.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo,
+        run_repo,
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter.clone()),
+        Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
+    );
+
+    let started = provisioner
+        .provision_first_run(&automation)
+        .await
+        .unwrap()
+        .expect("first run should be provisioned");
+
+    // The freshness guard requires agent_run.started_at >= agent_phase_started_at.
+    // The spawned agent's run row is created inside the starter, so the phase
+    // basis MUST be captured before the starter runs; otherwise the first plan
+    // turn always reads as stale and the run can never park at the plan gate.
+    let spawn_time = starter.invoked_at()[0];
+    let phase_basis = started
+        .agent_phase_started_at
+        .expect("entering Running must stamp agent_phase_started_at");
+    assert!(
+        phase_basis <= spawn_time,
+        "agent_phase_started_at ({phase_basis}) must not postdate the agent spawn ({spawn_time})"
+    );
 }
 
 #[tokio::test]
 async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_status() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
@@ -526,7 +1149,9 @@ async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_stat
 #[tokio::test]
 async fn provision_pending_run_marks_agent_failed_when_starter_errors() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
-    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation = automation("automation-1");

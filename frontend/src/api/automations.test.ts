@@ -28,6 +28,9 @@ function automationResponse(overrides: Record<string, unknown> = {}) {
     goal_items_json: "[{\"text\":\"Update docs\"}]",
     chain_mode: "merged_base",
     completion_signal: "pr_merged",
+    plan_approval_mode: "manual",
+    pr_merge_mode: "manual",
+    plan_deep_verification: false,
     max_runs: 25,
     max_consecutive_failures: 3,
     first_run_prompt: "Open a docs PR",
@@ -46,6 +49,14 @@ function runResponse(overrides: Record<string, unknown> = {}) {
     status: "published",
     judge_state: "in_progress",
     judge_lease_expires_at: null,
+    plan_judge_state: "none",
+    plan_revision_round: 0,
+    plan_revision_pending: false,
+    plan_phase: false,
+    plan_artifact_id: null,
+    plan_approved_by: null,
+    plan_approved_artifact_version: null,
+    plan_approved_at: null,
     conversation_id: "conversation-run-1",
     run_prompt: "Open a docs PR",
     prompt_author: "setup_agent",
@@ -116,6 +127,9 @@ describe("automationsApi", () => {
         projectId: "project-1",
         setupConversationId: "conversation-setup-1",
         providerHarness: "codex",
+        planApprovalMode: "manual",
+        prMergeMode: "manual",
+        planDeepVerification: false,
         maxRuns: 25,
         maxConsecutiveFailures: 3,
       }),
@@ -133,6 +147,9 @@ describe("automationsApi", () => {
       id: "automation-1",
       maxRuns: 12,
       maxConsecutiveFailures: 2,
+      planApprovalMode: "automatic",
+      prMergeMode: "automatic",
+      planDeepVerification: true,
     });
     await automationsApi.pause({
       id: "automation-1",
@@ -145,6 +162,9 @@ describe("automationsApi", () => {
         id: "automation-1",
         maxRuns: 12,
         maxConsecutiveFailures: 2,
+        planApprovalMode: "automatic",
+        prMergeMode: "automatic",
+        planDeepVerification: true,
       },
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "pause_automation", {
@@ -206,8 +226,24 @@ describe("automationsApi", () => {
 
   it("transforms automation detail runs", async () => {
     vi.mocked(invoke).mockResolvedValue({
-      automation: automationResponse(),
-      runs: [runResponse()],
+      automation: automationResponse({
+        plan_approval_mode: "automatic",
+        pr_merge_mode: "automatic",
+        plan_deep_verification: true,
+      }),
+      runs: [
+        runResponse({
+          status: "awaiting_plan_approval",
+          plan_judge_state: "in_progress",
+          plan_revision_round: 2,
+          plan_revision_pending: true,
+          plan_phase: true,
+          plan_artifact_id: "plan-artifact-1",
+          plan_approved_by: "judge",
+          plan_approved_artifact_version: 3,
+          plan_approved_at: "2026-07-09T13:45:00Z",
+        }),
+      ],
       usage: usageResponse(),
     });
 
@@ -216,12 +252,24 @@ describe("automationsApi", () => {
         automation: expect.objectContaining({
           baseDisplayName: "Default branch",
           firstRunPrompt: "Open a docs PR",
+          planApprovalMode: "automatic",
+          prMergeMode: "automatic",
+          planDeepVerification: true,
         }),
         runs: [
           expect.objectContaining({
             automationId: "automation-1",
             runIndex: 1,
+            status: "awaiting_plan_approval",
             judgeState: "in_progress",
+            planJudgeState: "in_progress",
+            planRevisionRound: 2,
+            planRevisionPending: true,
+            planPhase: true,
+            planArtifactId: "plan-artifact-1",
+            planApprovedBy: "judge",
+            planApprovedArtifactVersion: 3,
+            planApprovedAt: "2026-07-09T13:45:00Z",
             prNumber: 593,
             signalCheckFailures: 0,
           }),

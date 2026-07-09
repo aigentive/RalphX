@@ -30,11 +30,11 @@ mod verification;
 pub use create::create_child_session;
 pub use parent_context::get_parent_session_context;
 pub use shared::{session_is_team_mode, synthesize_verification_prompt};
+pub(crate) use shared::build_ideation_chat_service;
 pub(crate) use verification::create_verification_child_session;
 
 use shared::{
-    build_ideation_chat_service, json_error, load_parent_context, rollback_verification_state,
-    validate_resolved_team_config,
+    json_error, load_parent_context, rollback_verification_state, validate_resolved_team_config,
 };
 
 type JsonError = (StatusCode, Json<serde_json::Value>);

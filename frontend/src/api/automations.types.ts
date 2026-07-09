@@ -9,6 +9,7 @@ export type AutomationRunStatus =
   | "pending"
   | "provisioning"
   | "running"
+  | "awaiting_plan_approval"
   | "published"
   | "completed"
   | "merged"
@@ -22,6 +23,16 @@ export type AutomationJudgeState =
   | "done"
   | "failed"
   | "skipped";
+
+export type AutomationPlanApprovalMode = "manual" | "automatic";
+
+export type AutomationPrMergeMode = "manual" | "automatic";
+
+export type AutomationPlanJudgeState =
+  | "none"
+  | "in_progress"
+  | "done"
+  | "failed";
 
 export type AutomationPromptAuthor =
   | "setup_agent"
@@ -61,6 +72,9 @@ export interface Automation {
   goalItemsJson: string | null;
   chainMode: AutomationChainMode;
   completionSignal: AutomationCompletionSignal;
+  planApprovalMode: AutomationPlanApprovalMode;
+  prMergeMode: AutomationPrMergeMode;
+  planDeepVerification: boolean;
   maxRuns: number;
   maxConsecutiveFailures: number;
   firstRunPrompt: string | null;
@@ -76,6 +90,14 @@ export interface AutomationRun {
   status: AutomationRunStatus;
   judgeState: AutomationJudgeState;
   judgeLeaseExpiresAt: string | null;
+  planJudgeState: AutomationPlanJudgeState;
+  planRevisionRound: number;
+  planRevisionPending: boolean;
+  planPhase: boolean;
+  planArtifactId: string | null;
+  planApprovedBy: string | null;
+  planApprovedArtifactVersion: number | null;
+  planApprovedAt: string | null;
   conversationId: string | null;
   runPrompt: string;
   promptAuthor: AutomationPromptAuthor;
@@ -141,6 +163,9 @@ export interface UpdateAutomationSettingsInput {
   name?: string | undefined;
   maxRuns?: number | undefined;
   maxConsecutiveFailures?: number | undefined;
+  planApprovalMode?: AutomationPlanApprovalMode | undefined;
+  prMergeMode?: AutomationPrMergeMode | undefined;
+  planDeepVerification?: boolean | undefined;
 }
 
 export interface PauseAutomationInput {

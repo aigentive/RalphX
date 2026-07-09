@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 
-use crate::entities::{Automation, AutomationId, AutomationStatus, ProjectId};
+use crate::entities::{
+    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
+    ProjectId,
+};
 use crate::error::AppResult;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -8,6 +11,9 @@ pub struct AutomationSettingsPatch {
     pub name: Option<String>,
     pub max_runs: Option<i64>,
     pub max_consecutive_failures: Option<i64>,
+    pub plan_approval_mode: Option<AutomationPlanApprovalMode>,
+    pub pr_merge_mode: Option<AutomationPrMergeMode>,
+    pub plan_deep_verification: Option<bool>,
 }
 
 /// Partial patch for the automation configuration fields the setup agent
@@ -58,6 +64,13 @@ pub trait AutomationRepository: Send + Sync {
     async fn update_goal_items_json(
         &self,
         id: &AutomationId,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>>;
+
+    async fn update_goal_items_json_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_goal_items_json: Option<String>,
         goal_items_json: Option<String>,
     ) -> AppResult<Option<Automation>>;
 

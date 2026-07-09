@@ -76,32 +76,6 @@ pub(super) fn plan_approval_view_sync(
     }
 }
 
-pub(super) fn upsert_plan_approval_sync(
-    conn: &Connection,
-    session_id: &str,
-    artifact: &Artifact,
-    approved_at: &str,
-) -> Result<(), AppError> {
-    conn.execute(
-        "INSERT INTO plan_artifact_approvals (
-            session_id, artifact_id, artifact_version, status, approved_at, approved_by
-         ) VALUES (?1, ?2, ?3, 'approved', ?4, 'user')
-         ON CONFLICT(session_id) DO UPDATE SET
-            artifact_id = excluded.artifact_id,
-            artifact_version = excluded.artifact_version,
-            status = excluded.status,
-            approved_at = excluded.approved_at,
-            approved_by = excluded.approved_by",
-        rusqlite::params![
-            session_id,
-            artifact.id.as_str(),
-            i64::from(artifact.metadata.version),
-            approved_at,
-        ],
-    )?;
-    Ok(())
-}
-
 // ============================================================================
 // EditError Types
 // ============================================================================
