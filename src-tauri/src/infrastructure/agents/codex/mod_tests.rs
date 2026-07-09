@@ -123,6 +123,13 @@ fn codex_mcp_args_override(overrides: &[String]) -> &str {
         .expect("Codex MCP args override")
 }
 
+fn override_keys(overrides: &[String]) -> Vec<&str> {
+    overrides
+        .iter()
+        .map(|entry| entry.split_once('=').map_or(entry.as_str(), |(key, _)| key))
+        .collect()
+}
+
 fn seed_live_agent_yaml(root: &Path, agent_name: &str) {
     let agent_dir = root.join("agents").join(agent_name);
     std::fs::create_dir_all(&agent_dir).expect("create agent fixture dir");
@@ -775,7 +782,8 @@ fn build_codex_mcp_overrides_includes_runtime_feature_flags_from_agent_metadata(
         overrides
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
-        "Codex runtime feature flags should flow into config overrides: {overrides:?}"
+        "Codex runtime feature flags should flow into config overrides; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -796,19 +804,22 @@ fn build_codex_mcp_overrides_pr_describer_enables_submit_tool_without_shell() {
         overrides
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
-        "PR describer should disable Codex shell tool: {overrides:?}"
+        "PR describer should disable Codex shell tool; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| entry
             == "mcp_servers.ralphx.enabled_tools=[\"submit_agent_workspace_pr_description\"]"),
-        "PR describer enabled tools should be limited to its submit tool: {overrides:?}"
+        "PR describer enabled tools should be limited to its submit tool; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx.args=")
                 && entry.contains("--allowed-tools=submit_agent_workspace_pr_description")),
-        "PR describer stdio MCP args should pass the submit-tool allowlist: {overrides:?}"
+        "PR describer stdio MCP args should pass the submit-tool allowlist; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1014,29 +1025,34 @@ harnesses:
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx.url=")),
-        "external MCP transport should use a streamable HTTP URL: {overrides:?}"
+        "external MCP transport should use a streamable HTTP URL; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| {
             entry == "mcp_servers.ralphx.bearer_token_env_var=\"RALPHX_TAURI_MCP_BYPASS_TOKEN\""
         }),
-        "external MCP transport should use the Tauri bypass token env var: {overrides:?}"
+        "external MCP transport should use the Tauri bypass token env var; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "mcp_servers.ralphx.enabled_tools=[\"v1_start_ideation\",\"v1_get_ideation_status\"]"),
-        "external MCP enabled tools should come from Codex metadata: {overrides:?}"
+        "external MCP enabled tools should come from Codex metadata; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         !overrides.iter().any(|entry| entry.contains(".command=") || entry.contains(".args=")),
-        "external MCP transport must not point Codex at the bundled stdio MCP server: {overrides:?}"
+        "external MCP transport must not point Codex at the bundled stdio MCP server; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
-        "runtime feature flags should still be preserved: {overrides:?}"
+        "runtime feature flags should still be preserved; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1059,25 +1075,29 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
 
     assert!(
         args.contains("--allowed-tools=") && args.contains("ask_user_question"),
-        "Codex Plan chat must keep ask_user_question for interactive Agent conversations: {overrides:?}"
+        "Codex Plan chat must keep ask_user_question for interactive Agent conversations; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "features.apply_patch_freeform=false"),
-        "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it: {overrides:?}"
+        "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "features.apply_patch_streaming_events=false"),
-        "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them: {overrides:?}"
+        "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "include_apply_patch_tool=false"),
-        "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it: {overrides:?}"
+        "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1100,11 +1120,13 @@ fn build_codex_mcp_overrides_filters_plan_question_tool_for_external_runs() {
 
     assert!(
         !args.contains("ask_user_question"),
-        "External Codex Plan chat spawns must filter ask_user_question: {overrides:?}"
+        "External Codex Plan chat spawns must filter ask_user_question; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         args.contains("get_session_plan"),
-        "Filtering interactive tools must preserve non-interactive Plan tools: {overrides:?}"
+        "Filtering interactive tools must preserve non-interactive Plan tools; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1160,27 +1182,31 @@ harnesses:
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx.url=")),
-        "external MCP transport should remain configured: {overrides:?}"
+        "external MCP transport should remain configured; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx_internal.command=")),
-        "internal MCP sidecar should launch bundled stdio server: {overrides:?}"
+        "internal MCP sidecar should launch bundled stdio server; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| {
             entry
                 == "mcp_servers.ralphx_internal.enabled_tools=[\"create_agent_task\",\"list_agent_tasks\"]"
         }),
-        "internal sidecar enabled tools should come from internal_mcp_tools: {overrides:?}"
+        "internal sidecar enabled tools should come from internal_mcp_tools; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| {
             entry.contains("mcp_servers.ralphx_internal.args=")
                 && entry.contains("--allowed-tools=create_agent_task,list_agent_tasks")
         }),
-        "internal sidecar args should pass narrowed --allowed-tools: {overrides:?}"
+        "internal sidecar args should pass narrowed --allowed-tools; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
