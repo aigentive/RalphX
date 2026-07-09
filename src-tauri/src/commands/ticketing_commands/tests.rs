@@ -26,7 +26,8 @@ use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
-    ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    ChatConversationId, CoordinationMode, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    TeamIntent,
 };
 use crate::domain::integrations::{
     AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
@@ -3924,6 +3925,121 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
     );
     assert_eq!(github.state().push_branch_calls, 0);
     assert!(result.send_result.was_queued);
+}
+
+#[tokio::test]
+async fn start_agent_conversation_persists_team_intent_for_new_project_conversation() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "team-start-new").await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, execution_state);
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: app.state::<AppState>().inner(),
+        execution_state: app.state::<Arc<ExecutionState>>().inner(),
+        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
+        app_handle: app.handle().clone(),
+    })
+    .start(StartAgentConversationInput {
+        project_id: project_id.as_str().to_string(),
+        content: "Start Team chat".to_string(),
+        conversation_id: None,
+        parent_conversation_id: None,
+        title: None,
+        provider_harness: Some("codex".to_string()),
+        model_override: None,
+        logical_effort: None,
+        codex_fast_mode: None,
+        mode: Some("chat".to_string()),
+        base_ref_kind: None,
+        base_branch_mode: None,
+        base_ref: None,
+        base_display_name: None,
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: Vec::new(),
+        composer_artifact_references: Vec::new(),
+        team_intent: Some(TeamIntent::rx_native(None)),
+    })
+    .await
+    .expect("start should queue while paused");
+
+    assert!(result.workspace.is_none());
+    assert!(result.send_result.was_queued);
+    assert_eq!(
+        result.conversation.coordination_mode,
+        CoordinationMode::RxNativeTeam
+    );
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&result.conversation.id)
+        .await
+        .expect("stored conversation should load")
+        .expect("stored conversation should exist");
+    assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+#[tokio::test]
+async fn start_agent_conversation_updates_seeded_project_team_coordination_mode() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "team-start-seeded").await;
+    let seeded = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("seed conversation should be created");
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, execution_state);
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: app.state::<AppState>().inner(),
+        execution_state: app.state::<Arc<ExecutionState>>().inner(),
+        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
+        app_handle: app.handle().clone(),
+    })
+    .start(StartAgentConversationInput {
+        project_id: project_id.as_str().to_string(),
+        content: "Start seeded Team chat".to_string(),
+        conversation_id: Some(seeded.id.as_str().to_string()),
+        parent_conversation_id: None,
+        title: None,
+        provider_harness: Some("codex".to_string()),
+        model_override: None,
+        logical_effort: None,
+        codex_fast_mode: None,
+        mode: Some("chat".to_string()),
+        base_ref_kind: None,
+        base_branch_mode: None,
+        base_ref: None,
+        base_display_name: None,
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: Vec::new(),
+        composer_artifact_references: Vec::new(),
+        team_intent: Some(TeamIntent::rx_native(None)),
+    })
+    .await
+    .expect("start should queue while paused");
+
+    assert_eq!(result.conversation.id, seeded.id);
+    assert!(result.send_result.was_queued);
+    assert_eq!(
+        result.conversation.coordination_mode,
+        CoordinationMode::RxNativeTeam
+    );
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&result.conversation.id)
+        .await
+        .expect("stored conversation should load")
+        .expect("stored conversation should exist");
+    assert_eq!(stored.coordination_mode, CoordinationMode::RxNativeTeam);
 }
 
 #[tokio::test]

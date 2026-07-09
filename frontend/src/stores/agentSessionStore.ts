@@ -14,6 +14,7 @@ import type {
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  TeamIntent,
 } from "@/api/chat";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
@@ -75,6 +76,7 @@ export interface AgentStartConversationRetryInput {
   mode: AgentConversationWorkspaceMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
+  teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];

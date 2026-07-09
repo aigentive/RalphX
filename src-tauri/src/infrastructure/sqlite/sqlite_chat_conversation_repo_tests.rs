@@ -4,7 +4,7 @@
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId,
+    ChatConversationId, CoordinationMode,
 };
 use crate::domain::repositories::ChatConversationRepository;
 use crate::infrastructure::sqlite::SqliteChatConversationRepository;
@@ -29,6 +29,7 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,
         title: None,
@@ -85,6 +86,7 @@ async fn test_create_preserves_optional_fields() {
         upstream_provider: Some("anthropic".to_string()),
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
+        coordination_mode: CoordinationMode::RxNativeTeam,
         automation_id: None,
         automation_run_id: None,
         title: Some("My Conversation".to_string()),
@@ -114,11 +116,46 @@ async fn test_create_preserves_optional_fields() {
         loaded.agent_mode,
         Some(AgentConversationWorkspaceMode::Chat)
     );
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeTeam);
     assert_eq!(loaded.title, Some("My Conversation".to_string()));
     assert_eq!(loaded.message_count, 5);
     assert!(loaded.last_message_at.is_some());
     assert_eq!(loaded.parent_conversation_id, Some(parent_id_str));
     assert!(matches!(loaded.context_type, ChatContextType::Task));
+}
+
+#[tokio::test]
+async fn test_update_coordination_mode_persists_value() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let conv = make_conversation(ChatContextType::Project, "project-1");
+    let conversation_id = conv.id;
+    repo.create(conv).await.unwrap();
+
+    repo.update_coordination_mode(&conversation_id, CoordinationMode::RxNativeTeam)
+        .await
+        .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::RxNativeTeam);
+}
+
+#[tokio::test]
+async fn test_update_coordination_mode_preserves_legacy_compatibility_value() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+
+    let conv = make_conversation(ChatContextType::Project, "project-legacy");
+    let conversation_id = conv.id;
+    repo.create(conv).await.unwrap();
+
+    repo.update_coordination_mode(&conversation_id, CoordinationMode::LegacyClaudeTeam)
+        .await
+        .unwrap();
+
+    let loaded = repo.get_by_id(&conversation_id).await.unwrap().unwrap();
+    assert_eq!(loaded.coordination_mode, CoordinationMode::LegacyClaudeTeam);
 }
 
 // --- get_by_id ---
@@ -552,6 +589,7 @@ async fn test_clear_claude_session_id() {
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,
         title: None,

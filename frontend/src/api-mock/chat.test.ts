@@ -268,6 +268,71 @@ describe("mockGetConversationSummary", () => {
   });
 });
 
+describe("mock Team coordination mode", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("persists Team intent when starting an Agent conversation", async () => {
+    const result = await mockChatApi.startAgentConversation({
+      projectId: "project-1",
+      content: "Start Team work",
+      mode: "edit",
+      teamIntent: { coordinationMode: "rx_native_team" },
+    });
+
+    expect(result.conversation.coordinationMode).toBe("rx_native_team");
+    await expect(
+      mockChatApi.getConversationSummary(result.conversation.id)
+    ).resolves.toMatchObject({
+      id: result.conversation.id,
+      coordinationMode: "rx_native_team",
+    });
+  });
+
+  it("persists Team intent when sending into an existing conversation", async () => {
+    seedMockConversation(conversation("team-send", "Team send"), []);
+
+    const result = await mockChatApi.sendAgentMessage(
+      "project",
+      "project-1",
+      "Enable Team",
+      undefined,
+      undefined,
+      {
+        conversationId: "team-send",
+        teamIntent: { coordinationMode: "rx_native_team" },
+      }
+    );
+
+    expect(result).toMatchObject({
+      conversationId: "team-send",
+      isNewConversation: false,
+    });
+    await expect(mockGetConversationSummary("team-send")).resolves.toMatchObject({
+      coordinationMode: "rx_native_team",
+    });
+  });
+
+  it("updates and reports missing Team coordination conversations", async () => {
+    seedMockConversation(conversation("team-toggle", "Team toggle"), []);
+
+    await expect(
+      mockChatApi.updateAgentConversationCoordinationMode({
+        conversationId: "team-toggle",
+        coordinationMode: "rx_native_team",
+      })
+    ).resolves.toMatchObject({ coordinationMode: "rx_native_team" });
+
+    await expect(
+      mockChatApi.updateAgentConversationCoordinationMode({
+        conversationId: "missing-team-toggle",
+        coordinationMode: "solo",
+      })
+    ).rejects.toThrow("No mock conversation seeded for missing-team-toggle");
+  });
+});
+
 describe("mockGetConversationTimelinePage", () => {
   beforeEach(() => {
     mockChatApi.reset();

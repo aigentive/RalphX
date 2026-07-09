@@ -43,6 +43,7 @@ import {
   StartAgentConversationResponseSchema,
   forkAgentConversation,
   switchAgentConversationMode,
+  updateAgentConversationCoordinationMode,
   copyAgentConversationPlan,
   importAgentConversationPlan,
   sendAgentMessage,
@@ -2217,6 +2218,41 @@ describe("chat api", () => {
     expect(result.workspace?.mode).toBe("plan");
   });
 
+  it("updates an existing agent conversation coordination mode", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "conversation-chat",
+      context_type: "project",
+      context_id: "project-1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: "codex",
+      agent_mode: "edit",
+      coordination_mode: "rx_native_team",
+      title: "Chat",
+      message_count: 1,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:02:00Z",
+      archived_at: null,
+    });
+
+    const result = await updateAgentConversationCoordinationMode({
+      conversationId: "conversation-chat",
+      coordinationMode: "rx_native_team",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "update_agent_conversation_coordination_mode",
+      {
+        input: {
+          conversationId: "conversation-chat",
+          coordinationMode: "rx_native_team",
+        },
+      },
+    );
+    expect(result.coordinationMode).toBe("rx_native_team");
+  });
+
   it("sends source pull request metadata when switching mode with a PR base", async () => {
     mockInvoke.mockResolvedValue({
       conversation: {
@@ -2926,6 +2962,9 @@ describe("chat api", () => {
     );
     expect(chatApi.switchAgentConversationMode).toBe(
       switchAgentConversationMode,
+    );
+    expect(chatApi.updateAgentConversationCoordinationMode).toBe(
+      updateAgentConversationCoordinationMode,
     );
     expect(chatApi.forkAgentConversation).toBe(forkAgentConversation);
     expect(chatApi.archiveConversation).toBe(archiveConversation);

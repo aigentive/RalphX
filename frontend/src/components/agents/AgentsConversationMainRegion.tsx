@@ -27,6 +27,7 @@ interface AgentsConversationMainRegionProps {
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
+  onActiveTeamEnabledChange: ActiveConversationPanelProps["onActiveTeamEnabledChange"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onActiveProviderChange: ActiveConversationPanelProps["onActiveProviderChange"];
@@ -63,6 +64,7 @@ interface AgentsConversationMainRegionProps {
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
+  updatingTeamConversationId: ActiveConversationPanelProps["updatingTeamConversationId"];
   terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
@@ -88,6 +90,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
+  onActiveTeamEnabledChange,
   onActiveEffortChange,
   onActiveModelChange,
   onActiveProviderChange,
@@ -122,6 +125,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  updatingTeamConversationId,
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
@@ -144,6 +148,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
+        onActiveTeamEnabledChange={onActiveTeamEnabledChange}
         onActiveEffortChange={onActiveEffortChange}
         onActiveModelChange={onActiveModelChange}
         onActiveProviderChange={onActiveProviderChange}
@@ -176,6 +181,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
+        updatingTeamConversationId={updatingTeamConversationId}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />

@@ -757,6 +757,7 @@ interface AgentsActiveConversationPanelProps {
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
+  onActiveTeamEnabledChange: (enabled: boolean) => void | Promise<unknown>;
   onActiveEffortChange: (
     effort: string,
     providerSupportedEfforts?: readonly string[] | null,
@@ -821,6 +822,7 @@ interface AgentsActiveConversationPanelProps {
   selectedTaskArtifactId: string | null;
   setTerminalChatDockElement: (element: HTMLDivElement | null) => void;
   switchingConversationModeId: string | null;
+  updatingTeamConversationId: string | null;
   terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
 }
@@ -842,6 +844,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
+  onActiveTeamEnabledChange,
   onActiveEffortChange,
   onActiveModelChange,
   onActiveProviderChange,
@@ -871,6 +874,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  updatingTeamConversationId,
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
@@ -2514,6 +2518,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         modelId: normalizedActiveRuntime.modelId,
                         logicalEffort: normalizedActiveRuntime.effort,
                         codexFastMode: activeCodexFastModeOption,
+                        ...(options?.teamIntent
+                          ? { teamIntent: options.teamIntent }
+                          : {}),
                         ...(options?.projectReferences?.length
                           ? { composerProjectReferences: options.projectReferences }
                           : {}),
@@ -2689,6 +2696,25 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onFilesSelected={composerProps.onFilesSelected}
                     onRemoveAttachment={composerProps.onRemoveAttachment}
                     attachmentsUploading={composerProps.attachmentsUploading}
+                    {...(!isFocusedChildChat
+                      ? {
+                          team: {
+                            enabled:
+                              activeConversation.coordinationMode ===
+                              "rx_native_team",
+                            onEnabledChange: onActiveTeamEnabledChange,
+                            disabled:
+                              composerProps.isReadOnly ||
+                              isForkingConversation ||
+                              Boolean(automationRunReadOnlyReason) ||
+                              composerProps.agentStatus !== "idle",
+                            pending:
+                              updatingTeamConversationId ===
+                              selectedConversationId,
+                            testId: "agents-conversation-team",
+                          },
+                        }
+                      : {})}
                     {...(composerProps.value !== undefined
                       ? {
                           value: composerProps.value,
