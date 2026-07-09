@@ -151,6 +151,40 @@ async fn validation_run_repo_roundtrips_runs_and_orders_command_results() {
 }
 
 #[tokio::test]
+async fn validation_run_repo_latest_non_baseline_skips_newer_baseline_run() {
+    let (_db, repo, task) = setup_repo().await;
+    let mut final_run = validation_run(&task);
+    final_run.id = "final-run".to_string();
+    final_run.purpose = ValidationPurpose::Final;
+    final_run.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 1, 0).unwrap();
+    repo.create_run(&final_run)
+        .await
+        .expect("final run should persist");
+
+    let mut baseline_run = validation_run(&task);
+    baseline_run.id = "baseline-run".to_string();
+    baseline_run.purpose = ValidationPurpose::Baseline;
+    baseline_run.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 2, 0).unwrap();
+    repo.create_run(&baseline_run)
+        .await
+        .expect("baseline run should persist");
+
+    let latest = repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest lookup should succeed")
+        .expect("latest run should exist");
+    assert_eq!(latest.run.id, "baseline-run");
+
+    let latest_non_baseline = repo
+        .latest_non_baseline_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest non-baseline lookup should succeed")
+        .expect("latest non-baseline run should exist");
+    assert_eq!(latest_non_baseline.run.id, "final-run");
+}
+
+#[tokio::test]
 async fn validation_run_repo_returns_none_without_runs() {
     let (_db, repo, task) = setup_repo().await;
 

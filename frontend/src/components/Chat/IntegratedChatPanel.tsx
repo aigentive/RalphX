@@ -49,6 +49,7 @@ import {
   type ComposerProjectReference,
   type SendAgentMessageResult,
 } from "@/api/chat";
+import { isVisibleChatMessage } from "@/api/chat-message-visibility";
 import { api } from "@/lib/tauri";
 import { withAlpha } from "@/lib/theme-colors";
 import { getContextConfig, buildStoreKey } from "@/lib/chat-context-registry";
@@ -330,6 +331,9 @@ export function IntegratedChatPanel({
   const taskHistoryState = useUiStore((s) => s.taskHistoryState);
   const isHistoryMode = !!taskHistoryState;
   const hasHistoryConversation = !!taskHistoryState?.conversationId;
+  const historyConversationOverride = isHistoryMode
+    ? (taskHistoryState?.conversationId ?? null)
+    : conversationIdOverride;
 
   // Get task data from React Query (useTasks) which has full task data
   const { data: tasks = EMPTY_TASKS } = useTasks(projectId, {
@@ -375,7 +379,7 @@ export function IntegratedChatPanel({
   const mergeKey = selectedTaskId ? buildStoreKey("merge", selectedTaskId) : "";
   const mergeAgentRunning = useChatStore(selectIsAgentRunning(mergeKey));
   const forcedTaskRuntimeContext = selectedTaskId
-    ? taskRuntimeContextTypeOverride
+    ? taskHistoryState?.contextType ?? taskRuntimeContextTypeOverride
     : undefined;
 
   // Execution states: worker agent is running (only when NOT in ideation mode)
@@ -443,8 +447,7 @@ export function IntegratedChatPanel({
     isMergeMode,
     isHistoryMode,
     // Pass history mode overrides for conversation selection
-    overrideConversationId:
-      conversationIdOverride ?? taskHistoryState?.conversationId,
+    overrideConversationId: historyConversationOverride,
     storeContextKeyOverride,
     overrideAgentRunId: taskHistoryState?.agentRunId,
     isVisible,
@@ -1475,22 +1478,7 @@ export function IntegratedChatPanel({
   const sortedMessages = useMemo(() => {
     return (
       [...messagesData]
-        // Hide session recovery rehydration prompts from UI.
-        // Primary: metadata flag set by backend. Fallback: content prefix for pre-existing rows.
-        .filter((msg) => {
-          if (msg.metadata) {
-            try {
-              const meta = JSON.parse(msg.metadata);
-              if (meta.hidden_from_ui) return false;
-              if (meta.recovery_context) return false;
-            } catch {
-              /* not JSON, keep message */
-            }
-          }
-          if (msg.role === "user" && msg.content.startsWith("<instructions>"))
-            return false;
-          return true;
-        })
+        .filter(isVisibleChatMessage)
         .sort((a, b) => {
           if (a.timelineSequence != null && b.timelineSequence != null) {
             return a.timelineSequence - b.timelineSequence;
@@ -1540,10 +1528,20 @@ export function IntegratedChatPanel({
 
   // Empty state: only show when we KNOW there are no messages (not while loading)
   // Also don't show empty if conversations are loading - we might auto-select one
+  const hasLiveTranscriptState =
+    hasClientLiveStreamingState ||
+    isSending ||
+    agentStatus === "generating" ||
+    isFinalizing;
   const hasNoConversations =
-    !isConversationsLoading && (conversations.data?.length ?? 0) === 0;
+    !isConversationsLoading &&
+    !activeConversationId &&
+    (conversations.data?.length ?? 0) === 0;
   const hasEmptyConversation =
-    !isLoading && activeConversationId && sortedMessages.length === 0;
+    !isLoading &&
+    Boolean(activeConversationId) &&
+    sortedMessages.length === 0 &&
+    !hasLiveTranscriptState;
   const isEmpty = hasNoConversations || hasEmptyConversation;
 
   // Recency guard: suppress PreviousRunBanner if the agent was active within the last 10s.

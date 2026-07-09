@@ -37,6 +37,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
 import type { Task } from "@/types/task";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
+import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
@@ -332,9 +333,14 @@ vi.mock("@/components/tasks/TaskBoard", () => ({
 
 vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
   AgentsTaskDetailOverlay: ({
+    onFocusTaskRuntime,
     selectedTaskIdOverride,
     onCloseOverride,
   }: {
+    onFocusTaskRuntime?: (
+      taskId: string,
+      contextType: "task_execution" | "review" | "merge"
+    ) => void;
     selectedTaskIdOverride?: string | null;
     onCloseOverride?: () => void;
   }) =>
@@ -343,6 +349,12 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
         data-testid="mock-agent-task-detail"
         data-task-id={selectedTaskIdOverride}
       >
+        <button
+          type="button"
+          onClick={() => onFocusTaskRuntime?.(selectedTaskIdOverride, "review")}
+        >
+          Focus review runtime
+        </button>
         <button type="button" onClick={onCloseOverride}>
           Close task
         </button>
@@ -551,6 +563,23 @@ const workspace = (
   updatedAt: "2026-04-23T09:00:00Z",
   ...overrides,
 });
+
+const publishedPrSupervisionWorkspace = (
+  overrides: Partial<AgentConversationWorkspace> = {},
+): AgentConversationWorkspace =>
+  workspace({
+    mode: "edit",
+    publicationPrNumber: 90,
+    publicationPrUrl: "https://github.com/mock/project/pull/90",
+    publicationPrStatus: "open",
+    publicationPushStatus: "pushed",
+    prAutofixEnabled: true,
+    prAutoMergeDesired: true,
+    prAutoMergeCurrent: true,
+    prSupervisionStatus: "monitoring",
+    updatedAt: "2026-04-23T09:00:00Z",
+    ...overrides,
+  });
 
 const workspaceFreshness = (
   overrides: Partial<AgentConversationWorkspaceFreshness> = {},
@@ -991,6 +1020,33 @@ function renderPane(
       </TooltipProvider>
     </QueryClientProvider>,
   );
+}
+
+function renderPublishPanelForWorkspaceRerender(
+  initialWorkspace: AgentConversationWorkspace | null,
+  queryClient: QueryClient = createTestQueryClient(),
+) {
+  const pane = (paneWorkspace: AgentConversationWorkspace | null) => (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <div className="h-[480px]">
+          <AgentPublishPanel
+            workspace={paneWorkspace}
+            conversationTitle="Agent conversation"
+            onPublishWorkspace={vi.fn()}
+            isPublishingWorkspace={false}
+          />
+        </div>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+  const result = render(pane(initialWorkspace));
+  return {
+    ...result,
+    rerenderWorkspace: (nextWorkspace: AgentConversationWorkspace | null) => {
+      result.rerender(pane(nextWorkspace));
+    },
+  };
 }
 
 function artifactTabIds(tabRow: HTMLElement): string[] {
@@ -1698,6 +1754,63 @@ describe("AgentsArtifactPane", () => {
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
   });
 
+  it("passes task runtime focus requests from task details to the host chat", async () => {
+    const onFocusTaskRuntime = vi.fn();
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-1", executionPlanId: "exec-current" })],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Agent Plan",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T10:00:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [],
+      messages: [],
+    });
+
+    renderPane(
+      "tasks",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "kanban", onFocusTaskRuntime },
+    );
+
+    fireEvent.click(await screen.findByTestId("mock-agent-task-card"));
+    fireEvent.click(await screen.findByRole("button", { name: "Focus review runtime" }));
+
+    expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-1", "review");
+  });
+
   it("shows the automation artifact tab and opens the automation detail route", async () => {
     const onOpenAutomation = vi.fn();
     const automationConversation = {
@@ -1722,8 +1835,9 @@ describe("AgentsArtifactPane", () => {
     expect(
       await screen.findByTestId("agents-automation-panel-loading"),
     ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+    await waitFor(
+      () => expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+      deferredHydrationTimeout,
     );
   });
 
@@ -3220,6 +3334,235 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("keeps the GitHub auto-merge switch off after a successful disable settles", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        prAutofixEnabled: true,
+        prAutoMergeDesired: true,
+        prAutoMergeCurrent: true,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    const autoMergeSwitch = await screen.findByRole("switch", {
+      name: "GitHub auto-merge",
+    });
+    expect(autoMergeSwitch).toBeChecked();
+
+    fireEvent.click(autoMergeSwitch);
+
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Saving PR supervision"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).not.toBeChecked();
+  });
+
+  it("clears the PR supervision result override when refreshed workspace data matches it", async () => {
+    const initialWorkspace = publishedPrSupervisionWorkspace();
+    const settledWorkspace = publishedPrSupervisionWorkspace({
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting_for_checks",
+    });
+    setWorkspacePrSupervisionMock.mockResolvedValueOnce(settledWorkspace);
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialWorkspace);
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+        "Waiting for checks",
+      ),
+    );
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).not.toBeChecked();
+
+    rerenderWorkspace(settledWorkspace);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).not.toBeChecked(),
+    );
+
+    rerenderWorkspace(initialWorkspace);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).toBeChecked(),
+    );
+    expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+      "Monitoring PR",
+    );
+  });
+
+  it("clears the PR supervision result override when refreshed workspace data advances", async () => {
+    const initialWorkspace = publishedPrSupervisionWorkspace();
+    const settledWorkspace = publishedPrSupervisionWorkspace({
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting_for_checks",
+    });
+    setWorkspacePrSupervisionMock.mockResolvedValueOnce(settledWorkspace);
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialWorkspace);
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+        "Waiting for checks",
+      ),
+    );
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).not.toBeChecked();
+
+    rerenderWorkspace(
+      publishedPrSupervisionWorkspace({
+        updatedAt: "2026-04-23T09:01:00Z",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).toBeChecked(),
+    );
+    expect(screen.getByTestId("agents-pr-supervision-status")).toHaveTextContent(
+      "Monitoring PR",
+    );
+  });
+
+  it("clears the PR supervision result override when switching workspaces", async () => {
+    const initialWorkspace = publishedPrSupervisionWorkspace();
+    const settledWorkspace = publishedPrSupervisionWorkspace({
+      prAutoMergeDesired: false,
+      prAutoMergeCurrent: false,
+      prSupervisionStatus: "waiting_for_checks",
+    });
+    setWorkspacePrSupervisionMock.mockResolvedValueOnce(settledWorkspace);
+    const { rerenderWorkspace } =
+      renderPublishPanelForWorkspaceRerender(initialWorkspace);
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).not.toBeChecked(),
+    );
+
+    rerenderWorkspace(
+      publishedPrSupervisionWorkspace({
+        conversationId: "conversation-2",
+        publicationPrNumber: 91,
+        publicationPrUrl: "https://github.com/mock/project/pull/91",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "GitHub auto-merge" }),
+      ).toBeChecked(),
+    );
+    expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+      "conversation-1",
+      {
+        autoFixEnabled: true,
+        autoMergeDesired: false,
+        autoMergeMethod: "squash",
+      },
+    );
+  });
+
+  it("surfaces object-shaped backend reasons when PR supervision updates fail", async () => {
+    setWorkspacePrSupervisionMock.mockRejectedValueOnce({
+      message: "Branch is checked out by an active merge worktree",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        prAutofixEnabled: true,
+        prAutoMergeDesired: true,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Branch is checked out by an active merge worktree",
+      ),
+    );
+  });
+
+  it("surfaces string backend reasons when PR supervision updates fail", async () => {
+    setWorkspacePrSupervisionMock.mockRejectedValueOnce(
+      "GitHub auto-merge disable could not be confirmed",
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        prAutofixEnabled: true,
+        prAutoMergeDesired: true,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "GitHub auto-merge disable could not be confirmed",
+      ),
+    );
+  });
+
   it("opens Execution settings from PR automation tooltip actions", async () => {
     const user = userEvent.setup();
     renderPane(
@@ -4224,11 +4567,11 @@ describe("AgentsArtifactPane", () => {
         {
           id: "proposal-1",
           sessionId: "session-1",
-          title: "Gate proposal tab visibility",
-          description: "Keep proposal content inside the Plan tab.",
+          title: "Gate embedded proposal access",
+          description: "Show proposals inside the Plan tab.",
           category: "frontend",
           steps: ["Update shared tab helper"],
-          acceptanceCriteria: ["Plan owns proposal content"],
+          acceptanceCriteria: ["Proposal content stays embedded in Plan"],
           suggestedPriority: "high",
           priorityScore: 90,
           priorityReason: "Avoids dead-end navigation",
@@ -4270,7 +4613,7 @@ describe("AgentsArtifactPane", () => {
     });
 
     renderPane(
-      "proposal",
+      "proposal" as AgentArtifactTab,
       workspace({
         mode: "plan",
         linkedIdeationSessionId: "session-1",
@@ -4296,7 +4639,7 @@ describe("AgentsArtifactPane", () => {
     await user.click(proposalsToggle);
 
     expect(
-      await screen.findByText("Gate proposal tab visibility"),
+      await screen.findByText("Gate embedded proposal access"),
     ).toBeInTheDocument();
     await user.click(screen.getByTestId("proposal-card-proposal-1"));
     expect(
@@ -4308,6 +4651,60 @@ describe("AgentsArtifactPane", () => {
         screen.queryByTestId("proposal-detail-sheet"),
       ).not.toBeInTheDocument(),
     );
+    expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
+  });
+
+  it("opens linked proposal cards from the active Plan tab without a standalone Proposals tab", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({}, [
+        taskProposal({
+          id: "proposal-1",
+          title: "Gate embedded proposal access",
+          description: "Show proposals inside the Plan tab.",
+          acceptanceCriteria: ["Proposal content stays embedded in Plan"],
+          status: "pending",
+          createdTaskId: null,
+        }),
+      ]),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByTestId("agents-artifact-tab-plan"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
+
+    const planDisplay = await screen.findByTestId("plan-display-chromeless");
+    const proposalsToggle = within(planDisplay).getByRole("button", {
+      name: /1 Proposal/i,
+    });
+
+    expect(
+      screen.queryByText("Gate embedded proposal access"),
+    ).not.toBeInTheDocument();
+
+    await user.click(proposalsToggle);
+
+    expect(
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("Gate embedded proposal access"),
+    ).toBeInTheDocument();
     expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
   });
 
@@ -4930,7 +5327,7 @@ describe("AgentsArtifactPane", () => {
     });
 
     renderPane(
-      "proposal",
+      "proposal" as AgentArtifactTab,
       workspace({
         mode: "plan",
         linkedIdeationSessionId: "session-1",

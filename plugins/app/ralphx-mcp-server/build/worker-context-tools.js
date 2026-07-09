@@ -9,7 +9,7 @@
 export const WORKER_CONTEXT_TOOLS = [
     {
         name: "get_task_context",
-        description: "Fetch rich context for a task including source proposal, implementation plan, and related artifacts. Call this FIRST before implementing any task to understand the full picture.",
+        description: "Fetch authoritative task context including source proposal, implementation plan, blockers, scope drift, and related artifacts. Use when injected bootstrap context is absent, stale, incomplete, blocked, or when full task details are needed.",
         inputSchema: {
             type: "object",
             properties: {

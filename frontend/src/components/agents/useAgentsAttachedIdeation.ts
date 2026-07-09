@@ -65,11 +65,6 @@ export function useAgentsAttachedIdeation({
       ? attachedIdeationSessionQuery.data
       : null;
   const attachedIdeationSession = attachedIdeationSessionData?.session ?? null;
-  const attachedArtifactMode =
-    activeConversationMode ??
-    activeWorkspace?.mode ??
-    activeConversation?.agentMode ??
-    (activeConversation?.contextType === "ideation" ? "ideation" : null);
   const hasAutoOpenArtifacts = useMemo(() => {
     if (!attachedIdeationSession) {
       return false;
@@ -112,18 +107,14 @@ export function useAgentsAttachedIdeation({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact: hasAttachedPlanArtifact,
       canStartPlan,
-      hasProposals: Boolean(attachedIdeationSessionData?.proposals.length),
       hasVerificationEvidence,
       hasExecutionTasks,
-      artifactMode: attachedArtifactMode,
     });
   }, [
     activeConversation?.contextType,
     activeConversationMode,
     activeWorkspace,
     attachedIdeationSession,
-    attachedIdeationSessionData?.proposals.length,
-    attachedArtifactMode,
     hasAttachedPlanArtifact,
   ]);
   useEffect(() => {

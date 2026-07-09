@@ -23,6 +23,10 @@ import { chatApi } from "@/api/chat";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useUiStore } from "@/stores/uiStore";
+import type {
+  StreamingContentBlock,
+  StreamingTask,
+} from "@/types/streaming-task";
 
 vi.mock("@/hooks/useTeamModeAvailability", () => ({
   useTeamModeAvailability: () => ({
@@ -82,6 +86,7 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(
               role: string;
               content: string;
               createdAt: string;
+              metadata?: string | null;
               toolCalls: null;
               contentBlocks: null;
               parentMessageId?: string | null;
@@ -219,7 +224,7 @@ const mockChatPanelContext = {
   activeConversationId: null as string | null,
   streamingToolCalls: [] as unknown[],
   setStreamingToolCalls: vi.fn(),
-  streamingContentBlocks: [] as Array<{ type: "text"; text: string }>,
+  streamingContentBlocks: [] as StreamingContentBlock[],
   setStreamingContentBlocks: vi.fn(),
   streamingTasks: new Map(),
   setStreamingTasks: vi.fn(),
@@ -417,6 +422,35 @@ describe("IntegratedChatPanel", () => {
       );
     });
 
+    it("does not borrow a parent conversation override for history stages without transcripts", () => {
+      act(() => {
+        useUiStore.setState({
+          taskHistoryState: {
+            status: "reviewing",
+            timestamp: "2026-07-07T10:30:00Z",
+            contextType: "review",
+            hasConversation: false,
+          },
+        });
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            conversationIdOverride="workspace-conversation"
+          />
+        </TestWrapper>
+      );
+
+      expect(mockUseChatPanelContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isHistoryMode: true,
+          overrideConversationId: null,
+        }),
+      );
+    });
+
     it("observes all chrome below the transcript so any sibling height change can update transcript layout", async () => {
       const observedTargets: Element[] = [];
       const resizeCallbacks: ResizeObserverCallback[] = [];
@@ -608,6 +642,83 @@ describe("IntegratedChatPanel", () => {
       ).toBeInTheDocument();
     });
 
+    it("keeps live transcript mounted when only a hidden bootstrap row is persisted", async () => {
+      const liveTask: StreamingTask = {
+        toolUseId: "toolu-bootstrap-task",
+        toolName: "Task",
+        description: "Inspect hidden bootstrap handoff",
+        subagentType: "Explore",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [],
+      };
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      mockChatPanelContext.streamingContentBlocks = [
+        { type: "text", text: "Live bootstrap streaming chunk" },
+        { type: "task", toolUseId: liveTask.toolUseId },
+      ];
+      mockChatPanelContext.streamingTasks = new Map([
+        [liveTask.toolUseId, liveTask],
+      ]);
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.timelineData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "block:msg-bootstrap:0",
+            parentMessageId: "msg-bootstrap",
+            role: "user",
+            content: "Execute task: task-hidden",
+            metadata: JSON.stringify({
+              hidden_from_ui: true,
+              source: "task_runtime_bootstrap",
+            }),
+            createdAt: "2026-04-23T09:00:00Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 1,
+          },
+        ],
+        loadedStartIndex: 0,
+      };
+      act(() => {
+        useChatStore.getState().setAgentRunning("project:project-1", true);
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByText("Live bootstrap streaming chunk"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Inspect hidden bootstrap handoff"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Execute task: task-hidden"),
+      ).not.toBeInTheDocument();
+    });
+
     it("uses the timeline tail window even when older timeline blocks exist", async () => {
       mockChatPanelContext.storeContextKey = "project:project-1";
       mockChatPanelContext.currentContextType = "project";
@@ -692,6 +803,87 @@ describe("IntegratedChatPanel", () => {
       expect(
         screen.queryByText("Full persisted assistant transcript"),
       ).not.toBeInTheDocument();
+    });
+
+    it("hides hidden bootstrap rows from the modern timeline window", async () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "project-1",
+      };
+      useChatMockState.timelineData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "block:msg-bootstrap:0",
+            parentMessageId: "msg-bootstrap",
+            role: "user",
+            content: "Execute task: task-hidden",
+            metadata: JSON.stringify({
+              hidden_from_ui: true,
+              source: "task_runtime_bootstrap",
+            }),
+            createdAt: "2026-04-23T09:00:00Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 1,
+          },
+          {
+            id: "block:msg-user:0",
+            parentMessageId: "msg-user",
+            role: "user",
+            content: "Visible follow-up request",
+            createdAt: "2026-04-23T09:00:01Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 2,
+          },
+          {
+            id: "block:msg-assistant:0",
+            parentMessageId: "msg-assistant",
+            role: "assistant",
+            content: "Visible assistant response",
+            createdAt: "2026-04-23T09:00:02Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "finalized",
+            timelineSequence: 3,
+          },
+        ],
+        loadedStartIndex: 0,
+      };
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByText("Visible follow-up request"),
+      ).toBeInTheDocument();
+      expect(
+        await screen.findByText("Visible assistant response"),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Execute task: task-hidden")).not.toBeInTheDocument();
     });
 
     it("paints the timeline tail window before legacy history arrives", async () => {

@@ -15,6 +15,8 @@ paths:
 |---|---|
 | Lane-aware harnesses | Execution/review/merge runtime selection is lane-based even when the current defaults stay Claude-heavy. |
 | Claude default remains explicit | Worker/reviewer/merger and team-mode guidance in this file describes the current broadest-coverage default path; do not imply Codex parity where the product contract is still incremental. |
+| Validation timing | Execution agents do not run full baseline task validation by default; backend validation is for wave/final/re-execution evidence unless an explicit diagnostic, precondition check, or dry-run command-selection record is required. |
+| Failure ownership | Final/wave failures on task-scoped or modified surfaces must be fixed; unrelated pre-existing failures are reported or registered without silently expanding the current task. |
 
 ---
 
@@ -26,13 +28,14 @@ paths:
 | **Trigger** | `executing` or `re_executing` entry |
 | **CWD** | Worktree path or project dir |
 | **Permission** | `acceptEdits` (Write/Edit/Bash pre-approved) |
-| **Env var** | `RALPHX_TASK_STATE` = `executing` or `re_executing` |
+| **Bootstrap** | `<task_runtime_context>` carries task id/state/project/worktree; `RALPHX_TASK_STATE` remains backend-owned fallback (`executing` or `re_executing`) |
 
 **Execution flow:**
-1. If `re_executing` → fetch `get_review_notes()` + `get_task_issues(status: "open")` first
-2. `get_task_context(task_id)` → task details, proposal, plan, dependencies
-3. If blocked → STOP
-4. Read plan artifact; apply the orchestration pattern below when decomposing and delegating:
+1. If `re_executing` from `<task_runtime_context>` or fallback env → fetch `get_review_notes()` + `get_task_issues(status: "open")` before code changes
+2. Use `<task_runtime_context>` as bootstrap context only; it is not final authority for blockers, stale state, scope drift, plan details, or completion readiness
+3. Call `get_task_context(task_id)` when bootstrap context is absent, blocked, stale/incomplete, or full task/proposal/plan/scope details are needed
+4. If blocked → STOP
+5. Read plan artifact; apply the orchestration pattern below when decomposing and delegating:
 
    <!-- Inlined from docs/architecture/system-card-orchestration-pattern.md (§2 §4 §5 §9) -->
    **Execution phases:** Discovery → Plan Design (dependency graph + wave schedule) → Wave execution → Commit gate → repeat → Verify & clean up
@@ -61,11 +64,11 @@ paths:
 
    **Typical execution sequence:** `Read → Write/Edit → Bash (typecheck + test) → Grep (verify no dead refs) → commit`
 
-5. Decompose task into sub-scopes, build dependency graph, schedule waves
-6. Delegate to `ralphx-execution-coder` instances (max 3 concurrent, no overlapping write files)
-7. Apply wave gates (validate each wave before starting next)
-8. `start_step()` → work → `complete_step()` (per step)
-9. For re-execution: `mark_issue_in_progress()` / `mark_issue_addressed()` per issue
+6. Decompose task into sub-scopes, build dependency graph, schedule waves
+7. Delegate to `ralphx-execution-coder` instances (max 3 concurrent, no overlapping write files)
+8. Apply wave gates (validate each wave before starting next)
+9. `start_step()` → work → `complete_step()` (per step)
+10. For re-execution: `mark_issue_in_progress()` / `mark_issue_addressed()` per issue
 
 **Key MCP tools:** `start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_task_context`, `get_review_notes`, `get_task_issues`, `mark_issue_in_progress`, `mark_issue_addressed` (+ `Task` tool for coder delegation)
 

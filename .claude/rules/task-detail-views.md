@@ -5,6 +5,7 @@ paths:
   - "src/components/tasks/TaskDetailOverlay*"
   - "src/components/tasks/TaskDetailView*"
   - "src/components/tasks/TaskDetailModal*"
+  - "src/components/agents/task-details/**"
 ---
 
 # Task Detail Views Registry
@@ -48,6 +49,17 @@ paths:
 | View selection logic | `src/components/tasks/TaskDetailPanel.tsx:308-315` |
 | Entry point (Kanban) | `src/components/tasks/TaskDetailOverlay.tsx:628` |
 | View components | `src/components/tasks/detail-views/*.tsx` |
+
+## Agents Fork
+
+| Rule | Detail |
+|------|--------|
+| Path | Agents-owned detail views live under `src/components/agents/task-details/**`; do not assume generic `src/components/tasks/**` guidance is sufficient |
+| Shell | Agents right panel uses a one-column `TwoColumnLayout` compatibility shell: summary → stage body → evidence → context → actions |
+| Validation | Agents validation evidence belongs in state/evidence slots; do not re-add a global validation footer in the shell |
+| History | `StateTimelineNav` is runtime stage navigation: preserve repeated execution/review/merge attempts when transitions distinguish them |
+| Transcript focus | Historical stage with `conversationId` must set `taskHistoryState` and focus the main Agents chat on the matching runtime `contextType`; no `conversationId` → show no-transcript copy and do not borrow another transcript |
+| Historical actions | Mutation actions stay hidden/disabled in historical mode |
 
 ## View Components (12 total)
 

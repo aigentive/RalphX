@@ -1391,9 +1391,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     [panelStoreKeyOverride]
   );
   const panelConversationIdOverride =
-    focusedWorkspaceReviewConversationId ??
-    focusedAutomationRunConversationId ??
-    (!isFocusedChildChat ? selectedConversationId : null);
+    taskRuntimeFocus
+      ? null
+      : focusedWorkspaceReviewConversationId ??
+        focusedAutomationRunConversationId ??
+        (!isFocusedChildChat ? selectedConversationId : null);
   const panelAgentProcessContextIdOverride = taskRuntimeFocus
     ? taskRuntimeFocus.taskId
     : focusedWorkspaceReviewConversationId ??
@@ -1402,9 +1404,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         ? selectedConversationId
         : null);
   const panelSendConversationId =
-    focusedWorkspaceReviewConversationId ??
-    focusedAutomationRunConversationId ??
-    (!isFocusedChildChat ? selectedConversationId : null);
+    taskRuntimeFocus
+      ? null
+      : focusedWorkspaceReviewConversationId ??
+        focusedAutomationRunConversationId ??
+        (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
     getAgentQueueHaltState(s.executionStatus)

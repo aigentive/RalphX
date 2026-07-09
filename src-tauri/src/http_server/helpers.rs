@@ -15,8 +15,7 @@ use crate::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
     IdeationSession, IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority,
     ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId,
-    ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory,
-    ValidationCommandStatus, ValidationRunStatus,
+    ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::{
@@ -1621,7 +1620,7 @@ async fn compute_first_class_validation_cache(
 ) -> Option<ValidationCacheData> {
     let latest = state
         .validation_run_repo
-        .latest_run_with_results_for_task(&task.id)
+        .latest_non_baseline_run_with_results_for_task(&task.id)
         .await
         .ok()
         .flatten()?;
@@ -1655,7 +1654,7 @@ async fn compute_first_class_validation_cache(
     let tests_ran = !test_commands.is_empty();
     let tests_passed = test_commands
         .iter()
-        .all(|command| command.status == ValidationCommandStatus::Passed);
+        .all(|command| command.status.is_success_like());
     let captured_at = latest.run.completed_at.unwrap_or(latest.run.started_at);
     let passed_count = latest
         .commands

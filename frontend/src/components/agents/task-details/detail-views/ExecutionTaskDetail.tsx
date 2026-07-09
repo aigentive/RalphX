@@ -16,6 +16,7 @@ import {
   StatusPill,
   ProgressIndicator,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ValidationProgress } from "./shared/ValidationProgress";
 import { DurationDisplay } from "./shared/DurationDisplay";
@@ -373,6 +374,16 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
     <TwoColumnLayout
       description={task.description}
       testId="execution-task-detail"
+      actions={
+        !isHistorical ? (
+          <section data-testid="action-buttons-section">
+            <ActionButtonsCard
+              taskId={task.id}
+              isProcessing={false}
+            />
+          </section>
+        ) : null
+      }
     >
       {/* Status Banner */}
       <StatusBanner
@@ -458,6 +469,11 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
         metadataLogKey="execution_setup_log"
       />
 
+      <TaskValidationSection
+        taskId={task.id}
+        isHistorical={isHistorical === true}
+      />
+
       {/* Revision Feedback (only for re-executing with feedback or while loading) */}
       {isReExecuting && (revisionFeedback !== null || historyLoading) && (
         <section data-testid="revision-feedback-banner">
@@ -496,15 +512,6 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
         </section>
       )}
 
-      {/* Action Buttons (hidden in historical mode) */}
-      {!isHistorical && (
-        <section data-testid="action-buttons-section">
-          <ActionButtonsCard
-            taskId={task.id}
-            isProcessing={false}
-          />
-        </section>
-      )}
     </TwoColumnLayout>
   );
 }

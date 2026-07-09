@@ -143,20 +143,30 @@ function MergeCard({
 export function TaskContextRail({
   model,
   fallbackDescription,
+  showTask = true,
+  showHistorical = true,
+  showMerge = true,
 }: {
   model: TaskDetailContextModel;
   fallbackDescription?: string | null | undefined;
+  showTask?: boolean;
+  showHistorical?: boolean;
+  showMerge?: boolean;
 }) {
   const description = model.task.description ?? fallbackDescription;
 
+  if (!showTask && !showHistorical && !showMerge) return null;
+
   return (
     <div className="space-y-5">
-      <RailSection title="Task">
-        <DescriptionBlock description={description} />
-      </RailSection>
+      {showTask && (
+        <RailSection title="Task">
+          <DescriptionBlock description={description} />
+        </RailSection>
+      )}
 
-      <HistoricalLensCard viewMode={model.viewMode} />
-      {model.merge && <MergeCard merge={model.merge} />}
+      {showHistorical && <HistoricalLensCard viewMode={model.viewMode} />}
+      {showMerge && model.merge && <MergeCard merge={model.merge} />}
     </div>
   );
 }

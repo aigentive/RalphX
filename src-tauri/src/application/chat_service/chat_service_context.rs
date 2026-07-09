@@ -1218,6 +1218,11 @@ fn build_initial_prompt_with_history(
             )
         }
         ChatContextType::TaskExecution => {
+            let runtime_context_block = if history.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", history)
+            };
             format!(
                 "<instructions>\n\
                  RalphX Task Execution. Execute the task as specified.\n\
@@ -1225,12 +1230,17 @@ fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, runtime_context_block, user_message
             )
         }
         ChatContextType::Review => {
+            let runtime_context_block = if history.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", history)
+            };
             format!(
                 "<instructions>\n\
                  RalphX Review Session. You are reviewing this task. Examine the work, provide feedback, \
@@ -1239,9 +1249,9 @@ fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, runtime_context_block, user_message
             )
         }
         ChatContextType::Merge => {
@@ -1938,6 +1948,7 @@ fn apply_ralphx_env_vars(
     context_type: ChatContextType,
     context_id: &str,
     working_directory: &Path,
+    entity_status: Option<&str>,
     project_id: Option<&str>,
     team_mode: bool,
     lead_session_id: Option<&str>,
@@ -1958,6 +1969,9 @@ fn apply_ralphx_env_vars(
             cmd.env("RALPHX_TASK_ID", context_id);
         }
         _ => {}
+    }
+    if let Some(task_state) = task_runtime_state_for_context(context_type, entity_status) {
+        cmd.env("RALPHX_TASK_STATE", task_state);
     }
     if let Some(pid) = project_id {
         cmd.env("RALPHX_PROJECT_ID", pid);
@@ -2016,6 +2030,7 @@ fn build_mcp_runtime_context(
     conversation_id: Option<String>,
     agent_run_id: Option<&str>,
     working_directory: &Path,
+    entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     lead_session_id: Option<&str>,
@@ -2040,7 +2055,87 @@ fn build_mcp_runtime_context(
         filesystem_read_roots: filesystem_read_roots.to_vec(),
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
+        task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
     }
+}
+
+pub(super) fn task_runtime_state_for_context<'a>(
+    context_type: ChatContextType,
+    entity_status: Option<&'a str>,
+) -> Option<&'a str> {
+    match (context_type, entity_status) {
+        (ChatContextType::TaskExecution, Some(task_state @ ("executing" | "re_executing"))) => {
+            Some(task_state)
+        }
+        (ChatContextType::Review, Some(task_state @ "reviewing")) => Some(task_state),
+        _ => None,
+    }
+}
+
+pub(super) fn build_task_runtime_context_prompt(
+    context_type: ChatContextType,
+    context_id: &str,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    working_directory: &Path,
+) -> Result<Option<String>, String> {
+    let Some(task_state) = task_runtime_state_for_context(context_type, entity_status) else {
+        return Ok(None);
+    };
+    if context_id.trim().is_empty() {
+        return Err(format!(
+            "{} task runtime context missing task identity",
+            context_type
+        ));
+    }
+    let project_id = project_id
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "{} task runtime context missing project identity for task {}",
+                context_type, context_id
+            )
+        })?;
+    if working_directory.as_os_str().is_empty() {
+        return Err(format!(
+            "{} task runtime context missing working directory for task {}",
+            context_type, context_id
+        ));
+    }
+
+    let mut context = String::from("<task_runtime_context>\n");
+    context.push_str(&format!(
+        "<task_id>{}</task_id>\n",
+        escape_xml_text(context_id)
+    ));
+    context.push_str(&format!(
+        "<project_id>{}</project_id>\n",
+        escape_xml_text(project_id)
+    ));
+    context.push_str(&format!(
+        "<context_type>{}</context_type>\n",
+        escape_xml_text(&context_type.to_string())
+    ));
+    context.push_str(&format!(
+        "<task_state>{}</task_state>\n",
+        escape_xml_text(task_state)
+    ));
+    context.push_str(&format!(
+        "<working_directory>{}</working_directory>\n",
+        escape_xml_text(working_directory.to_string_lossy().as_ref())
+    ));
+    context.push_str(
+        "<full_context_hint>Use get_task_context and related task MCP tools when full or fresh task details are required.</full_context_hint>\n",
+    );
+    context.push_str("</task_runtime_context>");
+    Ok(Some(context))
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn project_mcp_parent_conversation_id(conversation: &ChatConversation) -> Option<String> {
@@ -2137,6 +2232,7 @@ pub async fn build_command(
         conversation,
         user_message,
         working_directory,
+        entity_status,
         project_id,
         filesystem_read_roots,
         team_mode,
@@ -2159,6 +2255,7 @@ async fn build_command_from_resolved_settings(
     conversation: &ChatConversation,
     user_message: &str,
     working_directory: &Path,
+    entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     team_mode: bool,
@@ -2197,6 +2294,13 @@ async fn build_command_from_resolved_settings(
             (prompt_with_attachments, Some(session_id.to_string()))
         }
         ProviderResumeMode::Recovery => {
+            let task_runtime_context = build_task_runtime_context_prompt(
+                conversation.context_type,
+                &conversation.context_id,
+                entity_status,
+                project_id,
+                working_directory,
+            )?;
             let initial_prompt = build_initial_prompt_with_session_artifacts_for_agent(
                 Some(agent_name),
                 conversation.context_type,
@@ -2212,7 +2316,7 @@ async fn build_command_from_resolved_settings(
                 } else {
                     IdeationBootstrapMode::Continuation
                 },
-                None,
+                task_runtime_context.as_deref(),
             )
             .await?;
             let prompt_with_attachments = format!("{}{}", initial_prompt, attachment_context);
@@ -2226,6 +2330,7 @@ async fn build_command_from_resolved_settings(
         Some(conversation.id.as_str()),
         None,
         working_directory,
+        entity_status,
         project_id,
         filesystem_read_roots,
         None,
@@ -2251,6 +2356,7 @@ async fn build_command_from_resolved_settings(
         conversation.context_type,
         &conversation.context_id,
         working_directory,
+        entity_status,
         project_id,
         team_mode,
         resume_session.as_deref(),
@@ -2269,6 +2375,7 @@ async fn build_recovery_command_from_resolved_settings(
     context_id: &str,
     message: &str,
     working_directory: &Path,
+    entity_status: Option<&str>,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
     parent_conversation_id: Option<String>,
@@ -2282,6 +2389,13 @@ async fn build_recovery_command_from_resolved_settings(
 ) -> Result<SpawnableCommand, String> {
     let resolved_model = resolved_spawn_settings.model.as_str();
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
+    let task_runtime_context = build_task_runtime_context_prompt(
+        context_type,
+        context_id,
+        entity_status,
+        project_id,
+        working_directory,
+    )?;
     let prompt = build_initial_prompt_with_session_artifacts_for_agent(
         Some(agent_name),
         context_type,
@@ -2293,7 +2407,7 @@ async fn build_recovery_command_from_resolved_settings(
         ideation_subagent_model_cap,
         Some(AgentHarnessKind::Claude),
         IdeationBootstrapMode::Recovery,
-        None,
+        task_runtime_context.as_deref(),
     )
     .await?;
     let prompt = format!(
@@ -2308,6 +2422,7 @@ async fn build_recovery_command_from_resolved_settings(
         None,
         None,
         working_directory,
+        entity_status,
         project_id,
         filesystem_read_roots,
         None,
@@ -2333,6 +2448,7 @@ async fn build_recovery_command_from_resolved_settings(
         context_type,
         context_id,
         working_directory,
+        entity_status,
         project_id,
         team_mode,
         None,
@@ -2415,6 +2531,16 @@ pub async fn build_codex_command(
     };
 
     let prompt_build_started = Instant::now();
+    let task_runtime_context = build_task_runtime_context_prompt(
+        conversation.context_type,
+        &conversation.context_id,
+        entity_status,
+        project_id,
+        working_directory,
+    )?;
+    let additional_prompt_context = task_runtime_context
+        .as_deref()
+        .or(agent_workspace_prompt_context);
     let initial_prompt = build_initial_prompt_with_session_artifacts_for_agent(
         Some(agent_name),
         conversation.context_type,
@@ -2430,7 +2556,7 @@ pub async fn build_codex_command(
         } else {
             IdeationBootstrapMode::Continuation
         },
-        agent_workspace_prompt_context,
+        additional_prompt_context,
     )
     .await?;
     tracing::info!(
@@ -2468,6 +2594,7 @@ pub async fn build_codex_command(
         Some(conversation.id.as_str()),
         agent_run_id,
         working_directory,
+        entity_status,
         project_id,
         filesystem_read_roots,
         None,
@@ -2513,6 +2640,7 @@ pub async fn build_codex_command(
         conversation.context_type,
         &conversation.context_id,
         working_directory,
+        entity_status,
         project_id,
         codex_team_mode,
         None,
@@ -2910,6 +3038,16 @@ pub async fn build_interactive_command(
     };
 
     let prompt_started = Instant::now();
+    let task_runtime_context = build_task_runtime_context_prompt(
+        conversation.context_type,
+        &conversation.context_id,
+        entity_status,
+        project_id,
+        working_directory,
+    )?;
+    let additional_prompt_context = task_runtime_context
+        .as_deref()
+        .or(agent_workspace_prompt_context);
     let initial_prompt = match resume_session {
         Some(_) => build_resume_initial_prompt(
             conversation.context_type,
@@ -2934,7 +3072,7 @@ pub async fn build_interactive_command(
                 } else {
                     IdeationBootstrapMode::Continuation
                 },
-                agent_workspace_prompt_context,
+                additional_prompt_context,
             )
             .await?
         }
@@ -2949,6 +3087,7 @@ pub async fn build_interactive_command(
         Some(conversation.id.as_str()),
         agent_run_id,
         working_directory,
+        entity_status,
         project_id,
         filesystem_read_roots,
         None,
@@ -2984,6 +3123,7 @@ pub async fn build_interactive_command(
         conversation.context_type,
         &conversation.context_id,
         working_directory,
+        entity_status,
         project_id,
         team_mode,
         resume_session,
@@ -3135,6 +3275,7 @@ pub async fn build_resume_command(
         session_id,
         project_id,
         filesystem_read_roots,
+        entity_status.as_deref(),
         parent_conversation_id,
         team_mode,
         artifact_repo,
@@ -3159,6 +3300,7 @@ async fn build_resume_command_from_resolved_settings(
     session_id: &str,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
+    entity_status: Option<&str>,
     parent_conversation_id: Option<String>,
     team_mode: bool,
     artifact_repo: Arc<dyn ArtifactRepository>,
@@ -3191,6 +3333,7 @@ async fn build_resume_command_from_resolved_settings(
                 None,
                 None,
                 working_directory,
+                entity_status,
                 project_id,
                 filesystem_read_roots,
                 None,
@@ -3216,6 +3359,7 @@ async fn build_resume_command_from_resolved_settings(
                 context_type,
                 context_id,
                 working_directory,
+                entity_status,
                 project_id,
                 team_mode,
                 Some(session_id),
@@ -3234,6 +3378,7 @@ async fn build_resume_command_from_resolved_settings(
                 context_id,
                 message,
                 working_directory,
+                entity_status,
                 project_id,
                 filesystem_read_roots,
                 parent_conversation_id,
@@ -3298,6 +3443,7 @@ pub async fn build_codex_resume_command(
         conversation_id.map(str::to_string),
         agent_run_id,
         working_directory,
+        entity_status.as_deref(),
         project_id,
         filesystem_read_roots,
         None,
@@ -3347,6 +3493,7 @@ pub async fn build_codex_resume_command(
                 context_type,
                 context_id,
                 working_directory,
+                entity_status.as_deref(),
                 project_id,
                 codex_team_mode,
                 Some(session_id),
@@ -3359,6 +3506,16 @@ pub async fn build_codex_resume_command(
             Ok(spawnable)
         }
         ProviderResumeMode::Recovery => {
+            let task_runtime_context = build_task_runtime_context_prompt(
+                context_type,
+                context_id,
+                entity_status.as_deref(),
+                project_id,
+                working_directory,
+            )?;
+            let additional_prompt_context = task_runtime_context
+                .as_deref()
+                .or(agent_workspace_prompt_context);
             let recovery_prompt = build_initial_prompt_with_session_artifacts_for_agent(
                 Some(agent_name),
                 context_type,
@@ -3370,7 +3527,7 @@ pub async fn build_codex_resume_command(
                 ideation_subagent_model_cap,
                 Some(AgentHarnessKind::Codex),
                 IdeationBootstrapMode::Recovery,
-                agent_workspace_prompt_context,
+                additional_prompt_context,
             )
             .await?;
             let recovery_prompt = format!(
@@ -3394,6 +3551,7 @@ pub async fn build_codex_resume_command(
                 context_type,
                 context_id,
                 working_directory,
+                entity_status.as_deref(),
                 project_id,
                 codex_team_mode,
                 None,
@@ -3862,6 +4020,201 @@ exit 0
             spawnable_env_value(launch_spawnable(&background), "CUSTOM_PROVIDER_TOKEN").as_deref(),
             Some("from-provider-env")
         );
+    }
+
+    #[test]
+    fn task_runtime_initial_prompts_include_supplied_runtime_context() {
+        let runtime_context =
+            "<task_runtime_context>\n<task_state>executing</task_state>\n</task_runtime_context>";
+        let execution_prompt = build_initial_prompt_with_history(
+            ChatContextType::TaskExecution,
+            "task-runtime-prompt",
+            "Execute task: task-runtime-prompt",
+            runtime_context,
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        );
+        assert!(execution_prompt.contains(runtime_context));
+        assert!(
+            execution_prompt
+                .contains("<user_message>Execute task: task-runtime-prompt</user_message>")
+        );
+
+        let first_turn_execution_prompt = build_initial_prompt_with_history(
+            ChatContextType::TaskExecution,
+            "task-runtime-empty",
+            "Execute task: task-runtime-empty",
+            "",
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        );
+        assert!(!first_turn_execution_prompt.contains("<task_runtime_context>"));
+
+        let review_context =
+            "<task_runtime_context>\n<task_state>reviewing</task_state>\n</task_runtime_context>";
+        let review_prompt = build_initial_prompt_with_history(
+            ChatContextType::Review,
+            "task-runtime-review",
+            "Review task: task-runtime-review",
+            review_context,
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        );
+        assert!(review_prompt.contains(review_context));
+        assert!(
+            review_prompt.contains("<user_message>Review task: task-runtime-review</user_message>")
+        );
+    }
+
+    #[test]
+    fn task_runtime_state_reaches_env_and_mcp_context() {
+        let mut spawnable = test_spawnable();
+        apply_ralphx_env_vars(
+            &mut spawnable,
+            agent_names::AGENT_WORKER,
+            ChatContextType::TaskExecution,
+            "task-runtime-env",
+            Path::new("/tmp/task-runtime-env"),
+            Some("re_executing"),
+            Some("project-runtime-env"),
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            spawnable_env_value(&spawnable, "RALPHX_TASK_STATE").as_deref(),
+            Some("re_executing")
+        );
+
+        let mut project_spawnable = test_spawnable();
+        apply_ralphx_env_vars(
+            &mut project_spawnable,
+            agent_names::AGENT_CHAT_PROJECT,
+            ChatContextType::Project,
+            "project-runtime-env",
+            Path::new("/tmp/project-runtime-env"),
+            Some("executing"),
+            Some("project-runtime-env"),
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            spawnable_env_value(&project_spawnable, "RALPHX_TASK_STATE"),
+            None
+        );
+
+        let runtime_context = build_mcp_runtime_context(
+            ChatContextType::Review,
+            "task-runtime-mcp",
+            Some("conversation-runtime-mcp".to_string()),
+            Some("run-runtime-mcp"),
+            Path::new("/tmp/task-runtime-mcp"),
+            Some("reviewing"),
+            Some("project-runtime-mcp"),
+            &[],
+            None,
+            None,
+        );
+        assert_eq!(runtime_context.task_state.as_deref(), Some("reviewing"));
+    }
+
+    #[tokio::test]
+    async fn task_runtime_launch_plans_inject_prompt_env_and_mcp_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-runtime-launch".to_string());
+        let harness_clis = [
+            (
+                AgentHarnessKind::Claude,
+                make_fake_claude_cli(&temp),
+                "Claude",
+            ),
+            (AgentHarnessKind::Codex, make_fake_codex_cli(&temp), "Codex"),
+        ];
+
+        for (harness, cli_path, harness_label) in harness_clis {
+            let task_id = TaskId::from_string(format!("task-runtime-launch-{harness_label}"));
+            let conversation = ChatConversation::new_task_execution(task_id.clone());
+            let resolved_spawn_settings =
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_names::AGENT_WORKER,
+                    Some(project_id.as_str()),
+                    ChatContextType::TaskExecution,
+                    Some("executing"),
+                    Some(harness),
+                    None,
+                    None,
+                )
+                .await;
+
+            let launch_plan = build_launch_plan_for_harness_for_test(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                &format!("Execute task: {}", task_id.as_str()),
+                Some(agent_names::AGENT_WORKER),
+                None,
+                ChatContextType::TaskExecution,
+                task_id.as_str(),
+                Some(conversation.id.as_str()),
+                Some("run-runtime-launch"),
+                temp.path(),
+                Some("executing"),
+                Some(project_id.as_str()),
+                &[],
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                false,
+                None,
+                &resolved_spawn_settings,
+                None,
+                None,
+            )
+            .await
+            .expect("task runtime launch plan should build");
+
+            let spawnable = launch_spawnable(&launch_plan);
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<task_runtime_context>")
+                    && prompt.contains("<task_state>executing</task_state>")
+                    && prompt.contains(task_id.as_str()),
+                "{harness_label} prompt should include task runtime context: {prompt}"
+            );
+            assert_eq!(
+                spawnable_env_value(spawnable, "RALPHX_TASK_STATE").as_deref(),
+                Some("executing"),
+                "{harness_label} launch env should include task state"
+            );
+
+            let mcp_args = match harness {
+                AgentHarnessKind::Claude => claude_mcp_config_args(spawnable).join("\n"),
+                AgentHarnessKind::Codex => spawnable
+                    .get_args_for_test()
+                    .into_iter()
+                    .filter(|arg| arg.starts_with("mcp_servers."))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            assert!(
+                mcp_args.contains("--task-state") && mcp_args.contains("executing"),
+                "{harness_label} MCP args should include task state: {mcp_args}"
+            );
+        }
     }
 
     async fn build_project_agent_launch_plan(

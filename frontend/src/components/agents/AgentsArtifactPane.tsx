@@ -111,6 +111,7 @@ import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
@@ -401,6 +402,10 @@ interface AgentsArtifactPaneProps {
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusWorkspaceReview?: (conversationId: string) => void;
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   onTaskArtifactSelectionChange?: (taskId: string | null) => void;
   onClose: () => void;
 }
@@ -423,6 +428,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onOpenAutomation,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
+  onFocusTaskRuntime,
   onTaskArtifactSelectionChange,
   onClose,
 }: AgentsArtifactPaneProps) {
@@ -738,14 +744,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           displayedVerificationStatus.status !== "unverified"))),
   );
   const proposalCount = proposals.length;
-  const conversationArtifactMode =
-    conversation?.agentMode === "plan" || conversation?.agentMode === "ideation"
-      ? conversation.agentMode
-      : null;
-  const artifactMode =
-    conversationArtifactMode ??
-    workspace?.mode ??
-    (conversation?.contextType === "ideation" ? "ideation" : null);
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
   const automationId = conversation?.automationId ?? null;
@@ -760,18 +758,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
         canStartPlan,
-        hasProposals: proposalCount > 0,
         hasVerificationEvidence,
         hasExecutionTasks: hasImplementationAttempt,
-        artifactMode,
       }),
     [
-      artifactMode,
       canStartPlan,
       hasImplementationAttempt,
       hasVerificationEvidence,
       planArtifactId,
-      proposalCount,
       sessionData,
     ],
   );
@@ -1341,6 +1335,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           publishFocusRequest={publishFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
+          {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
           onOpenReview={handleOpenReview}
@@ -1400,6 +1395,10 @@ type ArtifactContentProps = {
       inProgress: boolean;
     } | null,
   ) => void;
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
   onOpenReview: () => void;
@@ -1449,6 +1448,7 @@ function ArtifactContent({
   publishFocusRequest,
   onFocusVerificationSession: _onFocusVerificationSession,
   onDisplayedVerificationStatusChange,
+  onFocusTaskRuntime,
   verificationState,
   verificationInProgress,
   onOpenReview,
@@ -1476,7 +1476,14 @@ function ArtifactContent({
 
   if (activeTab === "automation" && automationId) {
     return (
-      <Suspense fallback={<EmptyArtifactState title="Loading automation..." />}>
+      <Suspense
+        fallback={
+          <EmptyArtifactState
+            title="Loading automation..."
+            testId="agents-automation-panel-loading"
+          />
+        }
+      >
         <LazyAgentsAutomationPanel
           automationId={automationId}
           conversationTitle={conversationTitle}
@@ -1657,6 +1664,7 @@ function ArtifactContent({
       mode={taskMode}
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
+      {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
     />
   );
 }
@@ -2379,12 +2387,17 @@ function TaskArtifactSurface({
   mode,
   selectedTaskId,
   onSelectedTaskIdChange,
+  onFocusTaskRuntime,
 }: {
   projectId: string | null;
   sessionId: string;
   mode: AgentTaskArtifactMode;
   selectedTaskId: string | null;
   onSelectedTaskIdChange: (id: string | null) => void;
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
 }) {
   const handleTaskSelect = useCallback(
     (taskId: string) => {
@@ -2410,6 +2423,7 @@ function TaskArtifactSurface({
         backLabel={backLabel}
         onBack={handleCloseTaskDetail}
         constrainContent
+        {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
       />
     </Suspense>
   ) : null;

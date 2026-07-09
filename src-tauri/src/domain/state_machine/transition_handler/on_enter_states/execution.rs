@@ -684,6 +684,8 @@ impl<'a> TransitionHandler<'a> {
         &self,
         task_id_str: &str,
         prompt: &str,
+        task_state: &str,
+        project_id_str: &str,
         failure_log: &str,
     ) -> AppResult<()> {
         match self
@@ -691,11 +693,12 @@ impl<'a> TransitionHandler<'a> {
             .context
             .services
             .chat_service
-            .send_message(
+            .send_task_runtime_bootstrap_message(
                 crate::domain::entities::ChatContextType::TaskExecution,
                 task_id_str,
                 prompt,
-                Default::default(),
+                task_state,
+                project_id_str,
             )
             .await
         {
@@ -797,6 +800,8 @@ impl<'a> TransitionHandler<'a> {
             .send_task_execution_message(
                 task_id_str,
                 &prompt,
+                "executing",
+                project_id_str,
                 "Failed to send task execution message — agent not started",
             )
             .await;
@@ -845,6 +850,8 @@ impl<'a> TransitionHandler<'a> {
             .send_task_execution_message(
                 task_id_str,
                 &prompt,
+                "re_executing",
+                project_id_str,
                 "Failed to send re-execution message — agent not started",
             )
             .await;

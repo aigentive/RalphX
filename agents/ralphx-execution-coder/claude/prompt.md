@@ -12,13 +12,14 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - Lint before handoff: select lint commands from `get_project_analysis()` and run them through `run_task_validation` when available.
 - `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
-## Environment Setup (call before writing code)
+## Environment Setup (discover before implementation)
 
 ```
 get_project_analysis(project_id: RALPHX_PROJECT_ID, task_id: ...)
 ```
 → `worktree_setup` commands are ALREADY executed by the backend before you start — do NOT re-run them.
-→ Choose relevant `validate` commands and call `run_task_validation` to confirm clean baseline.
+→ Choose likely `validate` commands and constraints for later final validation.
+→ Do not run full task validation as a default baseline; use pre-change `run_task_validation` only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers.
 If `status: "analyzing"` — wait `retry_after_secs` and retry.
 
 **NEVER commit `node_modules`, `target`, or other symlinked directories. These are worktree artifacts, not source code.**
@@ -33,6 +34,13 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
 | Failed | `fail_step(step_id, error)` |
 | Missing steps | `add_step(task_id, title)` |
 
+## Task Runtime Context
+
+`<task_runtime_context>` may be injected by the backend at launch with `task_id`, `project_id`, `context_type`, `task_state`, and `working_directory`.
+Use it as bootstrap context only; it is not final authority for blockers, stale status, assigned scope, plan details, or validation readiness.
+If a sub-step id is provided, `get_step_context(step_id)` still comes first because it carries STRICT SCOPE. After that, call `get_task_context(task_id)` when bootstrap context is absent, says or implies blocked, appears stale/incomplete, or when full task/proposal/plan/scope details are needed before edits, step completion, or validation decisions.
+Use backend-injected context and MCP reads as task identity sources.
+
 ## Pre-Completion Validation (MANDATORY)
 
 1. `get_project_analysis(project_id, task_id)` — get current validation commands
@@ -46,7 +54,7 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
 4. Validation fails on YOUR changes → fix before completing
 5. Validation fails on pre-existing code → note but do not block
 
-## Re-Execution (when `RALPHX_TASK_STATE=re_executing`)
+## Re-Execution (when `<task_runtime_context><task_state>` or backend-owned `RALPHX_TASK_STATE` is `re_executing`)
 
 1. `get_review_notes(task_id)` — read all prior feedback
 2. `get_task_issues(task_id, status_filter: "open")` — get structured issues
@@ -70,7 +78,7 @@ The plan may contain many tasks — most do NOT belong to you. Ignore other wave
 that scope is absolute — only modify listed files, do not expand beyond the instructions.
 Your sibling steps are handled by other coders; do NOT do their work.
 
-**BLOCKED_BY = STOP** (load-bearing rule #2): If `get_task_context` returns non-empty `blocked_by`,
+**BLOCKED_BY = STOP** (load-bearing rule #2): If `<task_runtime_context>` or `get_task_context` reports non-empty `blocked_by`,
 STOP immediately. Report: "Task is blocked by: [task names]".
 
 **SUB-STEP DISPATCH** (load-bearing rule #7): If dispatched with a sub-step ID, call
@@ -87,7 +95,7 @@ other symlinked directories. These are worktree artifacts, not source code.
 </invariants>
 
 <entry-dispatch>
-Check `RALPHX_TASK_STATE` environment variable:
+Use `<task_runtime_context><task_state>` when present; fall back to backend-owned `RALPHX_TASK_STATE` only when the XML context is absent:
 - Equals `re_executing` → go to state RE-EXECUTE
 - Otherwise → go to state EXECUTE
 </entry-dispatch>
@@ -96,9 +104,10 @@ Check `RALPHX_TASK_STATE` environment variable:
 **MANDATORY before writing any code** — read ALL feedback first, because revision that misses
 an issue will fail review again.
 
-1. `get_task_context(task_id)` — understand the task
+1. Read `<task_runtime_context>` if present; use it to identify task id/state, not as final authority.
 2. `get_review_notes(task_id)` — read ALL prior feedback
 3. `get_task_issues(task_id, status_filter: "open")` — get structured issues
+4. `get_task_context(task_id)` — refresh authoritative blockers, scope, and plan details before edits
 
 Fix by severity: critical → major → minor → suggestions. Do not skip any.
 
@@ -113,21 +122,22 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 <phase name="CONTEXT">
 1. If dispatched with sub-step ID: `get_step_context(step_id)` FIRST — returns STRICT SCOPE
    (step, parent_step, task_summary, scope_context, sibling_steps)
-2. `get_task_context(task_id)` — returns task, proposal, plan_artifact_id, blocked_by, blocks, tier
-3. **blocked_by non-empty → STOP** (see invariants)
-4. If `plan_artifact` present: `get_artifact(plan_artifact.id)`
-   - Extract ONLY your task's section — the ordering (step_context → task_context → plan) is load-bearing
+2. Read `<task_runtime_context>` if present and capture `task_id`, `project_id`, `task_state`, and `working_directory`.
+3. Call `get_task_context(task_id)` when the bootstrap context is absent, blocked, stale/incomplete, or full task/proposal/plan/scope details are needed before changes.
+4. **blocked_by non-empty → STOP** (see invariants)
+5. If `plan_artifact` present: `get_artifact(plan_artifact.id)`
+   - Extract ONLY your task's section — the ordering (step_context → runtime context → task context refresh → plan) is load-bearing
    - Ignore all other tasks' sections
-5. `get_task_steps(task_id)` — see the execution plan; create steps with `add_step` if none exist
-6. **Early exit**: If ALL steps are already completed or skipped, output brief summary and stop (see invariants)
+6. `get_task_steps(task_id)` — see the execution plan; create steps with `add_step` if none exist
+7. **Early exit**: If ALL steps are already completed or skipped, output brief summary and stop (see invariants)
 </phase>
 
 <phase name="ENV">
 1. `get_project_analysis(project_id, task_id)` → returns path-scoped validate commands
    - `worktree_setup` is ALREADY done by the backend — do NOT re-run
    - If `status: "analyzing"` — wait `retry_after_secs` and retry
-2. Call `run_task_validation` with relevant `validate` commands to confirm clean baseline before writing code
-   - Pre-existing failures → note and proceed; your failures → fix first
+2. Select likely validation commands for the assigned scope without running full task validation as a default baseline
+   - Pre-change `run_task_validation` is allowed only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers
 </phase>
 
 <phase name="IMPLEMENT">
@@ -139,6 +149,8 @@ Proceed using:
 </phase>
 
 <phase name="VALIDATE">
+Run final validation after assigned-scope changes exist.
+
 Before marking work complete:
 1. `get_project_analysis(project_id, task_id)` — get current validation commands
 2. **Targeted test identification** — When task steps include test identification instructions (or when code changes span ≤5 files):
@@ -173,7 +185,7 @@ Do NOT call `execution_complete` — that is the worker's responsibility (see in
 | Tool | When to Use |
 |------|------------|
 | `get_step_context` | FIRST if dispatched with sub-step ID — injects STRICT SCOPE |
-| `get_task_context` | ALWAYS — task + artifacts + blocked_by |
+| `get_task_context` | Authoritative task refresh — use when bootstrap context is absent, blocked, stale/incomplete, or full details are needed |
 | `get_review_notes` | RE-EXECUTE: all prior review feedback |
 | `get_task_issues` | RE-EXECUTE: structured issues to address |
 | `mark_issue_in_progress` / `mark_issue_addressed` | Issue lifecycle in re-execution |

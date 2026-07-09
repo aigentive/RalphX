@@ -26,6 +26,8 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
             "conversation-789",
             "--agent-run-id",
             "run-current",
+            "--task-state",
+            "re_executing",
             "--project-id",
             "project-456",
             "--working-directory",
@@ -45,6 +47,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(runtimeContext.conversationId).toBe("conversation-current");
         expect(runtimeContext.parentConversationId).toBe("conversation-789");
         expect(runtimeContext.agentRunId).toBe("run-current");
+        expect(runtimeContext.taskState).toBe("re_executing");
         expect(runtimeContext.projectId).toBe("project-456");
         expect(runtimeContext.workingDirectory).toBe("/tmp/workspace");
         expect(runtimeContext.filesystemReadRoots).toBe(JSON.stringify(["/tmp/project", "/tmp/shared-artifacts"]));
@@ -57,6 +60,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(env.RALPHX_CONVERSATION_ID).toBe("conversation-current");
         expect(env.RALPHX_PARENT_CONVERSATION_ID).toBe("conversation-789");
         expect(env.RALPHX_AGENT_RUN_ID).toBe("run-current");
+        expect(env.RALPHX_TASK_STATE).toBe("re_executing");
         expect(env.RALPHX_PROJECT_ID).toBe("project-456");
         expect(env.RALPHX_WORKING_DIRECTORY).toBe("/tmp/workspace");
         expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(JSON.stringify(["/tmp/project", "/tmp/shared-artifacts"]));
