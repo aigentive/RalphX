@@ -2302,8 +2302,22 @@ function AgentPlanPanel({
     if (isPlanApproved) {
       return "approved";
     }
-    return "needs_approval";
-  }, [hasImplementationAttempt, isPlanApproved, planArtifact]);
+    if (
+      workspace?.mode === "plan" &&
+      isOwnedCurrentPlan &&
+      planApprovalStatus === "draft"
+    ) {
+      return "needs_approval";
+    }
+    return null;
+  }, [
+    hasImplementationAttempt,
+    isOwnedCurrentPlan,
+    isPlanApproved,
+    planApprovalStatus,
+    planArtifact,
+    workspace?.mode,
+  ]);
   const showCreateProposalsLifecycleAction = Boolean(
     canCreateProposals && linkedProposalsCount === 0,
   );
