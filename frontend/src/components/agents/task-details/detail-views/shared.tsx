@@ -18,3 +18,9 @@ export { TaskMetricsCard } from "./shared/TaskMetricsCard";
 export { ChangeReviewSection, CommitSummaryCard } from "./shared/ChangeReviewSection";
 export { PlanMergeContextCard, PlanMergeContextSection } from "./shared/PlanMergeContextSection";
 export { TaskContextRail } from "./shared/TaskDetailContextRail";
+export {
+  TaskValidationCommandList,
+  TaskValidationEvidenceCard,
+  TaskValidationSection,
+  TaskValidationSummaryCard,
+} from "./shared/TaskValidationEvidenceCard";

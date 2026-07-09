@@ -1189,7 +1189,7 @@ describe("AgentsChatHeader", () => {
           mode: "edit",
           linkedIdeationSessionId: "planning-session-1",
         })}
-        availableArtifactTabs={["plan", "verification", "proposal"]}
+        availableArtifactTabs={["plan", "verification"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -1206,12 +1206,12 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
   });
 
-  it("filters stale Proposals shortcuts for ideation-mode conversations", () => {
+  it("shows ideation artifact shortcuts without a standalone Proposals shortcut", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "ideation" })}
         workspace={conversationWorkspace({ mode: "ideation" })}
-        availableArtifactTabs={["plan", "verification", "proposal", "tasks"]}
+        availableArtifactTabs={["plan", "verification", "tasks"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}

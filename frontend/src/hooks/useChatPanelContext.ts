@@ -30,7 +30,7 @@ interface UseChatPanelContextProps {
   isMergeMode: boolean;
   isHistoryMode: boolean;
   /** Override conversation ID for history mode - forces selection of specific conversation */
-  overrideConversationId?: string | undefined;
+  overrideConversationId?: string | null | undefined;
   /** Override the store key used for queue/running state. */
   storeContextKeyOverride?: string | undefined;
   /** Override agent run ID for history mode - used for scroll positioning */
@@ -131,7 +131,10 @@ export function useChatPanelContext({
   // caller owns a specific conversation, the override is authoritative on the
   // first render instead of waiting for the store sync effect.
   const storedActiveConversationId = useChatStore((s) => s.activeConversationIds[storeContextKey] ?? null);
-  const activeConversationId = overrideConversationId ?? storedActiveConversationId;
+  const activeConversationId =
+    overrideConversationId !== undefined
+      ? overrideConversationId
+      : storedActiveConversationId;
 
   // Context key for tracking changes
   const contextKey = ideationSessionId
@@ -286,15 +289,16 @@ export function useChatPanelContext({
   }, [contextKey, storeContextKey, setActiveConversation, queryClient, clearMessages, setSending, ideationSessionId, selectedTaskId, projectId, isMergeMode, isExecutionMode, isReviewMode]);
 
   // Track previous override conversation ID to detect changes
-  const prevOverrideConversationIdRef = useRef<string | undefined>(undefined);
+  const prevOverrideConversationIdRef = useRef<string | null | undefined>(undefined);
 
   // Handle override conversation selection (for history mode)
   useEffect(() => {
     if (overrideConversationId !== prevOverrideConversationIdRef.current) {
       prevOverrideConversationIdRef.current = overrideConversationId;
 
-      if (overrideConversationId) {
-        // In history mode with a specific conversation - select it
+      if (overrideConversationId !== undefined) {
+        // In history mode with a specific conversation - select it; null
+        // explicitly clears stale conversations for no-transcript stages.
         setActiveConversation(storeContextKey, overrideConversationId);
         hasAutoSelectedRef.current = true; // Prevent auto-select from overriding
       }
@@ -324,7 +328,7 @@ export function useChatPanelContext({
 
     // Explicit conversation owners such as history and Agents archived/session
     // lists must not be replaced by the active-list auto-selection path.
-    if (overrideConversationId) {
+    if (overrideConversationId !== undefined) {
       return;
     }
 

@@ -401,6 +401,16 @@ export function HumanReviewTaskDetail({ task, isHistorical = false }: HumanRevie
       <TwoColumnLayout
         description={task.description}
         testId="human-review-task-detail"
+        actions={
+          !isHistorical ? (
+            <section>
+              <ActionButtonsCard
+                taskId={task.id}
+                onReviewCode={() => setShowReviewModal(true)}
+              />
+            </section>
+          ) : null
+        }
       >
         {/* Status Banner */}
         <StatusBanner
@@ -442,15 +452,6 @@ export function HumanReviewTaskDetail({ task, isHistorical = false }: HumanRevie
           </section>
         )}
 
-        {/* Action Buttons (hidden in historical mode) */}
-        {!isHistorical && (
-          <section>
-            <ActionButtonsCard
-              taskId={task.id}
-              onReviewCode={() => setShowReviewModal(true)}
-            />
-          </section>
-        )}
       </TwoColumnLayout>
 
       {/* Review Detail Modal */}

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { BulkCancelResponseSchemaRaw, BulkPauseResponseSchemaRaw, BulkResumeResponseSchemaRaw, BulkArchiveResponseSchemaRaw, CleanupReportResponseSchemaRaw, InjectTaskResponseSchemaRaw, StateTransitionResponseSchemaRaw, UnblockTaskResponseSchemaRaw } from "./tasks.schemas";
 import { transformTask, type Task, type InternalStatus } from "@/types/task";
+import type { TaskRuntimeHistoryContextType } from "@/types/task-history";
 
 /**
  * Frontend BulkCancelResponse type (camelCase)
@@ -130,6 +131,20 @@ export interface StateTransition {
   conversationId?: string;
   /** Agent run ID for the specific execution within the conversation */
   agentRunId?: string;
+  /** Runtime context type for the associated transcript, when provided by the backend */
+  contextType?: TaskRuntimeHistoryContextType;
+  /** Stable transition identity, when provided by the backend */
+  transitionId?: string;
+}
+
+function isTaskRuntimeHistoryContextType(
+  contextType: string | null | undefined
+): contextType is TaskRuntimeHistoryContextType {
+  return (
+    contextType === "task_execution" ||
+    contextType === "review" ||
+    contextType === "merge"
+  );
 }
 
 /**
@@ -146,5 +161,7 @@ export function transformStateTransition(
     // Only include conversationId/agentRunId if they have actual string values (not null or undefined)
     ...(raw.conversation_id != null && { conversationId: raw.conversation_id }),
     ...(raw.agent_run_id != null && { agentRunId: raw.agent_run_id }),
+    ...(isTaskRuntimeHistoryContextType(raw.context_type) && { contextType: raw.context_type }),
+    ...(raw.transition_id != null && { transitionId: raw.transition_id }),
   };
 }

@@ -1,12 +1,17 @@
 export function EmptyArtifactState({
   title,
   detail,
+  testId,
 }: {
   title: string;
   detail?: string | undefined;
+  testId?: string | undefined;
 }) {
   return (
-    <div className="h-full min-h-[220px] flex items-center justify-center p-6 text-center">
+    <div
+      className="h-full min-h-[220px] flex items-center justify-center p-6 text-center"
+      data-testid={testId}
+    >
       <div className="max-w-sm">
         <div className="text-sm font-medium text-[var(--text-primary)]">{title}</div>
         {detail && (

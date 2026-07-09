@@ -1,11 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { setupApp } from "../../../fixtures/setup.fixtures";
+import type { StateTransition } from "@/api/tasks";
 import type { ChatMessageResponse } from "@/api/chat";
 import type {
   AgentConversationMode,
   ChatConversation,
 } from "@/types/chat-conversation";
+import type { InternalStatus, Task } from "@/types/task";
+import type { TaskStep } from "@/types/task-step";
 
 const projectId = "project-mock-1";
 const baseRef = {
@@ -18,6 +21,52 @@ const editConversationId = "conv-agent-edit-visual";
 const ideationConversationId = "conv-agent-ideation-visual";
 const archivedConversationId = "conv-agent-archived-visual";
 const stablePublishEventCreatedAt = "2026-05-13T05:20:00";
+
+const taskDetailVisualTaskIds = {
+  executing: "agents-task-detail-executing",
+  reviewing: "agents-task-detail-reviewing",
+  reviewPassed: "agents-task-detail-review-passed",
+  approved: "agents-task-detail-approved",
+  merged: "agents-task-detail-merged",
+} as const;
+
+const taskDetailVisualStates: Array<{
+  id: string;
+  status: InternalStatus;
+  title: string;
+  detailTestId: string;
+}> = [
+  {
+    id: taskDetailVisualTaskIds.executing,
+    status: "executing",
+    title: "Executing task detail parity",
+    detailTestId: "execution-task-detail",
+  },
+  {
+    id: taskDetailVisualTaskIds.reviewing,
+    status: "reviewing",
+    title: "Reviewing task detail parity",
+    detailTestId: "reviewing-task-detail",
+  },
+  {
+    id: taskDetailVisualTaskIds.reviewPassed,
+    status: "review_passed",
+    title: "Review passed task detail parity",
+    detailTestId: "human-review-task-detail",
+  },
+  {
+    id: taskDetailVisualTaskIds.approved,
+    status: "approved",
+    title: "Approved task detail parity",
+    detailTestId: "completed-task-detail",
+  },
+  {
+    id: taskDetailVisualTaskIds.merged,
+    status: "merged",
+    title: "Merged task detail parity",
+    detailTestId: "merged-task-detail",
+  },
+];
 
 function makePagedDiffRows() {
   return [
@@ -488,6 +537,404 @@ async function hydrateIdeationArtifactCache(page: Page, conversationId: string) 
   }, conversationId);
 }
 
+function taskDetailVisualTransitions(taskId: string): StateTransition[] {
+  return [
+    {
+      fromStatus: "ready",
+      toStatus: "executing",
+      trigger: "agent",
+      timestamp: "2026-07-07T10:00:00.000Z",
+      conversationId: "agents-task-detail-exec-1",
+      agentRunId: "run-exec-1",
+    },
+    {
+      fromStatus: "executing",
+      toStatus: "reviewing",
+      trigger: "system",
+      timestamp: "2026-07-07T10:10:00.000Z",
+      conversationId: "agents-task-detail-review-1",
+      agentRunId: "run-review-1",
+    },
+    {
+      fromStatus: "reviewing",
+      toStatus: "revision_needed",
+      trigger: "system",
+      timestamp: "2026-07-07T10:18:00.000Z",
+    },
+    {
+      fromStatus: "revision_needed",
+      toStatus: "re_executing",
+      trigger: "agent",
+      timestamp: "2026-07-07T10:22:00.000Z",
+      conversationId: "agents-task-detail-exec-2",
+      agentRunId: "run-exec-2",
+    },
+    {
+      fromStatus: "re_executing",
+      toStatus: "reviewing",
+      trigger: "system",
+      timestamp: "2026-07-07T10:30:00.000Z",
+      conversationId: "agents-task-detail-review-2",
+      agentRunId: "run-review-2",
+    },
+    {
+      fromStatus: "reviewing",
+      toStatus: "review_passed",
+      trigger: "system",
+      timestamp: "2026-07-07T10:38:00.000Z",
+      conversationId: "agents-task-detail-review-2",
+      agentRunId: "run-review-2",
+    },
+    {
+      fromStatus: "review_passed",
+      toStatus: "approved",
+      trigger: "system",
+      timestamp: "2026-07-07T10:42:00.000Z",
+    },
+    {
+      fromStatus: "approved",
+      toStatus: "pending_merge",
+      trigger: "system",
+      timestamp: "2026-07-07T10:45:00.000Z",
+    },
+    {
+      fromStatus: "pending_merge",
+      toStatus: "merged",
+      trigger: "system",
+      timestamp: "2026-07-07T10:50:00.000Z",
+      conversationId: "agents-task-detail-merge-1",
+      agentRunId: "run-merge-1",
+      contextType: "merge",
+    },
+  ].map((transition) => ({ ...transition, taskId })) as StateTransition[];
+}
+
+async function seedAgentsTaskDetailVisualState(page: Page) {
+  await page.evaluate(
+    async ({
+      targetConversationId,
+      seededProjectId,
+      taskStates,
+      mergedTaskId,
+      mergedTransitions,
+    }) => {
+      const queryClient = window.__queryClient;
+      const mockStore = window.__mockStore as
+        | {
+            tasks: Map<string, Task>;
+            taskSteps: Map<string, TaskStep[]>;
+          }
+        | undefined;
+
+      if (!queryClient || !mockStore) {
+        throw new Error("Expected mock store and query client to be available");
+      }
+
+      const { createMockTask, generateTestUuid } = await import("/src/test/mock-data");
+      const { AGENT_WORKER } = await import("/src/constants/agents");
+      const { seedMockConversation } = await import("/src/api-mock/chat");
+      const { infiniteTaskKeys } = await import("/src/hooks/useInfiniteTasksQuery");
+      const linkedSessionId = `${targetConversationId}-ideation-session`;
+      const linkedExecutionPlanId = `${linkedSessionId}-execution-plan`;
+      const now = "2026-07-07T10:55:00.000Z";
+      const seededTasks: Task[] = [];
+
+      for (const visualTask of taskStates) {
+        const task = createMockTask({
+          id: visualTask.id,
+          projectId: seededProjectId,
+          title: visualTask.title,
+          description:
+            "Agents detail parity fixture with long-enough copy to reveal cramped two-column regressions in the right panel.",
+          category: "feature",
+          internalStatus: visualTask.status,
+          priority: 2,
+          ideationSessionId: linkedSessionId,
+          executionPlanId: linkedExecutionPlanId,
+          planArtifactId: linkedSessionId,
+          taskBranch: `task/${visualTask.id}`,
+          startedAt: "2026-07-07T10:00:00.000Z",
+          completedAt:
+            visualTask.status === "approved" || visualTask.status === "merged"
+              ? "2026-07-07T10:55:00.000Z"
+              : null,
+          mergeCommitSha:
+            visualTask.status === "merged" ? "abc123def4567890" : null,
+        });
+        mockStore.tasks.set(visualTask.id, task);
+        seededTasks.push(task);
+        mockStore.taskSteps.set(visualTask.id, [
+          {
+            id: generateTestUuid(),
+            taskId: visualTask.id,
+            title: "Map current state",
+            description: "Review the state-specific body.",
+            status: "completed",
+            sortOrder: 0,
+            dependsOn: null,
+            createdBy: AGENT_WORKER,
+            completionNote: "Mapped",
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now,
+            completedAt: now,
+          },
+          {
+            id: generateTestUuid(),
+            taskId: visualTask.id,
+            title: "Verify shell order",
+            description: "Confirm summary, stage body, evidence, and context order.",
+            status:
+              visualTask.status === "executing" || visualTask.status === "reviewing"
+                ? "in_progress"
+                : "completed",
+            sortOrder: 1,
+            dependsOn: null,
+            createdBy: AGENT_WORKER,
+            completionNote:
+              visualTask.status === "executing" || visualTask.status === "reviewing"
+                ? null
+                : "Verified",
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now,
+            completedAt:
+              visualTask.status === "executing" || visualTask.status === "reviewing"
+                ? null
+                : now,
+          },
+        ]);
+      }
+
+      for (const runtimeConversation of [
+        {
+          id: "agents-task-detail-exec-1",
+          contextType: "task_execution" as const,
+          label: "Execution attempt 1",
+        },
+        {
+          id: "agents-task-detail-review-1",
+          contextType: "review" as const,
+          label: "Review attempt 1",
+        },
+        {
+          id: "agents-task-detail-exec-2",
+          contextType: "task_execution" as const,
+          label: "Execution attempt 2",
+        },
+        {
+          id: "agents-task-detail-review-2",
+          contextType: "review" as const,
+          label: "Review attempt 2",
+        },
+        {
+          id: "agents-task-detail-merge-1",
+          contextType: "merge" as const,
+          label: "Merge attempt 1",
+        },
+      ]) {
+        seedMockConversation(
+          {
+            id: runtimeConversation.id,
+            contextType: runtimeConversation.contextType,
+            contextId: mergedTaskId,
+            claudeSessionId: null,
+            providerSessionId: `thread-${runtimeConversation.id}`,
+            providerHarness: "codex",
+            upstreamProvider: "openai",
+            providerProfile: null,
+            agentMode: "edit",
+            title: runtimeConversation.label,
+            messageCount: 0,
+            lastMessageAt: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+          } as ChatConversation,
+          [
+            {
+              id: `${runtimeConversation.id}-assistant`,
+              sessionId: null,
+              projectId: seededProjectId,
+              taskId: mergedTaskId,
+              role: "assistant",
+              content: `${runtimeConversation.label} transcript for Agents detail parity.`,
+              metadata: null,
+              parentMessageId: null,
+              conversationId: runtimeConversation.id,
+              toolCalls: null,
+              contentBlocks: null,
+              sender: null,
+              attributionSource: "provider",
+              providerHarness: "codex",
+              providerSessionId: `thread-${runtimeConversation.id}`,
+              upstreamProvider: "openai",
+              providerProfile: null,
+              logicalModel: "gpt-5.4",
+              effectiveModelId: "gpt-5.4",
+              logicalEffort: "medium",
+              effectiveEffort: "medium",
+              inputTokens: 120,
+              outputTokens: 40,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 0,
+              estimatedUsd: null,
+              createdAt: now,
+            } as ChatMessageResponse,
+          ],
+        );
+      }
+
+      queryClient.setQueryData(
+        ["stateTransitions", mergedTaskId],
+        mergedTransitions,
+      );
+      queryClient.setQueryData(["tasks", "list", seededProjectId], (existing: Task[] | undefined) => {
+        const withoutSeeded = (existing ?? []).filter(
+          (task) => !taskStates.some((visualTask) => visualTask.id === task.id),
+        );
+        return [...seededTasks, ...withoutSeeded];
+      });
+
+      const sessionQueryKey = [
+        "ideation",
+        "sessions",
+        "detail",
+        linkedSessionId,
+        "with-data",
+      ];
+      queryClient.setQueryData(sessionQueryKey, (existing: { proposals?: unknown[] } | undefined) => {
+        if (!existing) return existing;
+        const existingProposals = existing.proposals ?? [];
+        return {
+          ...existing,
+          proposals: [
+            ...existingProposals,
+            ...seededTasks.map((task, index) => ({
+              id: `${task.id}-proposal`,
+              sessionId: linkedSessionId,
+              title: task.title,
+              description: task.description,
+              category: task.category,
+              steps: ["Open task detail", "Verify one-column layout"],
+              acceptanceCriteria: ["Task detail remains one-column"],
+              suggestedPriority: "medium",
+              priorityScore: 50,
+              priorityReason: "Visual test fixture",
+              estimatedComplexity: "medium",
+              userPriority: null,
+              userModified: false,
+              status: "accepted",
+              createdTaskId: task.id,
+              planArtifactId: task.planArtifactId,
+              planVersionAtCreation: 1,
+              sortOrder: index + 10,
+              createdAt: now,
+              updatedAt: now,
+            })),
+          ],
+        };
+      });
+
+      const activeColumns =
+        queryClient.getQueryData<Array<{ mapsTo: InternalStatus; groups?: Array<{ statuses: InternalStatus[] }> }>>([
+          "workflows",
+          "activeColumns",
+        ]) ?? [];
+      const cacheColumn = (
+        statuses: InternalStatus[],
+        ideationSessionId: string | null | undefined,
+      ) => {
+        const tasks = seededTasks.filter((task) =>
+          statuses.includes(task.internalStatus),
+        );
+        queryClient.setQueryData(
+          infiniteTaskKeys.list({
+            projectId: seededProjectId,
+            statuses,
+            includeArchived: false,
+            ideationSessionId,
+            executionPlanId: null,
+          }),
+          {
+            pages: [
+              {
+                tasks,
+                total: tasks.length,
+                offset: 0,
+                hasMore: false,
+              },
+            ],
+            pageParams: [0],
+          },
+        );
+      };
+      for (const column of activeColumns) {
+        const statuses =
+          column.groups && column.groups.length > 0
+            ? Array.from(new Set(column.groups.flatMap((group) => group.statuses)))
+            : [column.mapsTo];
+        cacheColumn(statuses, linkedSessionId);
+        cacheColumn(statuses, null);
+        cacheColumn(statuses, undefined);
+      }
+      for (const statuses of [
+        ["executing"],
+        ["reviewing"],
+        ["review_passed"],
+        ["approved"],
+        ["merged"],
+        ["executing", "re_executing", "qa_refining", "qa_testing", "qa_passed", "qa_failed"],
+        ["pending_review", "reviewing", "review_passed", "revision_needed", "escalated"],
+        ["approved", "merged"],
+        [
+          "pending_merge",
+          "merging",
+          "waiting_on_pr",
+          "merge_incomplete",
+          "merge_conflict",
+          "merged",
+        ],
+      ] as InternalStatus[][]) {
+        cacheColumn(statuses, linkedSessionId);
+        cacheColumn(statuses, null);
+        cacheColumn(statuses, undefined);
+      }
+    },
+    {
+      targetConversationId: ideationConversationId,
+      seededProjectId: projectId,
+      taskStates: taskDetailVisualStates,
+      mergedTaskId: taskDetailVisualTaskIds.merged,
+      mergedTransitions: taskDetailVisualTransitions(taskDetailVisualTaskIds.merged),
+    },
+  );
+}
+
+async function expectAgentsTaskDetailOneColumn(page: Page, detailTestId: string) {
+  const shell = page.getByTestId(detailTestId);
+  await expect(shell).toBeVisible();
+  await expect(shell).not.toHaveClass(/grid/);
+  const summary = page.getByTestId("task-detail-summary");
+  const stageBody = page.getByTestId("task-detail-stage-body");
+  const frame = page.getByTestId("task-detail-content-frame");
+  await expect(summary).toBeVisible();
+  await expect(stageBody).toBeVisible();
+
+  const [summaryBox, stageBodyBox] = await Promise.all([
+    summary.boundingBox(),
+    stageBody.boundingBox(),
+  ]);
+  expect(summaryBox).not.toBeNull();
+  expect(stageBodyBox).not.toBeNull();
+  expect(stageBodyBox!.y).toBeGreaterThan(summaryBox!.y);
+
+  const horizontalOverflow = await frame.evaluate(
+    (element) => element.scrollWidth - element.clientWidth,
+  );
+  expect(horizontalOverflow).toBeLessThanOrEqual(2);
+}
+
 async function seedAgentsScenario(page: Page) {
   await page.evaluate(() => {
     window.__mockChatApi?.reset();
@@ -825,6 +1272,73 @@ test.describe("Agents View", () => {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
+  });
+
+  test("Agents task detail keeps key stages one-column across split widths", async ({ page }) => {
+    await setupAgentsView(page);
+    await seedAgentsScenario(page);
+    await selectAgentConversation(page, ideationConversationId);
+
+    await page
+      .getByTestId("integrated-chat-header")
+      .getByRole("button", { name: "Open artifacts" })
+      .click();
+    await expect(page.getByTestId("agents-artifact-pane")).toBeVisible();
+    await hydrateIdeationArtifactCache(page, ideationConversationId);
+    await seedAgentsTaskDetailVisualState(page);
+    await page.getByTestId("agents-artifact-tab-tasks").click();
+    await expect(page.getByTestId("agents-artifact-content-tasks")).toBeVisible();
+    await page
+      .getByTestId("agents-artifact-pane")
+      .getByRole("button", { name: "Kanban" })
+      .click();
+
+    for (const viewport of [
+      { width: 1120, height: 860 },
+      { width: 1580, height: 920 },
+    ]) {
+      await page.setViewportSize(viewport);
+
+      for (const visualState of taskDetailVisualStates) {
+        const taskCard = page.getByTestId(`task-card-${visualState.id}`);
+        await taskCard.scrollIntoViewIfNeeded();
+        await taskCard.evaluate((element) => {
+          element.dispatchEvent(
+            new MouseEvent("click", {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+            }),
+          );
+        });
+        await expect(page.getByTestId("task-detail-overlay")).toBeVisible();
+        await expectAgentsTaskDetailOneColumn(page, visualState.detailTestId);
+        await page.getByTestId("task-overlay-back").click();
+        await expect(page.getByTestId("task-detail-overlay")).toHaveCount(0);
+      }
+    }
+
+    await page
+      .getByTestId(`task-card-${taskDetailVisualTaskIds.merged}`)
+      .evaluate((element) => {
+        element.dispatchEvent(
+          new MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+          }),
+        );
+      });
+    await expectAgentsTaskDetailOneColumn(page, "merged-task-detail");
+    await expect(page.getByTestId("timeline-badge-reviewing")).toHaveCount(2);
+    await page.getByTestId("timeline-badge-reviewing").nth(1).click();
+    await expect(page.getByTestId("history-mode-banner")).toContainText(
+      "Review attempt 2",
+    );
+    await expect(page.getByTestId("history-mode-banner")).toContainText(
+      "Main chat is showing this runtime transcript",
+    );
+    await expectAgentsTaskDetailOneColumn(page, "reviewing-task-detail");
   });
 
   test("v27 sidebar tree and static recent block match visual contract", async ({ page }) => {
