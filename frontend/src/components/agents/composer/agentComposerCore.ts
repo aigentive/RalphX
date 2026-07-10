@@ -75,54 +75,62 @@ export function detectAgentComposerTrigger(
     };
   }
 
-  const integrationTrigger = detectIntegrationTriggerInLine(
+  const lineIntegrationTrigger = detectIntegrationTriggerInLine(
     linePrefix,
     lineStart,
     safeCursor,
   );
-  if (integrationTrigger) {
-    return integrationTrigger;
+  if (lineIntegrationTrigger) {
+    return lineIntegrationTrigger;
   }
 
   const tokenStart = findCurrentTokenStart(text, safeCursor);
   const token = text.slice(tokenStart, safeCursor);
+  if (token.startsWith("/")) {
+    const query = token.slice(1);
+    if (query.includes("/") || query.includes("@") || query.includes("$")) {
+      return null;
+    }
+    return {
+      kind: "skill",
+      query,
+      rangeStart: tokenStart,
+      rangeEnd: safeCursor,
+    };
+  }
+
   const pathIndex = token.lastIndexOf("@");
-  const skillIndex = token.lastIndexOf("$");
-  const triggerIndex = Math.max(pathIndex, skillIndex);
-  if (triggerIndex < 0) {
+  if (pathIndex < 0) {
     return null;
   }
 
-  const marker = token[triggerIndex];
-  const rangeStart = tokenStart + triggerIndex;
+  const rangeStart = tokenStart + pathIndex;
   const query = text.slice(rangeStart + 1, safeCursor);
   if (query.includes("@") || query.includes("$")) {
     return null;
   }
-  if (marker === "@") {
-    const planTrigger = parsePlanTriggerQuery(query);
-    if (planTrigger) {
-      return {
-        kind: "plan",
-        query: planTrigger.query,
-        rangeStart,
-        rangeEnd: safeCursor,
-      };
-    }
-    const integrationTrigger = parseIntegrationTriggerQuery(query);
-    if (integrationTrigger) {
-      return {
-        kind: "integration",
-        query: integrationTrigger.query,
-        integrationKind: integrationTrigger.kind,
-        rangeStart,
-        rangeEnd: safeCursor,
-      };
-    }
+  const planTrigger = parsePlanTriggerQuery(query);
+  if (planTrigger) {
+    return {
+      kind: "plan",
+      query: planTrigger.query,
+      rangeStart,
+      rangeEnd: safeCursor,
+    };
+  }
+  const integrationTrigger = parseIntegrationTriggerQuery(query);
+  if (integrationTrigger) {
+    return {
+      kind: "integration",
+      query: integrationTrigger.query,
+      integrationKind: integrationTrigger.kind,
+      rangeStart,
+      rangeEnd: safeCursor,
+    };
   }
 
   return {
-    kind: marker === "@" ? "path" : "skill",
+    kind: "path",
     query,
     rangeStart,
     rangeEnd: safeCursor,
@@ -146,9 +154,11 @@ export function replaceAgentComposerTrigger(
   };
 }
 
-export function extractComposerSkillTokens(text: string): string[] {
+export function extractComposerSlashSkillTokens(text: string): string[] {
   const names = new Set<string>();
-  for (const match of text.matchAll(/\$([a-zA-Z0-9][a-zA-Z0-9_:-]*)/g)) {
+  for (const match of text.matchAll(
+    /(?:^|\s)\/([a-zA-Z0-9][a-zA-Z0-9_:-]*)(?=$|[\s),.;:!?])/g,
+  )) {
     const name = match[1];
     if (name) {
       names.add(name);
