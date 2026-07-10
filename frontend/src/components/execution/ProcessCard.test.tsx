@@ -183,6 +183,31 @@ describe("ProcessCard", () => {
       expect(screen.getByText(/5\/7 steps/)).toBeInTheDocument();
     });
 
+    it("excludes skipped steps from the displayed total", () => {
+      const process = createMockProcess({
+        stepProgress: {
+          taskId: "task-123",
+          total: 5,
+          completed: 1,
+          inProgress: 1,
+          pending: 1,
+          skipped: 2,
+          failed: 0,
+          currentStep: null,
+          nextStep: null,
+          percentComplete: 33.33,
+        },
+      });
+      render(
+        <ProcessCard
+          process={process}
+          onPause={vi.fn()}
+          onStop={vi.fn()}
+        />
+      );
+      expect(screen.getByText(/1\/3 steps/)).toBeInTheDocument();
+    });
+
     it("handles process without step progress", () => {
       const process = createMockProcess({ stepProgress: null });
       render(

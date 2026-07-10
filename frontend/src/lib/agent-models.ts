@@ -712,3 +712,55 @@ export function normalizeAgentRuntimeSelection(
     effort,
   };
 }
+
+export function normalizeAgentRuntimeForPersistence(
+  runtime: unknown,
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+): AgentRuntimeSelection {
+  const defaultEntry = defaultModelEntryForProvider("codex", registry);
+  const defaultRuntime: AgentRuntimeSelection = {
+    provider: "codex",
+    modelId: defaultEntry.id,
+    effort: defaultEntry.defaultEffort,
+  };
+
+  if (!runtime || typeof runtime !== "object") {
+    return defaultRuntime;
+  }
+
+  const candidate = runtime as Partial<Record<keyof AgentRuntimeSelection, unknown>>;
+  if (!isAgentProvider(candidate.provider)) {
+    return defaultRuntime;
+  }
+
+  const provider = candidate.provider;
+  const requestedModelId =
+    typeof candidate.modelId === "string" ? candidate.modelId.trim() : "";
+  const knownModel = findModelEntryForProvider(provider, requestedModelId, registry);
+
+  if (!knownModel && requestedModelId) {
+    const effort = fallbackEffortFromSupported(
+      candidate.effort,
+      providerDefaultEffort(provider, registry),
+      defaultEffortsForProvider(provider)
+    );
+    return {
+      provider,
+      modelId: requestedModelId,
+      effort,
+    };
+  }
+
+  const model = knownModel ?? defaultModelEntryForProvider(provider, registry);
+  const effort = fallbackEffortFromSupported(
+    candidate.effort,
+    model.defaultEffort,
+    model.supportedEfforts
+  );
+
+  return {
+    provider,
+    modelId: model.id,
+    effort,
+  };
+}

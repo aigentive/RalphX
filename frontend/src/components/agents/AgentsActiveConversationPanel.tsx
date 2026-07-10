@@ -1107,6 +1107,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       : null;
   const usesWorkspaceRuntimeControls =
     !isFocusedChildChat || chatFocus.type === "workspace_review";
+  const workspaceSendRuntime = usesWorkspaceRuntimeControls
+    ? selectableWorkspaceRuntime
+    : normalizedActiveRuntime;
   const runtimeStatusConversationId =
     activeConversation.parentConversationId ?? selectedConversationId;
   const runtimeStatusStoreKey = runtimeStatusConversationId
@@ -1829,9 +1832,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         undefined,
         {
           conversationId: activeWorkspace.conversationId,
-          providerHarness: normalizedActiveRuntime.provider,
-          modelId: normalizedActiveRuntime.modelId,
-          logicalEffort: normalizedActiveRuntime.effort,
+          providerHarness: workspaceSendRuntime.provider,
+          modelId: workspaceSendRuntime.modelId,
+          logicalEffort: workspaceSendRuntime.effort,
           codexFastMode: activeCodexFastModeOption,
           suppressUserMessage: true,
         },
@@ -1848,12 +1851,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace,
     activeCodexFastModeOption,
     canImplementPlanDirectly,
-    normalizedActiveRuntime.effort,
-    normalizedActiveRuntime.modelId,
-    normalizedActiveRuntime.provider,
     onConversationModeSwitched,
     planApprovalSessionId,
     queryClient,
+    workspaceSendRuntime,
   ]);
   const handleVerifyPlanFromComposer = useCallback(async () => {
     if (
@@ -2176,9 +2177,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           undefined,
           {
             conversationId,
-            providerHarness: normalizedActiveRuntime.provider,
-            modelId: normalizedActiveRuntime.modelId,
-            logicalEffort: normalizedActiveRuntime.effort,
+            providerHarness: workspaceSendRuntime.provider,
+            modelId: workspaceSendRuntime.modelId,
+            logicalEffort: workspaceSendRuntime.effort,
             codexFastMode: activeCodexFastModeOption,
           },
         );
@@ -2200,8 +2201,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     [
       activeCodexFastModeOption,
       activeProjectId,
-      normalizedActiveRuntime,
       onAgentUserMessageSent,
+      workspaceSendRuntime,
     ],
   );
 
@@ -2479,9 +2480,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               ? {
                   sendOptions: {
                     conversationId: panelSendConversationId,
-                    providerHarness: normalizedActiveRuntime.provider,
-                    modelId: normalizedActiveRuntime.modelId,
-                    logicalEffort: normalizedActiveRuntime.effort,
+                    providerHarness: workspaceSendRuntime.provider,
+                    modelId: workspaceSendRuntime.modelId,
+                    logicalEffort: workspaceSendRuntime.effort,
                     codexFastMode: activeCodexFastModeOption,
                   },
                 }
@@ -2526,9 +2527,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       undefined,
                       {
                         conversationId: forkResult.conversation.id,
-                        providerHarness: normalizedActiveRuntime.provider,
-                        modelId: normalizedActiveRuntime.modelId,
-                        logicalEffort: normalizedActiveRuntime.effort,
+                        providerHarness: workspaceSendRuntime.provider,
+                        modelId: workspaceSendRuntime.modelId,
+                        logicalEffort: workspaceSendRuntime.effort,
                         codexFastMode: activeCodexFastModeOption,
                         ...(options?.teamIntent
                           ? { teamIntent: options.teamIntent }

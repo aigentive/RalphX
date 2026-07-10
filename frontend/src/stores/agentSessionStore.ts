@@ -3,7 +3,7 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 import {
-  normalizeAgentRuntimeSelection,
+  normalizeAgentRuntimeForPersistence,
   type AgentEffort,
   type AgentProvider,
   type AgentRuntimeSelection,
@@ -96,6 +96,7 @@ export interface AgentStartConversationRetryInput {
   projectId: string;
   content: string;
   runtime: AgentRuntimeSelection;
+  runtimeProviderContext?: AgentRuntimeProviderContext;
   mode: AgentConversationWorkspaceMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
@@ -103,6 +104,11 @@ export interface AgentStartConversationRetryInput {
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
+}
+
+export interface AgentRuntimeProviderContext {
+  supportedEfforts?: string[] | null;
+  supportedModelAliases?: string[] | null;
 }
 
 export interface AgentStartConversationFailure {
@@ -232,7 +238,7 @@ function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSele
   return Object.fromEntries(
     Object.entries(value).map(([key, runtime]) => [
       key,
-      normalizeAgentRuntimeSelection(runtime),
+      normalizeAgentRuntimeForPersistence(runtime),
     ])
   );
 }
@@ -564,7 +570,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
 
       setRuntimeForConversation: (conversationId, projectId, runtime) =>
         set((state) => {
-          const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
           state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
@@ -575,7 +581,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
 
       setLastRuntimeForProject: (projectId, runtime) =>
         set((state) => {
-          const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
             modelId: normalizedRuntime.modelId,

@@ -42,7 +42,7 @@ import { buildStoreKey } from "@/lib/chat-context-registry";
 import type { TeammateState } from "@/stores/teamStore";
 import { ReviewFeedbackBody } from "@/components/reviews/ReviewFeedbackBody";
 import { getReviewFeedbackHeading } from "@/lib/review-feedback";
-import { getCompletableStepProgressCounts } from "@/types/task-step";
+import { getStepProgressDisplay } from "@/types/task-step";
 
 interface ExecutionTaskDetailProps {
   task: Task;
@@ -361,13 +361,16 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
     }
   }, [task.metadata]);
 
-  const percentComplete = progress?.percentComplete ?? 0;
   const rawTotal = progress?.total ?? 0;
-  const completableProgress = progress
-    ? getCompletableStepProgressCounts(progress)
-    : { completed: 0, total: 0 };
-  const completed = completableProgress.completed;
-  const total = completableProgress.total;
+  const progressDisplay = progress
+    ? getStepProgressDisplay(progress)
+    : { completed: 0, total: 0, completedPercent: 0, activePercent: 0 };
+  const completed = progressDisplay.completed;
+  const total = progressDisplay.total;
+  const shouldAnimateActiveProgress =
+    !isHistorical &&
+    (progress?.inProgress ?? 0) > 0 &&
+    progressDisplay.activePercent > progressDisplay.completedPercent;
 
   return (
     <TwoColumnLayout
@@ -432,12 +435,14 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
       )}
 
       {/* Progress Section */}
-      {rawTotal > 0 && (
+      {rawTotal > 0 && total > 0 && (
         <section data-testid="execution-progress-section">
           <SectionTitle>Progress</SectionTitle>
           <DetailCard>
             <ProgressIndicator
-              percentComplete={percentComplete}
+              percentComplete={progressDisplay.completedPercent}
+              activePercentComplete={progressDisplay.activePercent}
+              animateActiveProgress={shouldAnimateActiveProgress}
               completedSteps={completed}
               totalSteps={total}
               variant={isReExecuting ? "info" : "accent"}

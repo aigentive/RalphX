@@ -253,7 +253,7 @@ pub struct StepProgressSummary {
     pub current_step: Option<TaskStep>,
     /// Next step to be started (first Pending step)
     pub next_step: Option<TaskStep>,
-    /// Percentage complete (completed + skipped) / total * 100
+    /// Percentage complete over non-skipped steps: completed / (total - skipped) * 100
     pub percent_complete: f32,
 }
 
@@ -292,8 +292,10 @@ impl StepProgressSummary {
             .find(|s| s.status == TaskStepStatus::Pending)
             .cloned();
 
-        let percent_complete = if total > 0 {
-            ((completed + skipped) as f32 / total as f32) * 100.0
+        let completable_total = total.saturating_sub(skipped);
+        let completed_for_progress = completed.min(completable_total);
+        let percent_complete = if completable_total > 0 {
+            (completed_for_progress as f32 / completable_total as f32) * 100.0
         } else {
             0.0
         };
