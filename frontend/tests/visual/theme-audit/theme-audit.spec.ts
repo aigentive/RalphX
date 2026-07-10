@@ -133,7 +133,7 @@ for (const theme of THEMES) {
 
     test("reviews panel", async ({ page }) => {
       await page.click('[data-testid="reviews-toggle"]');
-      await page.waitForSelector('[data-testid="reviews-panel"]', { timeout: 10000 });
+      await page.waitForSelector('[data-testid="notifications-panel"]', { timeout: 10000 });
       const path = await saveScreenshot(page, theme, "reviews");
       expect(path).toContain(".png");
     });

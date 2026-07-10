@@ -31,7 +31,7 @@ const ALL_ENABLED: FeatureFlags = {
 function resetStores() {
   useUiStore.setState({
     sidebarOpen: true,
-    reviewsPanelOpen: false,
+    notificationsPanelOpen: false,
     currentView: "agents",
     activeModal: null,
     modalContext: undefined,
@@ -115,10 +115,10 @@ describe("Navigation store state", () => {
       expect(useUiStore.getState().sidebarOpen).toBe(false);
     });
 
-    it("preserves reviews panel state when switching views", () => {
-      useUiStore.getState().setReviewsPanelOpen(true);
+    it("preserves notification panel state when switching views", () => {
+      useUiStore.getState().setNotificationsPanelOpen(true);
       useUiStore.getState().setCurrentView("ideation");
-      expect(useUiStore.getState().reviewsPanelOpen).toBe(true);
+      expect(useUiStore.getState().notificationsPanelOpen).toBe(true);
     });
 
     it("preserves execution status when switching views", () => {

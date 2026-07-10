@@ -1,19 +1,16 @@
 import { test, expect } from "@playwright/test";
-import { ReviewsPanelPage } from "../../../pages/modals/reviews-panel.page";
+import { NotificationCenterPanelPage } from "../../../pages/modals/notification-center-panel.page";
 import { setupApp } from "../../../fixtures/setup.fixtures";
 
 /**
- * Visual regression tests for ReviewsPanel component.
- *
- * The ReviewsPanel is a slide-in panel that shows tasks awaiting review,
- * grouped by review phase (AI and Human).
+ * Visual regression tests for the notification center.
  */
 
-test.describe("ReviewsPanel", () => {
-  let reviewsPanel: ReviewsPanelPage;
+test.describe("NotificationCenterPanel", () => {
+  let reviewsPanel: NotificationCenterPanelPage;
 
   test.beforeEach(async ({ page }) => {
-    reviewsPanel = new ReviewsPanelPage(page);
+    reviewsPanel = new NotificationCenterPanelPage(page);
     await setupApp(page);
   });
 
@@ -40,11 +37,10 @@ test.describe("ReviewsPanel", () => {
     await expect(reviewsPanel.panel).not.toBeVisible();
   });
 
-  test("displays empty state when no reviews pending", async () => {
+  test("displays the needs-action empty state when no notifications are pending", async () => {
     await reviewsPanel.openPanel();
 
-    // Check for either empty state or task cards
-    // In mock mode, we might have empty reviews
+    // Check for either empty state or review cards in mock mode.
     const hasEmptyState = await reviewsPanel.emptyState.isVisible().catch(() => false);
     const hasTaskCards = (await reviewsPanel.getTaskCardCount()) > 0;
 
@@ -52,20 +48,18 @@ test.describe("ReviewsPanel", () => {
     expect(hasEmptyState || hasTaskCards).toBe(true);
   });
 
-  test("allows switching between AI and Human tabs", async () => {
+  test("allows switching between Needs action and History tabs", async () => {
     await reviewsPanel.openPanel();
 
     // Tabs should be visible
-    await expect(reviewsPanel.aiTab).toBeVisible();
-    await expect(reviewsPanel.humanTab).toBeVisible();
+    await expect(reviewsPanel.needsActionTab).toBeVisible();
+    await expect(reviewsPanel.historyTab).toBeVisible();
 
-    // Click AI tab
-    await reviewsPanel.switchToAiTab();
-    await expect(reviewsPanel.aiTab).toHaveAttribute("data-state", "active");
+    await reviewsPanel.switchToNeedsActionTab();
+    await expect(reviewsPanel.needsActionTab).toHaveAttribute("data-state", "active");
 
-    // Click Human tab
-    await reviewsPanel.switchToHumanTab();
-    await expect(reviewsPanel.humanTab).toHaveAttribute("data-state", "active");
+    await reviewsPanel.switchToHistoryTab();
+    await expect(reviewsPanel.historyTab).toHaveAttribute("data-state", "active");
   });
 
   test("matches snapshot", async ({ page }) => {
@@ -75,7 +69,7 @@ test.describe("ReviewsPanel", () => {
     await reviewsPanel.waitForAnimations();
 
     // Take snapshot
-    await expect(page).toHaveScreenshot("reviews-panel.png", {
+    await expect(page).toHaveScreenshot("notification-center-panel.png", {
       maxDiffPixelRatio: 0.01,
     });
   });

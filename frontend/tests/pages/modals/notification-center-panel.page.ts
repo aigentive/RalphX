@@ -2,15 +2,14 @@ import { Page, Locator } from "@playwright/test";
 import { BasePage } from "../base.page";
 
 /**
- * Page object for the ReviewsPanel component.
- * This is a slide-in panel that shows tasks awaiting review.
+ * Page object for the notification center.
  */
-export class ReviewsPanelPage extends BasePage {
+export class NotificationCenterPanelPage extends BasePage {
   readonly reviewsToggle: Locator;
   readonly panel: Locator;
   readonly closeButton: Locator;
-  readonly aiTab: Locator;
-  readonly humanTab: Locator;
+  readonly needsActionTab: Locator;
+  readonly historyTab: Locator;
   readonly taskCards: Locator;
   readonly emptyState: Locator;
   readonly loadingSpinner: Locator;
@@ -19,13 +18,13 @@ export class ReviewsPanelPage extends BasePage {
     super(page);
 
     this.reviewsToggle = page.locator('[data-testid="reviews-toggle"]');
-    this.panel = page.locator('[data-testid="reviews-panel"]');
-    this.closeButton = page.locator('[data-testid="reviews-panel-close"]');
-    this.aiTab = page.getByRole('tab', { name: /AI/ });
-    this.humanTab = page.getByRole('tab', { name: /Human/ });
+    this.panel = page.locator('[data-testid="notifications-panel"]');
+    this.closeButton = page.locator('[data-testid="notifications-panel-close"]');
+    this.needsActionTab = page.getByRole('tab', { name: /Needs action/ });
+    this.historyTab = page.getByRole('tab', { name: /History/ });
     this.taskCards = page.locator('[data-testid^="task-review-card-"]');
-    this.emptyState = page.locator('[data-testid="reviews-panel-empty"]');
-    this.loadingSpinner = page.locator('[data-testid="reviews-panel-loading"]');
+    this.emptyState = page.locator('[data-testid="attention-empty-state"]');
+    this.loadingSpinner = page.locator('[data-testid="notification-skeletons"]');
   }
 
   async openPanel() {
@@ -38,12 +37,12 @@ export class ReviewsPanelPage extends BasePage {
     await this.panel.waitFor({ state: "hidden", timeout: 5000 });
   }
 
-  async switchToAiTab() {
-    await this.aiTab.click();
+  async switchToNeedsActionTab() {
+    await this.needsActionTab.click();
   }
 
-  async switchToHumanTab() {
-    await this.humanTab.click();
+  async switchToHistoryTab() {
+    await this.historyTab.click();
   }
 
   async getTaskCardCount(): Promise<number> {

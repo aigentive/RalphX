@@ -41,9 +41,9 @@ function renderTopBar(overrides: Partial<Parameters<typeof AppTopBar>[0]> = {}) 
     <QueryClientProvider client={queryClient}>
       <AppTopBar
         currentView="ticketing"
-        pendingReviewCount={0}
-        reviewsPanelOpen={false}
-        onToggleReviewsPanel={vi.fn()}
+        attentionCount={0}
+        notificationsPanelOpen={false}
+        onToggleNotificationsPanel={vi.fn()}
         {...overrides}
       />
     </QueryClientProvider>,
@@ -98,6 +98,12 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(breadcrumb).toHaveTextContent("Project");
     expect(breadcrumb).toHaveTextContent("Ticketing");
+  });
+
+  it("uses the notification attention count with the existing badge testid", () => {
+    renderTopBar({ attentionCount: 12 });
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
+    expect(screen.getByRole("button", { name: /notifications.*12/i })).toBeInTheDocument();
   });
 
   it("shows the project selector on the ticketing view when enabled", () => {

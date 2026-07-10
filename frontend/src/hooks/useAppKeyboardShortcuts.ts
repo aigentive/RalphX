@@ -21,7 +21,7 @@ const ALL_ENABLED_FLAGS: FeatureFlags = {
 interface UseAppKeyboardShortcutsProps {
   currentView: ViewType;
   setCurrentView: (view: ViewType) => void;
-  toggleReviewsPanel?: () => void;
+  toggleNotificationsPanel?: () => void;
   toggleGraphRightPanel?: () => void;
   openProjectWizard?: () => void;
   hasProjects?: boolean;
@@ -39,7 +39,7 @@ interface UseAppKeyboardShortcutsProps {
 export function useAppKeyboardShortcuts({
   currentView,
   setCurrentView,
-  toggleReviewsPanel,
+  toggleNotificationsPanel,
   toggleGraphRightPanel,
   openProjectWizard,
   hasProjects,
@@ -171,7 +171,7 @@ export function useAppKeyboardShortcuts({
           case "r":
           case "R": {
             // Cmd+Shift+R: Toggle reviews panel
-            if (!e.shiftKey || !toggleReviewsPanel) {
+            if (!e.shiftKey || !toggleNotificationsPanel) {
               return;
             }
             const activeEl = document.activeElement;
@@ -182,7 +182,7 @@ export function useAppKeyboardShortcuts({
               return;
             }
             e.preventDefault();
-            toggleReviewsPanel();
+            toggleNotificationsPanel();
             break;
           }
           case "l":
@@ -244,7 +244,7 @@ export function useAppKeyboardShortcuts({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setCurrentView, toggleReviewsPanel, toggleGraphRightPanel, currentView, openProjectWizard, hasProjects, showWelcomeOverlay, openWelcomeOverlay, closeWelcomeOverlay, welcomeOverlayReturnView, openPlanQuickSwitcher, onBattleModeToggle, openSettings, openNewAgent, featureFlags]);
+  }, [setCurrentView, toggleNotificationsPanel, toggleGraphRightPanel, currentView, openProjectWizard, hasProjects, showWelcomeOverlay, openWelcomeOverlay, closeWelcomeOverlay, welcomeOverlayReturnView, openPlanQuickSwitcher, onBattleModeToggle, openSettings, openNewAgent, featureFlags]);
 
   // Global shortcut for Cmd+, (registered at OS level to bypass DevTools interception)
   const setCurrentViewRef = useRef(setCurrentView);

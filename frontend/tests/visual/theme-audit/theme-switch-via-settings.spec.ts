@@ -137,7 +137,7 @@ for (const theme of THEMES) {
 
       // Reviews panel toggle
       await page.click('[data-testid="reviews-toggle"]');
-      await page.waitForSelector('[data-testid="reviews-panel"]', { timeout: 10000 });
+      await page.waitForSelector('[data-testid="notifications-panel"]', { timeout: 10000 });
       await saveScreenshot(page, theme, "reviews");
       await page.click('[data-testid="reviews-toggle"]');
     });
