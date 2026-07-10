@@ -32,6 +32,10 @@ describe("agentStartErrors", () => {
           modelId: "gpt-5.5",
           effort: "xhigh",
         },
+        runtimeProviderContext: {
+          supportedEfforts: ["low", "medium", "high", "xhigh"],
+          supportedModelAliases: ["gpt-5.5"],
+        },
         mode: "edit",
         base: {
           kind: "local_branch",
@@ -65,6 +69,10 @@ describe("agentStartErrors", () => {
         provider: "codex",
         modelId: "gpt-5.5",
         effort: "xhigh",
+      },
+      runtimeProviderContext: {
+        supportedEfforts: ["low", "medium", "high", "xhigh"],
+        supportedModelAliases: ["gpt-5.5"],
       },
       mode: "edit",
       base: {

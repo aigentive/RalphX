@@ -120,6 +120,9 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     renderComposer: (props: Record<string, unknown>) => ReactNode;
     sendOptions?: {
       conversationId?: string;
+      providerHarness?: string;
+      modelId?: string;
+      logicalEffort?: string;
       codexFastMode?: boolean | null;
     };
     storeContextKeyOverride?: string;
@@ -140,6 +143,9 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
           : String(sendOptions.codexFastMode)
       }
       data-send-conversation-id={sendOptions?.conversationId ?? ""}
+      data-send-provider-harness={sendOptions?.providerHarness ?? ""}
+      data-send-model-id={sendOptions?.modelId ?? ""}
+      data-send-logical-effort={sendOptions?.logicalEffort ?? ""}
       data-store-context-key={storeContextKeyOverride ?? ""}
     >
       {planApprovalAction && (
@@ -2256,6 +2262,30 @@ describe("AgentsActiveConversationPanel", () => {
     expect(panel).toHaveAttribute("data-send-codex-fast-mode", "false");
   });
 
+  it("uses the selectable workspace runtime for chat send options", () => {
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        providerHarness: "codex",
+        logicalModel: "gpt-5.6-terra",
+        logicalEffort: "ultra",
+      },
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      },
+    });
+
+    expect(screen.getByTestId("workspace-model-value")).toHaveTextContent(
+      "gpt-5.5",
+    );
+    const panel = screen.getByTestId("integrated-chat-panel");
+    expect(panel).toHaveAttribute("data-send-provider-harness", "codex");
+    expect(panel).toHaveAttribute("data-send-model-id", "gpt-5.5");
+    expect(panel).toHaveAttribute("data-send-logical-effort", "xhigh");
+  });
+
   it("returns from child chat focus to the workspace chat from the header", async () => {
     const onSelectChatFocus = vi.fn();
 
@@ -3161,7 +3191,7 @@ describe("AgentsActiveConversationPanel", () => {
           conversationId: "conversation-1",
           providerHarness: "claude",
           modelId: "opus",
-          logicalEffort: "xhigh",
+          logicalEffort: "high",
         }),
       ),
     );

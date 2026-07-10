@@ -24,6 +24,7 @@ import {
   useAgentSessionStore,
   type AgentEffort,
   type AgentProvider,
+  type AgentRuntimeProviderContext,
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import {
@@ -62,6 +63,7 @@ import {
   agentModelOptions,
   defaultEffortForModel,
   defaultModelForProvider,
+  normalizeRuntimeForPersistence,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 import {
@@ -85,6 +87,7 @@ interface AgentsStartComposerSubmitInput {
   projectId: string;
   content: string;
   runtime: AgentRuntimeSelection;
+  runtimeProviderContext?: AgentRuntimeProviderContext;
   mode: AgentConversationWorkspaceMode;
   base: AgentConversationBaseSelection | null;
   files: File[];
@@ -143,6 +146,12 @@ function plainStartComposerError(message: string): StartComposerError {
   return { kind: "plain", message };
 }
 
+function copyRuntimeProviderValues(
+  values: readonly string[] | null,
+): string[] | null {
+  return values ? [...values] : null;
+}
+
 function startComposerErrorFromUnknown(error: unknown): StartComposerError {
   const linked = parseLinkedSetupFailure(error);
   if (linked) {
@@ -197,14 +206,14 @@ export function AgentsStartComposer({
   onRuntimePreferenceChange,
   onSubmit,
 }: AgentsStartComposerProps) {
+  const initialRuntime = normalizeRuntimeForPersistence(
+    defaultRuntime,
+    modelRegistry,
+  );
   const [projectId, setProjectId] = useState(defaultProjectId ?? "");
-  const [provider, setProvider] = useState<AgentProvider>(
-    normalizeRuntimeSelection(defaultRuntime).provider
-  );
-  const [modelId, setModelId] = useState(normalizeRuntimeSelection(defaultRuntime).modelId);
-  const [effort, setEffort] = useState<AgentEffort>(
-    normalizeRuntimeSelection(defaultRuntime).effort
-  );
+  const [provider, setProvider] = useState<AgentProvider>(initialRuntime.provider);
+  const [modelId, setModelId] = useState(initialRuntime.modelId);
+  const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
   const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
   const [teamEnabled, setTeamEnabled] = useState(false);
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
@@ -297,7 +306,7 @@ export function AgentsStartComposer({
     [configuredProviders, providerSettingsReady]
   );
   const normalizedRuntime = useMemo(() => {
-    const runtime = normalizeRuntimeSelection(
+    const runtime = normalizeRuntimeForPersistence(
       defaultRuntime ?? DEFAULT_AGENT_RUNTIME,
       modelRegistry
     );
@@ -872,11 +881,39 @@ export function AgentsStartComposer({
 
   const submitStartInput = useCallback(
     async (input: AgentsStartComposerSubmitInput) => {
-      lastStartAttemptRef.current = input;
+      const launchRuntime = normalizeRuntimeForSelectableProvider({
+        runtime: input.runtime,
+        providerOptions,
+        defaultProvider: toAgentProvider(providerSettings.defaultProvider),
+        modelRegistry,
+      });
+      if (!providerSettingsReady || !launchRuntime) {
+        setError(
+          plainStartComposerError(
+            providerStatusMessage ??
+              "Enable a provider with a validated CLI in Settings."
+          )
+        );
+        return;
+      }
+      const runtimeProviderContext: AgentRuntimeProviderContext = {
+        supportedEfforts: copyRuntimeProviderValues(
+          supportedEffortsForProvider(providerOptions, launchRuntime.provider)
+        ),
+        supportedModelAliases: copyRuntimeProviderValues(
+          supportedModelAliasesForProvider(providerOptions, launchRuntime.provider)
+        ),
+      };
+      const launchInput: AgentsStartComposerSubmitInput = {
+        ...input,
+        runtime: launchRuntime,
+        runtimeProviderContext,
+      };
+      lastStartAttemptRef.current = launchInput;
       setStartConversationFailure(null);
       setError(null);
       try {
-        await onSubmit(input);
+        await onSubmit(launchInput);
         lastStartAttemptRef.current = null;
         setStartConversationFailure(null);
         clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
@@ -887,12 +924,21 @@ export function AgentsStartComposer({
           setStartConversationFailure({
             kind: "linked_setup",
             message: nextError.message,
-            retryInput: buildAgentStartConversationRetryInput(input),
+            retryInput: buildAgentStartConversationRetryInput(launchInput),
           });
         }
       }
     },
-    [clearComposerDraft, onSubmit, setStartConversationFailure]
+    [
+      clearComposerDraft,
+      modelRegistry,
+      onSubmit,
+      providerOptions,
+      providerSettings.defaultProvider,
+      providerSettingsReady,
+      providerStatusMessage,
+      setStartConversationFailure,
+    ]
   );
 
   const handleRetryWithIsolatedBranch = useCallback(async () => {

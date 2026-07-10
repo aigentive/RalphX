@@ -7,6 +7,7 @@ import type {
   TeamIntent,
 } from "@/api/chat";
 import type {
+  AgentRuntimeProviderContext,
   AgentRuntimeSelection,
   AgentStartConversationRetryInput,
 } from "@/stores/agentSessionStore";
@@ -21,6 +22,7 @@ export interface AgentStartConversationRetryInputSource {
   projectId: string;
   content: string;
   runtime: AgentRuntimeSelection;
+  runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
   mode: AgentConversationWorkspaceMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null | undefined;
@@ -56,6 +58,9 @@ export function buildAgentStartConversationRetryInput(
     mode: input.mode,
     base: input.base,
   };
+  if (input.runtimeProviderContext !== undefined) {
+    retryInput.runtimeProviderContext = input.runtimeProviderContext;
+  }
   if (input.codexFastMode !== undefined) {
     retryInput.codexFastMode = input.codexFastMode;
   }
