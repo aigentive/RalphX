@@ -55,6 +55,8 @@ pub(crate) mod metrics_scope;
 pub(crate) mod metrics_trends;
 pub mod metrics_types;
 pub mod notification_commands;
+#[cfg(test)]
+mod notification_commands_tests;
 pub mod permission_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;

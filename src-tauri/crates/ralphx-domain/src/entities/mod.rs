@@ -153,8 +153,9 @@ pub use methodology::{
     MethodologyPlanTemplate, MethodologyStatus, MethodologyTemplate, ParseMethodologyStatusError,
 };
 pub use notification::{
-    AttentionItem, NewNotification, Notification, NotificationCategory, NotificationSeverity,
-    NotificationTarget, NotificationTargetKind,
+    notification_category_group, AttentionItem, NewNotification, Notification, NotificationCategory,
+    NotificationCategoryGroup, NotificationSettings, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
 };
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};

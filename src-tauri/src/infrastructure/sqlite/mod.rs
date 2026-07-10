@@ -71,6 +71,7 @@ pub mod sqlite_memory_event_repository;
 mod sqlite_memory_event_repository_tests;
 pub mod sqlite_methodology_repo;
 pub mod sqlite_notification_repo;
+pub mod sqlite_notification_settings_repo;
 #[cfg(test)]
 mod sqlite_notification_repo_tests;
 pub mod sqlite_orphan_worktree_cleanup_marker_repo;
@@ -164,6 +165,7 @@ pub use sqlite_memory_entry_repo::SqliteMemoryEntryRepository;
 pub use sqlite_memory_event_repository::SqliteMemoryEventRepository;
 pub use sqlite_methodology_repo::SqliteMethodologyRepository;
 pub use sqlite_notification_repo::SqliteNotificationRepository;
+pub use sqlite_notification_settings_repo::SqliteNotificationSettingsRepository;
 pub use sqlite_orphan_worktree_cleanup_marker_repo::SqliteOrphanWorktreeCleanupMarkerRepository;
 pub use sqlite_permission_repo::SqlitePermissionRepository;
 pub use sqlite_plan_artifact_approval_repo::SqlitePlanArtifactApprovalRepository;

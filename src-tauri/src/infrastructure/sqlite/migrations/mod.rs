@@ -408,8 +408,11 @@ mod v20260708120000_automation_run_plan_gate;
 mod v20260708130511_workspace_review_autofix_setting;
 mod v20260708131548_chat_conversation_coordination_mode;
 mod v20260710134609_notifications_table;
+mod v20260710201548_notification_settings;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
+#[cfg(test)]
+mod v20260710201548_notification_settings_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -514,7 +517,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260710134609;
+pub const SCHEMA_VERSION: i64 = 20260710201548;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1428,6 +1431,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260710134609,
         name: "notifications_table",
         migrate: v20260710134609_notifications_table::migrate,
+    },
+    Migration {
+        version: 20260710201548,
+        name: "notification_settings",
+        migrate: v20260710201548_notification_settings::migrate,
     },
 ];
 

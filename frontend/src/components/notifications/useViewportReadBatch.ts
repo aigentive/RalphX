@@ -61,15 +61,17 @@ export function useViewportReadBatch({ enabled, onMarkRead }: UseViewportReadBat
     }, { root: scrollViewport, threshold: 0.5 });
     observerRef.current = observer;
     elementsRef.current.forEach((element) => observer.observe(element));
+    const visibilityTimers = visibilityTimersRef.current;
+    const pending = pendingRef.current;
 
     return () => {
       observer.disconnect();
       observerRef.current = null;
-      visibilityTimersRef.current.forEach((timer) => clearTimeout(timer));
-      visibilityTimersRef.current.clear();
+      visibilityTimers.forEach((timer) => clearTimeout(timer));
+      visibilityTimers.clear();
       if (batchTimerRef.current !== null) clearTimeout(batchTimerRef.current);
       batchTimerRef.current = null;
-      pendingRef.current.clear();
+      pending.clear();
     };
   }, [clearVisibilityTimer, enabled, flush]);
 

@@ -30,6 +30,110 @@ pub enum NotificationCategory {
     Info,
 }
 
+/// User-configurable desktop-notification groups.
+///
+/// Keep [`notification_category_group`] exhaustive: adding a category requires an
+/// explicit product decision about which desktop preference controls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationCategoryGroup {
+    AgentRequests,
+    AgentWaiting,
+    Reviews,
+    TaskFailures,
+    AutomationApprovals,
+    AutomationRunCompletions,
+    GitGithub,
+}
+
+/// Maps every notification category to the desktop preference group that gates it.
+pub const fn notification_category_group(
+    category: NotificationCategory,
+) -> NotificationCategoryGroup {
+    match category {
+        NotificationCategory::PermissionRequest | NotificationCategory::AgentQuestion => {
+            NotificationCategoryGroup::AgentRequests
+        }
+        NotificationCategory::AgentWaiting | NotificationCategory::ProviderPaused => {
+            NotificationCategoryGroup::AgentWaiting
+        }
+        NotificationCategory::ReviewNeeded
+        | NotificationCategory::ReviewEscalated
+        | NotificationCategory::PlanApproval
+        | NotificationCategory::TeamPlanApproval => NotificationCategoryGroup::Reviews,
+        NotificationCategory::QaFailed
+        | NotificationCategory::MergeConflict
+        | NotificationCategory::MergeIncomplete
+        | NotificationCategory::TaskFailed
+        | NotificationCategory::TaskBlocked
+        | NotificationCategory::TaskStuck
+        | NotificationCategory::RecoveryPrompt => NotificationCategoryGroup::TaskFailures,
+        NotificationCategory::AutomationPlanApproval
+        | NotificationCategory::AutomationPaused
+        | NotificationCategory::AutomationRunFailed => {
+            NotificationCategoryGroup::AutomationApprovals
+        }
+        NotificationCategory::AutomationRunCompleted | NotificationCategory::Info => {
+            NotificationCategoryGroup::AutomationRunCompletions
+        }
+        NotificationCategory::GhAuth
+        | NotificationCategory::GitAuthPreflight
+        | NotificationCategory::PrReviewAction => NotificationCategoryGroup::GitGithub,
+    }
+}
+
+/// Persisted global preferences used by desktop dispatch and focused in-app toasts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationSettings {
+    pub desktop_enabled: bool,
+    pub desktop_only_when_unfocused: bool,
+    pub focused_toasts_enabled: bool,
+    pub desktop_agent_requests_enabled: bool,
+    pub desktop_agent_waiting_enabled: bool,
+    pub desktop_reviews_enabled: bool,
+    pub desktop_task_failures_enabled: bool,
+    pub desktop_automation_approvals_enabled: bool,
+    pub desktop_automation_run_completions_enabled: bool,
+    pub desktop_git_github_enabled: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            desktop_enabled: true,
+            desktop_only_when_unfocused: true,
+            focused_toasts_enabled: true,
+            desktop_agent_requests_enabled: true,
+            desktop_agent_waiting_enabled: true,
+            desktop_reviews_enabled: true,
+            desktop_task_failures_enabled: true,
+            desktop_automation_approvals_enabled: true,
+            desktop_automation_run_completions_enabled: false,
+            desktop_git_github_enabled: true,
+        }
+    }
+}
+
+impl NotificationSettings {
+    /// Returns whether the category's desktop preference group is enabled.
+    pub const fn desktop_category_enabled(&self, category: NotificationCategory) -> bool {
+        match notification_category_group(category) {
+            NotificationCategoryGroup::AgentRequests => self.desktop_agent_requests_enabled,
+            NotificationCategoryGroup::AgentWaiting => self.desktop_agent_waiting_enabled,
+            NotificationCategoryGroup::Reviews => self.desktop_reviews_enabled,
+            NotificationCategoryGroup::TaskFailures => self.desktop_task_failures_enabled,
+            NotificationCategoryGroup::AutomationApprovals => {
+                self.desktop_automation_approvals_enabled
+            }
+            NotificationCategoryGroup::AutomationRunCompletions => {
+                self.desktop_automation_run_completions_enabled
+            }
+            NotificationCategoryGroup::GitGithub => self.desktop_git_github_enabled,
+        }
+    }
+}
+
 /// Urgency for a durable notification-log entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,3 +245,7 @@ impl NewNotification {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "notification_tests.rs"]
+mod tests;

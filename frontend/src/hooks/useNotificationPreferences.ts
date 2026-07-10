@@ -1,8 +1,11 @@
+import { useNotificationSettings } from "./useNotificationSettings";
+
 export interface NotificationPreferences {
   focusedToastsEnabled: boolean;
 }
 
-/** Settings seam; PR 9 replaces this default with persisted notification preferences. */
+/** Consumer seam for focused toast gating; defaults true while settings hydrate. */
 export function useNotificationPreferences(): NotificationPreferences {
-  return { focusedToastsEnabled: true };
+  const { data: settings } = useNotificationSettings();
+  return { focusedToastsEnabled: settings?.focused_toasts_enabled ?? true };
 }

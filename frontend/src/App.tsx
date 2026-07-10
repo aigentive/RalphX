@@ -419,8 +419,16 @@ function AppContent() {
   const attentionCount = attentionItems.data?.length ?? 0;
   const unreadNotificationCount = useUnreadNotificationCount(currentProjectId);
   const hasUnreadNotificationHistory = (unreadNotificationCount.data ?? 0) > 0;
-  const notificationPanelWasOpened = useRef(false);
-  if (notificationsPanelOpen) notificationPanelWasOpened.current = true;
+  const [notificationPanelWasOpened, setNotificationPanelWasOpened] =
+    useState(false);
+  const shouldRenderNotificationPanel =
+    notificationPanelWasOpened || notificationsPanelOpen;
+
+  useEffect(() => {
+    if (notificationsPanelOpen) {
+      setNotificationPanelWasOpened(true);
+    }
+  }, [notificationsPanelOpen]);
 
   // Real-time execution status updates via Tauri events
   useExecutionEvents(executionProjectParam);
@@ -1471,7 +1479,7 @@ function AppContent() {
               bottomOffset 76 when ExecutionControlBar is visible below this
               panel, 0 elsewhere so the panel fills
               the viewport instead of leaving a ~84px void. */}
-          {notificationPanelWasOpened.current && (
+          {shouldRenderNotificationPanel && (
             <div
               className={cn(
                 "fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l",

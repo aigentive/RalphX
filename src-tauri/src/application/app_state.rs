@@ -63,10 +63,10 @@ use crate::domain::repositories::{
     ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    NotificationRepository, OrphanWorktreeCleanupMarkerRepository, PlanArtifactApprovalRepository,
-    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
-    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
+    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
+    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
@@ -95,8 +95,9 @@ use crate::infrastructure::memory::{
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
-    MemoryNotificationRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
-    MemoryPermissionRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
+    MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
+    MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
@@ -129,8 +130,9 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
-    SqliteNotificationRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
-    SqlitePermissionRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
+    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
+    SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
     SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
     SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
     SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
@@ -275,6 +277,8 @@ pub struct AppState {
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     /// Durable notification history repository.
     pub notification_repo: Arc<dyn NotificationRepository>,
+    /// Global desktop and focused-toast notification preferences.
+    pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories
@@ -1225,6 +1229,9 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            notification_settings_repo: Arc::new(
+                SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1493,6 +1500,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1657,6 +1665,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1830,6 +1839,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -2000,6 +2010,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),

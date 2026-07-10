@@ -2,8 +2,86 @@ use tauri::State;
 
 use crate::application::attention_service::AttentionService;
 use crate::domain::entities::AttentionItem;
+use crate::domain::entities::NotificationSettings;
 use crate::domain::repositories::NotificationPage;
 use crate::AppState;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateNotificationSettingsInput {
+    pub desktop_enabled: Option<bool>,
+    pub desktop_only_when_unfocused: Option<bool>,
+    pub focused_toasts_enabled: Option<bool>,
+    pub desktop_agent_requests_enabled: Option<bool>,
+    pub desktop_agent_waiting_enabled: Option<bool>,
+    pub desktop_reviews_enabled: Option<bool>,
+    pub desktop_task_failures_enabled: Option<bool>,
+    pub desktop_automation_approvals_enabled: Option<bool>,
+    pub desktop_automation_run_completions_enabled: Option<bool>,
+    pub desktop_git_github_enabled: Option<bool>,
+}
+
+/// Gets the persisted global notification preferences, or product defaults before first save.
+#[tauri::command]
+pub async fn get_notification_settings(
+    state: State<'_, AppState>,
+) -> Result<NotificationSettings, String> {
+    state
+        .notification_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Updates only supplied notification preferences so future fields remain forward-compatible.
+#[tauri::command]
+pub async fn update_notification_settings(
+    input: UpdateNotificationSettingsInput,
+    state: State<'_, AppState>,
+) -> Result<NotificationSettings, String> {
+    let mut settings = state
+        .notification_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if let Some(value) = input.desktop_enabled {
+        settings.desktop_enabled = value;
+    }
+    if let Some(value) = input.desktop_only_when_unfocused {
+        settings.desktop_only_when_unfocused = value;
+    }
+    if let Some(value) = input.focused_toasts_enabled {
+        settings.focused_toasts_enabled = value;
+    }
+    if let Some(value) = input.desktop_agent_requests_enabled {
+        settings.desktop_agent_requests_enabled = value;
+    }
+    if let Some(value) = input.desktop_agent_waiting_enabled {
+        settings.desktop_agent_waiting_enabled = value;
+    }
+    if let Some(value) = input.desktop_reviews_enabled {
+        settings.desktop_reviews_enabled = value;
+    }
+    if let Some(value) = input.desktop_task_failures_enabled {
+        settings.desktop_task_failures_enabled = value;
+    }
+    if let Some(value) = input.desktop_automation_approvals_enabled {
+        settings.desktop_automation_approvals_enabled = value;
+    }
+    if let Some(value) = input.desktop_automation_run_completions_enabled {
+        settings.desktop_automation_run_completions_enabled = value;
+    }
+    if let Some(value) = input.desktop_git_github_enabled {
+        settings.desktop_git_github_enabled = value;
+    }
+
+    state
+        .notification_settings_repo
+        .update_settings(&settings)
+        .await
+        .map_err(|error| error.to_string())
+}
 
 /// Lists live, human-actionable attention items for the notification center.
 ///
