@@ -282,6 +282,10 @@ mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]
+mod agent_workspace_publish_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_review_publish_handoff_tests;
+#[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]
 mod chat_service_output_tests;
