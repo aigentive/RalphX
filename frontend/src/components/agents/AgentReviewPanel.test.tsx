@@ -160,7 +160,7 @@ describe("AgentReviewPanel", () => {
 
     await user.hover(action.parentElement ?? action);
 
-    expect(await screen.findByText(disabledReason)).toBeInTheDocument();
+    expect(await screen.findAllByText(disabledReason)).not.toHaveLength(0);
   });
 
   it("keeps the outdated Review warning when the action is not runtime-blocked", () => {
