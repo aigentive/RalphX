@@ -472,17 +472,6 @@ impl<'a> TransitionHandler<'a> {
                             "deleted branch self-heal expected path cleanup",
                         )
                         .await?;
-                        task.task_branch = None;
-                        task.worktree_path = None;
-                        task.merge_commit_sha = None;
-                        task.touch();
-                        self.persist_execution_task_update(
-                            task_repo,
-                            &task,
-                            task_id_str,
-                            "clear_stale_git_refs",
-                        )
-                        .await?;
                         match create_fresh_branch_and_worktree(
                             &task,
                             &project,
@@ -496,15 +485,20 @@ impl<'a> TransitionHandler<'a> {
                         )
                         .await
                         {
-                            Ok((new_branch, new_worktree)) => {
-                                task.task_branch = Some(new_branch.clone());
+                            Ok(new_worktree) => {
+                                task.task_branch = Some(new_worktree.branch.clone());
+                                task.task_branch_base_ref = Some(new_worktree.base_ref.clone());
+                                task.task_branch_base_sha = Some(new_worktree.base_sha.clone());
                                 task.worktree_path =
-                                    Some(new_worktree.to_string_lossy().to_string());
+                                    Some(new_worktree.worktree_path.to_string_lossy().to_string());
+                                task.merge_commit_sha = None;
                                 task.touch();
                                 tracing::info!(
                                     task_id = task_id_str,
-                                    branch = %new_branch,
-                                    worktree_path = %new_worktree.display(),
+                                    branch = %new_worktree.branch,
+                                    base_ref = %new_worktree.base_ref,
+                                    base_sha = %new_worktree.base_sha,
+                                    worktree_path = %new_worktree.worktree_path.display(),
                                     "Self-healed: created fresh branch and worktree for deleted branch"
                                 );
                                 self.persist_execution_task_update(
@@ -536,16 +530,20 @@ impl<'a> TransitionHandler<'a> {
                         )
                         .await
                         {
-                            Ok((branch_name, worktree_path)) => {
+                            Ok(worktree) => {
                                 tracing::info!(
                                     task_id = task_id_str,
-                                    branch = %branch_name,
-                                    worktree_path = %worktree_path.display(),
+                                    branch = %worktree.branch,
+                                    base_ref = %worktree.base_ref,
+                                    base_sha = %worktree.base_sha,
+                                    worktree_path = %worktree.worktree_path.display(),
                                     "Created worktree with task branch"
                                 );
-                                task.task_branch = Some(branch_name);
+                                task.task_branch = Some(worktree.branch);
+                                task.task_branch_base_ref = Some(worktree.base_ref);
+                                task.task_branch_base_sha = Some(worktree.base_sha);
                                 task.worktree_path =
-                                    Some(worktree_path.to_string_lossy().to_string());
+                                    Some(worktree.worktree_path.to_string_lossy().to_string());
                                 task.touch();
                                 self.persist_execution_task_update(
                                     task_repo,
@@ -600,6 +598,7 @@ impl<'a> TransitionHandler<'a> {
                                         GIT_ISOLATION_ERROR_PREFIX, branch
                                     )));
                                 }
+                                persisted_task_branch_base_or_block(&task, branch, task_id_str)?;
                                 tracing::info!(
                                     task_id = task_id_str,
                                     branch = %branch,
@@ -868,6 +867,10 @@ fn validate_persisted_execution_worktree_path(
     project: &Project,
     task_id_str: &str,
 ) -> AppResult<()> {
+    if let Some(branch) = task.task_branch.as_deref() {
+        persisted_task_branch_base_or_block(task, branch, task_id_str)?;
+    }
+
     let worktree_path = task.worktree_path.as_deref().ok_or_else(|| {
         AppError::ExecutionBlocked(format!(
             "{}: task has no persisted worktree_path before execution spawn",

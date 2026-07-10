@@ -151,6 +151,9 @@ async fn test_create_and_retrieve_preserves_all_fields() {
     task.description = Some("A description".to_string());
     task.priority = 42;
     task.internal_status = InternalStatus::Ready;
+    task.task_branch = Some("ralphx/test/task-1".to_string());
+    task.task_branch_base_ref = Some("ralphx/test/agent-plan".to_string());
+    task.task_branch_base_sha = Some("abc123base".to_string());
 
     repo.create(task.clone()).await.unwrap();
     let found = repo.get_by_id(&task.id).await.unwrap().unwrap();
@@ -158,6 +161,9 @@ async fn test_create_and_retrieve_preserves_all_fields() {
     assert_eq!(found.id, task.id);
     assert_eq!(found.project_id, task.project_id);
     assert_eq!(found.category, task.category);
+    assert_eq!(found.task_branch, task.task_branch);
+    assert_eq!(found.task_branch_base_ref, task.task_branch_base_ref);
+    assert_eq!(found.task_branch_base_sha, task.task_branch_base_sha);
     assert_eq!(found.title, task.title);
     assert_eq!(found.description, task.description);
     assert_eq!(found.priority, task.priority);

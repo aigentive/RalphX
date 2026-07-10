@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::application::{
+    task_diff_base::{resolve_task_diff_base, TaskDiffBase},
     DiffService, FileChange, FileDiff, RunTaskValidationRequest, TaskValidationService,
     TaskValidationSummary,
 };
@@ -51,7 +52,11 @@ pub struct ValidationTaskDiffRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationTaskDiffStatResponse {
     pub task_id: String,
+    /// Effective Git ref used for the diff. Captured task bases are returned as SHAs.
     pub base_ref: String,
+    /// Human-readable branch/ref label for the effective base when available.
+    pub display_base_ref: String,
+    pub base_is_immutable: bool,
     pub files: Vec<FileChange>,
     pub total_files: usize,
     pub total_additions: u32,
@@ -61,7 +66,11 @@ pub struct ValidationTaskDiffStatResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationTaskDiffResponse {
     pub task_id: String,
+    /// Effective Git ref used for the diff. Captured task bases are returned as SHAs.
     pub base_ref: String,
+    /// Human-readable branch/ref label for the effective base when available.
+    pub display_base_ref: String,
+    pub base_is_immutable: bool,
     pub files: Vec<FileChange>,
     pub diffs: Vec<FileDiff>,
     pub truncated: bool,
@@ -71,10 +80,11 @@ pub async fn get_validation_task_diff_stat_http(
     State(state): State<HttpServerState>,
     Json(req): Json<ValidationTaskDiffRequest>,
 ) -> Result<Json<ValidationTaskDiffStatResponse>, StatusCode> {
-    let (task, _project, repo_path, base_ref) = resolve_task_diff_context(&state, &req.task_id)
+    let (task, _project, repo_path, task_base) = resolve_task_diff_context(&state, &req.task_id)
         .await
         .map_err(status_from_app_error)?;
-    let base_ref = req.base_ref.unwrap_or(base_ref);
+    let (base_ref, display_base_ref, base_is_immutable) =
+        resolve_request_diff_base(req.base_ref.as_deref(), &task_base);
     let diff_service = DiffService::new();
     let mut files = diff_service
         .get_worktree_file_changes_from_ref(path_str(&repo_path)?, &base_ref)
@@ -86,6 +96,8 @@ pub async fn get_validation_task_diff_stat_http(
     Ok(Json(ValidationTaskDiffStatResponse {
         task_id: task.id.as_str().to_string(),
         base_ref,
+        display_base_ref,
+        base_is_immutable,
         total_files: files.len(),
         files,
         total_additions,
@@ -97,10 +109,11 @@ pub async fn get_validation_task_diff_http(
     State(state): State<HttpServerState>,
     Json(req): Json<ValidationTaskDiffRequest>,
 ) -> Result<Json<ValidationTaskDiffResponse>, StatusCode> {
-    let (task, _project, repo_path, base_ref) = resolve_task_diff_context(&state, &req.task_id)
+    let (task, _project, repo_path, task_base) = resolve_task_diff_context(&state, &req.task_id)
         .await
         .map_err(status_from_app_error)?;
-    let base_ref = req.base_ref.unwrap_or(base_ref);
+    let (base_ref, display_base_ref, base_is_immutable) =
+        resolve_request_diff_base(req.base_ref.as_deref(), &task_base);
     let diff_service = DiffService::new();
     let mut files = diff_service
         .get_worktree_file_changes_from_ref(path_str(&repo_path)?, &base_ref)
@@ -129,6 +142,8 @@ pub async fn get_validation_task_diff_http(
     Ok(Json(ValidationTaskDiffResponse {
         task_id: task.id.as_str().to_string(),
         base_ref,
+        display_base_ref,
+        base_is_immutable,
         files: selected_files,
         diffs,
         truncated,
@@ -138,7 +153,7 @@ pub async fn get_validation_task_diff_http(
 async fn resolve_task_diff_context(
     state: &HttpServerState,
     task_id: &str,
-) -> AppResult<(Task, Project, PathBuf, String)> {
+) -> AppResult<(Task, Project, PathBuf, TaskDiffBase)> {
     let task_id = TaskId::from_string(task_id.to_string());
     let task = state
         .app_state
@@ -164,36 +179,34 @@ async fn resolve_task_diff_context(
             repo_path.display()
         ))
     })?;
-    let base_ref = resolve_task_diff_base_ref(state, &task, &project).await;
+    let base_ref = resolve_task_diff_base(&state.app_state, &task, &project).await;
     Ok((task, project, repo_path, base_ref))
 }
 
-async fn resolve_task_diff_base_ref(
-    state: &HttpServerState,
-    task: &Task,
-    project: &Project,
-) -> String {
-    if let Some(exec_plan_id) = &task.execution_plan_id {
-        if let Ok(Some(plan_branch)) = state
-            .app_state
-            .plan_branch_repo
-            .get_by_execution_plan_id(exec_plan_id)
-            .await
-        {
-            return plan_branch.branch_name;
-        }
+fn resolve_request_diff_base(
+    requested_base_ref: Option<&str>,
+    task_base: &TaskDiffBase,
+) -> (String, String, bool) {
+    if task_base.immutable {
+        return (
+            task_base.effective_base_ref.clone(),
+            task_base.display_base_ref.clone(),
+            true,
+        );
     }
-    if let Some(session_id) = &task.ideation_session_id {
-        if let Ok(Some(plan_branch)) = state
-            .app_state
-            .plan_branch_repo
-            .get_by_session_id(session_id)
-            .await
-        {
-            return plan_branch.branch_name;
-        }
+
+    if let Some(base_ref) = requested_base_ref
+        .map(str::trim)
+        .filter(|base_ref| !base_ref.is_empty())
+    {
+        return (base_ref.to_string(), base_ref.to_string(), false);
     }
-    project.base_branch_or_default().to_string()
+
+    (
+        task_base.effective_base_ref.clone(),
+        task_base.display_base_ref.clone(),
+        task_base.immutable,
+    )
 }
 
 fn sanitize_requested_paths(paths: Vec<String>) -> Vec<String> {
@@ -222,3 +235,7 @@ fn status_from_app_error(error: AppError) -> StatusCode {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
+
+#[cfg(test)]
+#[path = "validation_tests.rs"]
+mod validation_tests;

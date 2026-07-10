@@ -8,7 +8,8 @@ use ralphx_lib::commands::diff_commands::{
     get_file_diff_for_state, get_task_file_changes_for_state,
 };
 use ralphx_lib::commands::git_commands::{
-    get_task_commits_for_state, retry_merge_for_test, CommitInfoResponse, TaskDiffStatsResponse,
+    get_task_commits_for_state, get_task_diff_stats_for_state, retry_merge_for_test,
+    CommitInfoResponse, TaskDiffStatsResponse,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
@@ -113,7 +114,7 @@ async fn setup_agent_workspace_review_state() -> (tempfile::TempDir, AppState, C
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -205,6 +206,33 @@ fn setup_regular_task_merge_repo_with_advanced_base() -> (tempfile::TempDir, Str
     (dir, merge_sha)
 }
 
+fn setup_task_branch_repo_with_captured_base_and_advanced_main() -> (tempfile::TempDir, String) {
+    let dir = tempfile::TempDir::new().expect("create temp dir");
+    let repo = dir.path();
+
+    run_git(repo, &["init", "-b", "main"]);
+    run_git(repo, &["config", "user.email", "test@test.com"]);
+    run_git(repo, &["config", "user.name", "Test"]);
+
+    std::fs::write(repo.join("README.md"), "# test repo\n").expect("write readme");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "initial commit"]);
+    let captured_base_sha = run_git_output(repo, &["rev-parse", "HEAD"]);
+
+    run_git(repo, &["checkout", "-b", "task/test"]);
+    std::fs::write(repo.join("task.txt"), "task work\n").expect("write task");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "feat: selected task work"]);
+
+    run_git(repo, &["checkout", "main"]);
+    std::fs::write(repo.join("base.txt"), "base moved ahead\n").expect("write base");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "fix: unrelated base work"]);
+    run_git(repo, &["checkout", "task/test"]);
+
+    (dir, captured_base_sha)
+}
+
 fn setup_scope_drift_repo() -> tempfile::TempDir {
     let dir = tempfile::TempDir::new().expect("create temp dir");
     let repo = dir.path();
@@ -289,6 +317,41 @@ async fn setup_regular_merged_task_state(repo: &Path, merge_sha: String) -> (App
         .expect("create task");
 
     (app_state, task)
+}
+
+#[tokio::test]
+async fn test_get_task_diff_stats_uses_captured_base_when_main_advances() {
+    let (repo, captured_base_sha) = setup_task_branch_repo_with_captured_base_and_advanced_main();
+    let app_state = AppState::new_test();
+
+    let mut project = Project::new(
+        "Captured Base Diff Stats".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let mut task = Task::new(project.id.clone(), "Selected task".to_string());
+    task.task_branch = Some("task/test".to_string());
+    task.worktree_path = Some(repo.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(captured_base_sha);
+    app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .expect("create task");
+
+    let response = get_task_diff_stats_for_state(task.id.clone(), &app_state)
+        .await
+        .expect("get diff stats");
+
+    assert_eq!(response.changed_files, vec!["task.txt"]);
+    assert_eq!(response.files_changed, 1);
 }
 
 #[tokio::test]
@@ -408,7 +471,10 @@ async fn test_regular_squash_merged_task_uses_recorded_commit_parent_when_base_i
     // New file — old side is empty, new side contains the added content
     assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("task work")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("task work")),
         "hunk lines should contain added content"
     );
 }
@@ -466,7 +532,10 @@ async fn test_branchless_plan_merge_diff_uses_merge_base_when_base_is_ahead() {
     // New file — old side is empty, new side contains the added lines
     assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("first")),
         "hunk lines should contain added content"
     );
 }
@@ -569,7 +638,10 @@ async fn test_diff_commands_use_plan_branch_merge_sha_for_merged_plan_merge_task
     // New file — old side is empty, new side contains the added lines
     assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("first")),
         "hunk lines should contain added content"
     );
 }
@@ -617,7 +689,10 @@ async fn test_diff_commands_use_parent_for_squash_merged_plan_merge_task() {
     // New file — old side is empty, new side contains the added lines
     assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("first")),
         "hunk lines should contain added content"
     );
 }
@@ -639,7 +714,10 @@ async fn test_diff_commands_use_plan_branch_for_branchless_plan_merge_task() {
     // New file — old side is empty, new side contains the added lines
     assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("first")),
         "hunk lines should contain added content"
     );
 }
@@ -688,7 +766,10 @@ async fn test_agent_workspace_review_drilldown_uses_review_payload_context() {
     // New file — old side is empty, new side contains the added content
     assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("hello")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("hello")),
         "hunk lines should contain added content"
     );
 }

@@ -125,6 +125,8 @@ async fn create_test_task(
         archived_at: None,
         blocked_reason: None,
         task_branch: None,
+        task_branch_base_ref: None,
+        task_branch_base_sha: None,
         worktree_path: None,
         merge_commit_sha: None,
         metadata: None,
