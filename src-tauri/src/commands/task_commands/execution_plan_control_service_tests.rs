@@ -11,6 +11,7 @@ use crate::domain::entities::{
     ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanId, IdeationSession, IdeationSessionId,
     InternalStatus, Project, ProjectId, Task, TaskId,
 };
+use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskRepository};
 use crate::error::{AppError, AppResult};
 use async_trait::async_trait;
@@ -129,6 +130,7 @@ fn fail_transition_for(fixture: &mut ControlFixture, task_id: TaskId) {
         inner,
         transition_task_id: Some(task_id),
         fail_plan_task_query: false,
+        fail_status_history: false,
     });
 }
 
@@ -138,6 +140,17 @@ fn fail_plan_task_query(fixture: &mut ControlFixture) {
         inner,
         transition_task_id: None,
         fail_plan_task_query: true,
+        fail_status_history: false,
+    });
+}
+
+fn fail_status_history_for_restore(fixture: &mut ControlFixture) {
+    let inner = Arc::clone(&fixture.state.task_repo);
+    fixture.state.task_repo = Arc::new(FailingTaskRepository {
+        inner,
+        transition_task_id: None,
+        fail_plan_task_query: false,
+        fail_status_history: true,
     });
 }
 
@@ -340,6 +353,411 @@ async fn resume_plan_stops_before_transition_when_global_capacity_is_full() {
             .internal_status,
         InternalStatus::Paused
     );
+}
+
+#[tokio::test]
+async fn resume_plan_stops_before_transition_when_project_capacity_is_full() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    fixture
+        .state
+        .execution_settings_repo
+        .update_settings(
+            Some(&fixture.project_id),
+            &ExecutionSettings {
+                max_concurrent_tasks: 0,
+                ..ExecutionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+    let paused_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Project capacity gated resume task",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &paused_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_ignores_non_paused_plan_tasks() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let executing_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Already executing task",
+    )
+    .await;
+    let paused_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Paused task to resume",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 1);
+    assert_eq!(
+        stored_task(&fixture.state, &executing_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Executing,
+        "resume must not rewrite tasks that are no longer paused"
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &paused_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Failed,
+        "restorable paused task should still reach entry actions"
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_restores_paused_active_task_and_prepares_entry_actions() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let paused_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Restorable execution-plan task",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 1);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+
+    let stored = stored_task(&fixture.state, &paused_task.id).await;
+    assert_eq!(
+        stored.internal_status,
+        InternalStatus::Failed,
+        "mock execution startup should prove resumed entry actions ran"
+    );
+    assert!(
+        PauseReason::from_task_metadata(stored.metadata.as_deref()).is_none(),
+        "resume should clear pause metadata before entry actions"
+    );
+    assert!(
+        stored
+            .metadata
+            .as_deref()
+            .is_some_and(|metadata| metadata.contains("\"trigger_origin\":\"resume\"")),
+        "resume should mark task metadata for resumed entry actions"
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_skips_paused_task_without_restore_status() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let paused_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Paused,
+        "Paused task without restore status",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        stored_task(&fixture.state, &paused_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_skips_paused_task_when_restore_status_lookup_fails() {
+    let mut fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let paused_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Paused,
+        "Paused task with failing restore lookup",
+    )
+    .await;
+    fail_status_history_for_restore(&mut fixture);
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        stored_task(&fixture.state, &paused_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_continues_after_transition_failure() {
+    let mut fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let failing_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Failing resume task",
+    )
+    .await;
+    let succeeding_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Succeeding resume task",
+    )
+    .await;
+    fail_transition_for(&mut fixture, failing_task.id.clone());
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 1);
+    assert_eq!(
+        stored_task(&fixture.state, &failing_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused,
+        "failed resume transition should leave the task paused"
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &succeeding_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Failed,
+        "later paused tasks should still resume through entry actions"
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_skips_paused_task_with_non_agent_active_restore_status() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let paused_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Ready,
+        "Non-agent restore task",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &paused_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused
+    );
+}
+
+#[tokio::test]
+async fn pause_plan_rejects_missing_ideation_session() {
+    let fixture = setup_control_fixture().await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service
+        .pause_plan(ExecutionPlanControlScope {
+            project_id: fixture.project_id.clone(),
+            session_id: IdeationSessionId::from_string("missing-session".to_string()),
+            execution_plan_id: None,
+        })
+        .await;
+
+    match result {
+        Err(AppError::NotFound(message)) => {
+            assert!(
+                message.contains("Ideation session not found"),
+                "unexpected missing-session error: {message}"
+            );
+        }
+        other => panic!("expected missing-session not found error, got {other:?}"),
+    }
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+}
+
+#[tokio::test]
+async fn pause_plan_rejects_session_from_other_project() {
+    let fixture = setup_control_fixture().await;
+    let other_project = fixture
+        .state
+        .project_repo
+        .create(Project::new(
+            "Other project".to_string(),
+            "/tmp/ralphx-other-plan-project".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service
+        .pause_plan(ExecutionPlanControlScope {
+            project_id: other_project.id,
+            session_id: fixture.session_id.clone(),
+            execution_plan_id: Some(fixture.current_plan_id.clone()),
+        })
+        .await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert!(
+                message.contains("belongs to project"),
+                "unexpected project mismatch error: {message}"
+            );
+        }
+        other => panic!("expected project mismatch validation error, got {other:?}"),
+    }
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+}
+
+#[tokio::test]
+async fn pause_plan_rejects_session_without_active_execution_plan() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .mark_superseded(&fixture.current_plan_id)
+        .await
+        .unwrap();
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service.pause_plan(scope(&fixture)).await;
+
+    match result {
+        Err(AppError::NotFound(message)) => {
+            assert!(
+                message.contains("Active execution plan not found"),
+                "unexpected missing-plan error: {message}"
+            );
+        }
+        other => panic!("expected missing-plan not found error, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -583,6 +1001,7 @@ struct FailingTaskRepository {
     inner: Arc<dyn TaskRepository>,
     transition_task_id: Option<TaskId>,
     fail_plan_task_query: bool,
+    fail_status_history: bool,
 }
 
 #[async_trait]
@@ -647,6 +1066,11 @@ impl TaskRepository for FailingTaskRepository {
     }
 
     async fn get_status_history(&self, id: &TaskId) -> AppResult<Vec<StatusTransition>> {
+        if self.fail_status_history {
+            return Err(AppError::Validation(
+                "forced status history failure".to_string(),
+            ));
+        }
         self.inner.get_status_history(id).await
     }
 
