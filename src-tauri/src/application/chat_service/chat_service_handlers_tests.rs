@@ -1835,12 +1835,19 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
+    let (worktree, base_sha, _head_sha) = git_worktree_with_base_and_change();
 
-    let project = Project::new("Zero Step Output".into(), "/tmp/zero-step-output".into());
+    let project = Project::new(
+        "Zero Step Output".into(),
+        worktree.path().to_string_lossy().to_string(),
+    );
     state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "Zero-step output run".into());
     task.internal_status = InternalStatus::Executing;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> =

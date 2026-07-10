@@ -609,6 +609,7 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
 async fn on_enter_executing_repairs_wrong_existing_worktree_path_before_spawn() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
+    let base_sha = git_rev_parse(path, "main");
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -633,6 +634,8 @@ async fn on_enter_executing_repairs_wrong_existing_worktree_path_before_spawn() 
     let task_id_str = task_id.as_str().to_string();
     task.internal_status = InternalStatus::Executing;
     task.task_branch = Some(git_repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     task.worktree_path = Some(wrong_path_str.clone());
     task_repo.create(task).await.unwrap();
 

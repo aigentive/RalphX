@@ -135,6 +135,7 @@ async fn execution_complete_rejects_dirty_worktree() {
 #[tokio::test]
 async fn execution_complete_accepts_clean_committed_worktree() {
     let tmp_dir = create_temp_git_repo();
+    let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "HEAD"]);
     let source_path = validate_absolute_non_root_path(
         &tmp_dir.path().join("src.rs"),
         "clean completion test source",
@@ -149,6 +150,8 @@ async fn execution_complete_accepts_clean_committed_worktree() {
 
     let mut task = Task::new(ProjectId::new(), "Clean completion task".to_string());
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
 
