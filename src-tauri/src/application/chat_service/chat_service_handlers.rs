@@ -2277,6 +2277,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(artifact_repo),
                     Some(Arc::clone(ideation_session_repo)),
                     task_proposal_repo.clone(),
+                    agent_provider_settings_repo.as_ref().map(Arc::clone),
                     &session_id,
                     app_handle.as_ref(),
                 )

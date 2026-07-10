@@ -1,13 +1,19 @@
-use super::{build_ideation_recovery_metadata, provider_env_for_harness};
+use super::{
+    build_ideation_recovery_metadata, provider_env_for_harness, session_recovery_provider_decision,
+    SessionRecoveryProviderBlock,
+};
 
 use std::sync::Arc;
 
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
-use crate::domain::entities::{IdeationSession, ProjectId, VerificationStatus};
-use crate::domain::repositories::{IdeationSessionRepository, TaskProposalRepository};
+use crate::domain::entities::{ChatContextType, IdeationSession, ProjectId, VerificationStatus};
+use crate::domain::repositories::{
+    AgentProviderSettingsRepository, IdeationSessionRepository, TaskProposalRepository,
+};
 use crate::infrastructure::memory::{
-    MemoryIdeationSessionRepository, MemoryTaskProposalRepository,
+    MemoryAgentProviderSettingsRepository, MemoryIdeationSessionRepository,
+    MemoryTaskProposalRepository,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
@@ -23,7 +29,7 @@ fn make_repos() -> (
 
 #[tokio::test]
 async fn provider_env_for_harness_reads_recovery_app_state_provider_settings() {
-    let empty = provider_env_for_harness::<MockRuntime>(None, AgentHarnessKind::Claude)
+    let empty = provider_env_for_harness::<MockRuntime>(None, &None, AgentHarnessKind::Claude)
         .await
         .expect("missing app handle");
     assert!(empty.is_empty());
@@ -49,9 +55,10 @@ async fn provider_env_for_harness_reads_recovery_app_state_provider_settings() {
         .build(mock_context(noop_assets()))
         .expect("mock app");
 
-    let provider_env = provider_env_for_harness(Some(app.handle()), AgentHarnessKind::Claude)
-        .await
-        .expect("load provider env");
+    let provider_env =
+        provider_env_for_harness(Some(app.handle()), &None, AgentHarnessKind::Claude)
+            .await
+            .expect("load provider env");
 
     assert_eq!(
         provider_env
@@ -60,6 +67,33 @@ async fn provider_env_for_harness_reads_recovery_app_state_provider_settings() {
         Some("from-recovery")
     );
     assert!(!provider_env.contains_key("CLAUDE_MODEL"));
+}
+
+#[tokio::test]
+async fn session_recovery_provider_decision_blocks_disabled_slot_provider_without_app_handle() {
+    let repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    repo.upsert(&codex).await.expect("seed codex provider");
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> = repo;
+    let provider_repo = Some(provider_repo);
+
+    let block = session_recovery_provider_decision::<MockRuntime>(
+        None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await
+    .expect_err("disabled Claude must block review recovery before spawn");
+
+    match block {
+        SessionRecoveryProviderBlock::Disabled(message) => {
+            assert!(message.contains("claude is not enabled"), "{message}");
+        }
+        other => panic!("expected disabled-provider block, got {other:?}"),
+    }
 }
 
 #[tokio::test]

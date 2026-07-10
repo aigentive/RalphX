@@ -9,15 +9,17 @@ use crate::application::interactive_process_registry::{
 };
 use crate::application::AppState;
 use crate::commands::ExecutionState;
+use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRun, AgentRunId, AgentRunStatus, ChatAttachment,
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
     IdeationSession, IdeationSessionStatus, ProjectId, SessionPurpose, VerificationRoundSnapshot,
     VerificationRunSnapshot, VerificationStatus,
 };
-use crate::domain::repositories::QueuedMessageRepository;
+use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -807,6 +809,34 @@ fn queue_processing_outcome_falls_back_to_parent_run_without_queued_run() {
 }
 
 #[tokio::test]
+async fn queue_provider_decision_blocks_disabled_slot_provider_without_app_handle() {
+    let repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    repo.upsert(&codex).await.expect("seed codex provider");
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> = repo;
+    let provider_repo = Some(provider_repo);
+
+    let block =
+        super::super::chat_service_queue::queue_provider_decision::<tauri::test::MockRuntime>(
+            None,
+            &provider_repo,
+            AgentHarnessKind::Claude,
+            ChatContextType::Review,
+        )
+        .await
+        .expect_err("disabled Claude must block queued review resume before spawn");
+
+    match block {
+        super::super::chat_service_queue::QueueProviderBlock::Disabled(message) => {
+            assert!(message.contains("claude is not enabled"), "{message}");
+        }
+        other => panic!("expected disabled-provider block, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn queue_processing_leaves_messages_pending_when_execution_paused() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -829,6 +859,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         conversation_id,
         "session-cli",
         &app_state.message_queue,
+        None,
         None,
         &app_state.running_agent_registry,
         &app_state.agent_run_repo,
@@ -907,6 +938,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -1011,6 +1043,7 @@ EOF
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -1159,6 +1192,7 @@ EOF
             ChatConversationId::new(),
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -1350,6 +1384,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
