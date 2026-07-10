@@ -9,6 +9,8 @@ pub mod query;
 pub mod types;
 #[cfg(test)]
 mod execution_plan_control_service_tests;
+#[cfg(test)]
+mod execution_plan_controls_tests;
 
 // Re-export types
 pub use types::{

@@ -10,6 +10,13 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ExecutionPlanId, IdeationSessionId, ProjectId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExecutionPlanControlAction {
+    Pause,
+    Resume,
+    Stop,
+}
+
 fn control_scope(input: &ExecutionPlanControlInput) -> ExecutionPlanControlScope {
     ExecutionPlanControlScope {
         project_id: ProjectId::from_string(input.project_id.clone()),
@@ -37,6 +44,29 @@ fn emit_plan_task_refresh(app: &AppHandle, project_id: &str) {
     );
 }
 
+pub(super) async fn execute_execution_plan_control(
+    input: &ExecutionPlanControlInput,
+    state: &AppState,
+    execution_state: Arc<ExecutionState>,
+    app: Option<&AppHandle>,
+    action: ExecutionPlanControlAction,
+) -> Result<ExecutionPlanControlResponse, String> {
+    let scope = control_scope(input);
+    let service = ExecutionPlanControlService::new(state, execution_state, app.cloned());
+    let outcome = match action {
+        ExecutionPlanControlAction::Pause => service.pause_plan(scope).await,
+        ExecutionPlanControlAction::Resume => service.resume_plan(scope).await,
+        ExecutionPlanControlAction::Stop => service.stop_plan(scope).await,
+    }
+    .map_err(|e| e.to_string())?;
+
+    if let Some(app) = app {
+        emit_plan_task_refresh(app, &input.project_id);
+    }
+
+    Ok(response(outcome))
+}
+
 #[tauri::command]
 pub async fn pause_execution_plan(
     input: ExecutionPlanControlInput,
@@ -44,15 +74,14 @@ pub async fn pause_execution_plan(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: AppHandle,
 ) -> Result<ExecutionPlanControlResponse, String> {
-    let scope = control_scope(&input);
-    let service = ExecutionPlanControlService::new(
+    execute_execution_plan_control(
+        &input,
         &state,
         Arc::clone(execution_state.inner()),
-        Some(app.clone()),
-    );
-    let outcome = service.pause_plan(scope).await.map_err(|e| e.to_string())?;
-    emit_plan_task_refresh(&app, &input.project_id);
-    Ok(response(outcome))
+        Some(&app),
+        ExecutionPlanControlAction::Pause,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -62,18 +91,14 @@ pub async fn resume_execution_plan(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: AppHandle,
 ) -> Result<ExecutionPlanControlResponse, String> {
-    let scope = control_scope(&input);
-    let service = ExecutionPlanControlService::new(
+    execute_execution_plan_control(
+        &input,
         &state,
         Arc::clone(execution_state.inner()),
-        Some(app.clone()),
-    );
-    let outcome = service
-        .resume_plan(scope)
-        .await
-        .map_err(|e| e.to_string())?;
-    emit_plan_task_refresh(&app, &input.project_id);
-    Ok(response(outcome))
+        Some(&app),
+        ExecutionPlanControlAction::Resume,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -83,13 +108,12 @@ pub async fn stop_execution_plan(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: AppHandle,
 ) -> Result<ExecutionPlanControlResponse, String> {
-    let scope = control_scope(&input);
-    let service = ExecutionPlanControlService::new(
+    execute_execution_plan_control(
+        &input,
         &state,
         Arc::clone(execution_state.inner()),
-        Some(app.clone()),
-    );
-    let outcome = service.stop_plan(scope).await.map_err(|e| e.to_string())?;
-    emit_plan_task_refresh(&app, &input.project_id);
-    Ok(response(outcome))
+        Some(&app),
+        ExecutionPlanControlAction::Stop,
+    )
+    .await
 }

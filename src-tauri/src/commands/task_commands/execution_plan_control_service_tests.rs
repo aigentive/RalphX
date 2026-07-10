@@ -76,6 +76,27 @@ async fn create_plan_task(
     state.task_repo.create(task).await.unwrap()
 }
 
+async fn create_paused_plan_task_with_previous_status(
+    state: &AppState,
+    project_id: &ProjectId,
+    session_id: &IdeationSessionId,
+    execution_plan_id: &ExecutionPlanId,
+    previous_status: InternalStatus,
+    title: &str,
+) -> Task {
+    let mut task = Task::new(project_id.clone(), title.to_string());
+    task.ideation_session_id = Some(session_id.clone());
+    task.execution_plan_id = Some(execution_plan_id.clone());
+    task.internal_status = InternalStatus::Paused;
+    let pause_reason = PauseReason::UserInitiated {
+        previous_status: previous_status.to_string(),
+        paused_at: chrono::Utc::now().to_rfc3339(),
+        scope: "execution_plan".to_string(),
+    };
+    task.metadata = Some(pause_reason.write_to_task_metadata(None));
+    state.task_repo.create(task).await.unwrap()
+}
+
 fn scope(fixture: &ControlFixture) -> ExecutionPlanControlScope {
     ExecutionPlanControlScope {
         project_id: fixture.project_id.clone(),
@@ -118,6 +139,38 @@ fn fail_plan_task_query(fixture: &mut ControlFixture) {
         transition_task_id: None,
         fail_plan_task_query: true,
     });
+}
+
+#[tokio::test]
+async fn pause_plan_with_only_ready_tasks_halts_plan_without_affecting_tasks() {
+    let fixture = setup_control_fixture().await;
+    let ready_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Ready,
+        "Queued current plan task",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.pause_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Paused
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &ready_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Ready
+    );
 }
 
 #[tokio::test]
@@ -176,6 +229,38 @@ async fn pause_plan_sets_halt_mode_and_pauses_only_current_plan_active_tasks() {
 }
 
 #[tokio::test]
+async fn stop_plan_with_only_ready_tasks_halts_plan_without_affecting_tasks() {
+    let fixture = setup_control_fixture().await;
+    let ready_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Ready,
+        "Queued current plan stop task",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let outcome = service.stop_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Stopped
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &ready_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Ready
+    );
+}
+
+#[tokio::test]
 async fn stop_plan_sets_halt_mode_and_stops_only_current_plan_active_tasks() {
     let fixture = setup_control_fixture().await;
     let current_task = create_plan_task(
@@ -215,6 +300,46 @@ async fn stop_plan_sets_halt_mode_and_stops_only_current_plan_active_tasks() {
 
     let stale = stored_task(&fixture.state, &stale_task.id).await;
     assert_eq!(stale.internal_status, InternalStatus::Executing);
+}
+
+#[tokio::test]
+async fn resume_plan_stops_before_transition_when_global_capacity_is_full() {
+    let fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let paused_task = create_paused_plan_task_with_previous_status(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Capacity gated resume task",
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(1);
+    execution_state.set_running_count(1);
+
+    let service = ExecutionPlanControlService::new(&fixture.state, execution_state, None);
+
+    let outcome = service.resume_plan(scope(&fixture)).await.unwrap();
+
+    assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
+    assert_eq!(outcome.affected_count, 0);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+    assert_eq!(
+        stored_task(&fixture.state, &paused_task.id)
+            .await
+            .internal_status,
+        InternalStatus::Paused
+    );
 }
 
 #[tokio::test]
