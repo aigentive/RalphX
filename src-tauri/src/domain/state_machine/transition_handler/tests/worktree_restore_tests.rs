@@ -20,7 +20,7 @@ use super::helpers::*;
 use crate::application::chat_service::freshness_routing::{
     freshness_return_route, FreshnessRouteResult,
 };
-use crate::application::AppState;
+use crate::application::{AppState, GitService};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{GitMode, InternalStatus, Project, ProjectId, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
@@ -161,9 +161,7 @@ async fn re_review_worktree_restore() {
 // Shared helper: build a TaskTransitionService from AppState (mirrors freshness_return_path tests)
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn build_transition_service(
-    app_state: &AppState,
-) -> crate::application::TaskTransitionService {
+fn build_transition_service(app_state: &AppState) -> crate::application::TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
@@ -434,7 +432,9 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "reviewing",
         "review",
@@ -500,6 +500,9 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
 async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
+    let base_sha = GitService::get_branch_sha(path, "main")
+        .await
+        .expect("main base SHA");
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -514,6 +517,8 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let task_id_str = task_id.as_str().to_string();
     task.internal_status = InternalStatus::ReExecuting;
     task.task_branch = Some(git_repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     task.worktree_path = Some(format!("/nonexistent/merge-{}", task_id_str));
     task_repo.create(task).await.unwrap();
 
@@ -573,7 +578,9 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "re_executing",
         "task_execution",
@@ -658,7 +665,9 @@ async fn on_enter_executing_repairs_wrong_existing_worktree_path_before_spawn() 
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "executing",
         "task_execution",
@@ -777,6 +786,9 @@ async fn pre_execution_setup_blocks_worktree_task_with_missing_worktree_path() {
 async fn on_enter_executing_adopts_existing_authoritative_worktree_path() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
+    let base_sha = GitService::get_branch_sha(path, "main")
+        .await
+        .expect("main base SHA");
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -803,6 +815,8 @@ async fn on_enter_executing_adopts_existing_authoritative_worktree_path() {
     std::fs::create_dir_all(&expected_path).expect("create expected worktree path");
     task.internal_status = InternalStatus::Executing;
     task.task_branch = Some(git_repo.task_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     task.worktree_path = Some(stale_missing_path.to_string_lossy().to_string());
     task_repo.create(task).await.unwrap();
 
@@ -841,7 +855,9 @@ async fn on_enter_executing_adopts_existing_authoritative_worktree_path() {
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "executing",
         "task_execution",

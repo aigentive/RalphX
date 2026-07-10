@@ -752,6 +752,49 @@ fn git_worktree_with_initial_commit() -> (tempfile::TempDir, String) {
     (dir, sha)
 }
 
+fn git_worktree_with_base_and_change() -> (tempfile::TempDir, String, String) {
+    let (dir, base_sha) = git_worktree_with_initial_commit();
+    fs::write(dir.path().join("README.md"), "test\nchanged\n").expect("write changed file");
+    Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add should run");
+    let commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=RalphX Test",
+            "-c",
+            "user.email=ralphx-test@example.invalid",
+            "commit",
+            "-m",
+            "change",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("git commit should run");
+    assert!(
+        commit.status.success(),
+        "git change commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git rev-parse should run");
+    assert!(
+        head.status.success(),
+        "git rev-parse failed: {}",
+        String::from_utf8_lossy(&head.stderr)
+    );
+    let head_sha = String::from_utf8(head.stdout)
+        .expect("HEAD should be utf8")
+        .trim()
+        .to_string();
+    (dir, base_sha, head_sha)
+}
+
 #[test]
 fn test_validation_cache_proves_completion_requires_head_match_and_green_tests() {
     let sha = "abc123def456";
@@ -1859,7 +1902,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
-    let (_worktree, head_sha) = git_worktree_with_initial_commit();
+    let (_worktree, base_sha, head_sha) = git_worktree_with_base_and_change();
 
     let project = Project::new(
         "Validation Override".into(),
@@ -1870,6 +1913,8 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
     let mut task = Task::new(project.id.clone(), "Validated execution attempt".into());
     task.internal_status = InternalStatus::Executing;
     task.worktree_path = Some(_worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
@@ -3862,7 +3907,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
-    let (_worktree, head_sha) = git_worktree_with_initial_commit();
+    let (_worktree, base_sha, head_sha) = git_worktree_with_base_and_change();
 
     let project = Project::new(
         "AgentExit Validation Override".into(),
@@ -3873,6 +3918,8 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
     let mut task = Task::new(project.id.clone(), "Executing task".into());
     task.internal_status = InternalStatus::Executing;
     task.worktree_path = Some(_worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;

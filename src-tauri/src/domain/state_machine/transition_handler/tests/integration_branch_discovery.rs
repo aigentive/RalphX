@@ -2,6 +2,7 @@
 // These tests create REAL git repos using tempfile.
 
 use super::helpers::*;
+use crate::application::GitService;
 use crate::domain::entities::InternalStatus;
 use crate::domain::state_machine::{State, TaskEvent, TaskStateMachine, TransitionHandler};
 use std::sync::Arc;
@@ -279,6 +280,9 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
 
     std::fs::write(repo_path.join("README.md"), "initial content").unwrap();
     git_add_and_commit(&repo_path, "Initial commit");
+    let base_sha = GitService::get_branch_sha(&repo_path, "main")
+        .await
+        .expect("main base SHA");
 
     let worktree_parent = temp_dir.path().join("worktrees");
     std::fs::create_dir_all(&worktree_parent).unwrap();
@@ -292,6 +296,8 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
     let mut task = Task::new(project.id.clone(), "Test worktree recovery".to_string());
     task.internal_status = InternalStatus::Failed;
     task.task_branch = None;
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
 
     let expected_branch = format!("ralphx/test-project/task-{}", task.id.as_str());
     Command::new("git")

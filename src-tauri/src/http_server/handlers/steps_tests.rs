@@ -237,11 +237,18 @@ async fn execution_complete_accepts_non_empty_captured_base_diff() {
 #[tokio::test]
 async fn execution_complete_writes_validation_cache_with_targeted_metadata_update() {
     let tmp_dir = create_temp_git_repo();
+    let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "main"]);
+    std::fs::write(tmp_dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+    run_git(tmp_dir.path(), &["add", "src.rs"]);
+    run_git(tmp_dir.path(), &["commit", "-m", "task work"]);
+
     let app_state = Arc::new(AppState::new_test());
     let state = test_http_state(Arc::clone(&app_state));
 
     let mut task = Task::new(ProjectId::new(), "Validation cache task".to_string());
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
 
