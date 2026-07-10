@@ -485,6 +485,7 @@ mod v20260708130511_workspace_review_autofix_setting_tests;
 mod v20260708131548_chat_conversation_coordination_mode_tests;
 #[cfg(test)]
 mod v20260710000000_task_branch_base_tests;
+#[cfg(test)]
 mod v20260710003315_execution_plan_halt_mode_tests;
 #[cfg(test)]
 mod v65_unique_working_directory_tests;
