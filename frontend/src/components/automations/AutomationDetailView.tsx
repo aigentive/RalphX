@@ -31,6 +31,7 @@ import {
   describeRunFailure,
   getAutomationRunView,
   isAutomationDeletable,
+  isIdleAfterCancelledRun,
   isOpenAutomationRun,
   latestRun,
 } from "@/components/automations/automationStage";
@@ -923,6 +924,7 @@ export function AutomationDetailView({
   const { usage } = detail.data;
   const newestRuns = sortedNewestRuns(runs);
   const latest = latestRun(runs);
+  const idleAfterCancelledRun = isIdleAfterCancelledRun(automation, latest);
   const skipJudgeRun = isSignalTerminalUnjudged(latest) ? latest : null;
   // A run is only "in the way" of scheduling when the automation is actively
   // driving it. While paused, "Run now" is an explicit resume-and-override the
@@ -1132,6 +1134,32 @@ export function AutomationDetailView({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-6">
+        {idleAfterCancelledRun ? (
+          <div
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-2 text-sm"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-secondary)",
+            }}
+            data-testid="automation-idle-after-cancelled"
+          >
+            <span className="min-w-0">
+              This automation is idle — its last run was cancelled and no new run will start on its own.
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={actionPending}
+              onClick={() => void handleRunNow()}
+            >
+              Run now
+            </Button>
+          </div>
+        ) : null}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
           <div className="space-y-4">
             <Section title="Goal" testId="automation-goal-card">

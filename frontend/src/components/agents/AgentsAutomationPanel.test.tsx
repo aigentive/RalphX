@@ -280,7 +280,7 @@ function renderPanel({
     defaultOptions: { queries: { retry: false } },
   });
 
-  render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <AgentsAutomationPanel
         automationId="automation-1"
@@ -290,7 +290,7 @@ function renderPanel({
     </QueryClientProvider>,
   );
 
-  return { onOpenAutomation };
+  return { onOpenAutomation, unmount: rendered.unmount };
 }
 
 describe("AgentsAutomationPanel", () => {
@@ -1420,6 +1420,53 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent("Run 3 in progress");
     expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-paused")).not.toBeInTheDocument();
+  });
+
+  it("surfaces an idle-after-cancelled banner only for active automations", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const activeView = renderPanel();
+
+    expect(screen.getByTestId("agents-automation-idle-after-cancelled")).toHaveTextContent(
+      "This automation is idle — its last run was cancelled and no new run will start on its own.",
+    );
+    activeView.unmount();
+
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "paused" }),
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const pausedView = renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-automation-idle-after-cancelled"),
+    ).not.toBeInTheDocument();
+    pausedView.unmount();
+
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "running", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-automation-idle-after-cancelled"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders terminal automations without mutation controls", () => {

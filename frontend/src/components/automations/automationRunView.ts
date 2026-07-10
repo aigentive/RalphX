@@ -150,6 +150,18 @@ export function isAutomationRunComposerReadOnly(run: AutomationRun | null): bool
   return latestRunHoldsGoalAuthority(run);
 }
 
+/**
+ * Lockstep mirror of the missing `Cancelled` arm in the Rust scheduler's
+ * `observe_latest_run`: an active automation with a cancelled latest run is
+ * idle until the user explicitly starts another run.
+ */
+export function isIdleAfterCancelledRun(
+  automation: Automation,
+  latestRun: AutomationRun | null,
+): boolean {
+  return automation.status === "active" && latestRun?.status === "cancelled";
+}
+
 export function getAutomationRunStatusLabel(run: AutomationRun | null): string {
   if (!run) {
     return "No run";
