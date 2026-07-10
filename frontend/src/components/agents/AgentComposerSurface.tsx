@@ -74,7 +74,7 @@ import {
   detectAgentComposerTrigger,
   extractComposerArtifactTokens,
   extractPastedAtlassianResourceUrls,
-  extractComposerSkillTokens,
+  extractComposerSlashSkillTokens,
   normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
@@ -128,10 +128,7 @@ function getSkillSourceLabel(skill: AgentComposerSkill): string {
 }
 
 function getSlashSkillLabel(skill: AgentComposerSkill): string {
-  if (skill.source === "ralphx-internal") {
-    return `/${skill.name}`;
-  }
-  return skill.invocationValue || skill.name;
+  return `/${skill.name}`;
 }
 
 function getSkillInsertionText(
@@ -981,7 +978,7 @@ export function AgentComposerSurface({
           const item: AgentComposerMenuItem = {
             id: `skill:${skill.id}`,
             kind: "skill",
-            label: `$${skill.name}`,
+            label: getSlashSkillLabel(skill),
             detail: skill.name,
             sourceLabel: getSkillSourceLabel(skill),
           };
@@ -1301,7 +1298,7 @@ export function AgentComposerSurface({
       if (questionMode) {
         return { message };
       }
-      const tokens = new Set(extractComposerSkillTokens(message));
+      const tokens = new Set(extractComposerSlashSkillTokens(message));
       const internalNames = new Set(selectedInternalSkillNames);
       for (const skill of skills) {
         if (skill.source === "ralphx-internal" && tokens.has(skill.name)) {

@@ -1342,7 +1342,102 @@ describe("AgentComposerSurface", () => {
     );
   });
 
+  it("appends internal skill directives for typed slash skill tokens", async () => {
+    const onSend = vi.fn();
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({
+          skills: [
+            {
+              id: "internal:workspace-swe",
+              name: "workspace-swe",
+              displayName: null,
+              description: "Workspace skill",
+              source: "ralphx-internal",
+              providerHarness: null,
+              scope: "RalphX",
+              invocationKind: "internal-directive",
+              invocationValue: "workspace-swe",
+              enabled: true,
+              sourcePath: "plugins/app/skills/workspace-swe/SKILL.md",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Use /workspace-swe" } });
+    textarea.setSelectionRange(
+      "Use /workspace-swe".length,
+      "Use /workspace-swe".length,
+    );
+    fireEvent.keyUp(textarea);
+
+    await screen.findByTestId(
+      "agent-composer-menu-item-skill:internal:workspace-swe",
+    );
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith(
+      "Use /workspace-swe\n\n<!-- ralphx_internal_skill=workspace-swe -->",
+    );
+  });
+
   it("uses provider-native invocation values for selected harness skills", async () => {
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({
+          skills: [
+            {
+              id: "claude:project:review",
+              name: "review",
+              displayName: null,
+              description: "Claude project review skill.",
+              source: "harness-native",
+              providerHarness: "claude",
+              scope: "project",
+              invocationKind: "harness-native-token",
+              invocationValue: "/review",
+              enabled: true,
+              sourcePath: ".claude/skills/review/SKILL.md",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({
+      provider: {
+        value: "claude",
+        onValueChange: vi.fn(),
+        options: [{ id: "claude", label: "Claude" }],
+      },
+    });
+
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Use /rev" } });
+    textarea.setSelectionRange("Use /rev".length, "Use /rev".length);
+    fireEvent.keyUp(textarea);
+
+    const item = await screen.findByTestId(
+      "agent-composer-menu-item-skill:claude:project:review",
+    );
+    fireEvent.mouseDown(item);
+    fireEvent.click(item);
+
+    expect(textarea.value).toBe("Use /review ");
+  });
+
+  it("does not open skill suggestions for dollar tokens", async () => {
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "list_agent_composer_skills") {
         return Promise.resolve({
@@ -1381,13 +1476,16 @@ describe("AgentComposerSurface", () => {
     textarea.setSelectionRange("Use $rev".length, "Use $rev".length);
     fireEvent.keyUp(textarea);
 
-    const item = await screen.findByTestId(
-      "agent-composer-menu-item-skill:claude:project:review",
-    );
-    fireEvent.mouseDown(item);
-    fireEvent.click(item);
-
-    expect(textarea.value).toBe("Use /review ");
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("agent-composer-command-menu"),
+      ).not.toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId(
+        "agent-composer-menu-item-skill:claude:project:review",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("includes provider-native slash skills in the slash command menu", async () => {
@@ -1429,15 +1527,16 @@ describe("AgentComposerSurface", () => {
     textarea.setSelectionRange("/rev".length, "/rev".length);
     fireEvent.keyUp(textarea);
 
-    await screen.findByTestId(
+    const item = await screen.findByTestId(
       "agent-composer-menu-item-skill:claude:project:review",
     );
+    expect(item).toHaveTextContent("/review");
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(textarea.value).toBe("/review ");
   });
 
-  it("includes Codex-native dollar skills in the slash command menu", async () => {
+  it("invokes Codex-native skills from the slash menu with provider-native insertion", async () => {
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "list_agent_composer_skills") {
         return Promise.resolve({
@@ -1470,9 +1569,10 @@ describe("AgentComposerSurface", () => {
     textarea.setSelectionRange("/plug".length, "/plug".length);
     fireEvent.keyUp(textarea);
 
-    await screen.findByTestId(
+    const item = await screen.findByTestId(
       "agent-composer-menu-item-skill:codex:global:plugin-creator",
     );
+    expect(item).toHaveTextContent("/plugin-creator");
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(textarea.value).toBe("$plugin-creator ");
