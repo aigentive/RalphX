@@ -13,6 +13,9 @@ pub(crate) struct TaskDiffBase {
     pub immutable: bool,
 }
 
+pub(crate) const EMPTY_TASK_DIFF_MISSING_CAPTURED_BASE_REASON: &str =
+    "empty_task_diff_missing_captured_base";
+
 pub(crate) fn captured_task_diff_base(task: &Task) -> Option<TaskDiffBase> {
     let effective_base_ref = task
         .task_branch_base_sha
@@ -128,7 +131,17 @@ pub(crate) async fn ensure_task_has_non_empty_captured_diff(
         return Ok(());
     }
     let Some(stats) = read_captured_task_diff_stats(task, context).await? else {
-        return Ok(());
+        let base_ref = task
+            .task_branch_base_ref
+            .as_deref()
+            .unwrap_or("<unknown-base-ref>");
+        return Err(AppError::ExecutionBlocked(format!(
+            "{}: task {} has no captured base SHA for reported base {} during {}; refusing to advance code-change task without immutable task-diff proof",
+            EMPTY_TASK_DIFF_MISSING_CAPTURED_BASE_REASON,
+            task.id.as_str(),
+            base_ref,
+            context
+        )));
     };
     if diff_stats_has_changes(&stats) {
         return Ok(());
