@@ -1,6 +1,7 @@
 use super::ideation_harness_availability::{
     build_harness_override_availability, build_lane_harness_availability,
-    overlay_provider_runtime_probes, team_mode_supported_for_context,
+    overlay_provider_runtime_probes, provider_aware_runtime_probes_for_repo,
+    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
     validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override,
     validate_claude_runtime_path, LaneHarnessAvailability, ResolvedLaneHarnessConfig,
 };
@@ -14,7 +15,10 @@ use crate::domain::agents::{
 use crate::domain::entities::ChatContextType;
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+use async_trait::async_trait;
 use std::collections::HashMap;
+use std::error::Error;
+use std::io;
 use std::sync::Arc;
 
 fn unavailable_probe(error: &str) -> HarnessRuntimeProbe {
@@ -87,6 +91,37 @@ else
 fi
 "#,
     );
+}
+
+struct FailingAgentProviderSettingsRepository;
+
+fn provider_repo_error() -> Box<dyn Error> {
+    Box::new(io::Error::other("provider repo failed"))
+}
+
+#[async_trait]
+impl AgentProviderSettingsRepository for FailingAgentProviderSettingsRepository {
+    async fn get(
+        &self,
+        _provider: AgentHarnessKind,
+    ) -> Result<Option<AgentProviderSettings>, Box<dyn Error>> {
+        Err(provider_repo_error())
+    }
+
+    async fn list(&self) -> Result<Vec<AgentProviderSettings>, Box<dyn Error>> {
+        Err(provider_repo_error())
+    }
+
+    async fn get_default(&self) -> Result<Option<AgentProviderSettings>, Box<dyn Error>> {
+        Err(provider_repo_error())
+    }
+
+    async fn upsert(
+        &self,
+        _settings: &AgentProviderSettings,
+    ) -> Result<AgentProviderSettings, Box<dyn Error>> {
+        Err(provider_repo_error())
+    }
 }
 
 #[test]
@@ -362,6 +397,60 @@ fn provider_runtime_overlay_uses_custom_codex_probe() {
     assert_eq!(
         codex_probe.binary_path.as_deref(),
         Some(custom_codex_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn provider_aware_runtime_probes_reports_provider_repo_errors() {
+    let repo = Arc::new(FailingAgentProviderSettingsRepository)
+        as Arc<dyn AgentProviderSettingsRepository>;
+
+    let error = provider_aware_runtime_probes_for_repo(&repo)
+        .await
+        .expect_err("provider repo error should propagate");
+
+    assert!(error.contains("Failed to read provider settings"));
+    assert!(error.contains("provider repo failed"));
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn primary_ideation_availability_uses_rx_managed_codex_probe() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let managed_codex_path = temp_dir.path().join("codex");
+    write_modern_codex_cli(&managed_codex_path);
+    let _override =
+        crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+            managed_codex_path.clone(),
+        );
+    let state = AppState::new_test();
+    let settings = codex_provider_settings(AgentProviderCliManagementMode::RxManaged, true, true);
+    state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("upsert provider settings");
+    state
+        .agent_lane_settings_repo
+        .upsert_global(
+            AgentLane::IdeationPrimary,
+            &crate::domain::agents::AgentLaneSettings::new(AgentHarnessKind::Codex),
+        )
+        .await
+        .expect("upsert global lane settings");
+
+    let availability = resolve_primary_ideation_harness_availability_for_state(&state, None)
+        .await
+        .expect("primary ideation availability should resolve");
+
+    assert!(availability.available);
+    assert_eq!(availability.effective_harness, AgentHarnessKind::Codex);
+    assert_eq!(
+        availability.binary_path.as_deref(),
+        Some(managed_codex_path.to_string_lossy().as_ref())
     );
 }
 
