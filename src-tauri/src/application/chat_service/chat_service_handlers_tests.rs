@@ -11,16 +11,187 @@ use crate::application::{
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
+use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, ProviderSessionRef};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatConversationId, ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
-    ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
-    Project, ProjectId, Task, VerificationStatus,
+    ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
+    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
+    IdeationSessionId, InternalStatus, Project, ProjectId, Task, VerificationStatus,
 };
-use crate::domain::repositories::{AgentRunRepository, StateHistoryMetadata, StatusTransition};
+use crate::domain::repositories::{
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, StateHistoryMetadata,
+    StatusTransition, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
+};
+use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
-use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
+use tauri::{AppHandle, Runtime};
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_success<R: Runtime>(
+    agent_run_id: &str,
+    context_type: ChatContextType,
+    context_id: &str,
+    has_output: bool,
+    completion_tool_called: bool,
+    execution_slot_held: bool,
+    execution_state: &Option<Arc<ExecutionState>>,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_dependency_repo: &Arc<dyn TaskDependencyRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    conversation_repo: &Arc<dyn ChatConversationRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    activity_event_repo: &Arc<dyn ActivityEventRepository>,
+    message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    app_handle: &Option<AppHandle<R>>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    review_repo: &Option<Arc<dyn ReviewRepository>>,
+    verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
+) {
+    super::handle_stream_success(
+        agent_run_id,
+        context_type,
+        context_id,
+        has_output,
+        completion_tool_called,
+        execution_slot_held,
+        execution_state,
+        task_repo,
+        task_dependency_repo,
+        project_repo,
+        artifact_repo,
+        chat_message_repo,
+        chat_attachment_repo,
+        conversation_repo,
+        agent_run_repo,
+        ideation_session_repo,
+        activity_event_repo,
+        message_queue,
+        running_agent_registry,
+        memory_event_repo,
+        plan_branch_repo,
+        task_step_repo,
+        execution_settings_repo,
+        &None,
+        &None,
+        app_handle,
+        interactive_process_registry,
+        review_repo,
+        verification_child_registry,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_error<R: Runtime + 'static>(
+    error: &str,
+    stream_error: Option<&StreamError>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    agent_run_id: &str,
+    pre_assistant_msg_id: &str,
+    event_ctx: &EventContextPayload,
+    stored_session_id: Option<&str>,
+    effective_harness: AgentHarnessKind,
+    is_retry_attempt: bool,
+    user_message_content: Option<&str>,
+    conversation: Option<&ChatConversation>,
+    resolved_project_id: Option<String>,
+    cli_path: &std::path::Path,
+    plugin_dir: &std::path::Path,
+    working_directory: &std::path::Path,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    conversation_repo: &Arc<dyn ChatConversationRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_dependency_repo: &Arc<dyn TaskDependencyRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    task_proposal_repo: &Option<Arc<dyn TaskProposalRepository>>,
+    activity_event_repo: &Arc<dyn ActivityEventRepository>,
+    message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    execution_state: &Option<Arc<ExecutionState>>,
+    question_state: &Option<Arc<QuestionState>>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    app_handle: &Option<AppHandle<R>>,
+    agent_name: Option<&str>,
+    team_mode: bool,
+    run_chain_id: Option<String>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    review_repo: &Option<Arc<dyn ReviewRepository>>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
+) -> bool {
+    super::handle_stream_error(
+        error,
+        stream_error,
+        context_type,
+        context_id,
+        conversation_id,
+        agent_run_id,
+        pre_assistant_msg_id,
+        event_ctx,
+        stored_session_id,
+        effective_harness,
+        is_retry_attempt,
+        user_message_content,
+        conversation,
+        resolved_project_id,
+        cli_path,
+        plugin_dir,
+        working_directory,
+        chat_message_repo,
+        chat_timeline_repo,
+        chat_attachment_repo,
+        artifact_repo,
+        conversation_repo,
+        agent_run_repo,
+        task_repo,
+        task_dependency_repo,
+        project_repo,
+        ideation_session_repo,
+        task_proposal_repo,
+        activity_event_repo,
+        message_queue,
+        running_agent_registry,
+        memory_event_repo,
+        execution_state,
+        question_state,
+        plan_branch_repo,
+        execution_settings_repo,
+        &None,
+        &None,
+        app_handle,
+        agent_name,
+        team_mode,
+        run_chain_id,
+        interactive_process_registry,
+        review_repo,
+        task_step_repo,
+        verification_child_registry,
+    )
+    .await
+}
 
 /// Configurable mock: `get_by_id` returns the stored task (or None).
 struct StubTaskRepo {
@@ -30,7 +201,7 @@ struct StubTaskRepo {
 
 #[tokio::test]
 async fn provider_env_for_harness_reads_app_state_provider_settings() {
-    let empty = provider_env_for_harness::<MockRuntime>(&None, AgentHarnessKind::Claude)
+    let empty = provider_env_for_harness::<MockRuntime>(&None, &None, AgentHarnessKind::Claude)
         .await
         .expect("missing app handle");
     assert!(empty.is_empty());
@@ -57,7 +228,7 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         .expect("mock app");
     let handle = Some(app.handle().clone());
 
-    let provider_env = provider_env_for_harness(&handle, AgentHarnessKind::Claude)
+    let provider_env = provider_env_for_harness(&handle, &None, AgentHarnessKind::Claude)
         .await
         .expect("load provider env");
 
@@ -68,6 +239,457 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         Some("from-handler")
     );
     assert!(!provider_env.contains_key("CLAUDE_MODEL"));
+}
+
+#[tokio::test]
+async fn provider_env_for_harness_uses_explicit_provider_repo_without_app_handle() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(&env_path, "CUSTOM_PROVIDER_TOKEN=from-explicit-repo\n")
+        .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let provider_env =
+        provider_env_for_harness::<MockRuntime>(&None, &provider_repo, AgentHarnessKind::Claude)
+            .await
+            .expect("load provider env");
+
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-explicit-repo")
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_fails_execution_without_provider_repo() {
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await;
+
+    assert_eq!(
+        decision,
+        Err(RecoveryRetryProviderBlock::MissingProviderSettings),
+        "execution-slot recovery retries must fail closed without provider settings"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_allows_non_execution_without_provider_repo() {
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    )
+    .await
+    .expect("non-execution recovery can run without provider settings");
+
+    assert_eq!(
+        decision,
+        RecoveryRetryProviderDecision::AllowWithoutProviderSettings
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_blocks_disabled_provider() {
+    let app_state = AppState::new_test();
+    let mut disabled = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    disabled.is_default = true;
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&disabled)
+        .await
+        .expect("save disabled default provider");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await;
+
+    let Err(RecoveryRetryProviderBlock::Disabled(error)) = decision else {
+        panic!("expected disabled provider block");
+    };
+    assert!(
+        error.contains("Choose and enable a default provider")
+            || error.contains("Claude is not enabled"),
+        "unexpected disabled-provider error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_applies_explicit_provider_env() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(
+        &env_path,
+        "CUSTOM_PROVIDER_TOKEN=from-retry\nCLAUDE_MODEL=ignored\n",
+    )
+    .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save enabled provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await
+    .expect("recovery retry should load custom provider env");
+
+    let RecoveryRetryProviderDecision::ApplyEnv(provider_env) = decision else {
+        panic!("expected provider env application");
+    };
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-retry")
+    );
+    assert!(
+        !provider_env.contains_key("CLAUDE_MODEL"),
+        "protected model overrides must stay filtered from provider env"
+    );
+}
+
+fn recovery_retry_test_provider_spawnable() -> chat_service_context::ProviderSpawnableCommand {
+    chat_service_context::ProviderSpawnableCommand {
+        spawnable: SpawnableCommand::new(Command::new("true").into(), None),
+    }
+}
+
+fn spawnable_env_value(spawnable: &SpawnableCommand, key: &str) -> Option<String> {
+    spawnable
+        .get_envs_for_test()
+        .into_iter()
+        .find_map(|(env_key, env_value)| {
+            (env_key.to_string_lossy() == key).then(|| env_value.to_string_lossy().into_owned())
+        })
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_claude_session_fixture(dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    let cli_path = dir.join("claude-session-fixture.sh");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '{}'\n",
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{ "type": "text", "text": "recovered session" }]
+            },
+            "session_id": session_id,
+        }),
+        serde_json::json!({
+            "type": "result",
+            "session_id": session_id,
+            "is_error": false,
+            "result": "recovered session",
+            "cost_usd": 0.0,
+        })
+    );
+    std::fs::write(&cli_path, script).expect("write cli fixture");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("cli fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cli_path, permissions).expect("make cli fixture executable");
+    }
+
+    cli_path
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await;
+
+    assert!(
+        spawnable.is_none(),
+        "execution-slot recovery retry must not spawn without provider settings"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_allows_non_execution_without_provider_repo() {
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await;
+
+    assert!(
+        spawnable.is_some(),
+        "non-execution recovery retry can preserve the legacy no-provider path"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
+    let app_state = AppState::new_test();
+    let mut disabled = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    disabled.is_default = true;
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&disabled)
+        .await
+        .expect("save disabled default provider");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await;
+
+    assert!(
+        spawnable.is_none(),
+        "disabled providers must block recovery retry spawn"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_applies_provider_env() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(&env_path, "CUSTOM_PROVIDER_TOKEN=spawnable-env\n").expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save enabled provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .expect("enabled provider should allow recovery retry");
+
+    assert_eq!(
+        spawnable_env_value(&spawnable, "CUSTOM_PROVIDER_TOKEN").as_deref(),
+        Some("spawnable-env")
+    );
+}
+
+#[tokio::test]
+async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
+    let provider_gate = RecoveryRetryProviderGate::new(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    );
+
+    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+        Ok(recovery_retry_test_provider_spawnable()),
+        provider_gate,
+    )
+    .await;
+
+    assert!(
+        spawnable.is_some(),
+        "successful non-execution retry command should survive provider gating"
+    );
+}
+
+#[tokio::test]
+async fn resolve_recovery_retry_spawnable_drops_build_errors() {
+    let provider_gate = RecoveryRetryProviderGate::new(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    );
+
+    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+        Err("build failed".to_string()),
+        provider_gate,
+    )
+    .await;
+
+    assert!(
+        spawnable.is_none(),
+        "retry command build errors must not launch a recovery retry"
+    );
+}
+
+#[test]
+fn recovery_retry_app_repos_are_empty_without_app_handle() {
+    let repos = RecoveryRetryAppRepos::from_app_handle::<MockRuntime>(&None);
+
+    assert!(repos.ideation_effort_settings_repo.is_none());
+    assert!(repos.ideation_model_settings_repo.is_none());
+    assert!(repos.delegated_session_repo.is_none());
+}
+
+#[test]
+fn recovery_retry_app_repos_read_required_app_state_repos() {
+    let app_state = AppState::new_test();
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let repos = RecoveryRetryAppRepos::from_app_handle(&app_handle);
+
+    assert!(repos.ideation_effort_settings_repo.is_some());
+    assert!(repos.ideation_model_settings_repo.is_some());
+    assert!(repos.delegated_session_repo.is_some());
+}
+
+#[test]
+fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_handle() {
+    let app_state = AppState::new_test();
+    let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
+    let agent_lane_settings_repo = Some(Arc::clone(&app_state.agent_lane_settings_repo));
+    let agent_provider_settings_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let runtime_support = RuntimeSupportRepos::new(
+        &execution_settings_repo,
+        &agent_lane_settings_repo,
+        &agent_provider_settings_repo,
+        &None,
+        &None,
+    );
+
+    let deps = build_runtime_factory_deps::<MockRuntime>(
+        &None,
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(deps.execution_settings_repo.is_some());
+    assert!(deps.agent_lane_settings_repo.is_some());
+    assert!(deps.agent_provider_settings_repo.is_some());
+}
+
+#[test]
+fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_app_handle() {
+    let app_state = AppState::new_test();
+    let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
+    let runtime_support =
+        RuntimeSupportRepos::new(&execution_settings_repo, &None, &None, &None, &None);
+    let app = mock_builder()
+        .manage(app_state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let deps = build_runtime_factory_deps::<MockRuntime>(
+        &app_handle,
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(deps.execution_settings_repo.is_some());
+    assert!(
+        deps.agent_lane_settings_repo.is_none(),
+        "handler runtime deps must not silently recover missing lane settings from AppState"
+    );
+    assert!(
+        deps.agent_provider_settings_repo.is_none(),
+        "handler runtime deps must not silently recover missing provider settings from AppState"
+    );
 }
 
 #[tokio::test]
@@ -1177,7 +1799,6 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
 
 use crate::application::chat_service::chat_service_handlers::all_steps_completed;
 use crate::domain::entities::{TaskStep, TaskStepId};
-use crate::domain::repositories::TaskStepRepository;
 use crate::error::AppError;
 use std::collections::HashMap;
 
@@ -2329,6 +2950,7 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &state.delegated_session_repo,
         &Some(Arc::clone(&state.execution_settings_repo)),
         &Some(Arc::clone(&state.agent_lane_settings_repo)),
+        &Some(Arc::clone(&state.agent_provider_settings_repo)),
         &Some(Arc::clone(&state.ideation_effort_settings_repo)),
         &Some(Arc::clone(&state.ideation_model_settings_repo)),
         &Some(Arc::clone(&state.task_proposal_repo)),
@@ -2358,6 +2980,10 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         "stale-session retry must preserve task_step_repo for execution-side completion handling"
     );
     assert!(
+        ctx.repos.agent_provider_settings_repo.is_some(),
+        "stale-session retry must preserve provider settings for disabled-provider enforcement"
+    );
+    assert!(
         ctx.repos.review_repo.is_some(),
         "stale-session retry must preserve review_repo for review/merge completion flows"
     );
@@ -2372,6 +2998,123 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 
     let mut child = ctx.child;
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_runtime_repos() {
+    let _env = EnvVarGuard::set("ENABLE_SESSION_RECOVERY", "true");
+    let state = AppState::new_test();
+    let mut provider_settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    provider_settings.enabled = true;
+    provider_settings.is_default = true;
+    state
+        .agent_provider_settings_repo
+        .upsert(&provider_settings)
+        .await
+        .expect("enable Claude provider for recovery retry");
+
+    let project_id = ProjectId::new();
+    let project = Project::new("Recovered Project".into(), "/tmp/recovered-project".into());
+    state
+        .project_repo
+        .create(Project {
+            id: project_id.clone(),
+            ..project
+        })
+        .await
+        .expect("seed project");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "old-session".to_string(),
+    });
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    let mut historical_message = ChatMessage::user_in_project(project_id.clone(), "prior turn");
+    historical_message.conversation_id = Some(conversation_id.clone());
+    state
+        .chat_message_repo
+        .create(historical_message)
+        .await
+        .expect("seed recovery history");
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let agent_run_id = agent_run.id.as_str();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cli_path = write_claude_session_fixture(temp_dir.path(), "recovered-session");
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+        "No conversation found with session ID old-session",
+        None,
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        agent_run_id.as_str(),
+        "message-id-stale-recovery-success",
+        &event_ctx,
+        Some("old-session"),
+        AgentHarnessKind::Claude,
+        false,
+        Some("retry after stale session"),
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        &cli_path,
+        temp_dir.path(),
+        temp_dir.path(),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &Some(Arc::clone(&state.task_proposal_repo)),
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(Arc::clone(&state.agent_lane_settings_repo)),
+        &Some(Arc::clone(&state.agent_provider_settings_repo)),
+        &app_handle,
+        Some("orchestrator"),
+        false,
+        Some("chain-stale-recovery".to_string()),
+        &None,
+        &Some(Arc::clone(&state.review_repo)),
+        &Some(Arc::clone(&state.task_step_repo)),
+        &None,
+    )
+    .await;
+
+    assert!(
+        recovery_spawned,
+        "successful stale-session recovery must spawn a retry instead of falling through"
+    );
 }
 
 #[tokio::test]

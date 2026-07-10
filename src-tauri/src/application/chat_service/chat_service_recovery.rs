@@ -21,8 +21,9 @@ use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::VerificationStatus;
 use crate::domain::entities::{ChatContextType, ChatConversation, ChatConversationId};
 use crate::domain::repositories::{
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, IdeationSessionRepository, TaskProposalRepository,
+    AgentProviderSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, IdeationSessionRepository,
+    TaskProposalRepository,
 };
 use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,
@@ -32,18 +33,95 @@ use tauri::{Manager, Runtime};
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: Option<&tauri::AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, AppError> {
-    let Some(handle) = app_handle else {
-        return Ok(HashMap::new());
-    };
-    let app_state = handle.state::<AppState>();
+    let app_state_provider_repo = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        Some(&app_state.agent_provider_settings_repo),
+        provider_repo.as_ref(),
         harness,
     )
     .await
     .map_err(AppError::Infrastructure)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SessionRecoveryProviderDecision {
+    ApplyEnv(HashMap<String, String>),
+    AllowWithoutProviderSettings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SessionRecoveryProviderBlock {
+    Disabled(String),
+    Env(String),
+    MissingProviderSettings,
+}
+
+fn session_recovery_missing_provider_settings_message(context_type: ChatContextType) -> String {
+    format!(
+        "Provider settings were unavailable for {} runtime; spawn blocked to avoid bypassing disabled-provider policy.",
+        context_type
+    )
+}
+
+fn session_recovery_provider_block_error(
+    block: SessionRecoveryProviderBlock,
+    context_type: ChatContextType,
+) -> AppError {
+    match block {
+        SessionRecoveryProviderBlock::Disabled(error)
+        | SessionRecoveryProviderBlock::Env(error) => AppError::Infrastructure(error),
+        SessionRecoveryProviderBlock::MissingProviderSettings => AppError::Infrastructure(
+            session_recovery_missing_provider_settings_message(context_type),
+        ),
+    }
+}
+
+async fn session_recovery_provider_decision<R: Runtime>(
+    app_handle: Option<&tauri::AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+) -> Result<SessionRecoveryProviderDecision, SessionRecoveryProviderBlock> {
+    let app_state_provider_repo = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
+    let Some(provider_repo) = provider_repo else {
+        return if super::uses_execution_slot(context_type) {
+            Err(SessionRecoveryProviderBlock::MissingProviderSettings)
+        } else {
+            Ok(SessionRecoveryProviderDecision::AllowWithoutProviderSettings)
+        };
+    };
+
+    crate::application::ensure_provider_spawn_enabled(
+        &provider_repo,
+        recovery_harness,
+        "session_recovery",
+    )
+    .await
+    .map_err(SessionRecoveryProviderBlock::Disabled)?;
+
+    let provider_env = provider_env_for_harness(
+        app_handle,
+        &Some(Arc::clone(&provider_repo)),
+        recovery_harness,
+    )
+    .await
+    .map_err(|error| SessionRecoveryProviderBlock::Env(error.to_string()))?;
+
+    Ok(SessionRecoveryProviderDecision::ApplyEnv(provider_env))
 }
 
 /// Attempt to recover from a stale provider session by rebuilding conversation history
@@ -86,6 +164,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     old_session_id: &str,
     app_handle: Option<&tauri::AppHandle<R>>,
 ) -> AppResult<String> {
@@ -216,9 +295,18 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
-    let provider_env = match provider_env_for_harness(app_handle, harness).await {
-        Ok(provider_env) => provider_env,
-        Err(error) => {
+    let provider_env = match session_recovery_provider_decision(
+        app_handle,
+        &agent_provider_settings_repo,
+        harness,
+        context_type,
+    )
+    .await
+    {
+        Ok(SessionRecoveryProviderDecision::ApplyEnv(provider_env)) => provider_env,
+        Ok(SessionRecoveryProviderDecision::AllowWithoutProviderSettings) => HashMap::new(),
+        Err(block) => {
+            let error = session_recovery_provider_block_error(block, context_type);
             log_failure(&error);
             return Err(error);
         }

@@ -34,13 +34,14 @@ use crate::domain::entities::{ChatConversation, ChatTimelineItem};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -63,6 +64,7 @@ pub(super) struct BackgroundRunRepos {
     pub delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     pub ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     pub ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
@@ -930,6 +932,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             delegated_session_repo,
             execution_settings_repo,
             agent_lane_settings_repo,
+            agent_provider_settings_repo,
             ideation_effort_settings_repo,
             ideation_model_settings_repo,
             agent_conversation_workspace_repo,
@@ -1394,6 +1397,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &plan_branch_repo,
                     &task_step_repo,
                     &execution_settings_repo,
+                    &agent_lane_settings_repo,
+                    &agent_provider_settings_repo,
                     &app_handle,
                     &interactive_process_registry,
                     &review_repo,
@@ -1453,12 +1458,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         .with_runtime_support(
                             Some(exec_settings.clone()),
                             agent_lane_settings_repo.as_ref().map(Arc::clone),
-                            app_handle
-                                .as_ref()
-                                .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                                .map(|app_state| {
-                                    Arc::clone(&app_state.agent_provider_settings_repo)
-                                }),
+                            agent_provider_settings_repo.as_ref().map(Arc::clone),
                             None,
                             None,
                         )
@@ -1791,6 +1791,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         sess_id,
                         &message_queue,
                         queued_message_repo,
+                        agent_provider_settings_repo.as_ref().map(Arc::clone),
                         &running_agent_registry,
                         &agent_run_repo,
                         &chat_message_repo,
@@ -1951,6 +1952,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &question_state,
                     &plan_branch_repo,
                     &execution_settings_repo,
+                    &agent_lane_settings_repo,
+                    &agent_provider_settings_repo,
                     &app_handle,
                     agent_name.as_deref(),
                     team_mode,
@@ -2001,6 +2004,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 session_id,
                                 &message_queue,
                                 queued_message_repo,
+                                agent_provider_settings_repo.as_ref().map(Arc::clone),
                                 &running_agent_registry,
                                 &agent_run_repo,
                                 &chat_message_repo,
