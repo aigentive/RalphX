@@ -5,9 +5,10 @@
 //! - `kill_on_drop(true)` — process is SIGKILL'd when the future is dropped (e.g. on timeout).
 //! - A configurable timeout (from `git_runtime_config()`) to prevent hung processes.
 //! - Configurable retry attempts with backoff for known transient errors.
+use crate::domain::entities::MergeFailureSource;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
-use crate::infrastructure::git_auth::apply_git_subprocess_env;
+use crate::infrastructure::git_auth::{apply_git_subprocess_env, is_git_auth_failure_text};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use std::panic::Location;
 use std::path::Path;
@@ -73,13 +74,19 @@ pub(crate) const ENOENT_MARKER: &str = "working directory not found (enoent)";
 const ERR_INDEX_LOCK: &str = "index.lock";
 
 /// git cannot create a .lock file (e.g. for a ref or the index).
-const ERR_UNABLE_CREATE_LOCK: &str = "Unable to create";
+const ERR_UNABLE_CREATE_LOCK: &str = "unable to create";
 
 /// git cannot acquire a ref lock, usually due to concurrent ref updates.
 const ERR_CANNOT_LOCK_REF: &str = "cannot lock ref";
 
 /// git cannot update FETCH_HEAD due to concurrent fetch operations.
-const ERR_FETCH_HEAD: &str = "FETCH_HEAD";
+const ERR_FETCH_HEAD: &str = "fetch_head";
+
+/// git could not write repository state because disk space or quota was exhausted.
+const ERR_NO_SPACE_LEFT: &str = "no space left on device";
+const ERR_COULD_NOT_WRITE_INDEX: &str = "could not write new index file";
+const ERR_ENOSPC: &str = "enospc";
+const ERR_DISK_QUOTA: &str = "disk quota exceeded";
 
 /// git's shallow file was modified concurrently during a fetch/clone.
 const ERR_SHALLOW_FILE_CHANGED: &str = "shallow file has changed";
@@ -94,11 +101,77 @@ const TRANSIENT_PATTERNS: &[&str] = &[
     ERR_SHALLOW_FILE_CHANGED,
 ];
 
+const DISK_FULL_PATTERNS: &[&str] = &[
+    ERR_NO_SPACE_LEFT,
+    ERR_COULD_NOT_WRITE_INDEX,
+    ERR_ENOSPC,
+    ERR_DISK_QUOTA,
+];
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Returns true if the given stderr output matches any known transient error pattern.
 fn is_transient_error(stderr: &str) -> bool {
-    TRANSIENT_PATTERNS.iter().any(|pat| stderr.contains(pat))
+    is_transient_git_stderr(stderr)
+}
+
+pub(crate) fn is_disk_full_git_stderr(stderr: &str) -> bool {
+    let normalized = stderr.to_lowercase();
+    DISK_FULL_PATTERNS
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+}
+
+/// Returns true when stderr is a retryable git failure. Deterministic classes
+/// are checked first so broad git substrings cannot mask auth or ENOSPC errors.
+pub(crate) fn is_transient_git_stderr(stderr: &str) -> bool {
+    let normalized = stderr.to_lowercase();
+    if is_disk_full_git_stderr(&normalized) || is_git_auth_failure_text(&normalized) {
+        return false;
+    }
+
+    TRANSIENT_PATTERNS
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+}
+
+pub(crate) fn classify_git_failure_text(text: &str) -> MergeFailureSource {
+    let normalized = text.to_lowercase();
+
+    if is_git_auth_failure_text(&normalized) {
+        return MergeFailureSource::AuthFailure;
+    }
+    if is_disk_full_git_stderr(&normalized) {
+        return MergeFailureSource::DiskFull;
+    }
+    if normalized.contains(ENOENT_MARKER) {
+        return MergeFailureSource::WorktreeMissing;
+    }
+    if normalized.contains(ERR_INDEX_LOCK)
+        || normalized.contains(".lock")
+        || normalized.contains(ERR_CANNOT_LOCK_REF)
+    {
+        return MergeFailureSource::LockContention;
+    }
+    if is_transient_git_stderr(&normalized) {
+        return MergeFailureSource::TransientGit;
+    }
+    if normalized.contains("database error:") || normalized.contains("infrastructure error:") {
+        return MergeFailureSource::DeterministicInfra;
+    }
+
+    MergeFailureSource::Unknown
+}
+
+pub(crate) fn classify_git_failure_source(error: &AppError) -> MergeFailureSource {
+    match error {
+        AppError::Database(_) | AppError::Infrastructure(_) => {
+            MergeFailureSource::DeterministicInfra
+        }
+        AppError::GitAuth(_) => MergeFailureSource::AuthFailure,
+        AppError::GitOperation(message) => classify_git_failure_text(message),
+        _ => classify_git_failure_text(&error.to_string()),
+    }
 }
 
 fn build_git_command(args: &[String], cwd: &Path, env: &[(String, String)]) -> Command {
