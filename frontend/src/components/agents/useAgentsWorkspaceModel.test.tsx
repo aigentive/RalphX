@@ -134,4 +134,34 @@ describe("useAgentsWorkspaceModel", () => {
       effort: "high",
     });
   });
+
+  it("preserves selected Codex GPT-5.6 workspace runtime before alias-aware send checks", () => {
+    const { result } = renderHook(
+      () =>
+        useAgentsWorkspaceModel({
+          activeConversation: projectConversation({
+            providerHarness: "codex",
+            logicalModel: "gpt-5.5",
+            logicalEffort: "xhigh",
+          }),
+          modelRegistry: AGENT_MODEL_CATALOG,
+          optimisticWorkspacesByConversationId: {},
+          runtimeByConversationId: {
+            "conversation-1": {
+              provider: "codex",
+              modelId: "gpt-5.6-terra",
+              effort: "ultra",
+            },
+          },
+          selectedConversationId: "conversation-1",
+        }),
+      { wrapper: wrapper() },
+    );
+
+    expect(result.current.normalizedActiveRuntime).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
+    });
+  });
 });
