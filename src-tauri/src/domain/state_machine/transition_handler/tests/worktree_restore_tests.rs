@@ -20,7 +20,7 @@ use super::helpers::*;
 use crate::application::chat_service::freshness_routing::{
     freshness_return_route, FreshnessRouteResult,
 };
-use crate::application::{AppState, GitService};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{GitMode, InternalStatus, Project, ProjectId, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
@@ -29,6 +29,7 @@ use crate::domain::state_machine::transition_handler::merge_helpers::{
     compute_task_worktree_path, is_merge_worktree_path, restore_task_worktree,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helper: build TaskServices with retained MockChatService
@@ -67,6 +68,22 @@ fn assert_task_runtime_bootstrap_metadata(
     assert_eq!(value["task_id"], task_id);
     assert_eq!(value["task_state"], task_state);
     assert_eq!(value["context_type"], context_type);
+}
+
+fn git_rev_parse(repo_path: &std::path::Path, ref_name: &str) -> String {
+    let repo_path = validate_absolute_non_root_path(repo_path, "worktree restore test repository")
+        .expect("safe test repo");
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", ref_name])
+        .current_dir(&repo_path)
+        .output()
+        .expect("git rev-parse failed");
+    assert!(
+        output.status.success(),
+        "git rev-parse {ref_name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -161,7 +178,10 @@ async fn re_review_worktree_restore() {
 // Shared helper: build a TaskTransitionService from AppState (mirrors freshness_return_path tests)
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn build_transition_service(app_state: &AppState) -> crate::application::TaskTransitionService {
+#[rustfmt::skip]
+fn build_transition_service(
+    app_state: &AppState,
+) -> crate::application::TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
@@ -500,9 +520,7 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
 async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
-    let base_sha = GitService::get_branch_sha(path, "main")
-        .await
-        .expect("main base SHA");
+    let base_sha = git_rev_parse(path, "main");
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -786,9 +804,7 @@ async fn pre_execution_setup_blocks_worktree_task_with_missing_worktree_path() {
 async fn on_enter_executing_adopts_existing_authoritative_worktree_path() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
-    let base_sha = GitService::get_branch_sha(path, "main")
-        .await
-        .expect("main base SHA");
+    let base_sha = git_rev_parse(path, "main");
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());

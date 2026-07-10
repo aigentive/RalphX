@@ -187,6 +187,14 @@ fn resolve_request_diff_base(
     requested_base_ref: Option<&str>,
     task_base: &TaskDiffBase,
 ) -> (String, String, bool) {
+    if task_base.immutable {
+        return (
+            task_base.effective_base_ref.clone(),
+            task_base.display_base_ref.clone(),
+            true,
+        );
+    }
+
     if let Some(base_ref) = requested_base_ref
         .map(str::trim)
         .filter(|base_ref| !base_ref.is_empty())
@@ -227,3 +235,7 @@ fn status_from_app_error(error: AppError) -> StatusCode {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
+
+#[cfg(test)]
+#[path = "validation_tests.rs"]
+mod validation_tests;
