@@ -115,6 +115,14 @@ pub struct Task {
     /// Format: ralphx/{project-slug}/task-{task-id}
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_branch: Option<String>,
+    /// Branch/ref used when the task branch was first created.
+    /// Used as display context for immutable task-owned diffs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_branch_base_ref: Option<String>,
+    /// Exact commit SHA resolved from task_branch_base_ref at task branch creation.
+    /// Diff, validation, and review guards use this immutable SHA instead of the moving plan branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_branch_base_sha: Option<String>,
     /// Worktree path for this task (Worktree mode only, Phase 66)
     /// Only set when project.git_mode == Worktree
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +172,8 @@ impl Task {
             archived_at: None,
             blocked_reason: None,
             task_branch: None,
+            task_branch_base_ref: None,
+            task_branch_base_sha: None,
             worktree_path: None,
             merge_commit_sha: None,
             metadata: None,
@@ -267,6 +277,8 @@ impl Task {
                 .map(Self::parse_datetime),
             blocked_reason: row.get("blocked_reason")?,
             task_branch: row.get("task_branch")?,
+            task_branch_base_ref: row.get("task_branch_base_ref")?,
+            task_branch_base_sha: row.get("task_branch_base_sha")?,
             worktree_path: row.get("worktree_path")?,
             merge_commit_sha: row.get("merge_commit_sha")?,
             metadata: row.get("metadata")?,

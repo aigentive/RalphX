@@ -65,6 +65,27 @@ fn run_git(repo_path: &std::path::Path, args: &[&str]) {
     );
 }
 
+fn git_stdout(repo_path: &std::path::Path, args: &[&str]) -> String {
+    let repo_path =
+        validate_absolute_non_root_path(repo_path, "test git repository").expect("safe test repo");
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(&repo_path)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .expect("git command failed");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
     let tracker = TeamStateTracker::new();
     let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
@@ -128,6 +149,74 @@ async fn execution_complete_accepts_clean_committed_worktree() {
 
     let mut task = Task::new(ProjectId::new(), "Clean completion task".to_string());
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let response = execution_complete_http(
+        State(state),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: None,
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert!(response.0.success);
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_empty_captured_base_diff() {
+    let tmp_dir = create_temp_git_repo();
+    let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "HEAD"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let mut task = Task::new(ProjectId::new(), "Empty captured diff task".to_string());
+    task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let response = execution_complete_http(
+        State(state),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: None,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response.expect_err("empty captured-base diff must be rejected"),
+        axum::http::StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn execution_complete_accepts_non_empty_captured_base_diff() {
+    let tmp_dir = create_temp_git_repo();
+    let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "HEAD"]);
+    let source_path = validate_absolute_non_root_path(
+        &tmp_dir.path().join("src.rs"),
+        "captured completion test source",
+    )
+    .unwrap();
+    std::fs::write(source_path, "committed").unwrap();
+    run_git(tmp_dir.path(), &["add", "src.rs"]);
+    run_git(tmp_dir.path(), &["commit", "-m", "task work"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let mut task = Task::new(ProjectId::new(), "Non-empty captured diff task".to_string());
+    task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
 

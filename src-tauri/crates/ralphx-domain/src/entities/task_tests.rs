@@ -452,6 +452,8 @@ fn setup_test_db() -> Connection {
             archived_at TEXT,
             blocked_reason TEXT,
             task_branch TEXT,
+            task_branch_base_ref TEXT,
+            task_branch_base_sha TEXT,
             worktree_path TEXT,
             merge_commit_sha TEXT,
             metadata TEXT,
@@ -493,6 +495,8 @@ fn task_from_row_with_all_fields() {
     assert!(task.needs_review_point);
     assert!(task.started_at.is_some());
     assert!(task.completed_at.is_none());
+    assert!(task.task_branch_base_ref.is_none());
+    assert!(task.task_branch_base_sha.is_none());
 }
 
 #[test]
