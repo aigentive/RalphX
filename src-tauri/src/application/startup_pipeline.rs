@@ -256,6 +256,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         running_agent_registry: Arc::clone(&running_agent_registry),
         memory_event_repo: Arc::clone(&memory_event_repo),
         agent_clients: agent_clients.clone(),
+        agent_lane_settings_repo: Arc::clone(&agent_lane_settings_repo),
         agent_provider_settings_repo: Arc::clone(&agent_provider_settings_repo),
         plan_branch_repo: Arc::clone(&plan_branch_repo),
         github_service: github_service.as_ref().map(Arc::clone),

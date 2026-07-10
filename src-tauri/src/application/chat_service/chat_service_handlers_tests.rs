@@ -18,9 +18,180 @@ use crate::domain::entities::{
     ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
     Project, ProjectId, Task, VerificationStatus,
 };
-use crate::domain::repositories::{AgentRunRepository, StateHistoryMetadata, StatusTransition};
+use crate::domain::repositories::{
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, StateHistoryMetadata,
+    StatusTransition, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
+};
+use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use tauri::{AppHandle, Runtime};
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_success<R: Runtime>(
+    agent_run_id: &str,
+    context_type: ChatContextType,
+    context_id: &str,
+    has_output: bool,
+    completion_tool_called: bool,
+    execution_slot_held: bool,
+    execution_state: &Option<Arc<ExecutionState>>,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_dependency_repo: &Arc<dyn TaskDependencyRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    conversation_repo: &Arc<dyn ChatConversationRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    activity_event_repo: &Arc<dyn ActivityEventRepository>,
+    message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    app_handle: &Option<AppHandle<R>>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    review_repo: &Option<Arc<dyn ReviewRepository>>,
+    verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
+) {
+    super::handle_stream_success(
+        agent_run_id,
+        context_type,
+        context_id,
+        has_output,
+        completion_tool_called,
+        execution_slot_held,
+        execution_state,
+        task_repo,
+        task_dependency_repo,
+        project_repo,
+        artifact_repo,
+        chat_message_repo,
+        chat_attachment_repo,
+        conversation_repo,
+        agent_run_repo,
+        ideation_session_repo,
+        activity_event_repo,
+        message_queue,
+        running_agent_registry,
+        memory_event_repo,
+        plan_branch_repo,
+        task_step_repo,
+        execution_settings_repo,
+        &None,
+        &None,
+        app_handle,
+        interactive_process_registry,
+        review_repo,
+        verification_child_registry,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_stream_error<R: Runtime + 'static>(
+    error: &str,
+    stream_error: Option<&StreamError>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    agent_run_id: &str,
+    pre_assistant_msg_id: &str,
+    event_ctx: &EventContextPayload,
+    stored_session_id: Option<&str>,
+    effective_harness: AgentHarnessKind,
+    is_retry_attempt: bool,
+    user_message_content: Option<&str>,
+    conversation: Option<&ChatConversation>,
+    resolved_project_id: Option<String>,
+    cli_path: &std::path::Path,
+    plugin_dir: &std::path::Path,
+    working_directory: &std::path::Path,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    conversation_repo: &Arc<dyn ChatConversationRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    task_repo: &Arc<dyn TaskRepository>,
+    task_dependency_repo: &Arc<dyn TaskDependencyRepository>,
+    project_repo: &Arc<dyn ProjectRepository>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    task_proposal_repo: &Option<Arc<dyn TaskProposalRepository>>,
+    activity_event_repo: &Arc<dyn ActivityEventRepository>,
+    message_queue: &Arc<MessageQueue>,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    memory_event_repo: &Arc<dyn MemoryEventRepository>,
+    execution_state: &Option<Arc<ExecutionState>>,
+    question_state: &Option<Arc<QuestionState>>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    app_handle: &Option<AppHandle<R>>,
+    agent_name: Option<&str>,
+    team_mode: bool,
+    run_chain_id: Option<String>,
+    interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    review_repo: &Option<Arc<dyn ReviewRepository>>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
+) -> bool {
+    super::handle_stream_error(
+        error,
+        stream_error,
+        context_type,
+        context_id,
+        conversation_id,
+        agent_run_id,
+        pre_assistant_msg_id,
+        event_ctx,
+        stored_session_id,
+        effective_harness,
+        is_retry_attempt,
+        user_message_content,
+        conversation,
+        resolved_project_id,
+        cli_path,
+        plugin_dir,
+        working_directory,
+        chat_message_repo,
+        chat_timeline_repo,
+        chat_attachment_repo,
+        artifact_repo,
+        conversation_repo,
+        agent_run_repo,
+        task_repo,
+        task_dependency_repo,
+        project_repo,
+        ideation_session_repo,
+        task_proposal_repo,
+        activity_event_repo,
+        message_queue,
+        running_agent_registry,
+        memory_event_repo,
+        execution_state,
+        question_state,
+        plan_branch_repo,
+        execution_settings_repo,
+        &None,
+        &None,
+        app_handle,
+        agent_name,
+        team_mode,
+        run_chain_id,
+        interactive_process_registry,
+        review_repo,
+        task_step_repo,
+        verification_child_registry,
+    )
+    .await
+}
 
 /// Configurable mock: `get_by_id` returns the stored task (or None).
 struct StubTaskRepo {
@@ -30,7 +201,7 @@ struct StubTaskRepo {
 
 #[tokio::test]
 async fn provider_env_for_harness_reads_app_state_provider_settings() {
-    let empty = provider_env_for_harness::<MockRuntime>(&None, AgentHarnessKind::Claude)
+    let empty = provider_env_for_harness::<MockRuntime>(&None, &None, AgentHarnessKind::Claude)
         .await
         .expect("missing app handle");
     assert!(empty.is_empty());
@@ -57,7 +228,7 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         .expect("mock app");
     let handle = Some(app.handle().clone());
 
-    let provider_env = provider_env_for_harness(&handle, AgentHarnessKind::Claude)
+    let provider_env = provider_env_for_harness(&handle, &None, AgentHarnessKind::Claude)
         .await
         .expect("load provider env");
 
@@ -68,6 +239,114 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         Some("from-handler")
     );
     assert!(!provider_env.contains_key("CLAUDE_MODEL"));
+}
+
+#[tokio::test]
+async fn provider_env_for_harness_uses_explicit_provider_repo_without_app_handle() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(&env_path, "CUSTOM_PROVIDER_TOKEN=from-explicit-repo\n")
+        .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let provider_env =
+        provider_env_for_harness::<MockRuntime>(&None, &provider_repo, AgentHarnessKind::Claude)
+            .await
+            .expect("load provider env");
+
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-explicit-repo")
+    );
+}
+
+#[test]
+fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_handle() {
+    let app_state = AppState::new_test();
+    let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
+    let agent_lane_settings_repo = Some(Arc::clone(&app_state.agent_lane_settings_repo));
+    let agent_provider_settings_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let runtime_support = RuntimeSupportRepos::new(
+        &execution_settings_repo,
+        &agent_lane_settings_repo,
+        &agent_provider_settings_repo,
+        &None,
+        &None,
+    );
+
+    let deps = build_runtime_factory_deps::<MockRuntime>(
+        &None,
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(deps.execution_settings_repo.is_some());
+    assert!(deps.agent_lane_settings_repo.is_some());
+    assert!(deps.agent_provider_settings_repo.is_some());
+}
+
+#[test]
+fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_app_handle() {
+    let app_state = AppState::new_test();
+    let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
+    let runtime_support =
+        RuntimeSupportRepos::new(&execution_settings_repo, &None, &None, &None, &None);
+    let app = mock_builder()
+        .manage(app_state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let deps = build_runtime_factory_deps::<MockRuntime>(
+        &app_handle,
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        runtime_support,
+    );
+
+    assert!(deps.execution_settings_repo.is_some());
+    assert!(
+        deps.agent_lane_settings_repo.is_none(),
+        "handler runtime deps must not silently recover missing lane settings from AppState"
+    );
+    assert!(
+        deps.agent_provider_settings_repo.is_none(),
+        "handler runtime deps must not silently recover missing provider settings from AppState"
+    );
 }
 
 #[tokio::test]
@@ -1134,7 +1413,6 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
 
 use crate::application::chat_service::chat_service_handlers::all_steps_completed;
 use crate::domain::entities::{TaskStep, TaskStepId};
-use crate::domain::repositories::TaskStepRepository;
 use crate::error::AppError;
 use std::collections::HashMap;
 
@@ -2277,6 +2555,7 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &state.delegated_session_repo,
         &Some(Arc::clone(&state.execution_settings_repo)),
         &Some(Arc::clone(&state.agent_lane_settings_repo)),
+        &Some(Arc::clone(&state.agent_provider_settings_repo)),
         &Some(Arc::clone(&state.ideation_effort_settings_repo)),
         &Some(Arc::clone(&state.ideation_model_settings_repo)),
         &Some(Arc::clone(&state.task_proposal_repo)),
@@ -2304,6 +2583,10 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
     assert!(
         ctx.repos.task_step_repo.is_some(),
         "stale-session retry must preserve task_step_repo for execution-side completion handling"
+    );
+    assert!(
+        ctx.repos.agent_provider_settings_repo.is_some(),
+        "stale-session retry must preserve provider settings for disabled-provider enforcement"
     );
     assert!(
         ctx.repos.review_repo.is_some(),

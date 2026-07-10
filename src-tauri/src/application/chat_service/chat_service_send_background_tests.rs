@@ -1459,6 +1459,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         delegated_session_repo: Arc::clone(&state.delegated_session_repo),
         execution_settings_repo: None,
         agent_lane_settings_repo: None,
+        agent_provider_settings_repo: None,
         ideation_effort_settings_repo: None,
         ideation_model_settings_repo: None,
         agent_conversation_workspace_repo: Some(Arc::clone(
