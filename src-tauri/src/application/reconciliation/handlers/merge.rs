@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+use crate::application::git_service::git_cmd;
 use crate::application::harness_runtime_registry::{
     default_reconciliation_attempt_merge_deadline_secs,
     default_reconciliation_merge_circuit_breaker_threshold,
@@ -17,8 +18,9 @@ use crate::application::harness_runtime_registry::{
     default_reconciliation_validation_revert_max_count,
 };
 use crate::domain::entities::{
-    AgentRunStatus, ChatContextType, InternalStatus, MergeFailureSource, MergeRecoveryEventKind,
-    MergeRecoveryMetadata, MergeRecoveryReasonCode, PlanBranch,
+    task_metadata::RetryStrategy, AgentRunStatus, ChatContextType, InternalStatus,
+    MergeFailureSource, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    PlanBranch, Task,
 };
 use crate::domain::state_machine::transition_handler::has_branch_missing_metadata;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
@@ -29,6 +31,96 @@ use super::super::policy::{
 use super::super::ReconciliationRunner;
 
 impl ReconciliationRunner {
+    fn effective_failure_source_from_event(
+        event: &crate::domain::entities::MergeRecoveryEvent,
+    ) -> Option<MergeFailureSource> {
+        if event.kind == MergeRecoveryEventKind::Deferred
+            && event.reason_code == MergeRecoveryReasonCode::TargetBranchBusy
+        {
+            return Some(MergeFailureSource::TargetBranchBusy);
+        }
+
+        let classified_from_message = git_cmd::classify_git_failure_text(&event.message);
+        if matches!(
+            classified_from_message,
+            MergeFailureSource::AuthFailure
+                | MergeFailureSource::DiskFull
+                | MergeFailureSource::DeterministicInfra
+        ) {
+            return Some(classified_from_message);
+        }
+
+        match event.failure_source {
+            Some(MergeFailureSource::TransientGit) | Some(MergeFailureSource::Unknown) | None => {
+                if classified_from_message != MergeFailureSource::Unknown {
+                    Some(classified_from_message)
+                } else {
+                    event.failure_source.or(Some(MergeFailureSource::Unknown))
+                }
+            }
+            Some(source) => Some(source),
+        }
+    }
+
+    fn merge_failure_source_from_flat_metadata(task: &Task) -> Option<MergeFailureSource> {
+        let metadata = task.metadata.as_deref()?;
+        let json = serde_json::from_str::<serde_json::Value>(metadata).ok()?;
+        let source = json
+            .get("merge_failure_source")
+            .and_then(|value| serde_json::from_value::<MergeFailureSource>(value.clone()).ok())?;
+        let classified_from_error = json
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(git_cmd::classify_git_failure_text)
+            .unwrap_or(MergeFailureSource::Unknown);
+
+        if matches!(
+            classified_from_error,
+            MergeFailureSource::AuthFailure
+                | MergeFailureSource::DiskFull
+                | MergeFailureSource::DeterministicInfra
+        ) {
+            return Some(classified_from_error);
+        }
+
+        Some(source)
+    }
+
+    fn latest_merge_incomplete_failure_source(task: &Task) -> MergeFailureSource {
+        if let Some(source) = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .ok()
+            .flatten()
+            .and_then(|meta| {
+                meta.events
+                    .iter()
+                    .rev()
+                    .find(|event| {
+                        matches!(
+                            event.kind,
+                            MergeRecoveryEventKind::AttemptFailed
+                                | MergeRecoveryEventKind::Deferred
+                                | MergeRecoveryEventKind::AutoRetryTriggered
+                        )
+                    })
+                    .and_then(Self::effective_failure_source_from_event)
+            })
+        {
+            return source;
+        }
+
+        if let Some(source) = Self::merge_failure_source_from_flat_metadata(task) {
+            return source;
+        }
+
+        if crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
+            task,
+        ) {
+            return MergeFailureSource::TransientGit;
+        }
+
+        MergeFailureSource::Unknown
+    }
+
     #[doc(hidden)]
     pub async fn reconcile_merging_task(
         &self,
@@ -857,6 +949,23 @@ impl ReconciliationRunner {
             }
         }
 
+        // ORDERING: must read last event AFTER rate-limit refresh and BEFORE record_retry_metadata()
+        // Classify the failure source from the most recent event so auto-retries after a deferral
+        // are recorded as TargetBranchBusy rather than TransientGit, preventing false circuit
+        // breaker activation when tasks are repeatedly deferred for a concurrent merge.
+        let failure_source = Self::latest_merge_incomplete_failure_source(task);
+        if matches!(
+            failure_source.retry_strategy(),
+            RetryStrategy::NoAutomaticRetry
+        ) {
+            debug!(
+                task_id = task.id.as_str(),
+                failure_source = ?failure_source,
+                "Skipping MergeIncomplete auto-retry — failure source is not automatically retryable"
+            );
+            return false;
+        }
+
         // Circuit breaker — detect repeated identical failures before proceeding.
         // Fires when threshold+ of the last window failure events share the same source.
         let threshold = default_reconciliation_merge_circuit_breaker_threshold();
@@ -890,48 +999,26 @@ impl ReconciliationRunner {
             return false;
         }
 
-        // ORDERING: must read last event AFTER rate-limit refresh and BEFORE record_retry_metadata()
-        // Classify the failure source from the most recent event so auto-retries after a deferral
-        // are recorded as TargetBranchBusy rather than TransientGit, preventing false circuit
-        // breaker activation when tasks are repeatedly deferred for a concurrent merge.
-        let last_is_target_branch_busy =
-            MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .ok()
-                .flatten()
-                .and_then(|meta| meta.events.last().cloned())
-                .map(|e| {
-                    e.kind == MergeRecoveryEventKind::Deferred
-                        && e.reason_code == MergeRecoveryReasonCode::TargetBranchBusy
-                })
-                .unwrap_or(false);
         let is_pr_branch_publication_failure =
             crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
                 task,
             );
-        let failure_source = if last_is_target_branch_busy {
-            MergeFailureSource::TargetBranchBusy
-        } else {
-            MergeFailureSource::TransientGit
-        };
-        let reason_code = if last_is_target_branch_busy {
+        let reason_code = if failure_source == MergeFailureSource::TargetBranchBusy {
             Some(MergeRecoveryReasonCode::TargetBranchBusy)
         } else {
             None
         };
-        let retry_reason = if last_is_target_branch_busy {
+        let retry_reason = if failure_source == MergeFailureSource::TargetBranchBusy {
             "MergeIncomplete auto-retry — target branch busy (deferred)"
         } else if is_pr_branch_publication_failure {
             "MergeIncomplete auto-retry — PR branch publication failed"
         } else {
-            "MergeIncomplete auto-retry — transient git failure"
+            "MergeIncomplete auto-retry — retryable merge failure"
         };
-        let failure_source_str = if last_is_target_branch_busy {
-            "target_branch_busy"
-        } else if is_pr_branch_publication_failure {
-            "pr_branch_publication_failed"
-        } else {
-            "transient_git"
-        };
+        let failure_source_str = serde_json::to_value(failure_source)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("{failure_source:?}"));
 
         // Record retry metadata (last_retried_at + consecutive_validation_failures tracking)
         if let Err(e) = self.record_retry_metadata(task, is_validation).await {

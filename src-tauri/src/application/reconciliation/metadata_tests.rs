@@ -126,7 +126,9 @@ fn failure_source_helpers_read_flat_metadata_sources() {
     let agent_reported = task_with_metadata(
         serde_json::json!({ "merge_failure_source": "agent_reported" }).to_string(),
     );
-    assert!(ReconciliationRunner::is_agent_reported_failure(&agent_reported));
+    assert!(ReconciliationRunner::is_agent_reported_failure(
+        &agent_reported
+    ));
 
     let validation_failed = task_with_metadata(
         serde_json::json!({
@@ -199,6 +201,25 @@ fn should_circuit_break_ignores_insufficient_or_unclassified_failures() {
     let task = task_with_merge_recovery(recovery);
 
     assert!(ReconciliationRunner::should_circuit_break(&task, 1, 3).is_none());
+}
+
+#[test]
+fn should_circuit_break_ignores_non_retryable_merge_failure_sources() {
+    let mut recovery = MergeRecoveryMetadata::new();
+    for source in [
+        MergeFailureSource::AuthFailure,
+        MergeFailureSource::DiskFull,
+        MergeFailureSource::DeterministicInfra,
+        MergeFailureSource::Unknown,
+    ] {
+        recovery.append_event(merge_event(MergeRecoveryEventKind::AttemptFailed, source));
+    }
+    let task = task_with_merge_recovery(recovery);
+
+    assert!(
+        ReconciliationRunner::should_circuit_break(&task, 1, 4).is_none(),
+        "non-retryable merge failure sources should park visibly without tripping retry breaker"
+    );
 }
 
 #[test]

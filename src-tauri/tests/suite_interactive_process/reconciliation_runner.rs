@@ -7346,6 +7346,106 @@ async fn deferred_task_reconcile_classifies_as_target_branch_busy() {
     );
 }
 
+#[tokio::test]
+async fn merge_incomplete_deterministic_failure_sources_do_not_retry() {
+    use ralphx_lib::domain::entities::{
+        MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    };
+
+    let cases = [
+        (
+            "auth_failure",
+            "Merge failed: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        ),
+        (
+            "disk_full",
+            "Merge failed: fatal: Unable to create '.git/FETCH_HEAD': No space left on device",
+        ),
+        ("unknown", "Merge failed: fatal: not a git repository"),
+        (
+            "transient_git",
+            "Merge failed: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        ),
+    ];
+
+    for (source, message) in cases {
+        let app_state = AppState::new_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let reconciler = build_reconciler(&app_state, &execution_state);
+
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
+
+        let mut task = Task::new(
+            project.id.clone(),
+            format!("Deterministic Classification Task {source}"),
+        );
+        task.internal_status = InternalStatus::MergeIncomplete;
+        task.updated_at = chrono::Utc::now() - chrono::Duration::seconds(3600);
+        task.metadata = Some(
+            serde_json::json!({
+                "merge_recovery": {
+                    "version": 1,
+                    "events": [{
+                        "at": "2026-02-10T00:00:00Z",
+                        "kind": "attempt_failed",
+                        "source": "system",
+                        "reason_code": "git_error",
+                        "message": message,
+                        "failure_source": source
+                    }],
+                    "last_state": "failed"
+                }
+            })
+            .to_string(),
+        );
+        app_state.task_repo.create(task.clone()).await.unwrap();
+
+        let reconciled = reconciler
+            .reconcile_merge_incomplete_task(&task, InternalStatus::MergeIncomplete)
+            .await;
+
+        assert!(
+            !reconciled,
+            "non-retryable merge failure source {source} must not dispatch another merge attempt"
+        );
+
+        let updated = app_state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .unwrap()
+            .expect("task should exist");
+        assert_eq!(
+            updated.internal_status,
+            InternalStatus::MergeIncomplete,
+            "deterministic source {source} should stay visibly MergeIncomplete"
+        );
+
+        let recovery = MergeRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+            .expect("metadata parse should succeed")
+            .expect("merge_recovery should exist");
+        assert!(
+            !recovery.events.iter().any(|event| matches!(
+                event.kind,
+                MergeRecoveryEventKind::AutoRetryTriggered
+            )),
+            "deterministic source {source} should not append AutoRetryTriggered"
+        );
+        assert!(
+            recovery
+                .events
+                .iter()
+                .all(|event| event.reason_code == MergeRecoveryReasonCode::GitError),
+            "fixture should only contain the original git-error recovery evidence"
+        );
+    }
+}
+
 /// Boundary test: CB fires when TransientGit events reach the threshold despite
 /// TargetBranchBusy events being present (2+3 scenario), and does NOT fire when
 /// TransientGit events are below threshold (2+2 scenario).

@@ -74,6 +74,55 @@ fn test_empty_stderr_not_transient() {
 }
 
 #[test]
+fn disk_full_stderr_is_not_transient_even_with_broad_patterns() {
+    let stderr = "fatal: Unable to create '.git/FETCH_HEAD': No space left on device";
+
+    assert!(!is_transient_git_stderr(stderr));
+    assert_eq!(
+        classify_git_failure_text(stderr),
+        crate::domain::entities::MergeFailureSource::DiskFull
+    );
+}
+
+#[test]
+fn auth_stderr_is_not_transient() {
+    let stderr =
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+
+    assert!(!is_transient_git_stderr(stderr));
+    assert_eq!(
+        classify_git_failure_text(stderr),
+        crate::domain::entities::MergeFailureSource::AuthFailure
+    );
+}
+
+#[test]
+fn classify_git_failure_source_maps_app_error_variants() {
+    use crate::domain::entities::MergeFailureSource;
+
+    assert_eq!(
+        classify_git_failure_source(&AppError::Database("foreign key failed".to_string())),
+        MergeFailureSource::DeterministicInfra
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::Infrastructure(
+            "failed to draft plan PR description".to_string()
+        )),
+        MergeFailureSource::DeterministicInfra
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::GitAuth("Git could not authenticate".to_string())),
+        MergeFailureSource::AuthFailure
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::GitOperation(
+            "fatal: not a git repository".to_string()
+        )),
+        MergeFailureSource::Unknown
+    );
+}
+
+#[test]
 fn test_build_git_command_preserves_user_shim_before_resolved_node_bin() {
     assert_build_git_command_preserves_user_shim_before_resolved_node_bin(None);
 }

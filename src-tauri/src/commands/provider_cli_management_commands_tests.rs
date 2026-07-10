@@ -806,6 +806,8 @@ async fn managed_codex_installer_runs_fake_installer_with_rx_owned_env() {
     let _path = EnvGuard::set_os("PATH", &fake_bin_dir);
     let _nvm_bin = EnvGuard::unset("NVM_BIN");
     let _volta_home = EnvGuard::unset("VOLTA_HOME");
+    let _login_shell_env =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
 
     let output = run_managed_codex_installer()
         .await
@@ -839,6 +841,8 @@ async fn managed_claude_installer_runs_fake_native_installer() {
     let _path = EnvGuard::set_os("PATH", &fake_bin_dir);
     let _nvm_bin = EnvGuard::unset("NVM_BIN");
     let _volta_home = EnvGuard::unset("VOLTA_HOME");
+    let _login_shell_env =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
 
     let output = run_managed_claude_installer()
         .await
