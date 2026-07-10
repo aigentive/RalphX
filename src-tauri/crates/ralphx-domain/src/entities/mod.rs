@@ -26,6 +26,7 @@ pub mod memory_event;
 pub mod memory_rule_binding;
 pub mod merge_progress_event;
 pub mod methodology;
+pub mod notification;
 pub mod plan_branch;
 pub mod plan_selection_stats;
 pub mod project;
@@ -148,6 +149,9 @@ pub use memory_entry::{MemoryBucket, MemoryEntry, MemoryEntryId, MemoryStatus};
 pub use memory_event::{MemoryActorType, MemoryEvent, MemoryEventId, ParseMemoryActorTypeError};
 pub use memory_rule_binding::MemoryRuleBinding;
 pub use merge_progress_event::{MergePhase, MergePhaseInfo, MergePhaseStatus, MergeProgressEvent};
+pub use notification::{
+    AttentionItem, NotificationCategory, NotificationTarget, NotificationTargetKind,
+};
 pub use methodology::{
     MethodologyExtension, MethodologyId, MethodologyPhase, MethodologyPlanArtifactConfig,
     MethodologyPlanTemplate, MethodologyStatus, MethodologyTemplate, ParseMethodologyStatusError,

@@ -2,6 +2,7 @@
 // Used by the question bridge system to coordinate between MCP tools and frontend
 // Mirrors the permission_state.rs pattern exactly
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -36,10 +37,16 @@ pub struct PendingQuestionInfo {
     pub batch_total: Option<u32>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default = "default_created_at")]
+    pub created_at: String,
 }
 
 fn default_allow_skip() -> bool {
     true
+}
+
+fn default_created_at() -> String {
+    Utc::now().to_rfc3339()
 }
 
 /// A single option in a question
@@ -122,6 +129,34 @@ impl QuestionState {
         pending.values().map(|p| p.info.clone()).collect()
     }
 
+    /// Load pending questions without turning a durable repository failure into an empty result.
+    pub async fn get_pending_info_strict(
+        &self,
+    ) -> crate::error::AppResult<Vec<PendingQuestionInfo>> {
+        if let Some(repo) = &self.repo {
+            let mut pending = repo.get_pending().await?;
+            let durable_request_ids: HashSet<_> = pending
+                .iter()
+                .map(|question| question.request_id.clone())
+                .collect();
+            let live_pending = self.pending.lock().await;
+            pending.extend(
+                live_pending
+                    .values()
+                    .filter(|question| !durable_request_ids.contains(&question.info.request_id))
+                    .map(|question| question.info.clone()),
+            );
+            return Ok(pending);
+        }
+        Ok(self
+            .pending
+            .lock()
+            .await
+            .values()
+            .map(|question| question.info.clone())
+            .collect())
+    }
+
     /// Register a new pending question
     pub async fn register(
         &self,
@@ -173,6 +208,7 @@ impl QuestionState {
             batch_index,
             batch_total,
             metadata,
+            created_at: Utc::now().to_rfc3339(),
         };
 
         // Fire-and-forget persist to repo

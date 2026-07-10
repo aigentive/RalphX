@@ -1,8 +1,9 @@
 // Permission state for handling UI-based permission approvals
 // Used by the permission bridge system to coordinate between MCP tools and frontend
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{watch, Mutex};
 use tracing::{error, info};
@@ -29,6 +30,12 @@ pub struct PendingPermissionInfo {
     pub task_id: Option<String>,
     pub context_type: Option<String>,
     pub context_id: Option<String>,
+    #[serde(default = "default_created_at")]
+    pub created_at: String,
+}
+
+fn default_created_at() -> String {
+    Utc::now().to_rfc3339()
 }
 
 /// A pending permission request with its signaling channel
@@ -73,10 +80,33 @@ impl PermissionState {
         pending.values().map(|p| p.info.clone()).collect()
     }
 
+    /// Load pending requests for a derived, fail-closed read.
+    pub async fn get_pending_info_strict(&self) -> AppResult<Vec<PendingPermissionInfo>> {
+        if let Some(repo) = &self.repo {
+            let mut pending = repo.get_pending().await?;
+            let durable_request_ids: HashSet<_> = pending
+                .iter()
+                .map(|permission| permission.request_id.clone())
+                .collect();
+            let live_pending = self.pending.lock().await;
+            pending.extend(
+                live_pending
+                    .values()
+                    .filter(|permission| !durable_request_ids.contains(&permission.info.request_id))
+                    .map(|permission| permission.info.clone()),
+            );
+            return Ok(pending);
+        }
+        Ok(self.get_pending_info().await)
+    }
+
     /// Log a repo operation error without blocking the channel signaling path.
     fn log_repo_err<T>(result: AppResult<T>, request_id: &str, context: &str) {
         if let Err(e) = result {
-            error!("Failed to persist permission {} {}: {}", context, request_id, e);
+            error!(
+                "Failed to persist permission {} {}: {}",
+                context, request_id, e
+            );
         }
     }
 
@@ -103,7 +133,11 @@ impl PermissionState {
 
             // Fire-and-forget persist to repo
             if let Some(repo) = &self.repo {
-                Self::log_repo_err(repo.resolve(request_id, &decision).await, request_id, "resolution");
+                Self::log_repo_err(
+                    repo.resolve(request_id, &decision).await,
+                    request_id,
+                    "resolution",
+                );
             }
 
             true

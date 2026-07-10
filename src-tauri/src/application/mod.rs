@@ -27,6 +27,7 @@ pub mod agent_workspace_review;
 pub mod app_setup;
 pub mod app_paths;
 pub mod app_state;
+pub mod attention_service;
 pub mod apply_service;
 pub mod atlassian_integration_service;
 pub mod automation;

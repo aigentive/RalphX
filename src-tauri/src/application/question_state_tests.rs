@@ -62,6 +62,7 @@ async fn test_pending_question_info_serialization() {
         batch_index: None,
         batch_total: None,
         metadata: Some(serde_json::json!({ "kind": "plan_mode_proposal" })),
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
     let json = serde_json::to_string(&info).unwrap();
     assert!(json.contains("\"request_id\":\"req-123\""));
@@ -637,6 +638,7 @@ mod with_repo {
                 batch_index: None,
                 batch_total: None,
                 metadata: None,
+                created_at: "2026-07-10T00:00:00+00:00".to_string(),
             };
             repo.create_pending(&info).await.unwrap();
         }

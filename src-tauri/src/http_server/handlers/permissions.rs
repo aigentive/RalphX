@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use chrono::Utc;
 use uuid::Uuid;
 
 use super::*;
@@ -24,6 +25,7 @@ pub async fn request_permission(
         task_id: input.task_id.clone(),
         context_type: input.context_type.clone(),
         context_id: input.context_id.clone(),
+        created_at: Utc::now().to_rfc3339(),
     };
 
     // Store pending request with metadata

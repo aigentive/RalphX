@@ -6,6 +6,7 @@ macro_rules! register_tauri_commands {
         tauri::generate_handler![
             greet,
             commands::health::health_check,
+            commands::notification_commands::list_attention_items,
             commands::release_notes_commands::get_current_release_notes,
             commands::release_notes_commands::get_last_seen_release_notes_version,
             commands::release_notes_commands::mark_release_notes_seen,
