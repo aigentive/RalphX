@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::task_diff_base::task_allows_empty_captured_diff;
 
 pub async fn ensure_task_still_reviewing_before_transition(
     state: &HttpServerState,
@@ -127,6 +128,28 @@ pub async fn complete_review(
         );
         (StatusCode::BAD_REQUEST, e.to_string())
     })?;
+
+    if matches!(outcome, ReviewToolOutcome::Approved) {
+        let project = state
+            .app_state
+            .project_repo
+            .get_by_id(&task.project_id)
+            .await
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+        ensure_task_has_non_empty_captured_diff(&task, &project, "complete_review_approved")
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    decision = %req.decision,
+                    error = %error,
+                    "complete_review rejected: approved code-change task has no captured-base diff"
+                );
+                (StatusCode::BAD_REQUEST, error.to_string())
+            })?;
+    }
 
     // 3. Get feedback - stored separately from issues now
     let feedback = req.feedback.clone();
@@ -369,53 +392,111 @@ pub async fn complete_review(
                 .unwrap_or(false);
 
             // Fetch project for repo_path and working_directory (needed for git diff + cleanup)
-            let project_opt = state
+            let project = state
                 .app_state
                 .project_repo
                 .get_by_id(&task.project_id)
                 .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
             // Git diff validation safety gate (BEFORE metadata persistence).
             // If the branch has code changes, fall back to standard Approved flow.
-            let has_code_changes =
-                if let (Some(ref project), Some(ref branch)) = (&project_opt, &task_branch) {
-                    let repo_path = std::path::Path::new(&project.working_directory);
-                    let base = project.base_branch_or_default();
-                    match GitService::branches_have_same_content(repo_path, branch, base).await {
-                        Ok(false) => {
-                            // Not same content → branch has code changes
-                            tracing::warn!(
-                                task_id = %task_id.as_str(),
-                                branch = %branch,
-                                base_branch = %base,
-                                "Reviewer marked approved_no_changes but branch has code changes \
-                                 — falling back to standard Approved flow"
-                            );
-                            true
-                        }
-                        Ok(true) => false, // Same content — no changes, proceed with no-changes path
-                        Err(e) => {
-                            // Git error — defensive: proceed with no-changes path
-                            tracing::warn!(
-                                task_id = %task_id.as_str(),
-                                error = %e,
-                                "Git diff validation failed — proceeding with \
-                                 no-changes path (defensive)"
-                            );
-                            false
-                        }
+            let has_code_changes = match read_captured_task_diff_stats(
+                &task,
+                &project,
+                "complete_review_approved_no_changes",
+            )
+            .await
+            {
+                Ok(Some(stats)) => {
+                    let has_changes = diff_stats_has_changes(&stats);
+                    if has_changes {
+                        tracing::warn!(
+                            task_id = %task_id.as_str(),
+                            base_ref = %task.task_branch_base_ref.as_deref().unwrap_or_default(),
+                            base_sha = %task.task_branch_base_sha.as_deref().unwrap_or_default(),
+                            files_changed = stats.files_changed,
+                            "Reviewer marked approved_no_changes but captured-base diff has code changes — falling back to standard Approved flow"
+                        );
                     }
-                } else {
-                    // No project or no branch — proceed with no-changes path (defensive)
-                    false
-                };
+                    has_changes
+                }
+                Ok(None) => {
+                    if let Some(ref branch) = task_branch {
+                        let repo_path = std::path::Path::new(&project.working_directory);
+                        let base = project.base_branch_or_default();
+                        match GitService::branches_have_same_content(repo_path, branch, base).await
+                        {
+                            Ok(false) => {
+                                // Not same content → branch has code changes
+                                tracing::warn!(
+                                    task_id = %task_id.as_str(),
+                                    branch = %branch,
+                                    base_branch = %base,
+                                    "Reviewer marked approved_no_changes but branch has code changes \
+                                     — falling back to standard Approved flow"
+                                );
+                                true
+                            }
+                            Ok(true) => false,
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = %task_id.as_str(),
+                                    error = %e,
+                                    "Git diff validation failed for approved_no_changes"
+                                );
+                                return Err((
+                                    StatusCode::BAD_REQUEST,
+                                    format!(
+                                        "Cannot approve as no-changes because git diff validation failed: {e}"
+                                    ),
+                                ));
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        task_id = %task_id.as_str(),
+                        error = %error,
+                        "complete_review rejected: approved_no_changes diff check failed"
+                    );
+                    return Err((StatusCode::BAD_REQUEST, error.to_string()));
+                }
+            };
 
             if has_code_changes {
                 // Fall back to standard Approved flow (reviewer decision treated as regular Approved)
                 transition_ai_review_approval(&state, &transition_service, &task_id, require_human)
                     .await?
             } else {
+                if !task_allows_empty_captured_diff(&task) {
+                    let base_ref = task
+                        .task_branch_base_ref
+                        .as_deref()
+                        .unwrap_or("<unknown-base-ref>");
+                    let base_sha = task
+                        .task_branch_base_sha
+                        .as_deref()
+                        .unwrap_or("<unknown-base-sha>");
+                    tracing::warn!(
+                        task_id = %task_id.as_str(),
+                        base_ref = %base_ref,
+                        base_sha = %base_sha,
+                        "complete_review rejected: approved_no_changes requires explicit no-code classification"
+                    );
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "empty_task_diff_against_captured_base: task {} cannot be approved as no-changes because it is not explicitly classified as no-code/no-change",
+                            task_id.as_str()
+                        ),
+                    ));
+                }
+
                 // No code changes confirmed — set metadata and skip merge pipeline.
                 // Re-fetch task for a fresh mutable copy to avoid borrow conflicts.
                 let mut fresh_task = state
@@ -456,10 +537,7 @@ pub async fn complete_review(
                         task_id.as_str(),
                     );
 
-                    let project_working_dir = project_opt
-                        .as_ref()
-                        .map(|p| p.working_directory.clone())
-                        .unwrap_or_default();
+                    let project_working_dir = project.working_directory.clone();
 
                     tokio::spawn(deferred_merge_cleanup(
                         task_id.clone(),

@@ -407,6 +407,7 @@ mod v20260707120000_automations_spec_artifact_id;
 mod v20260708120000_automation_run_plan_gate;
 mod v20260708130511_workspace_review_autofix_setting;
 mod v20260708131548_chat_conversation_coordination_mode;
+mod v20260710000000_task_branch_base;
 mod v20260710003315_execution_plan_halt_mode;
 #[cfg(test)]
 mod v20260706113000_agent_conversation_issue_identity_tests;
@@ -483,6 +484,7 @@ mod v20260708130511_workspace_review_autofix_setting_tests;
 #[cfg(test)]
 mod v20260708131548_chat_conversation_coordination_mode_tests;
 #[cfg(test)]
+mod v20260710000000_task_branch_base_tests;
 mod v20260710003315_execution_plan_halt_mode_tests;
 #[cfg(test)]
 mod v65_unique_working_directory_tests;
@@ -1423,6 +1425,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260708131548,
         name: "chat_conversation_coordination_mode",
         migrate: v20260708131548_chat_conversation_coordination_mode::migrate,
+    },
+    Migration {
+        version: 20260710000000,
+        name: "task_branch_base",
+        migrate: v20260710000000_task_branch_base::migrate,
     },
     Migration {
         version: 20260710003315,

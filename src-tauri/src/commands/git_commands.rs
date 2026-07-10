@@ -10,6 +10,7 @@ use crate::application::git_service::{CommitInfo, DiffStats, GitService};
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_diff_base::read_task_diff_stats_from_resolved_base;
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
 use crate::commands::ExecutionState;
@@ -211,8 +212,13 @@ pub async fn get_task_diff_stats(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<TaskDiffStatsResponse, String> {
-    let task_id = TaskId::from_string(task_id);
+    get_task_diff_stats_for_state(TaskId::from_string(task_id), state.inner()).await
+}
 
+pub async fn get_task_diff_stats_for_state(
+    task_id: TaskId,
+    state: &AppState,
+) -> Result<TaskDiffStatsResponse, String> {
     // Get task
     let task = state
         .task_repo
@@ -229,19 +235,10 @@ pub async fn get_task_diff_stats(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", task.project_id.as_str()))?;
 
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-
-    // Determine working path — worktree path if available, else project dir
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    // Get diff stats
-    let stats = GitService::get_diff_stats(&working_path, base_branch)
-        .await
-        .map_err(|e| e.to_string())?;
+    let stats =
+        read_task_diff_stats_from_resolved_base(state, &task, &project, "tauri task diff stats")
+            .await
+            .map_err(|e| e.to_string())?;
 
     Ok(TaskDiffStatsResponse::from(stats))
 }

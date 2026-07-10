@@ -18,6 +18,7 @@ use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::AppState;
@@ -1227,12 +1228,49 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     } else {
                         false
                     };
-                    let completion_action = execution_completion_action(
+                    let mut completion_action = execution_completion_action(
                         has_output,
                         step_state,
                         completion_tool_called,
                         validation_complete,
                     );
+                    let mut completion_blocked_error: Option<String> = None;
+                    if completion_action == ExecutionCompletionAction::PendingReview {
+                        let project_for_gate = project_repo
+                            .get_by_id(&current_task_for_gate.project_id)
+                            .await;
+                        let diff_guard_result = match project_for_gate {
+                            Ok(Some(project)) => {
+                                ensure_task_has_non_empty_captured_diff(
+                                    &current_task_for_gate,
+                                    &project,
+                                    "stream_success_completion",
+                                )
+                                .await
+                                .map_err(|error| error.to_string())
+                            }
+                            Ok(None) => Err(format!(
+                                "empty_task_diff_guard: project {} for task {} was not found during stream_success_completion",
+                                current_task_for_gate.project_id.as_str(),
+                                task_id.as_str()
+                            )),
+                            Err(error) => Err(format!(
+                                "empty_task_diff_guard: failed to load project {} for task {} during stream_success_completion: {}",
+                                current_task_for_gate.project_id.as_str(),
+                                task_id.as_str(),
+                                error
+                            )),
+                        };
+                        if let Err(error) = diff_guard_result {
+                            tracing::warn!(
+                                task_id = task_id.as_str(),
+                                error = %error,
+                                "Worker completion downgraded to failure because task-owned diff is empty or unavailable"
+                            );
+                            completion_blocked_error = Some(error);
+                            completion_action = ExecutionCompletionAction::Failed;
+                        }
+                    }
 
                     if completion_action == ExecutionCompletionAction::PendingReview
                         && step_state == StepCompletionState::AllComplete
@@ -1306,8 +1344,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
                             .unwrap_or_else(|| serde_json::json!({}));
                         if let Some(obj) = metadata_obj.as_object_mut() {
-                            let incomplete_message =
-                                "Agent ended without completing all task steps";
+                            let incomplete_message = completion_blocked_error
+                                .as_deref()
+                                .unwrap_or("Agent ended without completing all task steps");
                             obj.insert(
                                 "last_agent_error".to_string(),
                                 serde_json::json!(incomplete_message),

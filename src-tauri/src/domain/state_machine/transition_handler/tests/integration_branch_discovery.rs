@@ -4,6 +4,7 @@
 use super::helpers::*;
 use crate::domain::entities::InternalStatus;
 use crate::domain::state_machine::{State, TaskEvent, TaskStateMachine, TransitionHandler};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 use std::sync::Arc;
 
 /// Helper: initialize a git repo in the given directory with an initial commit.
@@ -39,6 +40,23 @@ fn git_add_and_commit(repo_path: &std::path::Path, message: &str) {
         .current_dir(repo_path)
         .output()
         .unwrap();
+}
+
+fn git_rev_parse(repo_path: &std::path::Path, ref_name: &str) -> String {
+    use std::process::Command;
+    let repo_path = validate_absolute_non_root_path(repo_path, "branch discovery test repository")
+        .expect("safe test repo");
+    let output = Command::new("git")
+        .args(["rev-parse", ref_name])
+        .current_dir(&repo_path)
+        .output()
+        .expect("git rev-parse failed");
+    assert!(
+        output.status.success(),
+        "git rev-parse {ref_name} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 // ==================
@@ -279,6 +297,7 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
 
     std::fs::write(repo_path.join("README.md"), "initial content").unwrap();
     git_add_and_commit(&repo_path, "Initial commit");
+    let base_sha = git_rev_parse(&repo_path, "main");
 
     let worktree_parent = temp_dir.path().join("worktrees");
     std::fs::create_dir_all(&worktree_parent).unwrap();
@@ -292,6 +311,8 @@ async fn test_executing_entry_recovers_existing_branch_into_worktree() {
     let mut task = Task::new(project.id.clone(), "Test worktree recovery".to_string());
     task.internal_status = InternalStatus::Failed;
     task.task_branch = None;
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
 
     let expected_branch = format!("ralphx/test-project/task-{}", task.id.as_str());
     Command::new("git")
