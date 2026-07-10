@@ -550,7 +550,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .with_review_repo(Arc::clone(&review_repo))
         .with_chat_service(Arc::clone(&recovery_chat_service))
         .with_previous_session_cutoff(previous_session_cutoff)
-        .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids)),
+        .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids))
+        .with_notification_repo(Arc::clone(&app_state.notification_repo)),
     );
 
     let phase_started_at = startup_phase_started("startup_job_runner");

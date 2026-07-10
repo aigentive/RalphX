@@ -11,6 +11,10 @@ use tokio::sync::Mutex;
 use super::services::PrPollerRegistry;
 use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
+use crate::application::notification_service::{
+    NoopNotificationEventEmitter, NotificationEventEmitter, NotificationService,
+    TauriNotificationEventEmitter,
+};
 use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
@@ -59,8 +63,8 @@ use crate::domain::repositories::{
     ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
-    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    NotificationRepository, OrphanWorktreeCleanupMarkerRepository, PlanArtifactApprovalRepository,
+    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
     ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
     ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
@@ -91,8 +95,8 @@ use crate::infrastructure::memory::{
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
-    MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryNotificationRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
+    MemoryPermissionRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
@@ -125,8 +129,8 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
-    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqliteNotificationRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
+    SqlitePermissionRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
     SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
     SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
     SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
@@ -269,6 +273,8 @@ pub struct AppState {
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     /// Activity event repository (for activity stream persistence)
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
+    /// Durable notification history repository.
+    pub notification_repo: Arc<dyn NotificationRepository>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories
@@ -359,6 +365,16 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Builds the notification service with the emitter available in this app context.
+    /// Both the Tauri and HTTP AppStates carry the same AppHandle in production.
+    pub fn notification_service(&self) -> NotificationService {
+        let emitter: Arc<dyn NotificationEventEmitter> = match self.app_handle.as_ref() {
+            Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
+            None => Arc::new(NoopNotificationEventEmitter),
+        };
+        NotificationService::new(Arc::clone(&self.notification_repo), emitter)
+    }
+
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
         (Arc::new(NullEventSink), InternalEventBus::new())
     }
@@ -1303,6 +1319,9 @@ impl AppState {
             activity_event_repo: Arc::new(SqliteActivityEventRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            notification_repo: Arc::new(SqliteNotificationRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1534,6 +1553,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
             artifact_repo: Arc::new(SqliteArtifactRepository::from_shared(Arc::clone(
@@ -1697,6 +1717,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
             artifact_repo: Arc::new(SqliteArtifactRepository::from_shared(Arc::clone(
@@ -1875,6 +1896,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -2026,6 +2048,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             // Extensibility repositories
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),

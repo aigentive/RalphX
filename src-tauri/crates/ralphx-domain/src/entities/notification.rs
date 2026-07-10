@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Categories shared by live attention items and the durable notification log.
@@ -26,6 +27,15 @@ pub enum NotificationCategory {
     GhAuth,
     GitAuthPreflight,
     PrReviewAction,
+    Info,
+}
+
+/// Urgency for a durable notification-log entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationSeverity {
+    ActionRequired,
+    Warning,
     Info,
 }
 
@@ -84,4 +94,50 @@ pub struct AttentionItem {
     pub project_id: Option<String>,
     pub created_at: Option<String>,
     pub target: NotificationTarget,
+}
+
+/// A durable point-in-time notification. Notification rows are read/unread history, not live
+/// workflow state; use [`AttentionItem`] for currently actionable work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notification {
+    pub id: String,
+    pub created_at: DateTime<Utc>,
+    pub project_id: Option<String>,
+    pub category: NotificationCategory,
+    pub severity: NotificationSeverity,
+    pub title: String,
+    pub body: Option<String>,
+    pub target: NotificationTarget,
+    pub dedupe_key: Option<String>,
+    pub read_at: Option<DateTime<Utc>>,
+}
+
+/// Input for recording a durable notification. The service assigns the id and timestamps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewNotification {
+    pub project_id: Option<String>,
+    pub category: NotificationCategory,
+    pub severity: NotificationSeverity,
+    pub title: String,
+    pub body: Option<String>,
+    pub target: NotificationTarget,
+    pub dedupe_key: Option<String>,
+}
+
+impl NewNotification {
+    pub fn into_notification(self, now: DateTime<Utc>) -> Notification {
+        Notification {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: now,
+            project_id: self.project_id,
+            category: self.category,
+            severity: self.severity,
+            title: self.title,
+            body: self.body,
+            target: self.target,
+            dedupe_key: self.dedupe_key,
+            read_at: None,
+        }
+    }
 }

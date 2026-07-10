@@ -38,6 +38,7 @@ pub mod memory_archive_repository;
 pub mod memory_entry_repository;
 pub mod memory_event_repository;
 pub mod methodology_repo;
+pub mod notification_repository;
 pub mod plan_artifact_approval_repository;
 pub mod plan_branch_repository;
 pub mod plan_selection_stats_repository;
@@ -108,6 +109,7 @@ pub use memory_archive_repository::MemoryArchiveRepository;
 pub use memory_entry_repository::MemoryEntryRepository;
 pub use memory_event_repository::MemoryEventRepository;
 pub use methodology_repo::MethodologyRepository;
+pub use notification_repository::{NotificationPage, NotificationRepository};
 pub use plan_artifact_approval_repository::{
     PlanApprovalActor, PlanArtifactApproval, PlanArtifactApprovalRepository,
 };

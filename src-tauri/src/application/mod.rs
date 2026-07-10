@@ -11,7 +11,6 @@ pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
-pub mod agent_workspace_continuation;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
 pub mod agent_lane_settings_bootstrap;
@@ -19,17 +18,18 @@ pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review;
-pub mod app_setup;
 pub mod app_paths;
+pub mod app_setup;
 pub mod app_state;
-pub mod attention_service;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
 pub mod chat_attachment_storage;
@@ -62,17 +62,20 @@ pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod managed_team;
 pub mod memory_archive_service;
-pub(crate) mod merge_pipeline_visibility;
 pub mod memory_orchestration;
+pub(crate) mod merge_pipeline_visibility;
 pub(crate) mod native_menu;
+pub mod notification_service;
+#[cfg(test)]
+mod notification_service_tests;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod permission_state;
-pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_artifact_approval;
-pub(crate) mod plan_reference_import;
+pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
+pub(crate) mod plan_reference_import;
 pub mod pr_startup_recovery;
 pub mod priority_service;
 pub mod project_pr_template;
@@ -81,6 +84,7 @@ pub(crate) mod provider_onboarding_gate;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
+pub mod pull_request_detail;
 pub mod qa_service;
 pub mod question_state;
 pub mod ready_task_scheduler;
@@ -113,7 +117,6 @@ pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
-pub mod pull_request_detail;
 pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
@@ -147,8 +150,8 @@ pub use agent_lane_settings_bootstrap::{
 };
 pub use agent_task_service::AgentTaskService;
 pub use agent_terminal::AgentTerminalService;
-pub use app_state::AppState;
 pub use app_paths::AppPaths;
+pub use app_state::AppState;
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
 };
@@ -211,6 +214,7 @@ pub use linear_webhook_reconciliation_service::{
     LinearWebhookStore, MemoryLinearWebhookStore,
 };
 pub use memory_archive_service::MemoryArchiveService;
+pub use notification_service::NotificationService;
 pub use permission_state::{PendingPermissionInfo, PermissionDecision, PermissionState};
 pub use plan_ranking::{
     compute_activity_score, compute_final_score, compute_final_score_with_breakdown,
@@ -235,7 +239,6 @@ pub use session_export_service::{
     SessionData, SessionExport, SessionExportService, SourceInstance,
 };
 pub use session_reopen_service::SessionReopenService;
-pub use ticketing_status_catalog_service::TicketingStatusCatalogService;
 pub use startup_jobs::StartupJobRunner;
 pub use supervisor_service::{SupervisorConfig, SupervisorService, TaskMonitorState};
 pub use task_cleanup_service::{
@@ -256,6 +259,7 @@ pub use ticketing_service::{
     TicketingMutationResult, TicketingOperationEvent, TicketingPersonResult, TicketingService,
     TicketingTicketIdentity, TicketingTransitionOption, TICKETING_OPERATION_EVENT,
 };
+pub use ticketing_status_catalog_service::TicketingStatusCatalogService;
 pub use validation_service::{
     RunTaskValidationRequest, TaskValidationService, TaskValidationSummary,
     ValidationCommandRequest, ValidationCommandSummary, ValidationRunSummary,
@@ -319,6 +323,8 @@ mod prune_engine_tests;
 #[cfg(test)]
 mod publish_resilience_tests;
 #[cfg(test)]
+mod pull_request_detail_tests;
+#[cfg(test)]
 mod recovery_queue_tests;
 #[cfg(test)]
 mod runtime_wiring_tests;
@@ -335,13 +341,11 @@ mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
 #[cfg(test)]
-mod validation_service_tests;
-#[cfg(test)]
 mod ticketing_cache_invalidator_tests;
 #[cfg(test)]
-mod pull_request_detail_tests;
-#[cfg(test)]
 mod ticketing_pr_summary_tests;
+#[cfg(test)]
+mod validation_service_tests;
 #[cfg(test)]
 mod verification_child_session_tests;
 #[cfg(test)]

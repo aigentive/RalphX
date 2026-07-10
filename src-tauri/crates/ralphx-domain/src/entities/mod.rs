@@ -1,7 +1,4 @@
 pub mod activity_event;
-pub mod automation;
-#[cfg(test)]
-mod automation_tests;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
@@ -13,6 +10,9 @@ pub mod api_key;
 pub mod app_state;
 pub mod artifact;
 pub mod artifact_flow;
+pub mod automation;
+#[cfg(test)]
+mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
 pub mod chat_timeline;
@@ -49,14 +49,6 @@ pub use activity_event::{
     ActivityEvent, ActivityEventId, ActivityEventRole, ActivityEventType,
     ParseActivityEventRoleError, ParseActivityEventTypeError,
 };
-pub use automation::{
-    automation_is_transition_allowed, automation_run_is_transition_allowed,
-    is_open_automation_run, judge_is_transition_allowed, judge_transition_clears_verdict,
-    plan_judge_is_transition_allowed, Automation, AutomationAttachment, AutomationContextRef,
-    AutomationContextRefKind, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
-    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus,
-};
 pub use agent_conversation_granola_note::{
     AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,
 };
@@ -77,17 +69,16 @@ pub use agent_conversation_linear_issue::{
 pub use agent_conversation_workspace::{
     is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewGateStatus,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope,
-    AgentWorkspaceSourcePullRequest, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use agent_run::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
@@ -113,6 +104,14 @@ pub use artifact_flow::{
     create_plan_updated_sync_flow, create_research_to_dev_flow, ArtifactFlow, ArtifactFlowContext,
     ArtifactFlowEngine, ArtifactFlowEvaluation, ArtifactFlowEvent, ArtifactFlowFilter,
     ArtifactFlowId, ArtifactFlowStep, ArtifactFlowTrigger, ParseArtifactFlowEventError,
+};
+pub use automation::{
+    automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
+    judge_is_transition_allowed, judge_transition_clears_verdict, plan_judge_is_transition_allowed,
+    Automation, AutomationAttachment, AutomationContextRef, AutomationContextRefKind, AutomationId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus,
 };
 pub use chat_attachment::{ChatAttachment, ChatAttachmentId};
 pub use chat_conversation::{
@@ -149,12 +148,13 @@ pub use memory_entry::{MemoryBucket, MemoryEntry, MemoryEntryId, MemoryStatus};
 pub use memory_event::{MemoryActorType, MemoryEvent, MemoryEventId, ParseMemoryActorTypeError};
 pub use memory_rule_binding::MemoryRuleBinding;
 pub use merge_progress_event::{MergePhase, MergePhaseInfo, MergePhaseStatus, MergeProgressEvent};
-pub use notification::{
-    AttentionItem, NotificationCategory, NotificationTarget, NotificationTargetKind,
-};
 pub use methodology::{
     MethodologyExtension, MethodologyId, MethodologyPhase, MethodologyPlanArtifactConfig,
     MethodologyPlanTemplate, MethodologyStatus, MethodologyTemplate, ParseMethodologyStatusError,
+};
+pub use notification::{
+    AttentionItem, NewNotification, Notification, NotificationCategory, NotificationSeverity,
+    NotificationTarget, NotificationTargetKind,
 };
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
