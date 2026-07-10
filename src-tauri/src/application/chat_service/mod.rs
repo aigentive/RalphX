@@ -51,7 +51,7 @@ use crate::application::question_state::QuestionState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink,
@@ -5015,12 +5015,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "Unified ideation chat service requires agent lane settings repo".to_string(),
                 ));
             };
+            let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() else {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(
+                    "Unified ideation chat service requires agent provider settings repo"
+                        .to_string(),
+                ));
+            };
+            let probes =
+                match crate::application::provider_aware_runtime_probes_for_repo(provider_repo)
+                    .await
+                {
+                    Ok(probes) => probes,
+                    Err(error) => cleanup_and_err!(ChatServiceError::SpawnFailed(error)),
+                };
+            let lane_config = crate::application::resolve_lane_harness_config(
+                lane_repo,
+                project_id.as_deref(),
+                AgentLane::IdeationPrimary,
+            )
+            .await;
             let lane_availability =
-                crate::application::resolve_primary_ideation_harness_availability(
-                    lane_repo,
-                    project_id.as_deref(),
-                )
-                .await;
+                crate::application::build_lane_harness_availability(lane_config, &probes);
             if !lane_availability.available {
                 let error = lane_availability
                     .error

@@ -5,8 +5,9 @@ use std::{collections::HashMap, time::Instant};
 use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{
     plan_judge_model_for_provider, standard_harness_map, standard_harness_registry,
-    AgentHarnessKind, DEFAULT_AGENT_HARNESS,
+    AgentHarnessKind, AgentProviderSettings, DEFAULT_AGENT_HARNESS,
 };
+use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::infrastructure::agents::claude::{
     agent_harness_defaults_config, automations_config, clear_claude_cli_capability_cache,
     execution_defaults_config, external_mcp_config, find_claude_cli, node_utils,
@@ -377,9 +378,9 @@ fn probe_codex_cli_cached(cli_path: &Path) -> Result<CodexCliCapabilities, Strin
     result
 }
 
-fn resolve_claude_startup_integration() -> Result<Option<ResolvedHarnessStartupIntegration>, String>
-{
-    let cli_path = find_claude_cli().ok_or_else(|| "Claude CLI not found".to_string())?;
+fn resolve_claude_startup_integration_for_cli_path(
+    cli_path: PathBuf,
+) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
     let plugin_dir = crate::infrastructure::agents::claude::find_plugin_dir()
         .ok_or_else(|| "Claude plugin directory not found".to_string())?;
     Ok(Some(
@@ -389,6 +390,36 @@ fn resolve_claude_startup_integration() -> Result<Option<ResolvedHarnessStartupI
             plugin_dir,
         },
     ))
+}
+
+fn provider_startup_cli_path(
+    harness: AgentHarnessKind,
+    provider_settings: Option<&AgentProviderSettings>,
+) -> Option<Result<PathBuf, String>> {
+    let settings = provider_settings?;
+    if settings.provider != harness {
+        return None;
+    }
+    crate::application::managed_provider_cli::checked_provider_cli_launch_path(
+        settings,
+        "startup harness integration",
+    )
+}
+
+fn resolve_claude_startup_integration_with_provider_settings(
+    provider_settings: Option<&AgentProviderSettings>,
+) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
+    let cli_path = match provider_startup_cli_path(AgentHarnessKind::Claude, provider_settings) {
+        Some(Ok(path)) => path,
+        Some(Err(error)) => return Err(error),
+        None => find_claude_cli().ok_or_else(|| "Claude CLI not found".to_string())?,
+    };
+    resolve_claude_startup_integration_for_cli_path(cli_path)
+}
+
+fn resolve_claude_startup_integration() -> Result<Option<ResolvedHarnessStartupIntegration>, String>
+{
+    resolve_claude_startup_integration_with_provider_settings(None)
 }
 
 fn resolve_codex_startup_integration() -> Result<Option<ResolvedHarnessStartupIntegration>, String>
@@ -1178,6 +1209,32 @@ pub(crate) fn resolve_startup_harness_integration(
         .copied()
         .ok_or_else(|| format!("No startup harness integration registered for {}", harness))?;
     (adapter.resolve_startup_integration)()
+}
+
+pub(crate) fn resolve_startup_harness_integration_with_provider_settings(
+    harness: AgentHarnessKind,
+    provider_settings: Option<&AgentProviderSettings>,
+) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
+    match harness {
+        AgentHarnessKind::Claude => {
+            resolve_claude_startup_integration_with_provider_settings(provider_settings)
+        }
+        AgentHarnessKind::Codex => resolve_startup_harness_integration(harness),
+    }
+}
+
+pub(crate) async fn resolve_startup_harness_integration_with_provider_repo(
+    harness: AgentHarnessKind,
+    provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
+) -> Result<Option<ResolvedHarnessStartupIntegration>, String> {
+    if harness != AgentHarnessKind::Claude {
+        return resolve_startup_harness_integration(harness);
+    }
+
+    let provider_settings = provider_settings_repo.get(harness).await.map_err(|error| {
+        format!("Failed to read {harness} provider settings for startup integration: {error}")
+    })?;
+    resolve_startup_harness_integration_with_provider_settings(harness, provider_settings.as_ref())
 }
 
 pub(crate) async fn run_startup_harness_integration(
