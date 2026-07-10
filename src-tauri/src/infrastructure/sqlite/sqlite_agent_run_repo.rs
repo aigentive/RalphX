@@ -26,8 +26,9 @@ fn parse_datetime(s: &str) -> DateTime<Utc> {
 }
 
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatContextType,
-    ChatConversation, ChatConversationId, CoordinationMode, InterruptedConversation,
+    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, AutomationId,
+    AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, CoordinationMode,
+    InterruptedConversation,
 };
 
 /// Map a SQLite row to an AgentRun (expects columns: id, conversation_id, status,
@@ -467,6 +468,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         c.upstream_provider as conv_upstream_provider,
                         c.provider_profile as conv_provider_profile,
                         c.coordination_mode as conv_coordination_mode,
+                        c.automation_id,
+                        c.automation_run_id,
                         c.title,
                         c.message_count,
                         c.last_message_at,
@@ -546,8 +549,12 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             provider_profile,
                             agent_mode: None,
                             coordination_mode,
-                            automation_id: None,
-                            automation_run_id: None,
+                            automation_id: row
+                                .get::<_, Option<String>>("automation_id")?
+                                .map(AutomationId::from_string),
+                            automation_run_id: row
+                                .get::<_, Option<String>>("automation_run_id")?
+                                .map(AutomationRunId::from_string),
                             title: row.get("title")?,
                             message_count: row.get("message_count")?,
                             last_message_at: last_message_at_str.map(|s| parse_datetime(&s)),

@@ -181,7 +181,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo,
         automation_repo: _automation_repo,
-        automation_run_repo: _automation_run_repo,
+        automation_run_repo,
         agent_run_repo,
         ideation_session_repo,
         activity_event_repo,
@@ -383,6 +383,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&artifact_repo),
         Arc::clone(&conversation_repo),
         Arc::clone(&agent_run_repo),
+        Arc::clone(&automation_run_repo),
         Arc::clone(&project_repo),
         Arc::clone(&task_repo),
         Arc::clone(&task_dependency_repo),
@@ -645,6 +646,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         info!("Starting chat resumption runner...");
         let chat_resumption = build_startup_chat_resumption_runner(StartupChatResumptionDeps {
             agent_run_repo: Arc::clone(&agent_run_repo),
+            automation_run_repo: Arc::clone(&automation_run_repo),
             task_repo: Arc::clone(&task_repo),
             execution_state: Arc::clone(&execution_state),
             chat_runtime_deps: recovery_chat_service_deps.clone(),
