@@ -472,19 +472,6 @@ impl<'a> TransitionHandler<'a> {
                             "deleted branch self-heal expected path cleanup",
                         )
                         .await?;
-                        task.task_branch = None;
-                        task.task_branch_base_ref = None;
-                        task.task_branch_base_sha = None;
-                        task.worktree_path = None;
-                        task.merge_commit_sha = None;
-                        task.touch();
-                        self.persist_execution_task_update(
-                            task_repo,
-                            &task,
-                            task_id_str,
-                            "clear_stale_git_refs",
-                        )
-                        .await?;
                         match create_fresh_branch_and_worktree(
                             &task,
                             &project,
@@ -504,6 +491,7 @@ impl<'a> TransitionHandler<'a> {
                                 task.task_branch_base_sha = Some(new_worktree.base_sha.clone());
                                 task.worktree_path =
                                     Some(new_worktree.worktree_path.to_string_lossy().to_string());
+                                task.merge_commit_sha = None;
                                 task.touch();
                                 tracing::info!(
                                     task_id = task_id_str,

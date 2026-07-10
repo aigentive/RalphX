@@ -12,8 +12,9 @@
 
 use super::helpers::*;
 use crate::application::git_service::GitService;
+use crate::domain::entities::{GitMode, InternalStatus, Project, ProjectId, Task, TaskId};
 use crate::domain::state_machine::transition_handler::merge_helpers::compute_task_worktree_path;
-use crate::domain::entities::{Project, ProjectId};
+use crate::domain::state_machine::{State, TransitionHandler};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -104,6 +105,70 @@ async fn test_self_heal_detects_deleted_branch_no_worktree() {
     );
 
     let _ = GitService::delete_worktree(path, &expected_wt_path).await;
+}
+
+#[tokio::test]
+async fn test_self_heal_preserves_base_metadata_when_recreate_fails() {
+    let git_repo = setup_real_git_repo();
+    let path = git_repo.path();
+    let original_base_sha = GitService::get_branch_sha(path, "main")
+        .await
+        .expect("main branch should resolve");
+
+    let worktree_parent = path.join("worktrees");
+    fs::create_dir_all(&worktree_parent).unwrap();
+
+    let project_id = ProjectId::from_string("proj-preserve-base".to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        path.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project.git_mode = GitMode::Worktree;
+    project.base_branch = Some("missing-base".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+    let task_id_str = "heal-preserve-base";
+    let stale_branch = format!("ralphx/test-project/task-{}", task_id_str);
+    let mut task = Task::new(project_id.clone(), "Preserve base metadata".to_string());
+    task.id = TaskId::from_string(task_id_str.to_string());
+    task.internal_status = InternalStatus::Executing;
+    task.task_branch = Some(stale_branch.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(original_base_sha.clone());
+    let task_id = task.id.clone();
+
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    task_repo.create(task).await.unwrap();
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    project_repo.create(project).await.unwrap();
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let context = TaskContext::new(task_id.as_str(), project_id.as_str(), services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::Executing).await;
+    let error = result.expect_err("missing base should block branch recreation");
+    assert!(
+        error
+            .to_string()
+            .contains("base branch 'missing-base' does not exist"),
+        "unexpected recreate failure: {error}"
+    );
+
+    let persisted = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.task_branch.as_deref(),
+        Some(stale_branch.as_str())
+    );
+    assert_eq!(persisted.task_branch_base_ref.as_deref(), Some("main"));
+    assert_eq!(
+        persisted.task_branch_base_sha.as_deref(),
+        Some(original_base_sha.as_str())
+    );
 }
 
 // ==========================================
