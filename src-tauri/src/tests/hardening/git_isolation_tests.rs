@@ -204,6 +204,19 @@ async fn test_a5_worktree_path_none_at_spawn_time() {
         .args(["branch", "-M", "main"])
         .current_dir(&repo_path)
         .output();
+    let base_sha_output = std::process::Command::new("git")
+        .args(["rev-parse", "main"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        base_sha_output.status.success(),
+        "git rev-parse main failed: {}",
+        String::from_utf8_lossy(&base_sha_output.stderr)
+    );
+    let base_sha = String::from_utf8_lossy(&base_sha_output.stdout)
+        .trim()
+        .to_string();
 
     let svc = create_hardening_services();
 
@@ -229,6 +242,8 @@ async fn test_a5_worktree_path_none_at_spawn_time() {
 
     // Set task_branch but leave worktree_path = None
     task.task_branch = Some(branch_name.clone());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
     task.worktree_path = None; // explicitly None
     svc.task_repo.create(task).await.unwrap();
 

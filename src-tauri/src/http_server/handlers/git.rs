@@ -15,7 +15,9 @@ use super::*;
 use crate::application::chat_service::freshness_routing::{
     freshness_return_route, FreshnessRouteResult,
 };
-use crate::application::{GitService, TaskTransitionService};
+use crate::application::{
+    task_diff_base::read_task_diff_stats_from_resolved_base, GitService, TaskTransitionService,
+};
 use crate::domain::entities::{task_metadata::MergeFailureSource, InternalStatus, TaskId};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
@@ -928,7 +930,7 @@ pub async fn get_task_diff_stats(
         )
     })?;
 
-    // 3. Get project for base branch and working directory
+    // 3. Get project for base resolution and working directory
     let project = state
         .app_state
         .project_repo
@@ -937,19 +939,15 @@ pub async fn get_task_diff_stats(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-
-    // 4. Determine working path (worktree or main repo)
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    // 5. Get diff stats from GitService
-    let stats = GitService::get_diff_stats(&working_path, base_branch)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // 4. Get diff stats from the immutable captured base when available.
+    let stats = read_task_diff_stats_from_resolved_base(
+        &state.app_state,
+        &task,
+        &project,
+        "git task diff stats",
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(DiffStatsResponse {
         files_changed: stats.files_changed,

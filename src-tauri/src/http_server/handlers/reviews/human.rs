@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::task_diff_base::task_allows_empty_captured_diff;
 
 /// Approve a task after AI review has passed or escalated
 /// Only available when task is in ReviewPassed or Escalated status
@@ -33,6 +34,27 @@ pub async fn approve_task(
                 task.internal_status.as_str()
             ),
         ));
+    }
+
+    if !task_allows_empty_captured_diff(&task) {
+        let project = state
+            .app_state
+            .project_repo
+            .get_by_id(&task.project_id)
+            .await
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+        ensure_task_has_non_empty_captured_diff(&task, &project, "human_approve_task")
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    error = %error,
+                    "Human approval rejected because task-owned diff is empty or unavailable"
+                );
+                (StatusCode::BAD_REQUEST, error.to_string())
+            })?;
     }
 
     // 2. Create a human approval review note
