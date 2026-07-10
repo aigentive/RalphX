@@ -34,11 +34,13 @@ use crate::domain::entities::{
     VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -174,17 +176,164 @@ async fn mark_cancelled_stream_as_cancelled(
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, String> {
-    let Some(handle) = app_handle.as_ref() else {
-        return Ok(HashMap::new());
-    };
-    let app_state = handle.state::<AppState>();
+    let app_state_provider_repo = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        Some(&app_state.agent_provider_settings_repo),
+        provider_repo.as_ref(),
         harness,
     )
     .await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryRetryProviderDecision {
+    ApplyEnv(HashMap<String, String>),
+    AllowWithoutProviderSettings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryRetryProviderBlock {
+    Disabled(String),
+    Env(String),
+    MissingProviderSettings,
+}
+
+async fn recovery_retry_provider_decision<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+) -> Result<RecoveryRetryProviderDecision, RecoveryRetryProviderBlock> {
+    let Some(provider_repo) = agent_provider_settings_repo.as_ref() else {
+        return if super::uses_execution_slot(context_type) {
+            Err(RecoveryRetryProviderBlock::MissingProviderSettings)
+        } else {
+            Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings)
+        };
+    };
+
+    crate::application::ensure_provider_spawn_enabled(
+        provider_repo,
+        recovery_harness,
+        "recovery_retry",
+    )
+    .await
+    .map_err(RecoveryRetryProviderBlock::Disabled)?;
+
+    let provider_env =
+        provider_env_for_harness(app_handle, agent_provider_settings_repo, recovery_harness)
+            .await
+            .map_err(RecoveryRetryProviderBlock::Env)?;
+
+    Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env))
+}
+
+async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+    mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
+) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+    match recovery_retry_provider_decision(
+        app_handle,
+        agent_provider_settings_repo,
+        recovery_harness,
+        context_type,
+    )
+    .await
+    {
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
+            provider_spawnable.apply_provider_env(&provider_env);
+            Some(provider_spawnable.spawnable)
+        }
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
+            Some(provider_spawnable.spawnable)
+        }
+        Err(_) => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RecoveryRetryProviderGate<'a, R: Runtime> {
+    app_handle: &'a Option<AppHandle<R>>,
+    agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+}
+
+impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
+    fn new(
+        app_handle: &'a Option<AppHandle<R>>,
+        agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
+        recovery_harness: AgentHarnessKind,
+        context_type: ChatContextType,
+    ) -> Self {
+        Self {
+            app_handle,
+            agent_provider_settings_repo,
+            recovery_harness,
+            context_type,
+        }
+    }
+}
+
+async fn resolve_recovery_retry_spawnable<R: Runtime>(
+    retry_provider_spawnable: Result<chat_service_context::ProviderSpawnableCommand, String>,
+    provider_gate: RecoveryRetryProviderGate<'_, R>,
+) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+    match retry_provider_spawnable {
+        Ok(provider_spawnable) => {
+            recovery_retry_spawnable_with_provider_gate(
+                provider_gate.app_handle,
+                provider_gate.agent_provider_settings_repo,
+                provider_gate.recovery_harness,
+                provider_gate.context_type,
+                provider_spawnable,
+            )
+            .await
+        }
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                harness = %provider_gate.recovery_harness,
+                "Failed to build recovery retry spawnable"
+            );
+            None
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecoveryRetryAppRepos {
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
+}
+
+impl RecoveryRetryAppRepos {
+    fn from_app_handle<R: Runtime>(app_handle: &Option<AppHandle<R>>) -> Self {
+        let Some(handle) = app_handle else {
+            return Self::default();
+        };
+        let app_state = handle.state::<AppState>();
+        Self {
+            ideation_effort_settings_repo: Some(Arc::clone(
+                &app_state.ideation_effort_settings_repo,
+            )),
+            ideation_model_settings_repo: Some(Arc::clone(&app_state.ideation_model_settings_repo)),
+            delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
+        }
+    }
 }
 
 fn queue_verification_auto_continue(
@@ -463,6 +612,33 @@ enum ExecutionCompletionAction {
     Failed,
 }
 
+#[derive(Clone, Default)]
+struct RuntimeSupportRepos {
+    execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
+    agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+}
+
+impl RuntimeSupportRepos {
+    fn new(
+        execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+        agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+        plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+        interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    ) -> Self {
+        Self {
+            execution_settings_repo: execution_settings_repo.as_ref().map(Arc::clone),
+            agent_lane_settings_repo: agent_lane_settings_repo.as_ref().map(Arc::clone),
+            agent_provider_settings_repo: agent_provider_settings_repo.as_ref().map(Arc::clone),
+            plan_branch_repo: plan_branch_repo.as_ref().map(Arc::clone),
+            interactive_process_registry: interactive_process_registry.as_ref().map(Arc::clone),
+        }
+    }
+}
+
 fn execution_completion_action(
     _has_output: bool,
     step_state: StepCompletionState,
@@ -497,6 +673,7 @@ fn build_transition_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    runtime_support: RuntimeSupportRepos,
 ) -> TaskTransitionService {
     let deps = build_runtime_factory_deps(
         app_handle,
@@ -513,9 +690,7 @@ fn build_transition_service<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
-        None,
-        None,
-        None,
+        runtime_support,
     );
     build_transition_service_with_fallback(app_handle, execution_state, &deps)
 }
@@ -537,9 +712,7 @@ fn build_task_scheduler_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-    execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
-    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
-    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    runtime_support: RuntimeSupportRepos,
 ) -> TaskSchedulerService {
     let deps = build_runtime_factory_deps(
         app_handle,
@@ -556,9 +729,7 @@ fn build_task_scheduler_service<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
-        execution_settings_repo,
-        plan_branch_repo,
-        interactive_process_registry,
+        runtime_support,
     );
     build_task_scheduler_with_fallback(app_handle, execution_state, &deps)
 }
@@ -579,9 +750,7 @@ fn build_runtime_factory_deps<R: Runtime>(
     message_queue: Arc<MessageQueue>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-    execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
-    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
-    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    runtime_support: RuntimeSupportRepos,
 ) -> RuntimeFactoryDeps {
     RuntimeFactoryDeps::from_core(
         task_repo,
@@ -599,17 +768,11 @@ fn build_runtime_factory_deps<R: Runtime>(
         memory_event_repo,
     )
     .with_runtime_support(
-        execution_settings_repo,
-        app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo)),
-        app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
-        plan_branch_repo,
-        interactive_process_registry,
+        runtime_support.execution_settings_repo,
+        runtime_support.agent_lane_settings_repo,
+        runtime_support.agent_provider_settings_repo,
+        runtime_support.plan_branch_repo,
+        runtime_support.interactive_process_registry,
     )
     .with_agent_conversation_workspace_repo(
         app_handle
@@ -642,9 +805,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
     ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
     delegated_session_repo: &Arc<dyn crate::domain::repositories::DelegatedSessionRepository>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
-    agent_lane_settings_repo: &Option<
-        Arc<dyn crate::domain::repositories::AgentLaneSettingsRepository>,
-    >,
+    agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     ideation_effort_settings_repo: &Option<
         Arc<dyn crate::domain::repositories::IdeationEffortSettingsRepository>,
     >,
@@ -700,6 +862,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             delegated_session_repo: Arc::clone(delegated_session_repo),
             execution_settings_repo: execution_settings_repo.clone(),
             agent_lane_settings_repo: agent_lane_settings_repo.clone(),
+            agent_provider_settings_repo: agent_provider_settings_repo.clone(),
             ideation_effort_settings_repo: ideation_effort_settings_repo.clone(),
             ideation_model_settings_repo: ideation_model_settings_repo.clone(),
             agent_conversation_workspace_repo: None,
@@ -1105,6 +1268,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     app_handle: &Option<AppHandle<R>>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
@@ -1112,6 +1277,14 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
 ) {
+    let runtime_support = RuntimeSupportRepos::new(
+        execution_settings_repo,
+        agent_lane_settings_repo,
+        agent_provider_settings_repo,
+        plan_branch_repo,
+        interactive_process_registry,
+    );
+
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
         if let Some(ref exec_state) = execution_state {
@@ -1179,9 +1352,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
-                        execution_settings_repo.clone(),
-                        plan_branch_repo.clone(),
-                        interactive_process_registry.clone(),
+                        runtime_support.clone(),
                     );
                     let scheduler_concrete = Arc::new(scheduler_svc);
                     scheduler_concrete
@@ -1204,23 +1375,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        runtime_support.clone(),
                     )
                     .with_task_scheduler(task_scheduler);
-                    let transition_service = if let Some(ref repo) = execution_settings_repo {
-                        transition_service.with_execution_settings_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref repo) = plan_branch_repo {
-                        transition_service.with_plan_branch_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                        transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                    } else {
-                        transition_service
-                    };
                     let step_state = fetch_step_completion_state(task_step_repo, &task_id).await;
                     let validation_complete = if let Some(episode_entered_at) = episode_entered_at {
                         validated_completion_override(&current_task_for_gate, episode_entered_at)
@@ -1507,23 +1664,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             Arc::clone(running_agent_registry),
                             Arc::clone(exec_state),
                             Arc::clone(memory_event_repo),
+                            runtime_support.clone(),
                         );
-                        let transition_service = if let Some(ref repo) = execution_settings_repo {
-                            transition_service.with_execution_settings_repo(Arc::clone(repo))
-                        } else {
-                            transition_service
-                        };
-                        let transition_service = if let Some(ref repo) = plan_branch_repo {
-                            transition_service.with_plan_branch_repo(Arc::clone(repo))
-                        } else {
-                            transition_service
-                        };
-                        let transition_service = if let Some(ref ipr) = interactive_process_registry
-                        {
-                            transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                        } else {
-                            transition_service
-                        };
 
                         if let Err(e) = transition_service
                             .transition_task(&task_id, InternalStatus::Escalated)
@@ -1851,6 +1993,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     question_state: &Option<Arc<QuestionState>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     app_handle: &Option<AppHandle<R>>,
     agent_name: Option<&str>,
     team_mode: bool,
@@ -1862,6 +2006,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
 ) -> bool {
+    let runtime_support = RuntimeSupportRepos::new(
+        execution_settings_repo,
+        agent_lane_settings_repo,
+        agent_provider_settings_repo,
+        plan_branch_repo,
+        interactive_process_registry,
+    );
     let conversation_provider_session_ref =
         conversation.and_then(|conv| conv.provider_session_ref());
     let stored_provider_harness = conversation_provider_session_ref
@@ -1933,6 +2084,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 plan_branch_repo,
                 task_step_repo,
                 execution_settings_repo,
+                agent_lane_settings_repo,
+                agent_provider_settings_repo,
                 app_handle,
                 interactive_process_registry,
                 review_repo,
@@ -2014,6 +2167,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 plan_branch_repo,
                 task_step_repo,
                 execution_settings_repo,
+                agent_lane_settings_repo,
+                agent_provider_settings_repo,
                 app_handle,
                 interactive_process_registry,
                 review_repo,
@@ -2161,6 +2316,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(artifact_repo),
                     Some(Arc::clone(ideation_session_repo)),
                     task_proposal_repo.clone(),
+                    agent_provider_settings_repo.as_ref().map(Arc::clone),
                     &session_id,
                     app_handle.as_ref(),
                 )
@@ -2193,22 +2349,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 provider_session_id: new_session_id.clone(),
                             },
                         );
-                        let ideation_effort_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.ideation_effort_settings_repo)
-                        });
-                        let agent_lane_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.agent_lane_settings_repo)
-                        });
-                        let ideation_model_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.ideation_model_settings_repo)
-                        });
-                        let delegated_session_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.delegated_session_repo)
-                        });
+                        let retry_app_repos = RecoveryRetryAppRepos::from_app_handle(app_handle);
+                        let retry_agent_lane_settings_repo =
+                            agent_lane_settings_repo.as_ref().map(Arc::clone);
+                        let retry_agent_provider_settings_repo =
+                            agent_provider_settings_repo.as_ref().map(Arc::clone);
 
                         let retry_provider_spawnable =
                             chat_service_context::build_resume_command_for_harness(
@@ -2232,12 +2377,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 team_mode,
                                 Arc::clone(chat_attachment_repo),
                                 Arc::clone(artifact_repo),
-                                agent_lane_settings_repo.clone(),
-                                ideation_effort_settings_repo.clone(),
-                                ideation_model_settings_repo.clone(),
+                                retry_agent_lane_settings_repo.clone(),
+                                retry_app_repos.ideation_effort_settings_repo.clone(),
+                                retry_app_repos.ideation_model_settings_repo.clone(),
                                 Arc::clone(ideation_session_repo),
                                 Arc::clone(
-                                    delegated_session_repo
+                                    retry_app_repos
+                                        .delegated_session_repo
                                         .as_ref()
                                         .expect("delegated session repo available"),
                                 ),
@@ -2250,32 +2396,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 None,
                             )
                             .await;
-                        let retry_spawnable = match retry_provider_spawnable {
-                            Ok(mut provider_spawnable) => {
-                                match provider_env_for_harness(app_handle, recovery_harness).await {
-                                    Ok(provider_env) => {
-                                        provider_spawnable.apply_provider_env(&provider_env);
-                                        Some(provider_spawnable.spawnable)
-                                    }
-                                    Err(error) => {
-                                        tracing::error!(
-                                            error = %error,
-                                            harness = %recovery_harness,
-                                            "Failed to load provider env file for recovery retry"
-                                        );
-                                        None
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                tracing::error!(
-                                    error = %error,
-                                    harness = %recovery_harness,
-                                    "Failed to build recovery retry spawnable"
-                                );
-                                None
-                            }
-                        };
+                        let retry_provider_gate = RecoveryRetryProviderGate::new(
+                            app_handle,
+                            &retry_agent_provider_settings_repo,
+                            recovery_harness,
+                            context_type,
+                        );
+                        let retry_spawnable = resolve_recovery_retry_spawnable(
+                            retry_provider_spawnable,
+                            retry_provider_gate,
+                        )
+                        .await;
 
                         if let Some(spawnable) = retry_spawnable {
                             if let Ok(retry_child) = spawnable.spawn().await {
@@ -2300,13 +2431,15 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         task_dependency_repo,
                                         project_repo,
                                         ideation_session_repo,
-                                        delegated_session_repo
+                                        retry_app_repos
+                                            .delegated_session_repo
                                             .as_ref()
                                             .expect("delegated session repo available"),
                                         execution_settings_repo,
-                                        &agent_lane_settings_repo,
-                                        &ideation_effort_settings_repo,
-                                        &ideation_model_settings_repo,
+                                        &retry_agent_lane_settings_repo,
+                                        &retry_agent_provider_settings_repo,
+                                        &retry_app_repos.ideation_effort_settings_repo,
+                                        &retry_app_repos.ideation_model_settings_repo,
                                         task_proposal_repo,
                                         activity_event_repo,
                                         memory_event_repo,
@@ -2418,22 +2551,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(running_agent_registry),
                     Arc::clone(exec_state),
                     Arc::clone(memory_event_repo),
+                    runtime_support.clone(),
                 );
-                let transition_service = if let Some(ref repo) = execution_settings_repo {
-                    transition_service.with_execution_settings_repo(Arc::clone(repo))
-                } else {
-                    transition_service
-                };
-                let transition_service = if let Some(ref repo) = plan_branch_repo {
-                    transition_service.with_plan_branch_repo(Arc::clone(repo))
-                } else {
-                    transition_service
-                };
-                let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                    transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                } else {
-                    transition_service
-                };
 
                 if transition_service
                     .transition_task(&task_id, InternalStatus::PendingReview)
@@ -2969,22 +3088,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        runtime_support.clone(),
                     );
-                    let transition_service = if let Some(ref repo) = execution_settings_repo {
-                        transition_service.with_execution_settings_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref repo) = plan_branch_repo {
-                        transition_service.with_plan_branch_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                        transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                    } else {
-                        transition_service
-                    };
 
                     if let Err(transition_err) = transition_service
                         .transition_task(&task_id, target_status)
@@ -3334,22 +3439,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        runtime_support.clone(),
                     );
-                    let transition_service = if let Some(ref repo) = execution_settings_repo {
-                        transition_service.with_execution_settings_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref repo) = plan_branch_repo {
-                        transition_service.with_plan_branch_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                        transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                    } else {
-                        transition_service
-                    };
 
                     if let Err(e) = transition_service
                         .transition_task(&task_id, InternalStatus::Escalated)
