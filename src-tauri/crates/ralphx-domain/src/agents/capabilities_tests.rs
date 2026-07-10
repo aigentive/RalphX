@@ -55,6 +55,9 @@ fn test_codex_capabilities_include_current_model_family() {
     assert_eq!(caps.client_type, ClientType::Codex);
     assert_eq!(caps.max_context_tokens, 1_000_000);
     assert_eq!(caps.default_model().unwrap().id, "gpt-5.5");
+    assert!(model_ids.contains(&"gpt-5.6-sol"));
+    assert!(model_ids.contains(&"gpt-5.6-terra"));
+    assert!(model_ids.contains(&"gpt-5.6-luna"));
     assert!(model_ids.contains(&"gpt-5.5"));
     assert!(model_ids.contains(&"gpt-5.4"));
     assert!(model_ids.contains(&"gpt-5.4-mini"));

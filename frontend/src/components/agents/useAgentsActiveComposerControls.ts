@@ -94,11 +94,16 @@ export function useAgentsActiveComposerControls({
     (
       provider: AgentProvider,
       providerSupportedEfforts?: readonly string[] | null,
+      providerSupportedModelAliases?: readonly string[] | null,
     ) => {
       if (!runtimeConversationId || !activeProjectId) {
         return;
       }
-      const defaultModelId = defaultModelForProvider(provider, modelRegistry);
+      const defaultModelId = defaultModelForProvider(
+        provider,
+        modelRegistry,
+        providerSupportedModelAliases,
+      );
       const runtime =
         runtimeDefaultPolicy === "workspace_review_utility"
           ? workspaceReviewUtilityRuntimeForProvider(provider)
@@ -117,7 +122,8 @@ export function useAgentsActiveComposerControls({
         normalizeRuntimeSelection(
           runtime,
           modelRegistry,
-          providerSupportedEfforts
+          providerSupportedEfforts,
+          providerSupportedModelAliases,
         )
       );
     },

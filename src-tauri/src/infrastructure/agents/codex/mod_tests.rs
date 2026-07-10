@@ -2,11 +2,12 @@ use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
     compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn,
-    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models, probe_codex_cli,
-    resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
-    CodexMcpRuntimeContext,
+    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models,
+    parse_codex_model_catalog_capabilities, probe_codex_cli, resolve_codex_cli_from_candidates,
+    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
 };
 use crate::domain::agents::LogicalEffort;
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -72,6 +73,22 @@ fn full_codex_capabilities() -> CodexCliCapabilities {
         supports_mcp_subcommand: true,
         supports_fast_mode_feature: true,
         fast_mode_supported_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
+        supported_model_aliases: vec!["gpt-5.5".to_string()],
+        supported_efforts: vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+        ],
+        model_supported_efforts: BTreeMap::from([(
+            "gpt-5.5".to_string(),
+            vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ],
+        )]),
     }
 }
 
@@ -108,6 +125,79 @@ fn parse_codex_fast_mode_supported_models_reads_speed_tier_catalog() {
     );
 
     assert_eq!(models, vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]);
+}
+
+#[test]
+fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
+    let catalog = parse_codex_model_catalog_capabilities(
+        r#"{
+          "models": [
+            {
+              "slug": "gpt-5.6-sol",
+              "visibility": "list",
+              "supported_reasoning_levels": [
+                {"effort": "low"},
+                {"effort": "medium"},
+                {"effort": "high"},
+                {"effort": "xhigh"},
+                {"effort": "max"},
+                {"effort": "ultra"},
+                {"effort": "warp"}
+              ]
+            },
+            {
+              "slug": "gpt-5.6-luna",
+              "visibility": "list",
+              "supported_reasoning_levels": [
+                {"effort": "medium"},
+                {"effort": "low"},
+                {"effort": "max"}
+              ]
+            },
+            {
+              "slug": "hidden-model",
+              "visibility": "hidden",
+              "supported_reasoning_levels": [{"effort": "ultra"}]
+            }
+          ]
+        }"#,
+    );
+
+    assert_eq!(
+        catalog.supported_model_aliases,
+        vec!["gpt-5.6-luna".to_string(), "gpt-5.6-sol".to_string()]
+    );
+    assert_eq!(
+        catalog.supported_efforts,
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+            "ultra".to_string(),
+        ]
+    );
+    assert_eq!(
+        catalog.model_supported_efforts.get("gpt-5.6-sol"),
+        Some(&vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+            "ultra".to_string(),
+        ])
+    );
+    assert_eq!(
+        catalog.model_supported_efforts.get("gpt-5.6-luna"),
+        Some(&vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "max".to_string(),
+        ])
+    );
+    assert!(!catalog.model_supported_efforts.contains_key("hidden-model"));
 }
 
 fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
@@ -208,8 +298,10 @@ elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
   printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
 elif [ "$1" = "features" ] && [ "$2" = "list" ]; then
   printf '%s\n' 'fast_mode stable true'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ -z "$3" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.6-sol","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]}]}'
 elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ "$3" = "--bundled" ]; then
-  printf '%s\n' '{"models":[{"slug":"gpt-5.5","additional_speed_tiers":["fast"],"service_tiers":[{"id":"priority","name":"Fast"}]},{"slug":"gpt-5.4-mini","additional_speed_tiers":[]}]}'
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"additional_speed_tiers":["fast"],"service_tiers":[{"id":"priority","name":"Fast"}]},{"slug":"gpt-5.4-mini","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"additional_speed_tiers":[]}]}'
 else
   printf 'unexpected args: %s\n' "$*" >&2
   exit 64
@@ -241,6 +333,21 @@ fi
     assert_eq!(
         capabilities.fast_mode_supported_models(),
         vec!["gpt-5.5".to_string()]
+    );
+    assert_eq!(
+        capabilities.supported_model_aliases,
+        vec!["gpt-5.6-sol".to_string()]
+    );
+    assert_eq!(
+        capabilities.supported_effort_labels(),
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+            "ultra".to_string(),
+        ]
     );
 }
 
@@ -534,6 +641,8 @@ fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
         (LogicalEffort::Medium, "medium"),
         (LogicalEffort::High, "high"),
         (LogicalEffort::XHigh, "xhigh"),
+        (LogicalEffort::Max, "max"),
+        (LogicalEffort::Ultra, "ultra"),
     ] {
         let args = build_codex_exec_args(
             &full_codex_capabilities(),

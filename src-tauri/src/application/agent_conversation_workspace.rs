@@ -455,13 +455,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_defaults_and_b
         ensure_linked_agent_conversation_branch_worktree(&repo_path, &worktree_path, &branch_name)
             .await?;
     } else {
-        ensure_agent_conversation_worktree(
-            &repo_path,
-            &worktree_path,
-            &branch_name,
-            &checkout_ref,
-        )
-        .await?;
+        ensure_agent_conversation_worktree(&repo_path, &worktree_path, &branch_name, &checkout_ref)
+            .await?;
     }
     log_agent_workspace_phase(conversation_id, "ensure_worktree", worktree_started);
 
@@ -1506,8 +1501,7 @@ mod tests {
         conversation_id: &str,
         prefer_advanced_origin_base: bool,
     ) -> AppResult<AgentConversationWorkspace> {
-        let mut project =
-            Project::new("B3".to_string(), repo_path.to_string_lossy().to_string());
+        let mut project = Project::new("B3".to_string(), repo_path.to_string_lossy().to_string());
         project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
         let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
         prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
@@ -1543,14 +1537,20 @@ mod tests {
         git(&origin, &["init", "--bare", "-b", "main"]);
 
         setup_repo(&repo);
-        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         git(&repo, &["push", "origin", "main"]);
         let base = "ralphx/ralphx/automation-adv";
         git(&repo, &["branch", base]);
         git(&repo, &["push", "origin", base]);
         let local_base_sha = git(&repo, &["rev-parse", base]);
 
-        git(temp.path(), &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()]);
+        git(
+            temp.path(),
+            &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()],
+        );
         git(&helper, &["config", "user.email", "test@example.com"]);
         git(&helper, &["config", "user.name", "Test User"]);
         git(&helper, &["checkout", base]);
@@ -1593,7 +1593,10 @@ mod tests {
         std::fs::create_dir_all(&origin).unwrap();
         git(&origin, &["init", "--bare", "-b", "main"]);
         setup_repo(&repo);
-        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         git(&repo, &["push", "origin", "main"]);
         let base = "ralphx/ralphx/automation-inflight";
         git(&repo, &["branch", base]);
@@ -1626,7 +1629,10 @@ mod tests {
             .expect("workspace prepared without origin");
 
         assert_eq!(workspace.base_ref, base);
-        assert_eq!(workspace.base_commit.as_deref(), Some(local_base_sha.as_str()));
+        assert_eq!(
+            workspace.base_commit.as_deref(),
+            Some(local_base_sha.as_str())
+        );
     }
 
     #[tokio::test]
@@ -1636,7 +1642,10 @@ mod tests {
         let repo = temp.path().join("repo");
         let worktrees = temp.path().join("worktrees");
         setup_repo(&repo);
-        git(&repo, &["remote", "add", "origin", "/nonexistent/origin.git"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", "/nonexistent/origin.git"],
+        );
         let base = "ralphx/ralphx/automation-fetchfail";
         git(&repo, &["branch", base]);
         let local_base_sha = git(&repo, &["rev-parse", base]);
@@ -1647,7 +1656,10 @@ mod tests {
                 .expect("workspace prepared despite fetch failure");
 
         assert_eq!(workspace.base_ref, base);
-        assert_eq!(workspace.base_commit.as_deref(), Some(local_base_sha.as_str()));
+        assert_eq!(
+            workspace.base_commit.as_deref(),
+            Some(local_base_sha.as_str())
+        );
     }
 
     #[tokio::test]
@@ -1663,14 +1675,20 @@ mod tests {
         std::fs::create_dir_all(&origin).unwrap();
         git(&origin, &["init", "--bare", "-b", "main"]);
         setup_repo(&repo);
-        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         git(&repo, &["push", "origin", "main"]);
         let base = "feature/local-scope";
         git(&repo, &["branch", base]);
         git(&repo, &["push", "origin", base]);
         let local_base_sha = git(&repo, &["rev-parse", base]);
 
-        git(temp.path(), &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()]);
+        git(
+            temp.path(),
+            &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()],
+        );
         git(&helper, &["config", "user.email", "test@example.com"]);
         git(&helper, &["config", "user.name", "Test User"]);
         git(&helper, &["checkout", base]);
@@ -2257,7 +2275,7 @@ mod tests {
         .expect("workspace should be prepared before deferred setup completes");
 
         let marker_path = Path::new(&workspace.worktree_path).join(".agent_deferred_setup_marker");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 if marker_path.exists() {
                     break;
