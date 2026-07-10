@@ -357,9 +357,8 @@ export function AgentReviewPanel({
         isPublishingWorkspace,
       })
     : null;
-  const actionDisabledReasonId = actionDisabledReason
-    ? "agents-review-action-disabled-reason"
-    : undefined;
+  const shouldShowConversationActiveSkippedReason =
+    skippedReason === "conversation_active" && !actionDisabledReason;
   const actionButton = useMemo(() => {
     if (isRunning && !action) {
       return (
@@ -427,9 +426,6 @@ export function AgentReviewPanel({
                       size="sm"
                       className="h-8 w-7 border-0 bg-transparent p-0 hover:bg-[var(--bg-hover)]"
                       disabled={isActionDisabled}
-                      {...(actionDisabledReasonId !== undefined && {
-                        "aria-describedby": actionDisabledReasonId,
-                      })}
                       aria-label="Review actions"
                       data-testid="agents-review-actions-menu"
                     >
@@ -456,9 +452,6 @@ export function AgentReviewPanel({
                   }
                 }}
                 disabled={isActionDisabled}
-                {...(actionDisabledReasonId !== undefined && {
-                  "aria-describedby": actionDisabledReasonId,
-                })}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
                 Run again
@@ -476,9 +469,6 @@ export function AgentReviewPanel({
           action.kind === "fix" ? onFixIssues() : onStartReview(action.force)
         }
         disabled={isActionDisabled}
-        {...(actionDisabledReasonId !== undefined && {
-          "aria-describedby": actionDisabledReasonId,
-        })}
         className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
       >
         <ActionIcon className={`h-4 w-4 ${actionIconClassName}`} />
@@ -500,7 +490,6 @@ export function AgentReviewPanel({
     ActionIcon,
     action,
     actionDisabledReason,
-    actionDisabledReasonId,
     actionIconClassName,
     displayContext,
     isFixerActive,
@@ -597,25 +586,7 @@ export function AgentReviewPanel({
           <div className="shrink-0">{actionButton}</div>
         </div>
 
-        {actionDisabledReason && (
-          <div
-            id={actionDisabledReasonId}
-            className="mt-3 rounded-md px-3 py-2 text-xs"
-            data-testid="agents-review-action-disabled-reason"
-            role="status"
-            style={{
-              backgroundColor: "var(--bg-sunken)",
-              borderColor: "var(--border-subtle)",
-              borderWidth: 1,
-              borderStyle: "solid",
-              color: "var(--text-secondary)",
-            }}
-          >
-            {actionDisabledReason}
-          </div>
-        )}
-
-        {skippedReason === "conversation_active" && (
+        {shouldShowConversationActiveSkippedReason && (
           <div
             className="mt-3 rounded-md px-3 py-2 text-xs"
             role="status"
