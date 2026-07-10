@@ -8,7 +8,7 @@ use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
 
 use crate::application::chat_service::ChatService;
-use crate::application::services::pr_merge_poller::cleanup_terminal_agent_workspace_after_pr;
+use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
 use crate::application::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -198,12 +198,16 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             );
         }
     } else {
-        cleanup_terminal_agent_workspace_after_pr(
+        terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            deps.chat_service.as_ref().map(Arc::clone),
             &conversation_id,
             &project,
             Some(Arc::clone(&deps.github)),
             matches!(pr.status, PrStatus::Merged { .. }),
+            true,
+            pr_status,
         )
         .await;
     }
@@ -255,12 +259,16 @@ async fn reconcile_linked_agent_workspace_pr(
         ))
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
-    cleanup_terminal_agent_workspace_after_pr(
+    terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
+        Arc::clone(&deps.agent_run_repo),
+        deps.chat_service.as_ref().map(Arc::clone),
         &workspace.conversation_id,
         project,
         matches!(status, PrStatus::Merged { .. }).then(|| Arc::clone(&deps.github)),
         pr_status == "merged",
+        true,
+        pr_status,
     )
     .await;
 
@@ -374,7 +382,8 @@ pub(crate) fn external_pr_reconciliation_skip_reason(
     if matches!(
         workspace.publication_pr_status.as_deref(),
         Some("closed") | Some("merged")
-    ) {
+    ) && workspace.publication_pr_number.is_none()
+    {
         return Some("workspace_terminal");
     }
     if workspace.publication_pr_number.is_some() {

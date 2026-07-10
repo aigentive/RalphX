@@ -45,8 +45,9 @@ use crate::domain::entities::{
     AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
     AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
     AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, InterruptedConversation, ProjectId, VerificationGap,
-    VerificationRunSnapshot, VerificationStatus, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, InterruptedConversation, ProjectId,
+    VerificationGap, VerificationRunSnapshot, VerificationStatus,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -566,6 +567,49 @@ impl AutomationPlanJudgeInvoker for RecordingPlanJudgeInvoker {
                 model_id: Some("plan-judge-model".to_string()),
             }),
         }
+    }
+}
+
+struct BlockingPlanJudgeInvoker {
+    calls: Mutex<Vec<AutomationPlanJudgeInvocation>>,
+    release: Notify,
+    output: String,
+}
+
+impl BlockingPlanJudgeInvoker {
+    fn new(output: String) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            release: Notify::new(),
+            output,
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+
+    fn calls(&self) -> Vec<AutomationPlanJudgeInvocation> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[async_trait]
+impl AutomationPlanJudgeInvoker for BlockingPlanJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationPlanJudgeInvocation,
+    ) -> AppResult<AutomationPlanJudgeInvocationOutput> {
+        self.calls.lock().unwrap().push(input);
+        self.release.notified().await;
+        Ok(AutomationPlanJudgeInvocationOutput {
+            raw_output: self.output.clone(),
+            model_id: Some("plan-judge-model".to_string()),
+        })
     }
 }
 
@@ -1597,6 +1641,32 @@ async fn wait_for_plan_judge_call_count(plan_judge: &RecordingPlanJudgeInvoker, 
         sleep(Duration::from_millis(10)).await;
     }
     panic!("timed out waiting for {expected} plan judge calls");
+}
+
+async fn wait_for_blocking_plan_judge_call_count(
+    plan_judge: &BlockingPlanJudgeInvoker,
+    expected: usize,
+) {
+    for _ in 0..100 {
+        if plan_judge.call_count() == expected {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {expected} blocking plan judge calls");
+}
+
+async fn wait_for_plan_approval(
+    approval_repo: &MemoryPlanArtifactApprovalRepository,
+    session_id: &IdeationSessionId,
+) -> PlanArtifactApproval {
+    for _ in 0..100 {
+        if let Some(approval) = approval_repo.get_by_session(session_id).await.unwrap() {
+            return approval;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for plan approval row");
 }
 
 async fn wait_for_judge_call_count(judge: &RecordingJudgeInvoker, expected: usize) {
@@ -5218,9 +5288,9 @@ async fn automation_scheduler_automatic_plan_gate_dispatches_single_flight_with_
             4,
         )
         .await;
-    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
-        valid_plan_approve_verdict("plan-artifact-1"),
-    ]));
+    let plan_judge = Arc::new(BlockingPlanJudgeInvoker::new(valid_plan_approve_verdict(
+        "plan-artifact-1",
+    )));
     let mut config = AutomationSchedulerConfig::default();
     config.plan_judge_models.insert(
         crate::domain::agents::AgentHarnessKind::Claude,
@@ -5248,6 +5318,7 @@ async fn automation_scheduler_automatic_plan_gate_dispatches_single_flight_with_
     let summary = scheduler.tick_once().await.unwrap();
 
     assert_eq!(summary.judges_started, 1);
+    wait_for_blocking_plan_judge_call_count(&plan_judge, 1).await;
     let judging = scenario
         .run_repo
         .latest_for_automation(&scenario.automation_id)
@@ -5261,6 +5332,7 @@ async fn automation_scheduler_automatic_plan_gate_dispatches_single_flight_with_
     assert!(judging.plan_judge_lease_expires_at.is_some());
     let second_tick = scheduler.tick_once().await.unwrap();
     assert_eq!(second_tick.judges_started, 0);
+    plan_judge.release();
     let judged = wait_for_latest_plan_judge_state(
         &scenario.run_repo,
         &scenario.automation_id,
@@ -5281,12 +5353,7 @@ async fn automation_scheduler_automatic_plan_gate_dispatches_single_flight_with_
         .as_deref()
         .unwrap()
         .contains("sonnet"));
-    let approval = scenario
-        .approval_repo
-        .get_by_session(&scenario.session_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let approval = wait_for_plan_approval(&scenario.approval_repo, &scenario.session_id).await;
     assert_eq!(approval.artifact_id.as_str(), "plan-artifact-1");
     assert_eq!(approval.artifact_version, 4);
     assert_eq!(approval.approved_by, "judge");

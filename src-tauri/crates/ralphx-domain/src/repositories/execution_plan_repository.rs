@@ -5,7 +5,9 @@
 
 use async_trait::async_trait;
 
-use crate::domain::entities::{ExecutionPlan, ExecutionPlanId, IdeationSessionId};
+use crate::domain::entities::{
+    ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanId, IdeationSessionId,
+};
 use crate::error::AppResult;
 
 /// Repository trait for ExecutionPlan persistence.
@@ -30,6 +32,13 @@ pub trait ExecutionPlanRepository: Send + Sync {
 
     /// Mark an execution plan as superseded
     async fn mark_superseded(&self, id: &ExecutionPlanId) -> AppResult<()>;
+
+    /// Set the runtime halt mode for an execution plan
+    async fn set_halt_mode(
+        &self,
+        id: &ExecutionPlanId,
+        halt_mode: ExecutionPlanHaltMode,
+    ) -> AppResult<()>;
 
     /// Delete an execution plan
     async fn delete(&self, id: &ExecutionPlanId) -> AppResult<()>;

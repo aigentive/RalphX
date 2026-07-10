@@ -92,6 +92,10 @@ coverage:
           - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
           - "!src-tauri/src/commands/provider_cli_management_commands.rs"
           - "!src-tauri/src/commands/question_commands.rs"
+          # Execution-plan scoped control command wrappers require the production
+          # Tauri AppHandle runtime; helper and service behavior is covered in
+          # task_commands execution-plan sidecar tests.
+          - "!src-tauri/src/commands/task_commands/execution_plan_controls.rs"
           - "!src-tauri/src/http_server/mod.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/approval.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/create.rs"

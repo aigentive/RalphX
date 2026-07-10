@@ -2,9 +2,15 @@
 // Modular structure: types, helpers, query (read), mutation (write), tests
 
 pub mod helpers;
+mod execution_plan_control_service;
+pub mod execution_plan_controls;
 pub mod mutation;
 pub mod query;
 pub mod types;
+#[cfg(test)]
+mod execution_plan_control_service_tests;
+#[cfg(test)]
+mod execution_plan_controls_tests;
 
 // Re-export types
 pub use types::{
@@ -13,6 +19,8 @@ pub use types::{
     BulkCancelResponse,
     CleanupReportResponse,
     CreateTaskInput,
+    ExecutionPlanControlInput,
+    ExecutionPlanControlResponse,
     InjectTaskInput,
     InjectTaskResponse,
     PlanGroupInfo,
@@ -30,6 +38,10 @@ pub use types::{
     TimelineEventType,
     TimelineEventsResponse,
     UpdateTaskInput,
+};
+
+pub use execution_plan_controls::{
+    pause_execution_plan, resume_execution_plan, stop_execution_plan,
 };
 
 // Re-export helpers (for use by other command modules)

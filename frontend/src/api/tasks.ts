@@ -26,11 +26,22 @@ import {
   type TaskStep,
   type StepProgressSummary,
 } from "@/types/task-step";
-import { BulkCancelResponseSchemaRaw, BulkPauseResponseSchemaRaw, BulkResumeResponseSchemaRaw, BulkArchiveResponseSchemaRaw, CleanupReportResponseSchemaRaw, InjectTaskResponseSchemaRaw, StateTransitionResponseSchemaRaw, UnblockTaskResponseSchemaRaw } from "./tasks.schemas";
+import {
+  BulkArchiveResponseSchemaRaw,
+  BulkCancelResponseSchemaRaw,
+  BulkPauseResponseSchemaRaw,
+  BulkResumeResponseSchemaRaw,
+  CleanupReportResponseSchemaRaw,
+  ExecutionPlanControlResponseSchemaRaw,
+  InjectTaskResponseSchemaRaw,
+  StateTransitionResponseSchemaRaw,
+  UnblockTaskResponseSchemaRaw,
+} from "./tasks.schemas";
 import {
   transformBulkCancelResponse,
   transformBulkPauseResponse,
   transformBulkResumeResponse,
+  transformExecutionPlanControlResponse,
   transformBulkArchiveResponse,
   transformCleanupReport,
   transformInjectTaskResponse,
@@ -39,6 +50,7 @@ import {
   type BulkCancelResponse,
   type BulkPauseResponse,
   type BulkResumeResponse,
+  type ExecutionPlanControlResponse,
   type BulkArchiveResponse,
   type CleanupReport,
   type InjectTaskResponse,
@@ -47,13 +59,43 @@ import {
 } from "./tasks.transforms";
 
 // Re-export types for convenience
-export type { BulkCancelResponse, BulkPauseResponse, BulkResumeResponse, BulkArchiveResponse, CleanupReport, InjectTaskResponse, StateTransition, UnblockTaskResponse } from "./tasks.transforms";
+export type {
+  BulkArchiveResponse,
+  BulkCancelResponse,
+  BulkPauseResponse,
+  BulkResumeResponse,
+  CleanupReport,
+  ExecutionPlanControlResponse,
+  InjectTaskResponse,
+  StateTransition,
+  UnblockTaskResponse,
+} from "./tasks.transforms";
 
 // Re-export schemas for consumers that need validation
-export { BulkCancelResponseSchemaRaw, BulkPauseResponseSchemaRaw, BulkResumeResponseSchemaRaw, BulkArchiveResponseSchemaRaw, CleanupReportResponseSchemaRaw, InjectTaskResponseSchemaRaw, StateTransitionResponseSchemaRaw, UnblockTaskResponseSchemaRaw } from "./tasks.schemas";
+export {
+  BulkArchiveResponseSchemaRaw,
+  BulkCancelResponseSchemaRaw,
+  BulkPauseResponseSchemaRaw,
+  BulkResumeResponseSchemaRaw,
+  CleanupReportResponseSchemaRaw,
+  ExecutionPlanControlResponseSchemaRaw,
+  InjectTaskResponseSchemaRaw,
+  StateTransitionResponseSchemaRaw,
+  UnblockTaskResponseSchemaRaw,
+} from "./tasks.schemas";
 
 // Re-export transforms for consumers that need manual transformation
-export { transformBulkCancelResponse, transformBulkPauseResponse, transformBulkResumeResponse, transformBulkArchiveResponse, transformCleanupReport, transformInjectTaskResponse, transformStateTransition, transformUnblockTaskResponse } from "./tasks.transforms";
+export {
+  transformBulkArchiveResponse,
+  transformBulkCancelResponse,
+  transformBulkPauseResponse,
+  transformBulkResumeResponse,
+  transformCleanupReport,
+  transformExecutionPlanControlResponse,
+  transformInjectTaskResponse,
+  transformStateTransition,
+  transformUnblockTaskResponse,
+} from "./tasks.transforms";
 
 // ============================================================================
 // Input Types
@@ -453,6 +495,69 @@ export const tasksApi = {
       { groupKind, groupId, projectId },
       BulkResumeResponseSchemaRaw,
       transformBulkResumeResponse
+    ),
+
+  /**
+   * Pause the current implementation work for one execution plan.
+   */
+  pauseExecutionPlan: (input: {
+    projectId: string;
+    sessionId: string;
+    executionPlanId?: string | null;
+  }): Promise<ExecutionPlanControlResponse> =>
+    typedInvokeWithTransform(
+      "pause_execution_plan",
+      {
+        input: {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          executionPlanId: input.executionPlanId ?? null,
+        },
+      },
+      ExecutionPlanControlResponseSchemaRaw,
+      transformExecutionPlanControlResponse
+    ),
+
+  /**
+   * Resume paused work for one execution plan.
+   */
+  resumeExecutionPlan: (input: {
+    projectId: string;
+    sessionId: string;
+    executionPlanId?: string | null;
+  }): Promise<ExecutionPlanControlResponse> =>
+    typedInvokeWithTransform(
+      "resume_execution_plan",
+      {
+        input: {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          executionPlanId: input.executionPlanId ?? null,
+        },
+      },
+      ExecutionPlanControlResponseSchemaRaw,
+      transformExecutionPlanControlResponse
+    ),
+
+  /**
+   * Stop running work for one execution plan.
+   */
+  stopExecutionPlan: (input: {
+    projectId: string;
+    sessionId: string;
+    executionPlanId?: string | null;
+  }): Promise<ExecutionPlanControlResponse> =>
+    typedInvokeWithTransform(
+      "stop_execution_plan",
+      {
+        input: {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          executionPlanId: input.executionPlanId ?? null,
+        },
+      },
+      ExecutionPlanControlResponseSchemaRaw,
+      transformExecutionPlanControlResponse
     ),
 
   /**

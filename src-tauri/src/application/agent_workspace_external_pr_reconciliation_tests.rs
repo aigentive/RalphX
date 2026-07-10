@@ -547,6 +547,9 @@ fn skip_reason_covers_non_reconcilable_workspace_shapes() {
             external_pr_reconciliation_skip_reason(&workspace),
             Some("workspace_terminal")
         );
+
+        workspace.publication_pr_number = Some(92);
+        assert_eq!(external_pr_reconciliation_skip_reason(&workspace), None);
     }
 }
 

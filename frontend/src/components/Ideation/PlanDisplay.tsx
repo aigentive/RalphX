@@ -491,6 +491,16 @@ export function PlanDisplay({
   const planContent = plan.content.type === "inline" ? plan.content.text : "";
   const displayContent = historicalContent ?? planContent;
   const isViewingHistorical = selectedVersion !== plan.metadata.version;
+  const currentBodyMode = bodyMode ?? "plan";
+  const bodyModeButtonStyle = (isActive: boolean) => ({
+    color: isActive ? "var(--accent-primary)" : "var(--text-secondary)",
+    backgroundColor: isActive
+      ? withAlpha("var(--accent-primary)", 10)
+      : "transparent",
+    borderColor: isActive ? "var(--accent-border)" : "var(--border-subtle)",
+    borderStyle: "solid",
+    borderWidth: "1px",
+  });
 
   const handleBackToLatest = useCallback(() => {
     setSelectedVersion(plan.metadata.version);
@@ -754,38 +764,35 @@ export function PlanDisplay({
               )}
 
               {showProposalBodyToggle && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() =>
-                    onBodyModeChange?.(
-                      bodyMode === "proposals" ? "plan" : "proposals",
-                    )
-                  }
-                  aria-pressed={bodyMode === "proposals"}
-                  data-testid="plan-proposals-toggle"
-                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                  style={{
-                    color:
-                      bodyMode === "proposals"
-                        ? "var(--accent-primary)"
-                        : "var(--text-secondary)",
-                    backgroundColor:
-                      bodyMode === "proposals"
-                        ? withAlpha("var(--accent-primary)", 10)
-                        : "transparent",
-                    borderColor:
-                      bodyMode === "proposals"
-                        ? "var(--accent-border)"
-                        : "var(--border-subtle)",
-                    borderStyle: "solid",
-                    borderWidth: "1px",
-                  }}
-                >
-                  <GitPullRequestArrow className="w-3 h-3" />
-                  {linkedProposalsCount} Proposal{linkedProposalsCount !== 1 ? "s" : ""}
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onBodyModeChange?.("plan")}
+                    aria-pressed={currentBodyMode === "plan"}
+                    data-testid="plan-overview-toggle"
+                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                    style={bodyModeButtonStyle(currentBodyMode === "plan")}
+                  >
+                    <FileText className="w-3 h-3" />
+                    Overview
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onBodyModeChange?.("proposals")}
+                    aria-pressed={currentBodyMode === "proposals"}
+                    data-testid="plan-proposals-toggle"
+                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                    style={bodyModeButtonStyle(currentBodyMode === "proposals")}
+                  >
+                    <GitPullRequestArrow className="w-3 h-3" />
+                    {linkedProposalsCount} Proposal
+                    {linkedProposalsCount !== 1 ? "s" : ""}
+                  </Button>
+                </>
               )}
 
               {onVerifyPlan && (
