@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { useUiStore } from "@/stores/uiStore";
 
 import { getAgentQueueHaltState } from "./agentExecutionPause";
-import { normalizeRuntimeSelection } from "./agentOptions";
 import { AgentsStartComposer } from "./AgentsStartComposer";
 
 type StartComposerProps = ComponentProps<typeof AgentsStartComposer>;
@@ -41,7 +40,7 @@ export function AgentsStartConversationPanel({
       <AgentsStartComposer
         projects={projects}
         defaultProjectId={defaultProjectId}
-        defaultRuntime={normalizeRuntimeSelection(defaultRuntime, modelRegistry)}
+        defaultRuntime={defaultRuntime}
         executionHaltState={executionHaltState}
         isLoadingProjects={isLoadingProjects}
         isSubmitting={isStartingConversation}

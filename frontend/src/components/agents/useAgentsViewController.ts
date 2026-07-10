@@ -52,7 +52,7 @@ import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
 import { useAgentsTerminalDocks } from "./useAgentsTerminalDocks";
 import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
-import { normalizeRuntimeSelection } from "./agentOptions";
+import { normalizeRuntimeForPersistence } from "./agentOptions";
 import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
@@ -1327,7 +1327,7 @@ export function useAgentsViewController({
     (targetProjectId: string, runtime: AgentRuntimeSelection) => {
       setLastRuntimeForProject(
         targetProjectId,
-        normalizeRuntimeSelection(runtime, modelRegistry),
+        normalizeRuntimeForPersistence(runtime, modelRegistry),
       );
     },
     [modelRegistry, setLastRuntimeForProject],

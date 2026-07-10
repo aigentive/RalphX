@@ -423,6 +423,13 @@ vi.mock("@/hooks/useAgentModels", () => ({
       ],
       codex: [
         {
+          id: "gpt-5.6-terra",
+          label: "gpt-5.6-terra",
+          menuLabel: "gpt-5.6-terra",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        },
+        {
           id: "gpt-5.5",
           label: "gpt-5.5",
           menuLabel: "gpt-5.5",
