@@ -923,10 +923,10 @@ fn is_active_direct_external_pr_reconciliation_candidate(
 ) -> bool {
     if workspace.mode != AgentConversationWorkspaceMode::Edit
         || workspace.linked_plan_branch_id.is_some()
-        || matches!(
+        || (matches!(
             workspace.publication_pr_status.as_deref(),
             Some("closed") | Some("merged")
-        )
+        ) && workspace.publication_pr_number.is_none())
     {
         return false;
     }
@@ -1496,6 +1496,10 @@ mod tests {
         linked_missing.publication_pr_number = Some(13);
         linked_missing.publication_pr_status = Some("open".to_string());
         linked_missing.publication_push_status = Some("needs_agent".to_string());
+        let mut terminal_linked = candidate_workspace("terminal-linked");
+        terminal_linked.publication_pr_number = Some(14);
+        terminal_linked.publication_pr_status = Some("merged".to_string());
+        terminal_linked.publication_push_status = Some("pushed".to_string());
         let mut linked_plan = candidate_workspace("linked-plan");
         linked_plan.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1"));
         let mut blocked_push = candidate_workspace("blocked-push");
@@ -1512,6 +1516,7 @@ mod tests {
             second.clone(),
             linked_failed.clone(),
             linked_missing.clone(),
+            terminal_linked.clone(),
             linked_plan,
             blocked_push,
             terminal,
@@ -1527,7 +1532,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].conversation_id, linked_missing.conversation_id);
+        assert_eq!(limited[0].conversation_id, terminal_linked.conversation_id);
 
         let all = repo
             .list_active_direct_external_pr_reconciliation_candidates(10)
@@ -1538,6 +1543,7 @@ mod tests {
                 .map(|workspace| workspace.conversation_id)
                 .collect::<Vec<_>>(),
             vec![
+                terminal_linked.conversation_id,
                 linked_missing.conversation_id,
                 linked_failed.conversation_id,
                 second.conversation_id,

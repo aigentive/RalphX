@@ -13,7 +13,7 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload;
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
-use crate::application::services::pr_merge_poller::cleanup_terminal_agent_workspace_after_pr;
+use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatus};
@@ -162,17 +162,6 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
     }
 
-    if deps
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await?
-        .is_some()
-    {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "active_agent_run",
-        ));
-    }
-
     if workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.publication_push_status.as_deref() == Some("needs_agent")
     {
@@ -188,17 +177,6 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
     }
 
-    if deps
-        .agent_run_repo
-        .get_active_for_conversation(&conversation_id)
-        .await?
-        .is_some()
-    {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
-            "active_agent_run",
-        ));
-    }
-
     let Some(project) = deps.project_repo.get_by_id(&workspace.project_id).await? else {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "project_missing",
@@ -212,6 +190,78 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
     if !project.github_pr_enabled {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "github_pr_disabled",
+        ));
+    }
+
+    if deps
+        .agent_run_repo
+        .get_active_for_conversation(&conversation_id)
+        .await?
+        .is_some()
+    {
+        if let Ok(target) =
+            resolve_pr_supervision_recovery_target(&deps, &project, &workspace, trigger).await?
+        {
+            let sync_state = match deps
+                .github
+                .check_pr_sync_state(&target.worktree_path, target.pr_number)
+                .await
+            {
+                Ok(sync_state) => sync_state,
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        pr_number = target.pr_number,
+                        error = %error,
+                        "Agent workspace PR supervision recovery could not inspect active-run PR state"
+                    );
+                    return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                        "active_agent_run",
+                    ));
+                }
+            };
+            if is_terminal_pr_sync_status(&sync_state.status) {
+                let pr_status = publication_status_for_sync_state(&sync_state);
+                update_terminal_pr_recovery_state(
+                    &deps,
+                    &conversation_id,
+                    &workspace,
+                    &target,
+                    pr_status,
+                )
+                .await?;
+                deps.workspace_repo
+                    .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                        conversation_id.clone(),
+                        format!("pr_{pr_status}"),
+                        "succeeded",
+                        terminal_pr_recovery_summary(pr_status),
+                        None,
+                    ))
+                    .await?;
+                emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+                terminalize_agent_workspace_after_pr(
+                    Arc::clone(&deps.workspace_repo),
+                    Arc::clone(&deps.agent_run_repo),
+                    deps.chat_service.as_ref().map(Arc::clone),
+                    &conversation_id,
+                    &project,
+                    matches!(&sync_state.status, GithubPrStatus::Merged { .. })
+                        .then(|| Arc::clone(&deps.github)),
+                    pr_status == "merged",
+                    !target.is_ideation_plan(),
+                    pr_status,
+                )
+                .await;
+                return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+                    pr_number: target.pr_number,
+                    pr_status: pr_status.to_string(),
+                });
+            }
+        }
+
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+            "active_agent_run",
         ));
     }
 
@@ -246,13 +296,17 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
             .await?;
         emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
         if !target.is_ideation_plan() {
-            cleanup_terminal_agent_workspace_after_pr(
+            terminalize_agent_workspace_after_pr(
                 Arc::clone(&deps.workspace_repo),
+                Arc::clone(&deps.agent_run_repo),
+                deps.chat_service.as_ref().map(Arc::clone),
                 &conversation_id,
                 &project,
                 matches!(&sync_state.status, GithubPrStatus::Merged { .. })
                     .then(|| Arc::clone(&deps.github)),
                 pr_status == "merged",
+                true,
+                pr_status,
             )
             .await;
         }
@@ -407,6 +461,7 @@ async fn update_terminal_pr_recovery_state(
         deps.plan_branch_repo
             .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
             .await?;
+        clear_terminal_plan_pr_auto_merge_marker(deps, plan_branch, pr_status).await;
         deps.workspace_repo
             .update_pr_auto_merge_state(
                 conversation_id,
@@ -458,6 +513,31 @@ async fn update_recovered_pr_state(
             Some("pushed"),
         )
         .await
+}
+
+async fn clear_terminal_plan_pr_auto_merge_marker(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+    plan_branch: &PlanBranch,
+    pr_status: &str,
+) {
+    let (Some(transition_service), Some(task_id)) = (
+        deps.transition_service.as_ref(),
+        plan_branch.merge_task_id.as_ref(),
+    ) else {
+        return;
+    };
+
+    if let Err(error) = transition_service
+        .clear_github_auto_merge_correction_marker_for_terminal_pr(task_id, pr_status)
+        .await
+    {
+        tracing::warn!(
+            task_id = task_id.as_str(),
+            pr_status,
+            error = %error,
+            "Agent workspace PR supervision recovery failed to clear terminal auto-merge correction marker"
+        );
+    }
 }
 
 fn start_recovered_pr_polling(

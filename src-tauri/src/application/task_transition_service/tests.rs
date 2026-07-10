@@ -228,6 +228,135 @@ fn build_test_service_with_execution_state(
 }
 
 #[tokio::test]
+async fn route_github_pr_changes_requested_records_auto_merge_disarm_marker() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "PR Review Project".to_string(),
+        "/tmp/pr-review".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut merge_task = Task::new(project.id.clone(), "Merge plan PR".to_string());
+    merge_task.category = TaskCategory::PlanMerge;
+    app_state
+        .task_repo
+        .create(merge_task.clone())
+        .await
+        .unwrap();
+    let service = build_test_service(&app_state);
+    let feedback = crate::domain::services::github_service::PrReviewFeedback {
+        review_id: "review-marker".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-05-17T12:00:00Z".to_string()),
+        body: Some("Please adjust this.".to_string()),
+        comments: Vec::new(),
+    };
+
+    service
+        .route_github_pr_changes_requested_with_auto_merge_marker(
+            &merge_task.id,
+            676,
+            feedback,
+            "test",
+            true,
+            Some("rebase".to_string()),
+        )
+        .await
+        .expect("review correction should route");
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&merge_task.id)
+        .await
+        .unwrap()
+        .expect("merge task should exist");
+    let metadata: Value =
+        serde_json::from_str(updated.metadata.as_deref().expect("metadata should exist"))
+            .expect("metadata should be valid json");
+    assert_eq!(
+        metadata["github_auto_merge_disabled_for_correction"],
+        Value::Bool(true)
+    );
+    assert_eq!(metadata["github_auto_merge_pr_number"], Value::from(676));
+    assert_eq!(
+        metadata["github_auto_merge_disabled_source"],
+        Value::String("github_review_feedback".to_string())
+    );
+    assert_eq!(
+        metadata["github_auto_merge_method"],
+        Value::String("rebase".to_string())
+    );
+}
+
+#[tokio::test]
+async fn terminal_pr_state_consumes_auto_merge_disarm_marker() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Terminal PR Marker Project".to_string(),
+        "/tmp/terminal-pr-marker".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut merge_task = Task::new(project.id.clone(), "Merge plan PR".to_string());
+    merge_task.category = TaskCategory::PlanMerge;
+    merge_task.metadata = Some(
+        serde_json::json!({
+            "github_auto_merge_disabled_for_correction": true,
+            "github_auto_merge_pr_number": 676,
+            "github_auto_merge_method": "rebase",
+            "github_auto_merge_disabled_at": "2026-07-10T12:00:00Z",
+            "github_auto_merge_disabled_source": "github_review_feedback",
+            "github_auto_merge_reenable_failed_at": "2026-07-10T12:05:00Z",
+            "github_auto_merge_reenable_error": "temporary GitHub error",
+        })
+        .to_string(),
+    );
+    app_state
+        .task_repo
+        .create(merge_task.clone())
+        .await
+        .unwrap();
+    let service = build_test_service(&app_state);
+
+    let changed = service
+        .clear_github_auto_merge_correction_marker_for_terminal_pr(&merge_task.id, "merged")
+        .await
+        .expect("terminal marker cleanup should succeed");
+
+    assert!(changed, "terminal cleanup should consume the active marker");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&merge_task.id)
+        .await
+        .unwrap()
+        .expect("merge task should exist");
+    let metadata: Value =
+        serde_json::from_str(updated.metadata.as_deref().expect("metadata should exist"))
+            .expect("metadata should be valid json");
+    assert!(metadata
+        .get("github_auto_merge_disabled_for_correction")
+        .is_none());
+    assert!(metadata.get("github_auto_merge_pr_number").is_none());
+    assert!(metadata.get("github_auto_merge_method").is_none());
+    assert!(metadata.get("github_auto_merge_reenable_error").is_none());
+    assert_eq!(
+        metadata["github_auto_merge_terminal_cleared_source"],
+        Value::String("pr_terminal_state".to_string())
+    );
+    assert_eq!(
+        metadata["github_auto_merge_terminal_cleared_status"],
+        Value::String("merged".to_string())
+    );
+    assert!(metadata["github_auto_merge_terminal_cleared_at"].is_string());
+}
+
+#[tokio::test]
 async fn with_event_sink_rebuilds_status_change_emitter_without_external_events() {
     let app_state = AppState::new_test();
     let project = Project::new("Sink Project".to_string(), "/tmp/sink".to_string());
@@ -262,7 +391,10 @@ async fn with_event_sink_rebuilds_status_change_emitter_without_external_events(
 #[tokio::test]
 async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
     let app_state = AppState::new_test();
-    let project = Project::new("Dual Sink Project".to_string(), "/tmp/dual-sink".to_string());
+    let project = Project::new(
+        "Dual Sink Project".to_string(),
+        "/tmp/dual-sink".to_string(),
+    );
     app_state
         .project_repo
         .create(project.clone())
@@ -304,7 +436,10 @@ async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
 #[tokio::test]
 async fn corrective_transition_with_exit_emits_task_event_through_event_sink() {
     let app_state = AppState::new_test();
-    let project = Project::new("Corrective Sink Project".to_string(), "/tmp/corrective".to_string());
+    let project = Project::new(
+        "Corrective Sink Project".to_string(),
+        "/tmp/corrective".to_string(),
+    );
     app_state
         .project_repo
         .create(project.clone())

@@ -1306,6 +1306,24 @@ async fn list_external_pr_reconciliation_candidates_filters_to_reconcilable_edit
     missing_linked.publication_push_status = Some("needs_agent".to_string());
     repo.create_or_update(missing_linked.clone()).await.unwrap();
 
+    let terminal_linked_id =
+        ChatConversationId::from_string("26262626-2626-2626-2626-262626262626");
+    seed_conversation(&db, &terminal_linked_id);
+    let mut terminal_linked = make_workspace(terminal_linked_id);
+    terminal_linked.publication_pr_number = Some(76);
+    terminal_linked.publication_pr_status = Some("merged".to_string());
+    terminal_linked.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(terminal_linked.clone())
+        .await
+        .unwrap();
+
+    let terminal_unlinked_id =
+        ChatConversationId::from_string("27272727-2727-2727-2727-272727272727");
+    seed_conversation(&db, &terminal_unlinked_id);
+    let mut terminal_unlinked = make_workspace(terminal_unlinked_id);
+    terminal_unlinked.publication_pr_status = Some("merged".to_string());
+    repo.create_or_update(terminal_unlinked).await.unwrap();
+
     let needs_agent_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
     seed_conversation(&db, &needs_agent_id);
     let mut needs_agent = make_workspace(needs_agent_id);
@@ -1331,7 +1349,8 @@ async fn list_external_pr_reconciliation_candidates_filters_to_reconcilable_edit
         [
             candidate.conversation_id,
             linked.conversation_id,
-            missing_linked.conversation_id
+            missing_linked.conversation_id,
+            terminal_linked.conversation_id
         ]
         .into_iter()
         .collect()
