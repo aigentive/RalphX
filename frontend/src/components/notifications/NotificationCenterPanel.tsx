@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Inbox, X } from "lucide-react";
+import { CheckCircle2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { TaskReviewCard } from "@/components/reviews/TaskReviewCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
-import { navigateToIdeationSession } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
-import { useProjectStore } from "@/stores/projectStore";
 import { useTaskStore } from "@/stores/taskStore";
-import { useUiStore } from "@/stores/uiStore";
-import type { AttentionItem } from "@/types/notifications";
+import type { AttentionItem, Notification } from "@/types/notifications";
 
 import { ATTENTION_CATEGORY_MAPPING, type AttentionGroup } from "./categoryMapping";
+import { NotificationHistoryTab } from "./NotificationHistoryTab";
+import { navigateNotification } from "./notificationNavigation";
 import { ReviewDetailModal } from "@/components/reviews/ReviewDetailModal";
 
 const GROUP_ORDER: AttentionGroup[] = ["Agent requests", "Reviews", "Tasks", "Automations", "Git"];
@@ -46,10 +44,6 @@ function relativeTime(createdAt?: string): string | null {
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
-}
-
-function permissionRequestId(item: AttentionItem): string {
-  return item.id.replace(/^(?:permission|perm):/, "");
 }
 
 function permissionExpiry(createdAt: string | undefined, now: number): string | null {
@@ -111,14 +105,6 @@ function EmptyActionState() {
   </div>;
 }
 
-function HistoryPlaceholder() {
-  return <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center" data-testid="notification-history-empty-state">
-    <Inbox className="h-7 w-7" style={{ color: "var(--text-muted)" }} />
-    <p className="font-medium" style={{ color: "var(--text-primary)" }}>No notifications yet</p>
-    <p className="text-sm" style={{ color: "var(--text-muted)" }}>Alerts and completions will show up here.</p>
-  </div>;
-}
-
 export interface NotificationCenterPanelProps {
   projectId?: string;
   isOpen: boolean;
@@ -143,34 +129,17 @@ export function NotificationCenterPanel({ projectId, isOpen, onClose, onOpenAuto
   const groups = useMemo(() => GROUP_ORDER.map((group) => ({ group, items: items.filter((item) => ATTENTION_CATEGORY_MAPPING[item.category].group === group) })).filter(({ items: groupedItems }) => groupedItems.length > 0), [items]);
 
   const openItem = useCallback((item: AttentionItem) => {
-    if (item.category === "permission_request") {
-      window.dispatchEvent(new CustomEvent("ralphx:open-permission-dialog", { detail: { requestId: permissionRequestId(item) } }));
-      onClose();
-      return;
-    }
-    if (item.target.kind === "task" && item.target.taskId) useUiStore.getState().navigateToTask(item.target.taskId);
-    if (item.target.kind === "agent_conversation") {
-      const conversationId = item.target.conversationId ?? item.target.setupConversationId;
-      if (conversationId) navigateToIdeationSession(conversationId);
-    }
-    if (item.target.kind === "automation_run" && item.target.projectId && item.target.automationId && item.target.runId && item.target.conversationId) {
-      void requestAutomationRunOpen(queryClient, {
-        projectId: item.target.projectId,
-        automationId: item.target.automationId,
-        runId: item.target.runId,
-        conversationId: item.target.conversationId,
-        ...(item.target.setupConversationId && { setupConversationId: item.target.setupConversationId }),
-      }, {
-        ...(onOpenAutomationDetail && { onOpenAutomationDetail }),
-      });
-    } else if (item.target.kind === "automation_run" && item.target.automationId) {
-      onOpenAutomationDetail?.(item.target.automationId);
-    }
-    if (item.target.kind === "project" && item.target.projectId) {
-      useProjectStore.getState().selectProject(item.target.projectId);
-      useUiStore.getState().setCurrentView("kanban");
-    }
-    if (item.target.kind !== "none") onClose();
+    navigateNotification(item, queryClient, {
+      onClose,
+      ...(onOpenAutomationDetail && { onOpenAutomationDetail }),
+    });
+  }, [onClose, onOpenAutomationDetail, queryClient]);
+
+  const openHistoryNotification = useCallback((notification: Notification) => {
+    navigateNotification(notification, queryClient, {
+      onClose,
+      ...(onOpenAutomationDetail && { onOpenAutomationDetail }),
+    });
   }, [onClose, onOpenAutomationDetail, queryClient]);
 
   return <>
@@ -185,7 +154,7 @@ export function NotificationCenterPanel({ projectId, isOpen, onClose, onOpenAuto
         </TabsList>
       </Tabs>
       <ScrollArea className="min-h-0 flex-1">
-        {activeTab === "history" ? <HistoryPlaceholder /> : !contentMounted || isLoading ? <SkeletonRows /> : groups.length === 0 ? <EmptyActionState /> : <div className="space-y-4 p-4">{groups.map(({ group, items: groupedItems }) => <div key={group} className="space-y-2"><p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "color-mix(in srgb, var(--text-secondary) 60%, transparent)" }}>{group} · {groupedItems.length}</p><div className="space-y-2">{groupedItems.map((item) => {
+        {activeTab === "history" ? <NotificationHistoryTab active={contentMounted} {...(projectId !== undefined && { projectId })} onOpen={openHistoryNotification} /> : !contentMounted || isLoading ? <SkeletonRows /> : groups.length === 0 ? <EmptyActionState /> : <div className="space-y-4 p-4">{groups.map(({ group, items: groupedItems }) => <div key={group} className="space-y-2"><p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "color-mix(in srgb, var(--text-secondary) 60%, transparent)" }}>{group} · {groupedItems.length}</p><div className="space-y-2">{groupedItems.map((item) => {
           const taskId = item.target.taskId;
           const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId ? tasks[taskId] : undefined;
           return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} /> : <AttentionItemRow key={item.id} item={item} onOpen={openItem} />;

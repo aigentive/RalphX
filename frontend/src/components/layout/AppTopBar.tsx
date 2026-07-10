@@ -21,6 +21,7 @@ import { ThemeSelector } from "./ThemeSelector";
 interface AppTopBarProps {
   currentView: ViewType;
   attentionCount: number;
+  hasUnreadNotificationHistory?: boolean;
   attentionCountStale?: boolean;
   notificationsPanelOpen: boolean;
   onToggleNotificationsPanel: () => void;
@@ -443,6 +444,7 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
 export function AppTopBar({
   currentView,
   attentionCount,
+  hasUnreadNotificationHistory = false,
   attentionCountStale = false,
   notificationsPanelOpen,
   onToggleNotificationsPanel,
@@ -605,6 +607,14 @@ export function AppTopBar({
                 >
                   {attentionCount > 9 ? "9+" : attentionCount}
                 </span>
+              )}
+              {attentionCount === 0 && hasUnreadNotificationHistory && (
+                <span
+                  aria-label="Unread notification history"
+                  className="absolute right-1 top-1 h-1 w-1 rounded-full"
+                  style={{ backgroundColor: "var(--accent-primary)" }}
+                  data-testid="notifications-unread-dot"
+                />
               )}
             </button>
           </TooltipTrigger>

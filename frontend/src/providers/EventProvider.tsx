@@ -35,6 +35,7 @@ import { useFreshnessBlockedNotification } from "@/hooks/useFreshnessBlockedNoti
 import { useGitAuthStartupNotification } from "@/hooks/useGitAuthStartupNotification";
 import { useGlobalAgentLifecycle } from "@/hooks/useGlobalAgentLifecycle";
 import { useNotificationEvents } from "@/hooks/useNotificationEvents";
+import { useNotificationToasts } from "@/hooks/useNotificationToasts";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
 
 /**
@@ -83,6 +84,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useSupervisorAlerts();
   useReviewEvents();
   useNotificationEvents();
+  useNotificationToasts();
   useFileChangeEvents();
   useAgentEvents(); // Listen to agent:message events for Activity view (no active conversation)
   useExecutionErrorEvents(); // Handle agent execution errors and unstick UI

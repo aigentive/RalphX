@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useEventBus } from "@/providers/EventProvider";
 import { attentionKeys } from "./useAttentionItems";
+import { notificationKeys } from "./useNotificationHistory";
 
 const ATTENTION_INVALIDATION_EVENTS = [
   "review:update", "task:status_changed", "permission:request", "permission:expired",
@@ -18,6 +19,11 @@ export function useNotificationEvents() {
   useEffect(() => {
     const invalidate = () => void queryClient.invalidateQueries({ queryKey: attentionKeys.all });
     const unsubscribes = ATTENTION_INVALIDATION_EVENTS.map((event) => bus.subscribe(event, invalidate));
+    const invalidateNotificationHistory = () => void queryClient.invalidateQueries({ queryKey: notificationKeys.all });
+    unsubscribes.push(
+      bus.subscribe("notification:created", invalidateNotificationHistory),
+      bus.subscribe("notification:updated", invalidateNotificationHistory),
+    );
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
   }, [bus, queryClient]);
 }

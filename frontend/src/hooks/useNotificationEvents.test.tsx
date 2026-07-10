@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { useNotificationEvents } from "./useNotificationEvents";
 import { attentionKeys } from "./useAttentionItems";
+import { notificationKeys } from "./useNotificationHistory";
 
 const subscribers = new Map<string, () => void>();
 vi.mock("@/providers/EventProvider", () => ({
@@ -25,8 +26,12 @@ describe("useNotificationEvents", () => {
       "agent:ask_user_question", "agent:question_resolved", "automation:updated",
       "automation:run:updated", "plan_artifact:created", "plan_artifact:approved",
       "pr_review_artifact:created", "pr_review_artifact:updated",
+      "notification:created", "notification:updated",
     ]);
     subscribers.get("permission:request")?.();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: attentionKeys.all });
+
+    subscribers.get("notification:created")?.();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: notificationKeys.all });
   });
 });

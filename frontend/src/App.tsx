@@ -57,6 +57,7 @@ import type { UpdateProposalInput } from "@/api/ideation";
 import { toTaskProposal, ideationApi } from "@/api/ideation";
 import type { CreateProject } from "@/types/project";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
+import { useUnreadNotificationCount } from "@/hooks/useNotificationHistory";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useRunningProcesses } from "@/hooks/useRunningProcesses";
@@ -416,6 +417,8 @@ function AppContent() {
 
   const attentionItems = useAttentionItems(currentProjectId);
   const attentionCount = attentionItems.data?.length ?? 0;
+  const unreadNotificationCount = useUnreadNotificationCount(currentProjectId);
+  const hasUnreadNotificationHistory = (unreadNotificationCount.data ?? 0) > 0;
   const notificationPanelWasOpened = useRef(false);
   if (notificationsPanelOpen) notificationPanelWasOpened.current = true;
 
@@ -1303,6 +1306,7 @@ function AppContent() {
           <AppTopBar
             currentView={currentView}
             attentionCount={attentionCount}
+            hasUnreadNotificationHistory={hasUnreadNotificationHistory}
             attentionCountStale={attentionItems.isError}
             notificationsPanelOpen={notificationsPanelOpen}
             onToggleNotificationsPanel={toggleNotificationsPanel}

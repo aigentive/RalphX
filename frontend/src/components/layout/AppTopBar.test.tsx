@@ -106,6 +106,18 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     expect(screen.getByRole("button", { name: /notifications.*12/i })).toBeInTheDocument();
   });
 
+  it("shows the unread-history dot only when the attention count is zero", () => {
+    const { rerender } = renderTopBar({ hasUnreadNotificationHistory: true });
+    expect(screen.getByTestId("notifications-unread-dot")).toBeInTheDocument();
+
+    rerender(<QueryClientProvider client={new QueryClient()}><AppTopBar currentView="ticketing" attentionCount={0} hasUnreadNotificationHistory={false} notificationsPanelOpen={false} onToggleNotificationsPanel={vi.fn()} /></QueryClientProvider>);
+    expect(screen.queryByTestId("notifications-unread-dot")).not.toBeInTheDocument();
+
+    rerender(<QueryClientProvider client={new QueryClient()}><AppTopBar currentView="ticketing" attentionCount={1} hasUnreadNotificationHistory notificationsPanelOpen={false} onToggleNotificationsPanel={vi.fn()} /></QueryClientProvider>);
+    expect(screen.queryByTestId("notifications-unread-dot")).not.toBeInTheDocument();
+    expect(screen.getByTestId("reviews-badge")).toBeInTheDocument();
+  });
+
   it("shows the project selector on the ticketing view when enabled", () => {
     renderTopBar({
       currentView: "ticketing",

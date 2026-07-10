@@ -37,5 +37,29 @@ export const AttentionItemSchema = z.object({
 });
 
 export const AttentionItemListSchema = z.array(AttentionItemSchema);
+
+export const NotificationSeveritySchema = z.enum(["action_required", "warning", "info"]);
+
+/** Durable history row emitted by the notification service. */
+export const NotificationSchema = z.object({
+  id: z.string(),
+  createdAt: z.string(),
+  projectId: z.string().optional(),
+  category: AttentionCategorySchema,
+  severity: NotificationSeveritySchema,
+  title: z.string(),
+  body: z.string().optional(),
+  target: NotificationTargetSchema,
+  readAt: z.string().optional(),
+});
+
+export const NotificationPageSchema = z.object({
+  notifications: z.array(NotificationSchema),
+  cursor: z.string().optional(),
+  hasMore: z.boolean(),
+});
+
 export type AttentionItem = z.infer<typeof AttentionItemSchema>;
 export type NotificationTarget = z.infer<typeof NotificationTargetSchema>;
+export type Notification = z.infer<typeof NotificationSchema>;
+export type NotificationPage = z.infer<typeof NotificationPageSchema>;
