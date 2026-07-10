@@ -10,6 +10,33 @@ const QUESTION_BODY_LIMIT: usize = 240;
 pub struct InteractiveNotificationProducer;
 
 impl InteractiveNotificationProducer {
+    pub fn agent_waiting(
+        project_id: Option<String>,
+        conversation_id: &str,
+        title: Option<&str>,
+    ) -> NewNotification {
+        let title = title.unwrap_or("this conversation");
+        NewNotification {
+            project_id: project_id.clone(),
+            category: NotificationCategory::AgentWaiting,
+            severity: NotificationSeverity::Info,
+            title: "Your turn".to_string(),
+            body: Some(format!(
+                "Agent finished on “{title}” and is waiting for you"
+            )),
+            target: NotificationTarget {
+                kind: crate::domain::entities::NotificationTargetKind::AgentConversation,
+                project_id,
+                task_id: None,
+                conversation_id: Some(conversation_id.to_string()),
+                setup_conversation_id: None,
+                automation_id: None,
+                run_id: None,
+            },
+            dedupe_key: None,
+        }
+    }
+
     pub fn permission_request(
         request: &PendingPermissionInfo,
         resolved: ResolvedNotificationTarget,

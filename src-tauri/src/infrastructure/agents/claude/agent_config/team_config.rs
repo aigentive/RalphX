@@ -14,8 +14,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-const EMBEDDED_PROCESS_CONFIG: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/processes.yaml"));
+const EMBEDDED_PROCESS_CONFIG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../config/processes.yaml"
+));
 
 // ── Default value helpers ───────────────────────────────────────────────
 
@@ -184,7 +186,9 @@ pub fn canonical_team_constraints_config() -> TeamConstraintsConfig {
     embedded_process_config().team_constraints.clone()
 }
 
-pub fn resolve_canonical_team_constraints_config(raw: &TeamConstraintsConfig) -> TeamConstraintsConfig {
+pub fn resolve_canonical_team_constraints_config(
+    raw: &TeamConstraintsConfig,
+) -> TeamConstraintsConfig {
     let mut resolved = canonical_team_constraints_config();
 
     if let Some(yaml_defaults) = &raw.defaults {

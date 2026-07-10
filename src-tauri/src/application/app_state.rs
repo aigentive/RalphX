@@ -12,8 +12,8 @@ use super::services::PrPollerRegistry;
 use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
 use crate::application::notification_service::{
-    NoopNotificationEventEmitter, NotificationEventEmitter, NotificationService,
-    TauriNotificationEventEmitter,
+    NoopDesktopNotifier, NoopNotificationEventEmitter, NotificationEventEmitter,
+    NotificationService, TauriDesktopNotifier, TauriNotificationEventEmitter, WindowFocusState,
 };
 use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
@@ -279,6 +279,8 @@ pub struct AppState {
     pub notification_repo: Arc<dyn NotificationRepository>,
     /// Global desktop and focused-toast notification preferences.
     pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
+    /// Shared native window-focus signal used by desktop notification delivery.
+    pub window_focus_state: Arc<WindowFocusState>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories
@@ -376,7 +378,22 @@ impl AppState {
             Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
             None => Arc::new(NoopNotificationEventEmitter),
         };
-        NotificationService::new(Arc::clone(&self.notification_repo), emitter)
+        let desktop_notifier: Arc<dyn crate::application::notification_service::DesktopNotifier> =
+            match self.app_handle.as_ref() {
+                Some(app_handle) => Arc::new(TauriDesktopNotifier::new(app_handle.clone())),
+                None => Arc::new(NoopDesktopNotifier),
+            };
+        NotificationService::new_with_desktop_dispatch(
+            Arc::clone(&self.notification_repo),
+            emitter,
+            Arc::clone(&self.notification_settings_repo),
+            Arc::clone(&self.window_focus_state),
+            desktop_notifier,
+            std::time::Duration::from_secs(
+                crate::infrastructure::agents::claude::stream_timeouts()
+                    .desktop_notification_coalesce_window_secs,
+            ),
+        )
     }
 
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
@@ -1232,6 +1249,7 @@ impl AppState {
             notification_settings_repo: Arc::new(
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            window_focus_state: Arc::new(WindowFocusState::default()),
             validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1501,6 +1519,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1666,6 +1685,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1840,6 +1860,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -2011,6 +2032,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),

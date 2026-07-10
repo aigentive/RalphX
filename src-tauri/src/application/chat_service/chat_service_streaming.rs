@@ -5,11 +5,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 use tracing::info;
 
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::question_state::QuestionState;
 use crate::application::team_events;
 use crate::application::team_state_tracker::TeammateStatus;
@@ -53,6 +54,7 @@ use super::{
     AgentToolCallPayload, AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
+use crate::AppState;
 
 #[doc(hidden)]
 pub(crate) fn stream_mode_for_harness(harness: AgentHarnessKind) -> HarnessStreamMode {
@@ -68,6 +70,93 @@ pub(crate) fn provider_session_ref_for_harness(
         harness,
         provider_session_id: provider_session_id.into(),
     }
+}
+
+pub(crate) fn is_user_attended_turn_completion(
+    context_type: ChatContextType,
+    automation_run_owned: bool,
+    ideation_session_has_parent: bool,
+) -> bool {
+    !automation_run_owned
+        && !ideation_session_has_parent
+        && matches!(
+            context_type,
+            ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+        )
+}
+
+async fn record_agent_waiting_if_user_attended<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: &ChatConversationId,
+) {
+    let Some(state) = app_handle.try_state::<AppState>() else {
+        tracing::warn!("Agent turn completed without managed AppState; agent_waiting skipped");
+        return;
+    };
+    let conversation = match state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+    {
+        Ok(Some(conversation)) => conversation,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to load conversation for agent_waiting");
+            return;
+        }
+    };
+
+    let (project_id, ideation_session_has_parent, context_title) = match context_type {
+        ChatContextType::Ideation => {
+            let session_id = crate::domain::entities::IdeationSessionId::from_string(context_id);
+            match state.ideation_session_repo.get_by_id(&session_id).await {
+                Ok(Some(session)) => (
+                    Some(session.project_id.to_string()),
+                    session.parent_session_id.is_some(),
+                    session.title,
+                ),
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(error = %error, session_id = %session_id, "Failed to load ideation session for agent_waiting");
+                    return;
+                }
+            }
+        }
+        ChatContextType::Project => (Some(context_id.to_string()), false, None),
+        ChatContextType::Task => {
+            let task_id = TaskId::from_string(context_id.to_string());
+            match state.task_repo.get_by_id(&task_id).await {
+                Ok(Some(task)) => (Some(task.project_id.to_string()), false, Some(task.title)),
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(error = %error, task_id = %task_id, "Failed to load task for agent_waiting");
+                    return;
+                }
+            }
+        }
+        ChatContextType::Delegation
+        | ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge => return,
+    };
+
+    if !is_user_attended_turn_completion(
+        context_type,
+        conversation.automation_run_id.is_some(),
+        ideation_session_has_parent,
+    ) {
+        return;
+    }
+    state
+        .notification_service()
+        .record_ephemeral(InteractiveNotificationProducer::agent_waiting(
+            project_id,
+            &conversation.id.as_str(),
+            conversation.title.as_deref().or(context_title.as_deref()),
+        ))
+        .await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2105,6 +2194,13 @@ pub async fn process_stream_background<R: Runtime>(
                                     None,
                                 ),
                             );
+                            record_agent_waiting_if_user_attended(
+                                handle,
+                                context_type,
+                                context_id,
+                                conversation_id,
+                            )
+                            .await;
                         }
 
                         // Clear streaming state cache (same as normal run_completed path)

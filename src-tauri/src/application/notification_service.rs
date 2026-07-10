@@ -1,11 +1,20 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::{NotificationExt, PermissionState};
+use tokio::sync::Mutex;
 
-use crate::domain::entities::{NewNotification, Notification};
-use crate::domain::repositories::NotificationRepository;
+use crate::domain::entities::{
+    notification_category_group, NewNotification, Notification, NotificationCategory,
+    NotificationCategoryGroup,
+};
+use crate::domain::repositories::{NotificationRepository, NotificationSettingsRepository};
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::stream_timeouts;
 
 pub const NOTIFICATION_CREATED_EVENT: &str = "notification:created";
 pub const NOTIFICATION_UPDATED_EVENT: &str = "notification:updated";
@@ -31,6 +40,199 @@ impl NotificationEventEmitter for NoopNotificationEventEmitter {
 pub struct TauriNotificationEventEmitter {
     app_handle: AppHandle,
 }
+
+/// Process-wide window-focus state. It begins unfocused so notifications raised before the
+/// first native focus event remain deliverable instead of being silently suppressed.
+#[derive(Default)]
+pub struct WindowFocusState(AtomicBool);
+
+impl WindowFocusState {
+    pub fn is_focused(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub fn set_focused(&self, focused: bool) {
+        self.0.store(focused, Ordering::Release);
+    }
+}
+
+pub trait DesktopNotifier: Send + Sync {
+    fn send(&self, title: &str, body: Option<&str>) -> AppResult<()>;
+}
+
+pub struct TauriDesktopNotifier {
+    app_handle: AppHandle,
+}
+
+impl TauriDesktopNotifier {
+    pub fn new(app_handle: AppHandle) -> Self {
+        Self { app_handle }
+    }
+}
+
+impl DesktopNotifier for TauriDesktopNotifier {
+    fn send(&self, title: &str, body: Option<&str>) -> AppResult<()> {
+        let notification = self.app_handle.notification();
+        if notification
+            .permission_state()
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            == PermissionState::Prompt
+        {
+            notification
+                .request_permission()
+                .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+        }
+        if notification
+            .permission_state()
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            != PermissionState::Granted
+        {
+            return Err(AppError::Infrastructure(
+                "Desktop notification permission was not granted".to_string(),
+            ));
+        }
+
+        let mut builder = notification.builder().title(title);
+        if let Some(body) = body {
+            builder = builder.body(body);
+        }
+        builder
+            .show()
+            .map_err(|error| AppError::Infrastructure(error.to_string()))
+    }
+}
+
+#[derive(Default)]
+pub struct NoopDesktopNotifier;
+
+impl DesktopNotifier for NoopDesktopNotifier {
+    fn send(&self, _title: &str, _body: Option<&str>) -> AppResult<()> {
+        tracing::warn!("Desktop notification requested without an AppHandle; delivery skipped");
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct DefaultNotificationSettingsRepository;
+
+#[async_trait::async_trait]
+impl NotificationSettingsRepository for DefaultNotificationSettingsRepository {
+    async fn get_settings(&self) -> AppResult<crate::domain::entities::NotificationSettings> {
+        Ok(crate::domain::entities::NotificationSettings::default())
+    }
+
+    async fn update_settings(
+        &self,
+        settings: &crate::domain::entities::NotificationSettings,
+    ) -> AppResult<crate::domain::entities::NotificationSettings> {
+        Ok(settings.clone())
+    }
+}
+
+struct DesktopNotificationCoalescer {
+    pending: Mutex<Vec<Notification>>,
+    flush_scheduled: AtomicBool,
+    window: Duration,
+    notifier: Arc<dyn DesktopNotifier>,
+}
+
+impl DesktopNotificationCoalescer {
+    fn new(window: Duration, notifier: Arc<dyn DesktopNotifier>) -> Self {
+        Self {
+            pending: Mutex::new(Vec::new()),
+            flush_scheduled: AtomicBool::new(false),
+            window,
+            notifier,
+        }
+    }
+
+    async fn enqueue(self: &Arc<Self>, notification: Notification) {
+        self.pending.lock().await.push(notification);
+        if !self.flush_scheduled.swap(true, Ordering::AcqRel) {
+            let coalescer = Arc::clone(self);
+            tokio::spawn(async move {
+                tokio::time::sleep(coalescer.window).await;
+                coalescer.flush().await;
+            });
+        }
+    }
+
+    async fn flush(&self) {
+        let notifications = std::mem::take(&mut *self.pending.lock().await);
+        self.flush_scheduled.store(false, Ordering::Release);
+        if notifications.len() >= 3 {
+            let (title, body) = desktop_summary(&notifications);
+            self.send(&title, Some(&body));
+            return;
+        }
+        for notification in notifications {
+            self.send(&notification.title, notification.body.as_deref());
+        }
+    }
+
+    fn send(&self, title: &str, body: Option<&str>) {
+        if let Err(error) = self.notifier.send(title, body) {
+            tracing::warn!(error = %error, "Failed to dispatch desktop notification");
+        }
+    }
+}
+
+fn desktop_summary(notifications: &[Notification]) -> (String, String) {
+    let mut counts = HashMap::<&'static str, usize>::new();
+    let mut order = Vec::<&'static str>::new();
+    for notification in notifications {
+        let label = desktop_summary_label(notification.category);
+        if !counts.contains_key(label) {
+            order.push(label);
+        }
+        *counts.entry(label).or_default() += 1;
+    }
+    let details = order
+        .into_iter()
+        .map(|label| format!("{} {label}", counts[&label]))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let project = notifications
+        .first()
+        .and_then(|notification| notification.project_id.as_deref())
+        .filter(|project| {
+            notifications
+                .iter()
+                .all(|notification| notification.project_id.as_deref() == Some(*project))
+        });
+    let body = project
+        .map(|project| format!("{details} — {project}"))
+        .unwrap_or(details);
+    (
+        format!("{} items need your attention", notifications.len()),
+        body,
+    )
+}
+
+fn desktop_summary_label(category: NotificationCategory) -> &'static str {
+    match category {
+        NotificationCategory::ReviewNeeded
+        | NotificationCategory::ReviewEscalated
+        | NotificationCategory::PlanApproval
+        | NotificationCategory::TeamPlanApproval => "reviews",
+        NotificationCategory::PermissionRequest => "permission request",
+        NotificationCategory::AgentQuestion => "agent question",
+        NotificationCategory::MergeConflict => "merge conflict",
+        _ => match notification_category_group(category) {
+            NotificationCategoryGroup::AgentRequests => "agent requests",
+            NotificationCategoryGroup::AgentWaiting => "agent waiting",
+            NotificationCategoryGroup::Reviews => "reviews",
+            NotificationCategoryGroup::TaskFailures => "task failures",
+            NotificationCategoryGroup::AutomationApprovals => "automation approvals",
+            NotificationCategoryGroup::AutomationRunCompletions => "automation completions",
+            NotificationCategoryGroup::GitGithub => "GitHub items",
+        },
+    }
+}
+
+fn desktop_category_is_always(_category: NotificationCategory) -> bool {
+    false
+}
 impl TauriNotificationEventEmitter {
     pub fn new(app_handle: AppHandle) -> Self {
         Self { app_handle }
@@ -54,13 +256,40 @@ impl NotificationEventEmitter for TauriNotificationEventEmitter {
 pub struct NotificationService {
     repo: Arc<dyn NotificationRepository>,
     emitter: Arc<dyn NotificationEventEmitter>,
+    settings_repo: Arc<dyn NotificationSettingsRepository>,
+    focus_state: Arc<WindowFocusState>,
+    coalescer: Arc<DesktopNotificationCoalescer>,
 }
 impl NotificationService {
     pub fn new(
         repo: Arc<dyn NotificationRepository>,
         emitter: Arc<dyn NotificationEventEmitter>,
     ) -> Self {
-        Self { repo, emitter }
+        Self::new_with_desktop_dispatch(
+            repo,
+            emitter,
+            Arc::new(DefaultNotificationSettingsRepository),
+            Arc::new(WindowFocusState::default()),
+            Arc::new(NoopDesktopNotifier),
+            Duration::from_secs(stream_timeouts().desktop_notification_coalesce_window_secs),
+        )
+    }
+
+    pub(crate) fn new_with_desktop_dispatch(
+        repo: Arc<dyn NotificationRepository>,
+        emitter: Arc<dyn NotificationEventEmitter>,
+        settings_repo: Arc<dyn NotificationSettingsRepository>,
+        focus_state: Arc<WindowFocusState>,
+        notifier: Arc<dyn DesktopNotifier>,
+        coalesce_window: Duration,
+    ) -> Self {
+        Self {
+            repo,
+            emitter,
+            settings_repo,
+            focus_state,
+            coalescer: Arc::new(DesktopNotificationCoalescer::new(coalesce_window, notifier)),
+        }
     }
     pub fn repository(&self) -> Arc<dyn NotificationRepository> {
         Arc::clone(&self.repo)
@@ -110,6 +339,25 @@ impl NotificationService {
         }
     }
     async fn dispatch_desktop(&self, notification: &Notification) {
-        tracing::debug!(notification_id = %notification.id, "Desktop notification dispatch seam is not installed yet");
+        let settings = match self.settings_repo.get_settings().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load desktop notification settings");
+                return;
+            }
+        };
+        if !settings.desktop_enabled {
+            return;
+        }
+        if !settings.desktop_category_enabled(notification.category) {
+            return;
+        }
+        if settings.desktop_only_when_unfocused
+            && self.focus_state.is_focused()
+            && !desktop_category_is_always(notification.category)
+        {
+            return;
+        }
+        self.coalescer.enqueue(notification.clone()).await;
     }
 }

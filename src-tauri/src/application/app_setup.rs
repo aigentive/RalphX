@@ -116,8 +116,6 @@ pub(crate) fn run_app_setup(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
 
-    // Create the main window programmatically to set traffic light position
-    create_main_window(app)?;
     configure_bundled_runtime_env(app);
 
     // Create application state with production SQLite repositories
@@ -134,6 +132,9 @@ pub(crate) fn run_app_setup(
         internal_event_bus,
     )
     .expect("Failed to initialize AppState");
+
+    // Focus starts false until the first native event so pre-window dispatches remain deliverable.
+    create_main_window(app, Arc::clone(&app_state.window_focus_state))?;
     crate::commands::workspace_open_commands::warm_workspace_open_target_cache();
 
     // Construct WebhookPublisher ONCE — Arc-clone into both AppState instances.
