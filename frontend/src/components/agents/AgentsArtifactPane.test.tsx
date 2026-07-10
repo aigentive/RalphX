@@ -106,6 +106,9 @@ const {
   getIdeationSessionMock,
   getIdeationChildrenMock,
   restartImplementationMock,
+  pauseExecutionPlanMock,
+  resumeExecutionPlanMock,
+  stopExecutionPlanMock,
   useTasksMock,
   useConversationMock,
   useDependencyGraphMock,
@@ -167,6 +170,9 @@ const {
   getIdeationSessionMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
   restartImplementationMock: vi.fn(),
+  pauseExecutionPlanMock: vi.fn(),
+  resumeExecutionPlanMock: vi.fn(),
+  stopExecutionPlanMock: vi.fn(),
   useTasksMock: vi.fn(),
   useConversationMock: vi.fn(),
   useDependencyGraphMock: vi.fn(),
@@ -305,6 +311,22 @@ vi.mock("@/api/ideation", async (importOriginal) => {
         restartImplementation: (...args: unknown[]) =>
           restartImplementationMock(...args),
       },
+    },
+  };
+});
+
+vi.mock("@/api/tasks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/tasks")>();
+  return {
+    ...actual,
+    tasksApi: {
+      ...actual.tasksApi,
+      pauseExecutionPlan: (...args: unknown[]) =>
+        pauseExecutionPlanMock(...args),
+      resumeExecutionPlan: (...args: unknown[]) =>
+        resumeExecutionPlanMock(...args),
+      stopExecutionPlan: (...args: unknown[]) =>
+        stopExecutionPlanMock(...args),
     },
   };
 });
@@ -1472,6 +1494,18 @@ describe("AgentsArtifactPane", () => {
       executionPlanId: "exec-new",
       archivedTaskCount: 1,
       createdTaskIds: ["task-new"],
+    });
+    pauseExecutionPlanMock.mockResolvedValue({
+      executionPlanId: "exec-current",
+      affectedCount: 1,
+    });
+    resumeExecutionPlanMock.mockResolvedValue({
+      executionPlanId: "exec-current",
+      affectedCount: 1,
+    });
+    stopExecutionPlanMock.mockResolvedValue({
+      executionPlanId: "exec-current",
+      affectedCount: 1,
     });
     useTasksMock.mockReturnValue({
       data: [],
@@ -5289,6 +5323,160 @@ describe("AgentsArtifactPane", () => {
     expect(toastSuccessMock).toHaveBeenCalledWith(
       "Implementation restarted with 1 task",
     );
+  });
+
+  it("confirms before pausing and stopping the accepted execution plan", async () => {
+    const user = userEvent.setup();
+    const loadActivePlan = vi.fn().mockResolvedValue(undefined);
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+      loadActivePlan,
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-current",
+          executionPlanId: "exec-current",
+          internalStatus: "executing",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByTestId("plan-lifecycle-pause-button"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("plan-lifecycle-stop-button"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("plan-lifecycle-resume-button"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("plan-lifecycle-pause-button"));
+    let dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Pause this implementation plan?");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(pauseExecutionPlanMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("plan-lifecycle-pause-button"));
+    dialog = await screen.findByRole("alertdialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Pause Plan" }),
+    );
+
+    await waitFor(() =>
+      expect(pauseExecutionPlanMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        sessionId: "session-1",
+        executionPlanId: "exec-current",
+      }),
+    );
+    expect(loadActivePlan).toHaveBeenCalledWith("project-1");
+    expect(toastSuccessMock).toHaveBeenCalledWith("Plan paused");
+
+    await user.click(screen.getByTestId("plan-lifecycle-stop-button"));
+    dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Stop this implementation plan?");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Stop Plan" }),
+    );
+
+    await waitFor(() =>
+      expect(stopExecutionPlanMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        sessionId: "session-1",
+        executionPlanId: "exec-current",
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Plan stopped");
+  });
+
+  it("shows a confirmed resume control for paused accepted execution plan work", async () => {
+    const user = userEvent.setup();
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-current",
+          executionPlanId: "exec-current",
+          internalStatus: "paused",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByTestId("plan-lifecycle-resume-button"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("plan-lifecycle-pause-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("plan-lifecycle-stop-button"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("plan-lifecycle-resume-button"));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Resume this implementation plan?");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Resume Plan" }),
+    );
+
+    await waitFor(() =>
+      expect(resumeExecutionPlanMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        sessionId: "session-1",
+        executionPlanId: "exec-current",
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Plan resumed");
   });
 
   it("reports restart implementation failures from the confirmation action", async () => {
