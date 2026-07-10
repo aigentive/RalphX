@@ -38,6 +38,7 @@ use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
+use crate::application::{AppState, NotificationService};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution,
@@ -64,6 +65,10 @@ use crate::infrastructure::memory::{
     MemoryIdeationSessionRepository, MemoryPlanArtifactApprovalRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
+
+fn notification_service() -> NotificationService {
+    AppState::new_test().notification_service()
+}
 
 #[derive(Default)]
 struct RecordingStarter;
@@ -1429,6 +1434,7 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
         plan_verification_starter,
         Arc::new(NoopAutomationEventEmitter),
         artifact_repo,
+        notification_service(),
         Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
@@ -1794,6 +1800,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(NoopAutomationPlanVerificationStarter),
         Arc::new(NoopAutomationEventEmitter),
         artifact_repo,
+        notification_service(),
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );
@@ -7185,9 +7192,14 @@ async fn automation_run_now_spawned_judge_failure_emits_run_update() {
         run_repo.clone(),
         event_emitter.clone(),
         artifact_repo,
+        notification_service(),
     );
-    let transition_service =
-        AutomationTransitionService::new(automation_repo.clone(), run_repo.clone(), event_emitter);
+    let transition_service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        event_emitter,
+        notification_service(),
+    );
     let action = service
         .trigger_run_now_action(&automation_id)
         .await
@@ -7265,9 +7277,14 @@ async fn automation_run_now_spawned_judge_stale_failure_emits_nothing_after_disp
         run_repo.clone(),
         event_emitter.clone(),
         artifact_repo,
+        notification_service(),
     );
-    let transition_service =
-        AutomationTransitionService::new(automation_repo.clone(), run_repo.clone(), event_emitter);
+    let transition_service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        event_emitter,
+        notification_service(),
+    );
     let action = service
         .trigger_run_now_action(&automation_id)
         .await

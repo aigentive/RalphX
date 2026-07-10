@@ -51,7 +51,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope, Artifact, ArtifactId,
-    ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, ProjectId,
+    ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, NewNotification,
+    NotificationCategory, NotificationSeverity, NotificationTarget, NotificationTargetKind,
+    PlanBranch, ProjectId,
 };
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
@@ -1866,7 +1868,6 @@ pub async fn write_agent_workspace_pr_review_artifact(
         head_sha.clone(),
     )
     .await?;
-
     let previous_artifact = match monitor.review_artifact_id.clone() {
         Some(artifact_id) => {
             let latest_id = state
@@ -2007,6 +2008,8 @@ pub async fn propose_agent_workspace_pr_review_action(
         Some(head_sha.clone()),
     )
     .await?;
+    let entering_awaiting_user =
+        monitor.status != AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
     ensure_review_artifact_for_head(&monitor, &head_sha)?;
 
     let action = AgentWorkspacePrReviewAction::new(
@@ -2037,6 +2040,32 @@ pub async fn propose_agent_workspace_pr_review_action(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    if entering_awaiting_user {
+        state
+            .app_state
+            .notification_service()
+            .record(NewNotification {
+                project_id: Some(monitor.project_id.to_string()),
+                category: NotificationCategory::PrReviewAction,
+                severity: NotificationSeverity::ActionRequired,
+                title: format!("PR #{} needs your review", monitor.pr_number),
+                body: Some("A PR review action is waiting for your decision".to_string()),
+                target: NotificationTarget {
+                    kind: NotificationTargetKind::AgentConversation,
+                    project_id: Some(monitor.project_id.to_string()),
+                    task_id: None,
+                    conversation_id: Some(monitor.conversation_id.to_string()),
+                    setup_conversation_id: None,
+                    automation_id: None,
+                    run_id: None,
+                },
+                dedupe_key: Some(format!(
+                    "pr-review:{}:awaiting_user:{}",
+                    monitor.conversation_id, action.id
+                )),
+            })
+            .await;
+    }
 
     Ok(Json(ProposeAgentWorkspacePrReviewActionResponse {
         success: true,
@@ -2230,7 +2259,7 @@ pub async fn submit_agent_workspace_pr_review_action(
             let mut retry_monitor =
                 monitor_for_retryable_submission_failure(monitor, error_message.clone());
             retry_monitor.last_seen_head_sha = Some(action.head_sha.clone());
-            state
+            let retry_monitor = state
                 .app_state
                 .agent_conversation_workspace_repo
                 .upsert_pr_review_monitor(retry_monitor)
@@ -2238,6 +2267,33 @@ pub async fn submit_agent_workspace_pr_review_action(
                 .map_err(|error| {
                     json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                 })?;
+            state
+                .app_state
+                .notification_service()
+                .record(NewNotification {
+                    project_id: Some(retry_monitor.project_id.to_string()),
+                    category: NotificationCategory::PrReviewAction,
+                    severity: NotificationSeverity::ActionRequired,
+                    title: format!("PR #{} needs your review", retry_monitor.pr_number),
+                    body: Some(
+                        "A PR review action could not be submitted and needs your decision"
+                            .to_string(),
+                    ),
+                    target: NotificationTarget {
+                        kind: NotificationTargetKind::AgentConversation,
+                        project_id: Some(retry_monitor.project_id.to_string()),
+                        task_id: None,
+                        conversation_id: Some(retry_monitor.conversation_id.to_string()),
+                        setup_conversation_id: None,
+                        automation_id: None,
+                        run_id: None,
+                    },
+                    dedupe_key: Some(format!(
+                        "pr-review:{}:awaiting_user:{}",
+                        retry_monitor.conversation_id, action.id
+                    )),
+                })
+                .await;
             return Err(json_error(
                 StatusCode::BAD_GATEWAY,
                 "Failed to submit GitHub PR review",

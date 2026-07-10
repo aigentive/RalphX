@@ -8,6 +8,7 @@ use ralphx_lib::application::services::PrPollerRegistry;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::project_commands::*;
 use ralphx_lib::commands::ExecutionState;
+use ralphx_lib::domain::entities::NotificationCategory;
 use ralphx_lib::domain::entities::{
     ArtifactId, GitMode, IdeationSessionId, InternalStatus, MergeValidationMode, PlanBranch,
     PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
@@ -18,6 +19,40 @@ use ralphx_lib::infrastructure::memory::{
     MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskRepository,
 };
 use ralphx_lib::testing::create_mock_app_handle;
+use tokio::io::AsyncWriteExt;
+
+#[tokio::test]
+async fn gh_auth_login_prompt_records_one_durable_notification_per_device_code() {
+    let state = AppState::new_test();
+    let app_handle = create_mock_app_handle();
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    writer
+        .write_all(
+            b"First copy your one-time code: ABCD-1234\nThen enter your one-time code: ABCD-1234\n",
+        )
+        .await
+        .expect("prompt output should write");
+    drop(writer);
+
+    collect_gh_auth_login_output(Some(reader), app_handle, state.notification_service()).await;
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("notifications should list")
+        .notifications;
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].category, NotificationCategory::GhAuth);
+    assert!(notifications[0]
+        .body
+        .as_deref()
+        .is_some_and(|body| body.contains("ABCD-1234")));
+    assert_eq!(
+        notifications[0].dedupe_key.as_deref(),
+        Some("gh-auth:ABCD-1234")
+    );
+}
 
 // ── is_github_url tests ──────────────────────────────────────────────────────
 

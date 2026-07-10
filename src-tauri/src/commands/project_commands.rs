@@ -10,11 +10,12 @@ use tauri::{Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::time::Duration;
 
-use crate::application::{AppState, GitService, TaskTransitionService};
+use crate::application::{AppState, GitService, NotificationService, TaskTransitionService};
 use crate::commands::execution_commands::ActiveProjectState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    GitMode, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranchStatus, Project,
+    GitMode, InternalStatus, MergeStrategy, MergeValidationMode, NewNotification,
+    NotificationCategory, NotificationSeverity, NotificationTarget, PlanBranchStatus, Project,
     ProjectId,
 };
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
@@ -958,6 +959,7 @@ fn gh_web_login_args() -> [&'static str; 8] {
 async fn run_gh_web_login_command(
     app_handle: tauri::AppHandle,
     deadline: Duration,
+    notification_service: NotificationService,
 ) -> Result<(), String> {
     let mut child =
         tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
@@ -972,8 +974,16 @@ async fn run_gh_web_login_command(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_task = tokio::spawn(collect_gh_auth_login_output(stdout, app_handle.clone()));
-    let stderr_task = tokio::spawn(collect_gh_auth_login_output(stderr, app_handle));
+    let stdout_task = tokio::spawn(collect_gh_auth_login_output(
+        stdout,
+        app_handle.clone(),
+        notification_service.clone(),
+    ));
+    let stderr_task = tokio::spawn(collect_gh_auth_login_output(
+        stderr,
+        app_handle,
+        notification_service,
+    ));
 
     let status = match tokio::time::timeout(deadline, child.wait()).await {
         Ok(Ok(status)) => status,
@@ -1006,12 +1016,15 @@ async fn run_gh_web_login_command(
     })
 }
 
-async fn collect_gh_auth_login_output<R>(
-    stream: Option<R>,
-    app_handle: tauri::AppHandle,
+#[doc(hidden)]
+pub async fn collect_gh_auth_login_output<S, R>(
+    stream: Option<S>,
+    app_handle: tauri::AppHandle<R>,
+    notification_service: NotificationService,
 ) -> Vec<String>
 where
-    R: AsyncRead + Unpin,
+    S: AsyncRead + Unpin,
+    R: tauri::Runtime,
 {
     let Some(stream) = stream else {
         return Vec::new();
@@ -1020,7 +1033,21 @@ where
     let mut reader = BufReader::new(stream).lines();
     while let Ok(Some(line)) = reader.next_line().await {
         if let Some(prompt) = parse_gh_auth_login_prompt(&line) {
+            let code = prompt.code.clone();
             let _ = app_handle.emit(GH_AUTH_LOGIN_PROMPT_EVENT, prompt);
+            if let Some(code) = code {
+                notification_service
+                    .record(NewNotification {
+                        project_id: None,
+                        category: NotificationCategory::GhAuth,
+                        severity: NotificationSeverity::ActionRequired,
+                        title: "GitHub login needed".to_string(),
+                        body: Some(format!("Enter code {code} to finish gh login")),
+                        target: NotificationTarget::none(),
+                        dedupe_key: Some(format!("gh-auth:{code}")),
+                    })
+                    .await;
+            }
         }
         lines.push(line);
     }
@@ -1134,12 +1161,15 @@ pub async fn setup_gh_git_auth() -> Result<bool, String> {
 
 /// Start GitHub CLI's browser login flow from RalphX's app environment.
 #[tauri::command]
-pub async fn login_gh_with_browser(app: tauri::AppHandle) -> Result<bool, String> {
+pub async fn login_gh_with_browser(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
     if check_gh_auth_status().await {
         return Ok(true);
     }
 
-    run_gh_web_login_command(app, Duration::from_secs(300)).await?;
+    run_gh_web_login_command(app, Duration::from_secs(300), state.notification_service()).await?;
 
     if check_gh_auth_status().await {
         Ok(true)
@@ -1421,8 +1451,7 @@ fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
     execution_state: &Arc<ExecutionState>,
     _app_handle: tauri::AppHandle<R>,
 ) -> Arc<TaskTransitionService> {
-    let mut svc =
-        state.build_transition_service_for_runtime(Arc::clone(execution_state), None);
+    let mut svc = state.build_transition_service_for_runtime(Arc::clone(execution_state), None);
 
     svc = svc.with_pr_poller_registry(Arc::clone(&state.pr_poller_registry));
 

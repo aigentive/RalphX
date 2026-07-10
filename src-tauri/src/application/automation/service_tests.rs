@@ -23,6 +23,7 @@ use crate::application::automation::service::{
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
 };
+use crate::application::{AppState, NotificationService};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, Automation,
     AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
@@ -41,6 +42,10 @@ use crate::infrastructure::memory::{
     MemoryAutomationRepository, MemoryAutomationRunRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
+
+fn notification_service() -> NotificationService {
+    AppState::new_test().notification_service()
+}
 
 /// Artifact repository fake that delegates storage to an in-memory repo while
 /// recording `create_with_previous_version` links so spec-versioning tests can
@@ -236,6 +241,7 @@ fn service_with_emitter_and_artifacts(
         run_repo.clone(),
         event_emitter,
         artifact_repo.clone(),
+        notification_service(),
     );
     (service, automation_repo, run_repo, artifact_repo)
 }
@@ -261,6 +267,7 @@ fn service_with_auto_merge_controls(
         run_repo.clone(),
         event_emitter,
         artifact_repo,
+        notification_service(),
     )
     .with_pr_auto_merge_controls(workspace_repo_trait, Some(github_trait));
     (service, automation_repo, run_repo)
@@ -1424,6 +1431,7 @@ async fn service_status_controls_fail_when_compare_and_swap_loses() {
         )),
         emitter.clone(),
         Arc::new(RecordingArtifactRepository::default()),
+        notification_service(),
     );
     let pause_id = AutomationId::from_string("automation-1");
     let pause_error = pause_service
@@ -1444,6 +1452,7 @@ async fn service_status_controls_fail_when_compare_and_swap_loses() {
         )),
         emitter.clone(),
         Arc::new(RecordingArtifactRepository::default()),
+        notification_service(),
     );
     let resume_error = resume_service.resume(&pause_id).await.unwrap_err();
     assert!(matches!(resume_error, AppError::Conflict(_)));
@@ -1460,6 +1469,7 @@ async fn service_status_controls_fail_when_compare_and_swap_loses() {
         )),
         emitter.clone(),
         Arc::new(RecordingArtifactRepository::default()),
+        notification_service(),
     );
     let stop_error = stop_service.stop(&pause_id).await.unwrap_err();
     assert!(matches!(stop_error, AppError::Conflict(_)));
@@ -2723,6 +2733,7 @@ async fn service_skip_judge_loses_cleanly_when_scheduler_started_judge() {
         run_repo,
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(RecordingArtifactRepository::default()),
+        notification_service(),
     );
 
     let outcome = service.skip_judge(&active.id, &run.id).await.unwrap();
@@ -2750,6 +2761,7 @@ async fn service_skip_judge_loses_cleanly_when_failed_judge_was_redispatched() {
         run_repo,
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(RecordingArtifactRepository::default()),
+        notification_service(),
     );
 
     let outcome = service.skip_judge(&paused.id, &run.id).await.unwrap();
@@ -3174,6 +3186,7 @@ async fn service_judge_successor_readiness_pause_cas_loss_is_clean_outcome() {
         run_repo,
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(RecordingArtifactRepository::default()),
+        notification_service(),
     );
 
     let outcome = service

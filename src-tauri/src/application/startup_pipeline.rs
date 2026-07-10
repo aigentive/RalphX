@@ -212,12 +212,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
     let phase_started_at = startup_phase_started("git_auth_preflight");
     let startup_git_preflight =
-        crate::application::startup_git_auth_preflight::run_startup_git_auth_preflight(
+        crate::application::startup_git_auth_preflight::run_startup_git_auth_preflight_with_notifications(
             Arc::clone(&project_repo),
             Arc::clone(&app_state_repo),
             Some(Arc::clone(&plan_branch_repo)),
             Some(Arc::clone(&agent_conversation_workspace_repo)),
             &app_handle,
+            Some(app_state.notification_service()),
         )
         .await;
     startup_phase_completed("git_auth_preflight", phase_started_at);
