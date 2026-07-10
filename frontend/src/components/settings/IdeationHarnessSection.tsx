@@ -180,9 +180,16 @@ function getEffortOptions(
   model: string | null,
   modelRegistry: AgentModelRegistry,
   providerSupportedEfforts?: readonly string[] | null,
+  providerSupportedModelAliases?: readonly string[] | null,
 ) {
   const provider = isAgentProvider(harness) ? harness : "claude";
-  const modelId = model ?? defaultModelForProvider(provider, modelRegistry);
+  const modelId =
+    model ??
+    defaultModelForProvider(
+      provider,
+      modelRegistry,
+      providerSupportedModelAliases,
+    );
   return [
     {
       value: "inherit",
@@ -449,6 +456,7 @@ function defaultsForHarness(
   lane: AgentLane,
   harness: KnownHarness,
   modelRegistry: AgentModelRegistry,
+  providerSupportedModelAliases?: readonly unknown[] | null,
 ): {
   harness: Harness;
   model: string | null;
@@ -466,7 +474,11 @@ function defaultsForHarness(
     };
   }
 
-  const defaultCodexModel = defaultModelForProvider("codex", modelRegistry);
+  const defaultCodexModel = defaultModelForProvider(
+    "codex",
+    modelRegistry,
+    providerSupportedModelAliases,
+  );
   const defaultCodexEffort = defaultEffortForModel(
     "codex",
     defaultCodexModel,
@@ -520,7 +532,12 @@ function defaultsForProvider(
     return null;
   }
 
-  const fallback = defaultsForHarness(lane, provider.provider, modelRegistry);
+  const fallback = defaultsForHarness(
+    lane,
+    provider.provider,
+    modelRegistry,
+    provider.supportedModelAliases,
+  );
   return {
     harness: provider.provider,
     model: provider.model ?? fallback.model,
@@ -628,6 +645,7 @@ function HarnessRow({
     lane.row?.model ?? null,
     modelRegistry,
     configuredProviderSettings?.supportedEfforts ?? null,
+    configuredProviderSettings?.supportedModelAliases ?? null,
   );
 
   useEffect(() => {
@@ -1042,11 +1060,17 @@ function HarnessSubsection({
       return;
     }
 
+    const provider = providers.find((candidate) => candidate.provider === harness);
     setShowError(false);
     updateLane(
       {
         lane,
-        ...defaultsForHarness(lane, harness, modelRegistry),
+        ...defaultsForHarness(
+          lane,
+          harness,
+          modelRegistry,
+          provider?.supportedModelAliases,
+        ),
       },
       { onError: () => setShowError(true) },
     );

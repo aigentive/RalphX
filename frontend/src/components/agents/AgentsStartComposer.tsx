@@ -540,15 +540,25 @@ export function AgentsStartComposer({
       }
       clearStartError();
       const remembered = lastModelEffortByProvider[nextProvider];
+      const nextProviderModelAliases = supportedModelAliasesForProvider(
+        providerOptions,
+        nextProvider,
+      );
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider: nextProvider,
-          modelId: remembered?.modelId ?? defaultModelForProvider(nextProvider, modelRegistry),
+          modelId:
+            remembered?.modelId ??
+            defaultModelForProvider(
+              nextProvider,
+              modelRegistry,
+              nextProviderModelAliases,
+            ),
           effort: remembered?.effort,
         },
         modelRegistry,
         supportedEffortsForProvider(providerOptions, nextProvider),
-        supportedModelAliasesForProvider(providerOptions, nextProvider)
+        nextProviderModelAliases
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);

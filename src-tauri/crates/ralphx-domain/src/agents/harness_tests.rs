@@ -48,6 +48,7 @@ fn test_logical_effort_parse_and_display() {
     assert_eq!(LogicalEffort::High.to_string(), "high");
     assert_eq!(LogicalEffort::XHigh.to_string(), "xhigh");
     assert_eq!(LogicalEffort::Max.to_string(), "max");
+    assert_eq!(LogicalEffort::Ultra.to_string(), "ultra");
 
     assert_eq!("low".parse::<LogicalEffort>().unwrap(), LogicalEffort::Low);
     assert_eq!(
@@ -55,6 +56,10 @@ fn test_logical_effort_parse_and_display() {
         LogicalEffort::XHigh
     );
     assert_eq!("max".parse::<LogicalEffort>().unwrap(), LogicalEffort::Max);
+    assert_eq!(
+        "ultra".parse::<LogicalEffort>().unwrap(),
+        LogicalEffort::Ultra
+    );
 }
 
 #[test]
@@ -64,6 +69,7 @@ fn test_logical_effort_to_legacy_claude_effort() {
     assert_eq!(LogicalEffort::High.to_legacy_claude_effort(), "high");
     assert_eq!(LogicalEffort::XHigh.to_legacy_claude_effort(), "xhigh");
     assert_eq!(LogicalEffort::Max.to_legacy_claude_effort(), "max");
+    assert_eq!(LogicalEffort::Ultra.to_legacy_claude_effort(), "ultra");
 }
 
 #[test]
