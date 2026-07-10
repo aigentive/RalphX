@@ -7,6 +7,7 @@ import {
   Clock,
   Info,
   Loader2,
+  PauseCircle,
   RotateCcw,
   Zap,
 } from "lucide-react";
@@ -28,12 +29,18 @@ export interface PlanLifecycleAction {
   testId?: string;
 }
 
+export interface PlanLifecycleRuntimeCounts {
+  running: number;
+  paused: number;
+}
+
 interface PlanLifecycleBannerProps {
   state: PlanLifecycleState;
   title: string;
   description: string;
   actions: readonly PlanLifecycleAction[];
   acceptedFooterActions?: readonly PlanLifecycleAction[] | undefined;
+  acceptedRuntimeCounts?: PlanLifecycleRuntimeCounts | undefined;
   counts?: StatusCounts | undefined;
   acceptedAt?: string | null | undefined;
   onViewWork?: (() => void) | undefined;
@@ -113,6 +120,7 @@ export function PlanLifecycleBanner({
   description,
   actions,
   acceptedFooterActions = [],
+  acceptedRuntimeCounts,
   counts,
   acceptedAt = null,
   onViewWork,
@@ -122,6 +130,8 @@ export function PlanLifecycleBanner({
 }: PlanLifecycleBannerProps) {
   const config = LIFECYCLE_CONFIG[state];
   const Icon = config.icon;
+  const runningCount = acceptedRuntimeCounts?.running ?? counts?.active ?? 0;
+  const pausedCount = acceptedRuntimeCounts?.paused ?? 0;
   const rootStyle = {
     "--plan-lifecycle-accent": config.accent,
     backgroundColor: withAlpha(config.accent, 8),
@@ -273,7 +283,7 @@ export function PlanLifecycleBanner({
                   {counts.total} {counts.total === 1 ? "task" : "tasks"}
                 </span>
 
-                {counts.active > 0 ? (
+                {runningCount > 0 ? (
                   <div className="flex items-center gap-1.5">
                     <Zap
                       className="h-3.5 w-3.5"
@@ -283,7 +293,22 @@ export function PlanLifecycleBanner({
                       className="text-[0.75rem] font-medium"
                       style={{ color: "var(--accent-primary)" }}
                     >
-                      {counts.active} in progress
+                      {runningCount} in progress
+                    </span>
+                  </div>
+                ) : null}
+
+                {pausedCount > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <PauseCircle
+                      className="h-3.5 w-3.5"
+                      style={{ color: "var(--text-muted)" }}
+                    />
+                    <span
+                      className="text-[0.75rem]"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {pausedCount} paused
                     </span>
                   </div>
                 ) : null}
@@ -303,7 +328,7 @@ export function PlanLifecycleBanner({
                   </div>
                 ) : null}
 
-                {counts.idle > 0 && counts.active === 0 && counts.done === 0 ? (
+                {counts.idle > 0 && runningCount === 0 && counts.done === 0 ? (
                   <div className="flex items-center gap-1.5">
                     <Clock
                       className="h-3.5 w-3.5"

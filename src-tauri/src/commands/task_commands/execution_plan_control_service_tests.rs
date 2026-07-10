@@ -84,15 +84,18 @@ fn scope(fixture: &ControlFixture) -> ExecutionPlanControlScope {
     }
 }
 
-async fn current_plan_halt_mode(fixture: &ControlFixture) -> ExecutionPlanHaltMode {
-    fixture
-        .state
+async fn plan_halt_mode(state: &AppState, plan_id: &ExecutionPlanId) -> ExecutionPlanHaltMode {
+    state
         .execution_plan_repo
-        .get_by_id(&fixture.current_plan_id)
+        .get_by_id(plan_id)
         .await
         .unwrap()
         .unwrap()
         .halt_mode
+}
+
+async fn current_plan_halt_mode(fixture: &ControlFixture) -> ExecutionPlanHaltMode {
+    plan_halt_mode(&fixture.state, &fixture.current_plan_id).await
 }
 
 async fn stored_task(state: &AppState, task_id: &TaskId) -> Task {
@@ -212,6 +215,71 @@ async fn stop_plan_sets_halt_mode_and_stops_only_current_plan_active_tasks() {
 
     let stale = stored_task(&fixture.state, &stale_task.id).await;
     assert_eq!(stale.internal_status, InternalStatus::Executing);
+}
+
+#[tokio::test]
+async fn pause_plan_rejects_stale_explicit_plan_id_without_mutation() {
+    let fixture = setup_control_fixture().await;
+    let current_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Current active attempt",
+    )
+    .await;
+    let stale_task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.old_plan_id,
+        InternalStatus::Executing,
+        "Superseded attempt",
+    )
+    .await;
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service
+        .pause_plan(ExecutionPlanControlScope {
+            project_id: fixture.project_id.clone(),
+            session_id: fixture.session_id.clone(),
+            execution_plan_id: Some(fixture.old_plan_id.clone()),
+        })
+        .await;
+
+    match result {
+        Err(AppError::Validation(message)) => {
+            assert!(
+                message.contains("active execution plan"),
+                "stale explicit plan id should be rejected as non-current, got: {message}"
+            );
+        }
+        other => panic!("expected stale explicit plan id validation error, got {other:?}"),
+    }
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+    assert_eq!(
+        plan_halt_mode(&fixture.state, &fixture.old_plan_id).await,
+        ExecutionPlanHaltMode::Running
+    );
+
+    let current = stored_task(&fixture.state, &current_task.id).await;
+    assert_eq!(current.internal_status, InternalStatus::Executing);
+    assert!(
+        PauseReason::from_task_metadata(current.metadata.as_deref()).is_none(),
+        "current active attempt must not receive stale-id pause metadata"
+    );
+    let stale = stored_task(&fixture.state, &stale_task.id).await;
+    assert_eq!(stale.internal_status, InternalStatus::Executing);
+    assert!(
+        PauseReason::from_task_metadata(stale.metadata.as_deref()).is_none(),
+        "superseded attempt must not receive pause metadata"
+    );
 }
 
 #[tokio::test]

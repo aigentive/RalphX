@@ -123,4 +123,31 @@ describe("PlanLifecycleBanner", () => {
     expect(onResume).toHaveBeenCalledTimes(1);
     expect(onStop).toHaveBeenCalledTimes(1);
   });
+
+  it("uses runtime counts so paused tasks are not shown as in progress", () => {
+    render(
+      <PlanLifecycleBanner
+        state="accepted"
+        title="Plan accepted"
+        description="Implementation work is ready."
+        actions={[]}
+        counts={{
+          total: 3,
+          idle: 2,
+          active: 1,
+          done: 0,
+        }}
+        acceptedRuntimeCounts={{
+          running: 0,
+          paused: 1,
+        }}
+      />,
+    );
+
+    const banner = screen.getByTestId("plan-lifecycle-banner");
+
+    expect(within(banner).queryByText("1 in progress")).not.toBeInTheDocument();
+    expect(within(banner).getByText("1 paused")).toBeInTheDocument();
+    expect(within(banner).getByText("2 queued")).toBeInTheDocument();
+  });
 });

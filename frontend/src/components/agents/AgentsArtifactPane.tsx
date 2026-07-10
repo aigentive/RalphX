@@ -2744,6 +2744,7 @@ function AgentPlanPanel({
                 actions={planLifecycleActions}
                 {...(planLifecycleState === "accepted" && {
                   counts: implementationTaskCounts,
+                  acceptedRuntimeCounts: planRuntimeControlCounts,
                   acceptedFooterActions,
                   acceptedAt: session?.convertedAt ?? null,
                   onViewWork: onOpenTasks,

@@ -375,26 +375,27 @@ impl<'a> ExecutionPlanControlService<'a> {
             )));
         }
 
-        let plan = if let Some(id) = scope.execution_plan_id.as_ref() {
-            self.state
-                .execution_plan_repo
-                .get_by_id(id)
-                .await?
-                .ok_or_else(|| {
-                    AppError::NotFound(format!("Execution plan not found: {}", id.as_str()))
-                })?
-        } else {
-            self.state
-                .execution_plan_repo
-                .get_active_for_session(&scope.session_id)
-                .await?
-                .ok_or_else(|| {
-                    AppError::NotFound(format!(
-                        "Active execution plan not found for session {}",
-                        scope.session_id.as_str()
-                    ))
-                })?
-        };
+        let plan = self
+            .state
+            .execution_plan_repo
+            .get_active_for_session(&scope.session_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Active execution plan not found for session {}",
+                    scope.session_id.as_str()
+                ))
+            })?;
+
+        if let Some(requested_id) = scope.execution_plan_id.as_ref() {
+            if requested_id != &plan.id {
+                return Err(AppError::Validation(format!(
+                    "Execution plan {} is not the active execution plan for session {}",
+                    requested_id.as_str(),
+                    scope.session_id.as_str()
+                )));
+            }
+        }
 
         if plan.session_id != scope.session_id {
             return Err(AppError::Validation(format!(
