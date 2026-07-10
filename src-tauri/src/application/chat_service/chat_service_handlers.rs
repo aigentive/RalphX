@@ -35,7 +35,8 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, ExecutionSettingsRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
     TaskStepRepository,
@@ -258,6 +259,79 @@ async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
             Some(provider_spawnable.spawnable)
         }
         Err(_) => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RecoveryRetryProviderGate<'a, R: Runtime> {
+    app_handle: &'a Option<AppHandle<R>>,
+    agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+}
+
+impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
+    fn new(
+        app_handle: &'a Option<AppHandle<R>>,
+        agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
+        recovery_harness: AgentHarnessKind,
+        context_type: ChatContextType,
+    ) -> Self {
+        Self {
+            app_handle,
+            agent_provider_settings_repo,
+            recovery_harness,
+            context_type,
+        }
+    }
+}
+
+async fn resolve_recovery_retry_spawnable<R: Runtime>(
+    retry_provider_spawnable: Result<chat_service_context::ProviderSpawnableCommand, String>,
+    provider_gate: RecoveryRetryProviderGate<'_, R>,
+) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+    match retry_provider_spawnable {
+        Ok(provider_spawnable) => {
+            recovery_retry_spawnable_with_provider_gate(
+                provider_gate.app_handle,
+                provider_gate.agent_provider_settings_repo,
+                provider_gate.recovery_harness,
+                provider_gate.context_type,
+                provider_spawnable,
+            )
+            .await
+        }
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                harness = %provider_gate.recovery_harness,
+                "Failed to build recovery retry spawnable"
+            );
+            None
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecoveryRetryAppRepos {
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
+}
+
+impl RecoveryRetryAppRepos {
+    fn from_app_handle<R: Runtime>(app_handle: &Option<AppHandle<R>>) -> Self {
+        let Some(handle) = app_handle else {
+            return Self::default();
+        };
+        let app_state = handle.state::<AppState>();
+        Self {
+            ideation_effort_settings_repo: Some(Arc::clone(
+                &app_state.ideation_effort_settings_repo,
+            )),
+            ideation_model_settings_repo: Some(Arc::clone(&app_state.ideation_model_settings_repo)),
+            delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
+        }
     }
 }
 
@@ -2235,22 +2309,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 provider_session_id: new_session_id.clone(),
                             },
                         );
-                        let ideation_effort_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.ideation_effort_settings_repo)
-                        });
+                        let retry_app_repos = RecoveryRetryAppRepos::from_app_handle(app_handle);
                         let retry_agent_lane_settings_repo =
                             agent_lane_settings_repo.as_ref().map(Arc::clone);
                         let retry_agent_provider_settings_repo =
                             agent_provider_settings_repo.as_ref().map(Arc::clone);
-                        let ideation_model_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.ideation_model_settings_repo)
-                        });
-                        let delegated_session_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.delegated_session_repo)
-                        });
 
                         let retry_provider_spawnable =
                             chat_service_context::build_resume_command_for_harness(
@@ -2275,11 +2338,12 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 Arc::clone(chat_attachment_repo),
                                 Arc::clone(artifact_repo),
                                 retry_agent_lane_settings_repo.clone(),
-                                ideation_effort_settings_repo.clone(),
-                                ideation_model_settings_repo.clone(),
+                                retry_app_repos.ideation_effort_settings_repo.clone(),
+                                retry_app_repos.ideation_model_settings_repo.clone(),
                                 Arc::clone(ideation_session_repo),
                                 Arc::clone(
-                                    delegated_session_repo
+                                    retry_app_repos
+                                        .delegated_session_repo
                                         .as_ref()
                                         .expect("delegated session repo available"),
                                 ),
@@ -2292,26 +2356,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 None,
                             )
                             .await;
-                        let retry_spawnable = match retry_provider_spawnable {
-                            Ok(provider_spawnable) => {
-                                recovery_retry_spawnable_with_provider_gate(
-                                    app_handle,
-                                    &retry_agent_provider_settings_repo,
-                                    recovery_harness,
-                                    context_type,
-                                    provider_spawnable,
-                                )
-                                .await
-                            }
-                            Err(error) => {
-                                tracing::error!(
-                                    error = %error,
-                                    harness = %recovery_harness,
-                                    "Failed to build recovery retry spawnable"
-                                );
-                                None
-                            }
-                        };
+                        let retry_provider_gate = RecoveryRetryProviderGate::new(
+                            app_handle,
+                            &retry_agent_provider_settings_repo,
+                            recovery_harness,
+                            context_type,
+                        );
+                        let retry_spawnable = resolve_recovery_retry_spawnable(
+                            retry_provider_spawnable,
+                            retry_provider_gate,
+                        )
+                        .await;
 
                         if let Some(spawnable) = retry_spawnable {
                             if let Ok(retry_child) = spawnable.spawn().await {
@@ -2336,14 +2391,15 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         task_dependency_repo,
                                         project_repo,
                                         ideation_session_repo,
-                                        delegated_session_repo
+                                        retry_app_repos
+                                            .delegated_session_repo
                                             .as_ref()
                                             .expect("delegated session repo available"),
                                         execution_settings_repo,
                                         &retry_agent_lane_settings_repo,
                                         &retry_agent_provider_settings_repo,
-                                        &ideation_effort_settings_repo,
-                                        &ideation_model_settings_repo,
+                                        &retry_app_repos.ideation_effort_settings_repo,
+                                        &retry_app_repos.ideation_model_settings_repo,
                                         task_proposal_repo,
                                         activity_event_repo,
                                         memory_event_repo,

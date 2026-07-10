@@ -491,6 +491,73 @@ async fn recovery_retry_spawnable_gate_applies_provider_env() {
     );
 }
 
+#[tokio::test]
+async fn resolve_recovery_retry_spawnable_allows_gated_build_success() {
+    let provider_gate = RecoveryRetryProviderGate::new(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    );
+
+    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+        Ok(recovery_retry_test_provider_spawnable()),
+        provider_gate,
+    )
+    .await;
+
+    assert!(
+        spawnable.is_some(),
+        "successful non-execution retry command should survive provider gating"
+    );
+}
+
+#[tokio::test]
+async fn resolve_recovery_retry_spawnable_drops_build_errors() {
+    let provider_gate = RecoveryRetryProviderGate::new(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    );
+
+    let spawnable = resolve_recovery_retry_spawnable::<MockRuntime>(
+        Err("build failed".to_string()),
+        provider_gate,
+    )
+    .await;
+
+    assert!(
+        spawnable.is_none(),
+        "retry command build errors must not launch a recovery retry"
+    );
+}
+
+#[test]
+fn recovery_retry_app_repos_are_empty_without_app_handle() {
+    let repos = RecoveryRetryAppRepos::from_app_handle::<MockRuntime>(&None);
+
+    assert!(repos.ideation_effort_settings_repo.is_none());
+    assert!(repos.ideation_model_settings_repo.is_none());
+    assert!(repos.delegated_session_repo.is_none());
+}
+
+#[test]
+fn recovery_retry_app_repos_read_required_app_state_repos() {
+    let app_state = AppState::new_test();
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let repos = RecoveryRetryAppRepos::from_app_handle(&app_handle);
+
+    assert!(repos.ideation_effort_settings_repo.is_some());
+    assert!(repos.ideation_model_settings_repo.is_some());
+    assert!(repos.delegated_session_repo.is_some());
+}
+
 #[test]
 fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_handle() {
     let app_state = AppState::new_test();

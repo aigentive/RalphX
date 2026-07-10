@@ -4,7 +4,7 @@ use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
 };
 use crate::application::{
-    AgentClientBundle, ChatResumptionRunner, ChatService, InteractiveProcessRegistry,
+    AgentClientBundle, AppState, ChatResumptionRunner, ChatService, InteractiveProcessRegistry,
     PrPollerRegistry, ReconciliationRunner, TaskSchedulerService,
 };
 use crate::commands::ExecutionState;
@@ -17,7 +17,7 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
-use tauri::Runtime;
+use tauri::{Manager, Runtime};
 
 pub(crate) struct StartupSchedulerDeps<R: Runtime = tauri::Wry> {
     pub execution_state: Arc<ExecutionState>,
@@ -35,7 +35,6 @@ pub(crate) struct StartupSchedulerDeps<R: Runtime = tauri::Wry> {
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
     pub agent_clients: AgentClientBundle,
-    pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
     pub agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
@@ -54,6 +53,11 @@ pub(crate) fn build_startup_task_scheduler<R: Runtime>(
 fn build_startup_task_scheduler_concrete<R: Runtime>(
     deps: StartupSchedulerDeps<R>,
 ) -> Arc<TaskSchedulerService> {
+    let agent_lane_settings_repo = {
+        let app_state = deps._app_handle.state::<AppState>();
+        Arc::clone(&app_state.agent_lane_settings_repo)
+    };
+
     let mut scheduler = TaskSchedulerService::new(
         Arc::clone(&deps.execution_state),
         deps.project_repo,
@@ -72,7 +76,7 @@ fn build_startup_task_scheduler_concrete<R: Runtime>(
         None,
     )
     .with_agent_clients(deps.agent_clients)
-    .with_agent_lane_settings_repo(deps.agent_lane_settings_repo)
+    .with_agent_lane_settings_repo(agent_lane_settings_repo)
     .with_agent_provider_settings_repo(deps.agent_provider_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
     .with_execution_plan_repo(deps.execution_plan_repo)
@@ -187,12 +191,16 @@ mod tests {
     use super::*;
     use crate::application::AppState;
     use crate::domain::entities::{ExecutionPlan, IdeationSession, InternalStatus, Project, Task};
-    use crate::testing::create_mock_app_handle;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
 
     #[tokio::test]
     async fn startup_scheduler_skips_ready_task_from_superseded_execution_plan() {
         let app_state = AppState::new_test();
         let execution_state = Arc::new(ExecutionState::new());
+        let app = mock_builder()
+            .manage(app_state.clone())
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
 
         let project = Project::new(
             "Startup Scheduler Project".into(),
@@ -241,14 +249,13 @@ mod tests {
             running_agent_registry: Arc::clone(&app_state.running_agent_registry),
             memory_event_repo: Arc::clone(&app_state.memory_event_repo),
             agent_clients: app_state.agent_client_bundle(),
-            agent_lane_settings_repo: Arc::clone(&app_state.agent_lane_settings_repo),
             agent_provider_settings_repo: Arc::clone(&app_state.agent_provider_settings_repo),
             plan_branch_repo: Arc::clone(&app_state.plan_branch_repo),
             execution_plan_repo: Arc::clone(&app_state.execution_plan_repo),
             interactive_process_registry: Arc::clone(&app_state.interactive_process_registry),
             github_service: None,
             pr_poller_registry: Arc::clone(&app_state.pr_poller_registry),
-            _app_handle: create_mock_app_handle(),
+            _app_handle: app.handle().clone(),
         });
 
         scheduler.try_schedule_ready_tasks().await;
@@ -270,6 +277,10 @@ mod tests {
     fn startup_scheduler_carries_lane_and_provider_settings() {
         let app_state = AppState::new_test();
         let execution_state = Arc::new(ExecutionState::new());
+        let app = mock_builder()
+            .manage(app_state.clone())
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
 
         let scheduler = build_startup_task_scheduler_concrete(StartupSchedulerDeps {
             execution_state,
@@ -287,14 +298,13 @@ mod tests {
             running_agent_registry: Arc::clone(&app_state.running_agent_registry),
             memory_event_repo: Arc::clone(&app_state.memory_event_repo),
             agent_clients: app_state.agent_client_bundle(),
-            agent_lane_settings_repo: Arc::clone(&app_state.agent_lane_settings_repo),
             agent_provider_settings_repo: Arc::clone(&app_state.agent_provider_settings_repo),
             plan_branch_repo: Arc::clone(&app_state.plan_branch_repo),
             execution_plan_repo: Arc::clone(&app_state.execution_plan_repo),
             interactive_process_registry: Arc::clone(&app_state.interactive_process_registry),
             github_service: None,
             pr_poller_registry: Arc::clone(&app_state.pr_poller_registry),
-            _app_handle: create_mock_app_handle(),
+            _app_handle: app.handle().clone(),
         });
 
         assert!(scheduler.agent_lane_settings_repo.is_some());
