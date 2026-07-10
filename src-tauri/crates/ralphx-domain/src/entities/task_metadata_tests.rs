@@ -1200,6 +1200,11 @@ fn test_merge_failure_source_serde_roundtrip() {
         MergeFailureSource::CleanupTimeout,
         MergeFailureSource::TeardownRace,
         MergeFailureSource::PipelineActiveExpired,
+        MergeFailureSource::HookEnvironment,
+        MergeFailureSource::RepeatedHookFailure,
+        MergeFailureSource::AuthFailure,
+        MergeFailureSource::DiskFull,
+        MergeFailureSource::DeterministicInfra,
     ];
     for variant in &variants {
         let json = serde_json::to_string(variant).unwrap();
@@ -1263,38 +1268,64 @@ fn test_circuit_breaker_true_serialized() {
 
 #[test]
 fn test_retry_strategy() {
-    assert_eq!(
-        MergeFailureSource::AgentReported.retry_strategy(),
-        RetryStrategy::NoAutomaticRetry
-    );
-    assert_eq!(
-        MergeFailureSource::ValidationFailed.retry_strategy(),
-        RetryStrategy::NoAutomaticRetry
-    );
-    assert_eq!(
-        MergeFailureSource::TransientGit.retry_strategy(),
-        RetryStrategy::AutoRetry
-    );
-    assert_eq!(
-        MergeFailureSource::WorktreeMissing.retry_strategy(),
-        RetryStrategy::AutoRetry
-    );
-    assert_eq!(
-        MergeFailureSource::SpawnFailure.retry_strategy(),
-        RetryStrategy::AutoRetry
-    );
-    assert_eq!(
-        MergeFailureSource::LockContention.retry_strategy(),
-        RetryStrategy::AutoRetry
-    );
-    assert_eq!(
-        MergeFailureSource::RateLimited.retry_strategy(),
-        RetryStrategy::AutoRetry
-    );
-    assert_eq!(
-        MergeFailureSource::Unknown.retry_strategy(),
-        RetryStrategy::AutoRetry
-    );
+    let cases = [
+        (MergeFailureSource::TransientGit, RetryStrategy::AutoRetry),
+        (MergeFailureSource::SystemDetected, RetryStrategy::AutoRetry),
+        (
+            MergeFailureSource::WorktreeMissing,
+            RetryStrategy::AutoRetry,
+        ),
+        (MergeFailureSource::SpawnFailure, RetryStrategy::AutoRetry),
+        (MergeFailureSource::LockContention, RetryStrategy::AutoRetry),
+        (MergeFailureSource::RateLimited, RetryStrategy::AutoRetry),
+        (MergeFailureSource::CleanupTimeout, RetryStrategy::AutoRetry),
+        (MergeFailureSource::TeardownRace, RetryStrategy::AutoRetry),
+        (
+            MergeFailureSource::PipelineActiveExpired,
+            RetryStrategy::AutoRetry,
+        ),
+        (
+            MergeFailureSource::TargetBranchBusy,
+            RetryStrategy::AutoRetryNoCB,
+        ),
+        (
+            MergeFailureSource::AgentReported,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (
+            MergeFailureSource::ValidationFailed,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (
+            MergeFailureSource::HookEnvironment,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (
+            MergeFailureSource::RepeatedHookFailure,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (
+            MergeFailureSource::AuthFailure,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (
+            MergeFailureSource::DiskFull,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (
+            MergeFailureSource::DeterministicInfra,
+            RetryStrategy::NoAutomaticRetry,
+        ),
+        (MergeFailureSource::Unknown, RetryStrategy::NoAutomaticRetry),
+    ];
+
+    for (source, expected) in cases {
+        assert_eq!(
+            source.retry_strategy(),
+            expected,
+            "{source:?} retry strategy drifted"
+        );
+    }
 }
 
 // ── GitIsolation tests ────────────────────────────────────────────────────────

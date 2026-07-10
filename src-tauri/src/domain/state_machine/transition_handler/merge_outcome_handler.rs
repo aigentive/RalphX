@@ -144,28 +144,22 @@ async fn transition_to_merge_incomplete(
         .await;
 }
 
-/// Patterns that indicate transient git errors (lock contention, concurrent access).
-/// These match the patterns in `git_cmd::TRANSIENT_PATTERNS` plus additional merge-specific ones.
-// NOTE: All patterns must be lowercase — comparison uses .to_lowercase() on error messages
-const TRANSIENT_GIT_PATTERNS: &[&str] = &[
-    "index.lock",
-    "unable to create",
-    "cannot lock ref",
-    "fetch_head",
-    "shallow file has changed",
-];
-
 /// Classify whether a merge error is transient (worth retrying immediately)
 /// vs permanent (should go to MergeIncomplete for reconciliation).
 ///
 /// Transient: lock contention, index.lock, concurrent ref updates
 /// Permanent: not a git repo, merge conflicts, unrelated histories
 pub(super) fn is_transient_merge_error(error: &crate::error::AppError) -> bool {
-    if !matches!(error, crate::error::AppError::GitOperation(_)) {
-        return false;
-    }
-    let msg = error.to_string().to_lowercase();
-    TRANSIENT_GIT_PATTERNS.iter().any(|pat| msg.contains(pat))
+    matches!(
+        git_cmd::classify_git_failure_source(error),
+        MergeFailureSource::TransientGit | MergeFailureSource::LockContention
+    )
+}
+
+pub(in crate::domain::state_machine::transition_handler) fn classify_merge_failure_source(
+    error: &crate::error::AppError,
+) -> MergeFailureSource {
+    git_cmd::classify_git_failure_source(error)
 }
 
 impl<'a> super::TransitionHandler<'a> {
@@ -996,14 +990,7 @@ impl<'a> super::TransitionHandler<'a> {
 
         let mut recovery = get_or_create_recovery(task);
         let attempt = retry_attempt_count(&recovery);
-        let error_str = error.to_string().to_lowercase();
-        let failure_source = if error_str.contains(git_cmd::ENOENT_MARKER) {
-            MergeFailureSource::WorktreeMissing
-        } else if error_str.contains("index.lock") || error_str.contains(".lock") {
-            MergeFailureSource::LockContention
-        } else {
-            MergeFailureSource::TransientGit
-        };
+        let failure_source = git_cmd::classify_git_failure_source(&error);
         let failed_event = MergeRecoveryEvent::new(
             MergeRecoveryEventKind::AttemptFailed,
             MergeRecoverySource::System,

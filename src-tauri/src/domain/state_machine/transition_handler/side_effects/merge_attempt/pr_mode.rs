@@ -4,7 +4,9 @@ use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::services::{PlanPrPublisher, PrReviewState};
 use crate::domain::state_machine::{State, TransitionHandler};
 use crate::domain::state_machine::transition_handler::{
-    draft_plan_pr_description_for_write, resolve_plan_branch_pr_base, TaskCore,
+    draft_plan_pr_description_for_write,
+    merge_outcome_handler::classify_merge_failure_source,
+    resolve_plan_branch_pr_base, TaskCore,
 };
 
 impl<'a> TransitionHandler<'a> {
@@ -270,14 +272,54 @@ impl<'a> TransitionHandler<'a> {
                 let _ = plan_branch_repo
                     .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
                     .await;
+                let failure_source = classify_merge_failure_source(&e);
+                let mut recovery =
+                    MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+                        .unwrap_or(None)
+                        .unwrap_or_else(MergeRecoveryMetadata::new);
+                let attempt = recovery
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind,
+                            MergeRecoveryEventKind::AutoRetryTriggered
+                                | MergeRecoveryEventKind::AttemptFailed
+                        )
+                    })
+                    .count() as u32
+                    + 1;
+                let event = MergeRecoveryEvent::new(
+                    MergeRecoveryEventKind::AttemptFailed,
+                    MergeRecoverySource::System,
+                    MergeRecoveryReasonCode::GitError,
+                    format!("PR operation failed: {}", e),
+                )
+                .with_source_branch(&branch_name)
+                .with_target_branch(&target_branch)
+                .with_attempt(attempt)
+                .with_failure_source(failure_source);
+                recovery.append_event_with_state(event, MergeRecoveryState::Failed);
+                match recovery.update_task_metadata(task.metadata.as_deref()) {
+                    Ok(updated_json) => task.metadata = Some(updated_json),
+                    Err(metadata_error) => tracing::error!(
+                        task_id = task_id_str,
+                        error = %metadata_error,
+                        "PR-mode: failed to serialize merge recovery metadata"
+                    ),
+                }
                 let metadata = serde_json::json!({
                     "error": format!("PR operation failed: {}", e),
                     "error_code": "pr_operation_failed",
+                    "merge_failure_source": serde_json::to_value(failure_source)
+                        .unwrap_or_default(),
                 });
                 self.transition_to_merge_incomplete(
                     TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
-                    metadata, true,
-                ).await;
+                    metadata,
+                    true,
+                )
+                .await;
             }
         }
     }
