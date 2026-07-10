@@ -19,9 +19,9 @@ use ralphx_lib::commands::unified_chat_commands::{
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
     switch_agent_conversation_mode_for_state_stopping_running_agent, AgentRunStatusResponse,
-    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
-    AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE, ModeSwitchInitiator, QueuedMessageResponse,
-    SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, ModeSwitchInitiator,
+    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
@@ -3680,7 +3680,7 @@ mod ipc_contract {
     #[test]
     fn agent_model_registry_ipc_contract_covers_provider_defaults() {
         let built_ins = built_in_agent_models();
-        assert_eq!(built_ins.len(), 11);
+        assert_eq!(built_ins.len(), 14);
         let sonnet_4_6 = built_ins
             .iter()
             .find(|model| {
@@ -3711,6 +3711,67 @@ mod ipc_contract {
                 LogicalEffort::High,
                 LogicalEffort::XHigh,
                 LogicalEffort::Max
+            ]
+        );
+        let codex_model_ids = built_ins
+            .iter()
+            .filter(|model| model.provider == AgentHarnessKind::Codex)
+            .map(|model| model.model_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codex_model_ids,
+            vec![
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+            ]
+        );
+        let gpt_56_sol = built_ins
+            .iter()
+            .find(|model| {
+                model.provider == AgentHarnessKind::Codex && model.model_id == "gpt-5.6-sol"
+            })
+            .expect("GPT-5.6 Sol should be exposed as a built-in Codex model");
+        assert_eq!(gpt_56_sol.default_effort, LogicalEffort::Medium);
+        assert_eq!(
+            gpt_56_sol.supported_efforts,
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+                LogicalEffort::Ultra,
+            ]
+        );
+        let gpt_56_terra = built_ins
+            .iter()
+            .find(|model| {
+                model.provider == AgentHarnessKind::Codex && model.model_id == "gpt-5.6-terra"
+            })
+            .expect("GPT-5.6 Terra should be exposed as a built-in Codex model");
+        assert_eq!(gpt_56_terra.default_effort, LogicalEffort::Medium);
+        assert_eq!(gpt_56_terra.supported_efforts, gpt_56_sol.supported_efforts);
+        let gpt_56_luna = built_ins
+            .iter()
+            .find(|model| {
+                model.provider == AgentHarnessKind::Codex && model.model_id == "gpt-5.6-luna"
+            })
+            .expect("GPT-5.6 Luna should be exposed as a built-in Codex model");
+        assert_eq!(gpt_56_luna.default_effort, LogicalEffort::Medium);
+        assert_eq!(
+            gpt_56_luna.supported_efforts,
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
             ]
         );
         assert_eq!(
@@ -3791,7 +3852,7 @@ mod ipc_contract {
             snapshot
                 .default_for_provider(AgentHarnessKind::Codex)
                 .map(|model| model.model_id.as_str()),
-            Some("gpt-5.4")
+            Some("gpt-5.6-sol")
         );
     }
 

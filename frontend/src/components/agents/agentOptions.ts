@@ -4,7 +4,6 @@ import type {
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import {
-  AGENT_EFFORT_CATALOG,
   agentEffortOptionsForModel,
   agentModelOptionsForProvider,
   defaultEffortForModel,
@@ -29,14 +28,6 @@ export const AGENT_PROVIDER_OPTIONS: Array<{ id: AgentProvider; label: string }>
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
 ];
-
-export const AGENT_EFFORT_OPTIONS: AgentEffortOption[] = AGENT_EFFORT_CATALOG.map(
-  ({ id, label, description }) => ({
-    id,
-    label,
-    description,
-  })
-);
 
 export const DEFAULT_AGENT_RUNTIME: AgentRuntimeSelection =
   normalizeAgentRuntimeSelection(null);
@@ -89,7 +80,7 @@ export function agentEffortOptions(
   ).map(({ id, label, description }) => ({
     id,
     label,
-    description,
+    ...(description ? { description } : {}),
   }));
 }
 

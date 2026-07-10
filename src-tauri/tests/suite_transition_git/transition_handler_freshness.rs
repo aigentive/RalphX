@@ -617,10 +617,8 @@ async fn source_conflicts_returns_route_to_merging() {
 }
 
 #[tokio::test]
-async fn source_error_after_retry_blocks_execution() {
-    // A missing task branch makes update_source_from_target return Error.
-    // ensure_branches_fresh retries once, then blocks execution instead of
-    // silently marking freshness as passed.
+async fn source_branch_missing_blocks_execution_without_retry() {
+    // A missing task branch blocks immediately instead of entering the retry path.
     let repo = setup_real_git_repo();
     let project = make_test_project(&repo.path_string());
     let task = make_test_task(Some("task/nonexistent-source-branch"), None);
@@ -644,9 +642,10 @@ async fn source_error_after_retry_blocks_execution() {
         matches!(
             result,
             Err(FreshnessAction::ExecutionBlocked { ref reason })
-                if reason.contains("update_source_from_target")
+                if reason.contains("branch missing before source update")
+                    && reason.contains("task/nonexistent-source-branch")
         ),
-        "Source check error must block after retry. Got: {:?}",
+        "Missing source branch must block without retry. Got: {:?}",
         result
     );
 }

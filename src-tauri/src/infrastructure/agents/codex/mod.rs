@@ -1,6 +1,7 @@
 mod codex_cli_client;
 pub mod stream_processor;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -50,6 +51,9 @@ pub struct CodexCliCapabilities {
     pub supports_mcp_subcommand: bool,
     pub supports_fast_mode_feature: bool,
     pub fast_mode_supported_models: Vec<String>,
+    pub supported_model_aliases: Vec<String>,
+    pub supported_efforts: Vec<String>,
+    pub model_supported_efforts: BTreeMap<String, Vec<String>>,
 }
 
 impl CodexCliCapabilities {
@@ -90,6 +94,25 @@ impl CodexCliCapabilities {
         } else {
             Vec::new()
         }
+    }
+
+    pub fn supported_effort_labels(&self) -> Vec<String> {
+        self.supported_efforts.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodexModelCatalogCapabilities {
+    pub supported_model_aliases: Vec<String>,
+    pub supported_efforts: Vec<String>,
+    pub model_supported_efforts: BTreeMap<String, Vec<String>>,
+}
+
+impl CodexModelCatalogCapabilities {
+    fn is_empty(&self) -> bool {
+        self.supported_model_aliases.is_empty()
+            && self.supported_efforts.is_empty()
+            && self.model_supported_efforts.is_empty()
     }
 }
 
@@ -520,18 +543,24 @@ pub fn parse_codex_cli_capabilities(
     exec_help: &str,
     version_output: Option<&str>,
     features_output: Option<&str>,
-    model_catalog_output: Option<&str>,
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
 ) -> CodexCliCapabilities {
     let supports_fast_mode_feature = features_output
         .map(parse_codex_fast_mode_feature)
         .unwrap_or(false);
     let fast_mode_supported_models = if supports_fast_mode_feature {
-        model_catalog_output
-            .map(parse_codex_fast_mode_supported_models)
-            .unwrap_or_default()
+        parse_codex_fast_mode_supported_models_from_catalogs(
+            refreshed_model_catalog_output,
+            bundled_model_catalog_output,
+        )
     } else {
         Vec::new()
     };
+    let model_catalog_capabilities = parse_best_codex_model_catalog(
+        refreshed_model_catalog_output,
+        bundled_model_catalog_output,
+    );
 
     CodexCliCapabilities {
         version: version_output.and_then(parse_codex_version),
@@ -546,6 +575,140 @@ pub fn parse_codex_cli_capabilities(
         supports_mcp_subcommand: root_help.contains("mcp"),
         supports_fast_mode_feature,
         fast_mode_supported_models,
+        supported_model_aliases: model_catalog_capabilities.supported_model_aliases,
+        supported_efforts: model_catalog_capabilities.supported_efforts,
+        model_supported_efforts: model_catalog_capabilities.model_supported_efforts,
+    }
+}
+
+fn parse_best_codex_model_catalog(
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
+) -> CodexModelCatalogCapabilities {
+    let refreshed = refreshed_model_catalog_output
+        .map(parse_codex_model_catalog_capabilities)
+        .unwrap_or_default();
+    if !refreshed.is_empty() {
+        return refreshed;
+    }
+
+    bundled_model_catalog_output
+        .map(parse_codex_model_catalog_capabilities)
+        .unwrap_or_default()
+}
+
+fn parse_codex_fast_mode_supported_models_from_catalogs(
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
+) -> Vec<String> {
+    let mut supported_models = Vec::new();
+    for output in [refreshed_model_catalog_output, bundled_model_catalog_output]
+        .into_iter()
+        .flatten()
+    {
+        supported_models.extend(parse_codex_fast_mode_supported_models(output));
+    }
+    supported_models.sort();
+    supported_models.dedup();
+    supported_models
+}
+
+pub fn parse_codex_model_catalog_capabilities(output: &str) -> CodexModelCatalogCapabilities {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(output) else {
+        return CodexModelCatalogCapabilities::default();
+    };
+    let Some(models) = root.get("models").and_then(serde_json::Value::as_array) else {
+        return CodexModelCatalogCapabilities::default();
+    };
+
+    let mut supported_model_aliases = Vec::new();
+    let mut supported_efforts = Vec::new();
+    let mut model_supported_efforts = BTreeMap::new();
+
+    for model in models {
+        if !codex_model_is_visible_list_entry(model) {
+            continue;
+        }
+        let Some(slug) = model
+            .get("slug")
+            .or_else(|| model.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())
+        else {
+            continue;
+        };
+
+        supported_model_aliases.push(slug.to_string());
+        if let Some(aliases) = model.get("aliases").and_then(serde_json::Value::as_array) {
+            supported_model_aliases.extend(aliases.iter().filter_map(|alias| {
+                alias
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|alias| !alias.is_empty())
+                    .map(str::to_string)
+            }));
+        }
+
+        let mut model_efforts = model
+            .get("supported_reasoning_levels")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|level| {
+                let effort = level.get("effort").and_then(serde_json::Value::as_str)?;
+                normalize_codex_reasoning_effort(effort)
+            })
+            .collect::<Vec<_>>();
+        sort_codex_reasoning_efforts(&mut model_efforts);
+        supported_efforts.extend(model_efforts.iter().cloned());
+        model_supported_efforts.insert(slug.to_string(), model_efforts);
+    }
+
+    supported_model_aliases.sort();
+    supported_model_aliases.dedup();
+    sort_codex_reasoning_efforts(&mut supported_efforts);
+
+    CodexModelCatalogCapabilities {
+        supported_model_aliases,
+        supported_efforts,
+        model_supported_efforts,
+    }
+}
+
+fn codex_model_is_visible_list_entry(model: &serde_json::Value) -> bool {
+    model
+        .get("visibility")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|visibility| visibility.eq_ignore_ascii_case("list"))
+}
+
+fn normalize_codex_reasoning_effort(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if codex_reasoning_effort_order(&normalized).is_some() {
+        return Some(normalized);
+    }
+    warn!(
+        effort = value,
+        "Ignoring unknown Codex reasoning effort in model catalog"
+    );
+    None
+}
+
+fn sort_codex_reasoning_efforts(efforts: &mut Vec<String>) {
+    efforts.sort_by_key(|effort| codex_reasoning_effort_order(effort).unwrap_or(u8::MAX));
+    efforts.dedup();
+}
+
+fn codex_reasoning_effort_order(effort: &str) -> Option<u8> {
+    match effort {
+        "low" => Some(0),
+        "medium" => Some(1),
+        "high" => Some(2),
+        "xhigh" => Some(3),
+        "max" => Some(4),
+        "ultra" => Some(5),
+        _ => None,
     }
 }
 
@@ -622,14 +785,17 @@ pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> 
     let root_help = run_codex_command(cli_path, &["--help"])?;
     let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
     let features_output = run_codex_optional_command(cli_path, &["features", "list"]);
-    let model_catalog_output =
+    let refreshed_model_catalog_output =
+        run_codex_optional_command(cli_path, &["debug", "models"]);
+    let bundled_model_catalog_output =
         run_codex_optional_command(cli_path, &["debug", "models", "--bundled"]);
     Ok(parse_codex_cli_capabilities(
         &root_help,
         &exec_help,
         Some(&version_output),
         Some(&features_output),
-        Some(&model_catalog_output),
+        Some(&refreshed_model_catalog_output),
+        Some(&bundled_model_catalog_output),
     ))
 }
 

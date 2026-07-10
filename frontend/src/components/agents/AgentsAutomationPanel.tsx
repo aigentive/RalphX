@@ -910,7 +910,15 @@ export function AgentsAutomationPanel({
       if (!selectableAutomationRuntime) {
         return;
       }
-      const modelId = defaultModelForProvider(provider, modelRegistry);
+      const providerSupportedModelAliases = supportedModelAliasesForProvider(
+        providerOptions,
+        provider,
+      );
+      const modelId = defaultModelForProvider(
+        provider,
+        modelRegistry,
+        providerSupportedModelAliases,
+      );
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -919,7 +927,7 @@ export function AgentsAutomationPanel({
         },
         modelRegistry,
         supportedEffortsForProvider(providerOptions, provider),
-        supportedModelAliasesForProvider(providerOptions, provider),
+        providerSupportedModelAliases,
       );
       updateAutomationRuntime(nextRuntime);
     },

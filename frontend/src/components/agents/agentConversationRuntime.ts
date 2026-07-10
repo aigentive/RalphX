@@ -15,6 +15,7 @@ const AGENT_EFFORTS = new Set<AgentEffort>([
   "high",
   "xhigh",
   "max",
+  "ultra",
 ]);
 
 const WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER: Record<AgentProvider, string> = {
