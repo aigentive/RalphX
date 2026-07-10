@@ -1,7 +1,17 @@
 // Transform functions for converting snake_case tasks API responses to camelCase frontend types
 
 import { z } from "zod";
-import { BulkCancelResponseSchemaRaw, BulkPauseResponseSchemaRaw, BulkResumeResponseSchemaRaw, BulkArchiveResponseSchemaRaw, CleanupReportResponseSchemaRaw, InjectTaskResponseSchemaRaw, StateTransitionResponseSchemaRaw, UnblockTaskResponseSchemaRaw } from "./tasks.schemas";
+import {
+  BulkArchiveResponseSchemaRaw,
+  BulkCancelResponseSchemaRaw,
+  BulkPauseResponseSchemaRaw,
+  BulkResumeResponseSchemaRaw,
+  CleanupReportResponseSchemaRaw,
+  ExecutionPlanControlResponseSchemaRaw,
+  InjectTaskResponseSchemaRaw,
+  StateTransitionResponseSchemaRaw,
+  UnblockTaskResponseSchemaRaw,
+} from "./tasks.schemas";
 import { transformTask, type Task, type InternalStatus } from "@/types/task";
 import type { TaskRuntimeHistoryContextType } from "@/types/task-history";
 
@@ -37,6 +47,20 @@ export interface BulkResumeResponse {
 
 export function transformBulkResumeResponse(raw: z.infer<typeof BulkResumeResponseSchemaRaw>): BulkResumeResponse {
   return { resumedCount: raw.resumed_count };
+}
+
+export interface ExecutionPlanControlResponse {
+  executionPlanId: string;
+  affectedCount: number;
+}
+
+export function transformExecutionPlanControlResponse(
+  raw: z.infer<typeof ExecutionPlanControlResponseSchemaRaw>
+): ExecutionPlanControlResponse {
+  return {
+    executionPlanId: raw.execution_plan_id,
+    affectedCount: raw.affected_count,
+  };
 }
 
 export interface BulkArchiveResponse {

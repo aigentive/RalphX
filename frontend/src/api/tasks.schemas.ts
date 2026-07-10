@@ -49,6 +49,15 @@ export const BulkResumeResponseSchemaRaw = z.object({
 });
 
 /**
+ * Execution plan control response schema from Rust (snake_case)
+ * Returned by pause_execution_plan/resume_execution_plan/stop_execution_plan.
+ */
+export const ExecutionPlanControlResponseSchemaRaw = z.object({
+  execution_plan_id: z.string(),
+  affected_count: z.number().int(),
+});
+
+/**
  * Bulk archive response schema from Rust (snake_case)
  * Returned by archive_tasks_in_group command.
  */

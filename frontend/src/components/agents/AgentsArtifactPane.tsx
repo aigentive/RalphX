@@ -6,11 +6,14 @@ import {
   LayoutGrid,
   ListPlus,
   Network,
+  Pause,
+  Play,
   Rocket,
   ClipboardList,
   ScrollText,
   ShieldCheck,
   Sparkles,
+  Square,
   Ticket,
   Workflow,
   X,
@@ -33,6 +36,7 @@ import { atlassianApi } from "@/api/atlassian";
 import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
+import { tasksApi } from "@/api/tasks";
 import { verificationApi } from "@/api/verification";
 import {
   chatApi,
@@ -89,7 +93,11 @@ import type {
   VerificationStatus,
 } from "@/types/ideation";
 import type { Task } from "@/types/task";
-import { getStatusCounts, type StatusCounts } from "@/types/status";
+import {
+  getStatusCounts,
+  type InternalStatus,
+  type StatusCounts,
+} from "@/types/status";
 import type { DependencyGraphResponse } from "@/api/ideation.types";
 import {
   getAgentConversationStoreKey,
@@ -138,6 +146,15 @@ import {
 } from "@/components/automations/automationConversationTabPolicy";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
+const PLAN_CONTROL_RUNNING_STATUSES = new Set<InternalStatus>([
+  "executing",
+  "qa_refining",
+  "qa_testing",
+  "reviewing",
+  "re_executing",
+  "merging",
+  "pending_merge",
+]);
 
 function noop() {}
 
@@ -183,6 +200,22 @@ function getVisibleImplementationTasks({
   }
 
   return proposalCreatedTasks;
+}
+
+function getPlanRuntimeControlCounts(tasks: readonly Task[]): {
+  paused: number;
+  running: number;
+} {
+  let paused = 0;
+  let running = 0;
+  for (const task of tasks) {
+    if (task.internalStatus === "paused") {
+      paused += 1;
+    } else if (PLAN_CONTROL_RUNNING_STATUSES.has(task.internalStatus)) {
+      running += 1;
+    }
+  }
+  return { paused, running };
 }
 
 type WorkspaceReviewPassState = Pick<
@@ -1463,6 +1496,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onPlanSeeded={handlePlanSeeded}
           dependencyGraph={dependencyGraph}
           proposals={proposals}
+          visibleImplementationTasks={visibleImplementationTasks}
+          activeExecutionPlanId={activeExecutionPlanId}
           implementationTaskCounts={implementationTaskCounts}
           hasImplementationAttempt={hasImplementationAttempt}
           onPublishWorkspace={onPublishWorkspace}
@@ -1527,6 +1562,8 @@ type ArtifactContentProps = {
   onPlanSeeded: (result: AgentConversationPlanSeedResult) => void;
   dependencyGraph: DependencyGraphResponse | null;
   proposals: TaskProposal[];
+  visibleImplementationTasks: readonly Task[];
+  activeExecutionPlanId: string | null;
   implementationTaskCounts: StatusCounts;
   hasImplementationAttempt: boolean;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
@@ -1598,6 +1635,8 @@ function ArtifactContent({
   onPlanSeeded,
   dependencyGraph,
   proposals,
+  visibleImplementationTasks,
+  activeExecutionPlanId,
   implementationTaskCounts,
   hasImplementationAttempt,
   onPublishWorkspace,
@@ -1777,6 +1816,8 @@ function ArtifactContent({
         isPlanLoading={isPlanLoading}
         proposals={proposals}
         dependencyGraph={dependencyGraph}
+        visibleImplementationTasks={visibleImplementationTasks}
+        activeExecutionPlanId={activeExecutionPlanId}
         implementationTaskCounts={implementationTaskCounts}
         hasImplementationAttempt={hasImplementationAttempt}
         onPlanUpdated={onPlanUpdated}
@@ -1850,6 +1891,8 @@ function AgentPlanPanel({
   isPlanLoading,
   proposals,
   dependencyGraph,
+  visibleImplementationTasks,
+  activeExecutionPlanId,
   implementationTaskCounts,
   hasImplementationAttempt,
   onPlanUpdated,
@@ -1869,6 +1912,8 @@ function AgentPlanPanel({
   isPlanLoading: boolean;
   proposals: TaskProposal[];
   dependencyGraph: DependencyGraphResponse | null;
+  visibleImplementationTasks: readonly Task[];
+  activeExecutionPlanId: string | null;
   implementationTaskCounts: StatusCounts;
   hasImplementationAttempt: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -1964,6 +2009,27 @@ function AgentPlanPanel({
   const restartImplementationMutation = useMutation({
     mutationFn: (sessionId: string) =>
       ideationApi.sessions.restartImplementation(sessionId),
+  });
+  const pauseExecutionPlanMutation = useMutation({
+    mutationFn: (input: {
+      projectId: string;
+      sessionId: string;
+      executionPlanId?: string | null;
+    }) => tasksApi.pauseExecutionPlan(input),
+  });
+  const resumeExecutionPlanMutation = useMutation({
+    mutationFn: (input: {
+      projectId: string;
+      sessionId: string;
+      executionPlanId?: string | null;
+    }) => tasksApi.resumeExecutionPlan(input),
+  });
+  const stopExecutionPlanMutation = useMutation({
+    mutationFn: (input: {
+      projectId: string;
+      sessionId: string;
+      executionPlanId?: string | null;
+    }) => tasksApi.stopExecutionPlan(input),
   });
 
   const handleCreateProposals = useCallback(async () => {
@@ -2072,9 +2138,31 @@ function AgentPlanPanel({
   });
   const primaryPlanAction = planComplexityQuery.data?.recommendedAction;
   const isAcceptedPlan = session?.status === "accepted";
+  const planRuntimeControlCounts = useMemo(
+    () => getPlanRuntimeControlCounts(visibleImplementationTasks),
+    [visibleImplementationTasks],
+  );
   const canRestartImplementation = Boolean(
     isAcceptedPlan && implementationTaskCounts.total > 0 && session?.id,
   );
+  const canPauseExecutionPlan = Boolean(
+    isAcceptedPlan &&
+      session?.id &&
+      session.projectId &&
+      planRuntimeControlCounts.running > 0,
+  );
+  const canStopExecutionPlan = canPauseExecutionPlan;
+  const canResumeExecutionPlan = Boolean(
+    isAcceptedPlan &&
+      session?.id &&
+      session.projectId &&
+      planRuntimeControlCounts.running === 0 &&
+      planRuntimeControlCounts.paused > 0,
+  );
+  const isExecutionPlanControlPending =
+    pauseExecutionPlanMutation.isPending ||
+    resumeExecutionPlanMutation.isPending ||
+    stopExecutionPlanMutation.isPending;
   const workspaceConversationId = workspace?.conversationId ?? null;
 
   const handleApprovePlan = useCallback(async () => {
@@ -2292,6 +2380,131 @@ function AgentPlanPanel({
     workspaceConversationId,
   ]);
 
+  const invalidateExecutionPlanControlQueries = useCallback(async () => {
+    if (!session) {
+      return;
+    }
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ideationKeys.sessionWithData(session.id),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ideationKeys.sessions(),
+      }),
+      queryClient.invalidateQueries({ queryKey: taskKeys.lists() }),
+      ...(workspaceConversationId
+        ? [invalidateWorkspaceQueries(queryClient, workspaceConversationId)]
+        : []),
+    ]);
+    await loadActivePlan(session.projectId);
+  }, [loadActivePlan, queryClient, session, workspaceConversationId]);
+
+  const handlePauseExecutionPlan = useCallback(() => {
+    if (!session || !canPauseExecutionPlan) {
+      return;
+    }
+
+    void confirm({
+      title: "Pause this implementation plan?",
+      description:
+        "Running work for this plan will pause and queued work for this plan will wait until you resume it. Other project work will continue.",
+      confirmText: "Pause Plan",
+      pendingText: "Pausing...",
+      onConfirm: async () => {
+        try {
+          await pauseExecutionPlanMutation.mutateAsync({
+            projectId: session.projectId,
+            sessionId: session.id,
+            executionPlanId: activeExecutionPlanId,
+          });
+          await invalidateExecutionPlanControlQueries();
+          toast.success("Plan paused");
+        } catch (err) {
+          toast.error(extractErrorMessage(err, "Failed to pause plan"));
+          throw err;
+        }
+      },
+    });
+  }, [
+    activeExecutionPlanId,
+    canPauseExecutionPlan,
+    confirm,
+    invalidateExecutionPlanControlQueries,
+    pauseExecutionPlanMutation,
+    session,
+  ]);
+
+  const handleResumeExecutionPlan = useCallback(() => {
+    if (!session || !canResumeExecutionPlan) {
+      return;
+    }
+
+    void confirm({
+      title: "Resume this implementation plan?",
+      description:
+        "Paused work for this plan will resume using the same scheduler and capacity limits as the execution bar. Other project work is unchanged.",
+      confirmText: "Resume Plan",
+      pendingText: "Resuming...",
+      onConfirm: async () => {
+        try {
+          await resumeExecutionPlanMutation.mutateAsync({
+            projectId: session.projectId,
+            sessionId: session.id,
+            executionPlanId: activeExecutionPlanId,
+          });
+          await invalidateExecutionPlanControlQueries();
+          toast.success("Plan resumed");
+        } catch (err) {
+          toast.error(extractErrorMessage(err, "Failed to resume plan"));
+          throw err;
+        }
+      },
+    });
+  }, [
+    activeExecutionPlanId,
+    canResumeExecutionPlan,
+    confirm,
+    invalidateExecutionPlanControlQueries,
+    resumeExecutionPlanMutation,
+    session,
+  ]);
+
+  const handleStopExecutionPlan = useCallback(() => {
+    if (!session || !canStopExecutionPlan) {
+      return;
+    }
+
+    void confirm({
+      title: "Stop this implementation plan?",
+      description:
+        "Running work for this plan will stop and queued work for this plan will not continue automatically. Other project work will continue.",
+      confirmText: "Stop Plan",
+      pendingText: "Stopping...",
+      variant: "destructive",
+      onConfirm: async () => {
+        try {
+          await stopExecutionPlanMutation.mutateAsync({
+            projectId: session.projectId,
+            sessionId: session.id,
+            executionPlanId: activeExecutionPlanId,
+          });
+          await invalidateExecutionPlanControlQueries();
+          toast.success("Plan stopped");
+        } catch (err) {
+          toast.error(extractErrorMessage(err, "Failed to stop plan"));
+          throw err;
+        }
+      },
+    });
+  }, [
+    activeExecutionPlanId,
+    canStopExecutionPlan,
+    confirm,
+    invalidateExecutionPlanControlQueries,
+    session,
+    stopExecutionPlanMutation,
+  ]);
+
   const planLifecycleState = useMemo<PlanLifecycleState | null>(() => {
     if (!planArtifact) {
       return null;
@@ -2427,6 +2640,64 @@ function AgentPlanPanel({
     showCreateProposalsLifecycleAction,
     verificationInProgress,
   ]);
+  const acceptedFooterActions = useMemo<PlanLifecycleAction[]>(() => {
+    if (planLifecycleState !== "accepted") {
+      return [];
+    }
+
+    const disabled =
+      isExecutionPlanControlPending || restartImplementationMutation.isPending;
+    const actions: PlanLifecycleAction[] = [];
+    if (canResumeExecutionPlan) {
+      actions.push({
+        key: "resume-plan",
+        label: resumeExecutionPlanMutation.isPending ? "Resuming..." : "Resume",
+        onClick: handleResumeExecutionPlan,
+        icon: Play,
+        disabled,
+        loading: resumeExecutionPlanMutation.isPending,
+        primary: true,
+        testId: "plan-lifecycle-resume-button",
+      });
+    }
+    if (canPauseExecutionPlan) {
+      actions.push({
+        key: "pause-plan",
+        label: pauseExecutionPlanMutation.isPending ? "Pausing..." : "Pause",
+        onClick: handlePauseExecutionPlan,
+        icon: Pause,
+        disabled,
+        loading: pauseExecutionPlanMutation.isPending,
+        testId: "plan-lifecycle-pause-button",
+      });
+    }
+    if (canStopExecutionPlan) {
+      actions.push({
+        key: "stop-plan",
+        label: stopExecutionPlanMutation.isPending ? "Stopping..." : "Stop",
+        onClick: handleStopExecutionPlan,
+        icon: Square,
+        disabled,
+        loading: stopExecutionPlanMutation.isPending,
+        tone: "danger",
+        testId: "plan-lifecycle-stop-button",
+      });
+    }
+    return actions;
+  }, [
+    canPauseExecutionPlan,
+    canResumeExecutionPlan,
+    canStopExecutionPlan,
+    handlePauseExecutionPlan,
+    handleResumeExecutionPlan,
+    handleStopExecutionPlan,
+    isExecutionPlanControlPending,
+    pauseExecutionPlanMutation.isPending,
+    planLifecycleState,
+    restartImplementationMutation.isPending,
+    resumeExecutionPlanMutation.isPending,
+    stopExecutionPlanMutation.isPending,
+  ]);
   const planLifecycleDescription =
     planLifecycleState === "accepted"
       ? "Implementation work is attached to this plan."
@@ -2473,6 +2744,8 @@ function AgentPlanPanel({
                 actions={planLifecycleActions}
                 {...(planLifecycleState === "accepted" && {
                   counts: implementationTaskCounts,
+                  acceptedRuntimeCounts: planRuntimeControlCounts,
+                  acceptedFooterActions,
                   acceptedAt: session?.convertedAt ?? null,
                   onViewWork: onOpenTasks,
                 })}

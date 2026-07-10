@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
-    ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationSessionId,
+    ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanId, ExecutionPlanStatus, IdeationSessionId,
 };
 use crate::domain::repositories::ExecutionPlanRepository;
 use crate::error::{AppError, AppResult};
@@ -73,6 +73,24 @@ impl ExecutionPlanRepository for MemoryExecutionPlanRepository {
         match plans.get_mut(id.as_str()) {
             Some(plan) => {
                 plan.status = ExecutionPlanStatus::Superseded;
+                Ok(())
+            }
+            None => Err(AppError::NotFound(format!(
+                "Execution plan not found: {}",
+                id
+            ))),
+        }
+    }
+
+    async fn set_halt_mode(
+        &self,
+        id: &ExecutionPlanId,
+        halt_mode: ExecutionPlanHaltMode,
+    ) -> AppResult<()> {
+        let mut plans = self.plans.write().await;
+        match plans.get_mut(id.as_str()) {
+            Some(plan) => {
+                plan.halt_mode = halt_mode;
                 Ok(())
             }
             None => Err(AppError::NotFound(format!(
