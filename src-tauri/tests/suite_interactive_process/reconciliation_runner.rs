@@ -3300,7 +3300,10 @@ async fn reconcile_merge_incomplete_skips_retry_when_rate_limit_active() {
 
 #[tokio::test]
 async fn reconcile_merge_incomplete_proceeds_after_rate_limit_expired() {
-    use ralphx_lib::domain::entities::{MergeRecoveryMetadata, MergeRecoveryState, Project};
+    use ralphx_lib::domain::entities::{
+        MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+        MergeRecoverySource, MergeRecoveryState, Project,
+    };
 
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -3321,7 +3324,16 @@ async fn reconcile_merge_incomplete_proceeds_after_rate_limit_expired() {
 
     let mut recovery = MergeRecoveryMetadata::new();
     recovery.rate_limit_retry_after = Some("2020-01-01T00:00:00+00:00".to_string());
-    recovery.last_state = MergeRecoveryState::RateLimited;
+    recovery.append_event_with_state(
+        MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::AttemptFailed,
+            MergeRecoverySource::System,
+            MergeRecoveryReasonCode::ProviderRateLimited,
+            "Rate limit hit during merge",
+        )
+        .with_failure_source(MergeFailureSource::RateLimited),
+        MergeRecoveryState::RateLimited,
+    );
     task.metadata = Some(recovery.update_task_metadata(None).unwrap());
     app_state.task_repo.create(task.clone()).await.unwrap();
 
@@ -3953,6 +3965,7 @@ async fn rc5_starvation_guard_skips_recently_retried_task() {
     task1.metadata = Some(
         serde_json::json!({
             "last_retried_at": chrono::Utc::now().to_rfc3339(),
+            "merge_failure_source": serde_json::to_value(MergeFailureSource::TransientGit).unwrap(),
         })
         .to_string(),
     );
@@ -3963,7 +3976,12 @@ async fn rc5_starvation_guard_skips_recently_retried_task() {
     // Task 2: not recently retried (no last_retried_at)
     let mut task2 = Task::new(project.id.clone(), "Fresh Task".to_string());
     task2.internal_status = InternalStatus::MergeIncomplete;
-    task2.metadata = Some(serde_json::json!({}).to_string());
+    task2.metadata = Some(
+        serde_json::json!({
+            "merge_failure_source": serde_json::to_value(MergeFailureSource::TransientGit).unwrap(),
+        })
+        .to_string(),
+    );
     task2.updated_at = chrono::Utc::now() - chrono::Duration::seconds(300);
     app_state.task_repo.create(task2.clone()).await.unwrap();
 
