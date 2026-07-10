@@ -3,7 +3,8 @@
 use tauri::State;
 
 use crate::application::{
-    resolve_primary_ideation_harness_availability, validate_chat_runtime_for_context, AppState,
+    resolve_primary_ideation_harness_availability_for_state, validate_chat_runtime_for_context,
+    AppState,
 };
 use crate::domain::entities::{IdeationSessionId, IdeationSessionStatus};
 use crate::domain::ideation::IdeationSettings;
@@ -85,7 +86,7 @@ pub async fn send_orchestrator_message(
 #[tauri::command]
 pub async fn is_orchestrator_available(state: State<'_, AppState>) -> Result<bool, String> {
     let lane_availability =
-        resolve_primary_ideation_harness_availability(&state.agent_lane_settings_repo, None).await;
+        resolve_primary_ideation_harness_availability_for_state(&state, None).await?;
     Ok(lane_availability.available)
 }
 
