@@ -68,3 +68,39 @@ pub async fn get_unread_notification_count(
         .await
         .map_err(|error| error.to_string())
 }
+
+/// Requests notification permission when needed, then sends a development smoke notification.
+///
+/// This command is intentionally unavailable from release builds. Desktop notification dispatch
+/// remains owned by `NotificationService` when that integration is added.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub fn debug_send_test_notification(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+
+    let notification = app.notification();
+    if notification
+        .permission_state()
+        .map_err(|error| error.to_string())?
+        == PermissionState::Prompt
+    {
+        notification
+            .request_permission()
+            .map_err(|error| error.to_string())?;
+    }
+
+    if notification
+        .permission_state()
+        .map_err(|error| error.to_string())?
+        != PermissionState::Granted
+    {
+        return Err("Desktop notification permission was not granted".to_string());
+    }
+
+    notification
+        .builder()
+        .title("RalphX notification smoke test")
+        .body("Desktop notifications are available in this development build.")
+        .show()
+        .map_err(|error| error.to_string())
+}

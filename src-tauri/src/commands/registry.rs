@@ -11,6 +11,8 @@ macro_rules! register_tauri_commands {
             commands::notification_commands::mark_notification_read,
             commands::notification_commands::mark_all_notifications_read,
             commands::notification_commands::get_unread_notification_count,
+            #[cfg(debug_assertions)]
+            commands::notification_commands::debug_send_test_notification,
             commands::release_notes_commands::get_current_release_notes,
             commands::release_notes_commands::get_last_seen_release_notes_version,
             commands::release_notes_commands::mark_release_notes_seen,
