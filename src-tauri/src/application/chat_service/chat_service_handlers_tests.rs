@@ -28,7 +28,7 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
-use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
 use tauri::{AppHandle, Runtime};
 
 #[allow(clippy::too_many_arguments)]
@@ -268,6 +268,226 @@ async fn provider_env_for_harness_uses_explicit_provider_repo_without_app_handle
             .get("CUSTOM_PROVIDER_TOKEN")
             .map(String::as_str),
         Some("from-explicit-repo")
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_fails_execution_without_provider_repo() {
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await;
+
+    assert_eq!(
+        decision,
+        Err(RecoveryRetryProviderBlock::MissingProviderSettings),
+        "execution-slot recovery retries must fail closed without provider settings"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_allows_non_execution_without_provider_repo() {
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+    )
+    .await
+    .expect("non-execution recovery can run without provider settings");
+
+    assert_eq!(
+        decision,
+        RecoveryRetryProviderDecision::AllowWithoutProviderSettings
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_blocks_disabled_provider() {
+    let app_state = AppState::new_test();
+    let mut disabled = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    disabled.is_default = true;
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&disabled)
+        .await
+        .expect("save disabled default provider");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await;
+
+    let Err(RecoveryRetryProviderBlock::Disabled(error)) = decision else {
+        panic!("expected disabled provider block");
+    };
+    assert!(
+        error.contains("Choose and enable a default provider")
+            || error.contains("Claude is not enabled"),
+        "unexpected disabled-provider error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_provider_decision_applies_explicit_provider_env() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(
+        &env_path,
+        "CUSTOM_PROVIDER_TOKEN=from-retry\nCLAUDE_MODEL=ignored\n",
+    )
+    .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save enabled provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let decision = recovery_retry_provider_decision::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+    )
+    .await
+    .expect("recovery retry should load custom provider env");
+
+    let RecoveryRetryProviderDecision::ApplyEnv(provider_env) = decision else {
+        panic!("expected provider env application");
+    };
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-retry")
+    );
+    assert!(
+        !provider_env.contains_key("CLAUDE_MODEL"),
+        "protected model overrides must stay filtered from provider env"
+    );
+}
+
+fn recovery_retry_test_provider_spawnable() -> chat_service_context::ProviderSpawnableCommand {
+    chat_service_context::ProviderSpawnableCommand {
+        spawnable: SpawnableCommand::new(Command::new("true").into(), None),
+    }
+}
+
+fn spawnable_env_value(spawnable: &SpawnableCommand, key: &str) -> Option<String> {
+    spawnable
+        .get_envs_for_test()
+        .into_iter()
+        .find_map(|(env_key, env_value)| {
+            (env_key.to_string_lossy() == key).then(|| env_value.to_string_lossy().into_owned())
+        })
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_fails_execution_without_provider_repo() {
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await;
+
+    assert!(
+        spawnable.is_none(),
+        "execution-slot recovery retry must not spawn without provider settings"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_allows_non_execution_without_provider_repo() {
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &None,
+        AgentHarnessKind::Claude,
+        ChatContextType::Project,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await;
+
+    assert!(
+        spawnable.is_some(),
+        "non-execution recovery retry can preserve the legacy no-provider path"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_blocks_disabled_provider() {
+    let app_state = AppState::new_test();
+    let mut disabled = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    disabled.is_default = true;
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&disabled)
+        .await
+        .expect("save disabled default provider");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await;
+
+    assert!(
+        spawnable.is_none(),
+        "disabled providers must block recovery retry spawn"
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_spawnable_gate_applies_provider_env() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(&env_path, "CUSTOM_PROVIDER_TOKEN=spawnable-env\n").expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save enabled provider settings");
+    let provider_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+
+    let spawnable = recovery_retry_spawnable_with_provider_gate::<MockRuntime>(
+        &None,
+        &provider_repo,
+        AgentHarnessKind::Claude,
+        ChatContextType::Review,
+        recovery_retry_test_provider_spawnable(),
+    )
+    .await
+    .expect("enabled provider should allow recovery retry");
+
+    assert_eq!(
+        spawnable_env_value(&spawnable, "CUSTOM_PROVIDER_TOKEN").as_deref(),
+        Some("spawnable-env")
     );
 }
 

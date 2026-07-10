@@ -192,6 +192,75 @@ async fn provider_env_for_harness<R: Runtime>(
     .await
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryRetryProviderDecision {
+    ApplyEnv(HashMap<String, String>),
+    AllowWithoutProviderSettings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryRetryProviderBlock {
+    Disabled(String),
+    Env(String),
+    MissingProviderSettings,
+}
+
+async fn recovery_retry_provider_decision<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+) -> Result<RecoveryRetryProviderDecision, RecoveryRetryProviderBlock> {
+    let Some(provider_repo) = agent_provider_settings_repo.as_ref() else {
+        return if super::uses_execution_slot(context_type) {
+            Err(RecoveryRetryProviderBlock::MissingProviderSettings)
+        } else {
+            Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings)
+        };
+    };
+
+    crate::application::ensure_provider_spawn_enabled(
+        provider_repo,
+        recovery_harness,
+        "recovery_retry",
+    )
+    .await
+    .map_err(RecoveryRetryProviderBlock::Disabled)?;
+
+    let provider_env =
+        provider_env_for_harness(app_handle, agent_provider_settings_repo, recovery_harness)
+            .await
+            .map_err(RecoveryRetryProviderBlock::Env)?;
+
+    Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env))
+}
+
+async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+    mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
+) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+    match recovery_retry_provider_decision(
+        app_handle,
+        agent_provider_settings_repo,
+        recovery_harness,
+        context_type,
+    )
+    .await
+    {
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
+            provider_spawnable.apply_provider_env(&provider_env);
+            Some(provider_spawnable.spawnable)
+        }
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
+            Some(provider_spawnable.spawnable)
+        }
+        Err(_) => None,
+    }
+}
+
 fn queue_verification_auto_continue(
     message_queue: &Arc<MessageQueue>,
     child_id: &IdeationSessionId,
@@ -2224,58 +2293,15 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             )
                             .await;
                         let retry_spawnable = match retry_provider_spawnable {
-                            Ok(mut provider_spawnable) => {
-                                if let Some(provider_repo) =
-                                    retry_agent_provider_settings_repo.as_ref()
-                                {
-                                    if let Err(error) =
-                                        crate::application::ensure_provider_spawn_enabled(
-                                            provider_repo,
-                                            recovery_harness,
-                                            "recovery_retry",
-                                        )
-                                        .await
-                                    {
-                                        tracing::error!(
-                                            error = %error,
-                                            harness = %recovery_harness,
-                                            "Provider disabled for recovery retry"
-                                        );
-                                        None
-                                    } else {
-                                        match provider_env_for_harness(
-                                            app_handle,
-                                            &retry_agent_provider_settings_repo,
-                                            recovery_harness,
-                                        )
-                                        .await
-                                        {
-                                            Ok(provider_env) => {
-                                                provider_spawnable
-                                                    .apply_provider_env(&provider_env);
-                                                Some(provider_spawnable.spawnable)
-                                            }
-                                            Err(error) => {
-                                                tracing::error!(
-                                                    error = %error,
-                                                    harness = %recovery_harness,
-                                                    "Failed to load provider env file for recovery retry"
-                                                );
-                                                None
-                                            }
-                                        }
-                                    }
-                                } else if super::uses_execution_slot(context_type) {
-                                    tracing::error!(
-                                        %context_type,
-                                        context_id,
-                                        harness = %recovery_harness,
-                                        "Provider settings repository missing for recovery retry"
-                                    );
-                                    None
-                                } else {
-                                    Some(provider_spawnable.spawnable)
-                                }
+                            Ok(provider_spawnable) => {
+                                recovery_retry_spawnable_with_provider_gate(
+                                    app_handle,
+                                    &retry_agent_provider_settings_repo,
+                                    recovery_harness,
+                                    context_type,
+                                    provider_spawnable,
+                                )
+                                .await
                             }
                             Err(error) => {
                                 tracing::error!(
