@@ -2994,7 +2994,7 @@ fn build_patch_excerpt(patch_sections: &[(&str, &str)], status: Option<&str>) ->
     }
 }
 
-async fn resolve_review_target(
+pub(crate) async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
@@ -4600,8 +4600,9 @@ x
         assert!(review_prompt.contains("RX-42"));
         assert!(!review_prompt
             .contains("Fetch any `kind=&quot;plan&quot;` artifact reference with `get_artifact`"));
-        assert!(review_prompt
-            .contains("Use the target scope, head SHA, and diff fingerprint returned"));
+        assert!(
+            review_prompt.contains("Use the target scope, head SHA, and diff fingerprint returned")
+        );
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
         assert!(!review_prompt.contains("pass conversation_id"));
 
