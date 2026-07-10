@@ -116,6 +116,13 @@ export interface StepProgressSummary {
   percentComplete: number;
 }
 
+export interface StepProgressDisplay {
+  completed: number;
+  total: number;
+  completedPercent: number;
+  activePercent: number;
+}
+
 /**
  * Transform function for StepProgressSummary
  */
@@ -143,6 +150,35 @@ export function getCompletableStepProgressCounts(
   return {
     completed: Math.min(Math.max(0, progress.completed), total),
     total,
+  };
+}
+
+export function getStepProgressDisplay(
+  progress: Pick<
+    StepProgressSummary,
+    "completed" | "inProgress" | "skipped" | "total"
+  >
+): StepProgressDisplay {
+  const { completed, total } = getCompletableStepProgressCounts(progress);
+  const activeStepCount = Math.min(
+    completed + Math.max(0, progress.inProgress),
+    total
+  );
+
+  if (total === 0) {
+    return {
+      completed,
+      total,
+      completedPercent: 0,
+      activePercent: 0,
+    };
+  }
+
+  return {
+    completed,
+    total,
+    completedPercent: (completed / total) * 100,
+    activePercent: (activeStepCount / total) * 100,
   };
 }
 
