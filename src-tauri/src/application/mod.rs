@@ -185,13 +185,13 @@ pub use granola_integration_service::{
     GranolaIntegrationService, GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary,
     GranolaTranscriptEntry, UnavailableGranolaApiClient,
 };
-pub(crate) use harness_runtime_registry::probe_supported_harnesses;
 pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
-    build_lane_harness_availability, resolve_lane_harness_config,
-    resolve_primary_ideation_harness_availability, team_mode_supported_for_context,
-    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override,
-    AGENT_LANES, IDEATION_LANES,
+    build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
+    provider_aware_runtime_probes_for_repo, resolve_lane_harness_config,
+    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
+    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
+    IDEATION_LANES,
 };
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,

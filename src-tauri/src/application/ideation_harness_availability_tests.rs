@@ -1,13 +1,16 @@
 use super::ideation_harness_availability::{
     build_harness_override_availability, build_lane_harness_availability,
-    team_mode_supported_for_context, validate_chat_runtime_for_context,
+    overlay_provider_runtime_probes, team_mode_supported_for_context,
+    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override,
     validate_claude_runtime_path, LaneHarnessAvailability, ResolvedLaneHarnessConfig,
 };
 use crate::application::harness_runtime_registry::{
     standard_harness_probe_registry, HarnessRuntimeProbe,
 };
 use crate::application::AppState;
-use crate::domain::agents::{AgentHarnessKind, AgentLane};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentLane, AgentProviderCliManagementMode, AgentProviderSettings,
+};
 use crate::domain::entities::ChatContextType;
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
@@ -35,6 +38,55 @@ fn probe_map(
     codex_probe: HarnessRuntimeProbe,
 ) -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
     crate::domain::agents::standard_harness_map(claude_probe, codex_probe)
+}
+
+fn codex_provider_settings(
+    mode: AgentProviderCliManagementMode,
+    enabled: bool,
+    default_provider: bool,
+) -> AgentProviderSettings {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    settings.enabled = enabled;
+    settings.is_default = default_provider;
+    settings.cli_management_mode = mode;
+    settings
+}
+
+fn write_executable(path: &std::path::Path, contents: &str) {
+    std::fs::write(path, contents).expect("write fake codex");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fake codex");
+    }
+}
+
+fn write_modern_codex_cli(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.144.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+elif [ "$1" = "features" ] && [ "$2" = "list" ]; then
+  printf '%s\n' 'fast_mode stable true'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ -z "$3" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"additional_speed_tiers":["fast"]}]}'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ "$3" = "--bundled" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"additional_speed_tiers":["fast"]}]}'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
 }
 
 #[test]
@@ -257,6 +309,62 @@ fn project_chat_runtime_override_uses_requested_harness_probe() {
     );
 }
 
+#[test]
+fn provider_runtime_overlay_uses_rx_managed_codex_probe() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let managed_codex_path = temp_dir.path().join("codex");
+    write_modern_codex_cli(&managed_codex_path);
+    let _override =
+        crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+            managed_codex_path.clone(),
+        );
+    let settings = codex_provider_settings(AgentProviderCliManagementMode::RxManaged, true, true);
+    let mut probes = probe_map(
+        unavailable_probe("Claude CLI not found"),
+        unavailable_probe("Codex CLI not found"),
+    );
+
+    overlay_provider_runtime_probes(&[settings], &mut probes);
+
+    let codex_probe = probes
+        .get(&AgentHarnessKind::Codex)
+        .expect("Codex probe should be overlaid");
+    assert!(codex_probe.available);
+    assert_eq!(
+        codex_probe.binary_path.as_deref(),
+        Some(managed_codex_path.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn provider_runtime_overlay_uses_custom_codex_probe() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let custom_codex_path = temp_dir.path().join("codex-wrapper");
+    write_modern_codex_cli(&custom_codex_path);
+    let mut settings =
+        codex_provider_settings(AgentProviderCliManagementMode::UserManaged, true, true);
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(custom_codex_path.to_string_lossy().into_owned());
+    let mut probes = probe_map(
+        unavailable_probe("Claude CLI not found"),
+        unavailable_probe("Codex CLI not found"),
+    );
+
+    overlay_provider_runtime_probes(&[settings], &mut probes);
+
+    let codex_probe = probes
+        .get(&AgentHarnessKind::Codex)
+        .expect("Codex probe should be overlaid");
+    assert!(codex_probe.available);
+    assert_eq!(
+        codex_probe.binary_path.as_deref(),
+        Some(custom_codex_path.to_string_lossy().as_ref())
+    );
+}
+
 #[tokio::test]
 async fn chat_runtime_validation_requires_enabled_default_provider_first() {
     let mut state = AppState::new_test();
@@ -272,6 +380,72 @@ async fn chat_runtime_validation_requires_enabled_default_provider_first() {
     .expect_err("missing default provider should block before runtime probe");
 
     assert!(error.contains("Settings > Harness > Providers"));
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn chat_runtime_validation_reports_rx_managed_codex_missing_binary() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let missing_codex_path = temp_dir.path().join("missing-codex");
+    let _override =
+        crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
+            missing_codex_path,
+        );
+    let state = AppState::new_test();
+    let settings = codex_provider_settings(AgentProviderCliManagementMode::RxManaged, true, true);
+    state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("upsert provider settings");
+
+    let error = validate_chat_runtime_for_context_with_override(
+        &state,
+        ChatContextType::Project,
+        "project-rx-managed-codex",
+        "project chat",
+        Some(AgentHarnessKind::Codex),
+    )
+    .await
+    .expect_err("missing RX-managed Codex should block chat start");
+
+    assert_eq!(error, "RX-managed Codex is not installed.");
+}
+
+#[tokio::test]
+async fn chat_runtime_validation_still_rejects_disabled_codex_provider() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let custom_codex_path = temp_dir.path().join("codex-wrapper");
+    write_modern_codex_cli(&custom_codex_path);
+    let mut state = AppState::new_test();
+    let provider_repo = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Claude),
+    );
+    state.agent_provider_settings_repo =
+        provider_repo.clone() as Arc<dyn AgentProviderSettingsRepository>;
+    let mut disabled_codex =
+        codex_provider_settings(AgentProviderCliManagementMode::UserManaged, false, false);
+    disabled_codex.custom_binary_enabled = true;
+    disabled_codex.custom_binary_path = Some(custom_codex_path.to_string_lossy().into_owned());
+    provider_repo
+        .upsert(&disabled_codex)
+        .await
+        .expect("upsert disabled Codex provider");
+
+    let error = validate_chat_runtime_for_context_with_override(
+        &state,
+        ChatContextType::Project,
+        "project-disabled-codex",
+        "project chat",
+        Some(AgentHarnessKind::Codex),
+    )
+    .await
+    .expect_err("disabled provider should still block chat start");
+
+    assert!(error.contains("codex is not enabled"));
 }
 
 #[tokio::test]
