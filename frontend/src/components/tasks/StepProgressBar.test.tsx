@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StepProgressBar } from "./StepProgressBar";
+import { stepKeys } from "@/hooks/useTaskSteps";
 import { api } from "@/lib/tauri";
 import type { StepProgressSummary } from "@/types/task-step";
 
@@ -33,6 +34,20 @@ function createWrapper() {
       },
     },
   });
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+
+function createWrapperWithProgress(taskId: string, progress: StepProgressSummary) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+  queryClient.setQueryData(stepKeys.progress(taskId), progress);
   return ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
@@ -124,6 +139,24 @@ describe("StepProgressBar", () => {
       await vi.waitFor(() => {
         expect(container.firstChild).toBeNull();
       });
+    });
+
+    it("returns null when every step is skipped", async () => {
+      const allSkipped = {
+        ...mockProgress,
+        total: 2,
+        completed: 0,
+        inProgress: 0,
+        pending: 0,
+        skipped: 2,
+        failed: 0,
+      };
+
+      const { container } = render(<StepProgressBar taskId="task-1" />, {
+        wrapper: createWrapperWithProgress("task-1", allSkipped),
+      });
+
+      expect(container.firstChild).toBeNull();
     });
   });
 

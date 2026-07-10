@@ -187,7 +187,9 @@ async fn update_task_step_command_applies_partial_fields_and_rejects_missing_ste
     )
     .await
     .expect_err("missing step should error");
-    assert!(missing_error.to_string().contains("Step missing-step not found"));
+    assert!(missing_error
+        .to_string()
+        .contains("Step missing-step not found"));
 
     let created = create_task_step(
         task_id.as_str().to_string(),
@@ -384,21 +386,15 @@ async fn test_get_step_progress() {
 }
 
 #[tokio::test]
-async fn get_step_progress_command_excludes_skipped_steps_from_percent() {
+async fn get_step_progress_ipc_contract_excludes_skipped_steps_from_percent() {
     let app = task_step_command_app();
     let project = create_test_project(app.state::<AppState>().inner()).await;
     let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
 
     let mut steps = Vec::new();
-    for (sort_order, title) in [
-        "Done",
-        "Active",
-        "Pending",
-        "Skipped A",
-        "Skipped B",
-    ]
-    .into_iter()
-    .enumerate()
+    for (sort_order, title) in ["Done", "Active", "Pending", "Skipped A", "Skipped B"]
+        .into_iter()
+        .enumerate()
     {
         steps.push(
             create_task_step(
@@ -495,7 +491,10 @@ async fn get_step_progress_command_summarizes_current_and_next_steps() {
     assert_eq!(progress.total, 2);
     assert_eq!(progress.in_progress, 1);
     assert_eq!(progress.pending, 1);
-    assert_eq!(progress.current_step.expect("current step").id.as_str(), current.id);
+    assert_eq!(
+        progress.current_step.expect("current step").id.as_str(),
+        current.id
+    );
     assert_eq!(progress.next_step.expect("next step").id.as_str(), next.id);
 }
 
@@ -549,7 +548,9 @@ async fn start_step_command_sets_in_progress_and_rejects_invalid_status() {
     let missing_error = start_step("missing-step".to_string(), app.state::<AppState>())
         .await
         .expect_err("missing step should error");
-    assert!(missing_error.to_string().contains("Step missing-step not found"));
+    assert!(missing_error
+        .to_string()
+        .contains("Step missing-step not found"));
 
     let step = create_task_step(
         task_id.as_str().to_string(),
@@ -698,7 +699,10 @@ async fn complete_step_command_requires_in_progress_and_records_note() {
     .expect("step completes");
 
     assert_eq!(completed.status, "completed");
-    assert_eq!(completed.completion_note.as_deref(), Some("Finished cleanly"));
+    assert_eq!(
+        completed.completion_note.as_deref(),
+        Some("Finished cleanly")
+    );
     assert!(completed.completed_at.is_some());
 }
 
@@ -802,13 +806,9 @@ async fn skip_step_command_accepts_pending_and_rejects_terminal_status() {
     assert_eq!(skipped.status, "skipped");
     assert_eq!(skipped.completion_note.as_deref(), Some("No longer needed"));
 
-    let skip_again = skip_step(
-        step.id,
-        "still no".to_string(),
-        app.state::<AppState>(),
-    )
-    .await
-    .expect_err("terminal skipped step cannot skip again");
+    let skip_again = skip_step(step.id, "still no".to_string(), app.state::<AppState>())
+        .await
+        .expect_err("terminal skipped step cannot skip again");
     assert!(skip_again
         .to_string()
         .contains("Step must be Pending or InProgress to skip"));
