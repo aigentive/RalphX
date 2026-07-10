@@ -2,8 +2,8 @@
 // These implementations record calls for verification in tests
 
 use super::services::{
-    AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStartResult, ReviewStarter,
-    TaskScheduler,
+    AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier,
+    ReviewStartResult, ReviewStarter, TaskNotification, TaskScheduler,
 };
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -170,6 +170,13 @@ impl EventEmitter for MockEventEmitter {
 #[derive(Debug, Default)]
 pub struct MockNotifier {
     notifications: Arc<Mutex<Vec<ServiceCall>>>,
+    notification_records: Arc<Mutex<Vec<NotificationRecord>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotificationRecord {
+    pub context: NotificationContext,
+    pub notification: TaskNotification,
 }
 
 impl MockNotifier {
@@ -182,9 +189,15 @@ impl MockNotifier {
         self.notifications.lock().unwrap().clone()
     }
 
+    /// Returns typed notification calls, including their authoritative history context.
+    pub fn notification_records(&self) -> Vec<NotificationRecord> {
+        self.notification_records.lock().unwrap().clone()
+    }
+
     /// Clears all recorded notifications
     pub fn clear(&self) {
         self.notifications.lock().unwrap().clear();
+        self.notification_records.lock().unwrap().clear();
     }
 
     /// Returns the number of notifications sent
@@ -204,21 +217,17 @@ impl MockNotifier {
 
 #[async_trait]
 impl Notifier for MockNotifier {
-    async fn notify(&self, notification_type: &str, task_id: &str) {
+    async fn notify(&self, context: NotificationContext, notification: TaskNotification) {
+        self.notification_records
+            .lock()
+            .unwrap()
+            .push(NotificationRecord {
+                context: context.clone(),
+                notification: notification.clone(),
+            });
         self.notifications.lock().unwrap().push(ServiceCall::new(
             "notify",
-            vec![notification_type.to_string(), task_id.to_string()],
-        ));
-    }
-
-    async fn notify_with_message(&self, notification_type: &str, task_id: &str, message: &str) {
-        self.notifications.lock().unwrap().push(ServiceCall::new(
-            "notify_with_message",
-            vec![
-                notification_type.to_string(),
-                task_id.to_string(),
-                message.to_string(),
-            ],
+            vec![format!("{notification:?}"), context.task.id.to_string()],
         ));
     }
 }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::domain::entities::merge_progress_event::{MergePhase, MergePhaseStatus};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
-use super::super::{TransitionHandler, cleanup_helpers, emit_merge_progress};
+use super::super::{cleanup_helpers, emit_merge_progress, TransitionHandler};
 
 pub(super) async fn cancel_validation_and_stop_agents<'a>(
     handler: &TransitionHandler<'a>,

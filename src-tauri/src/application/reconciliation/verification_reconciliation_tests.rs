@@ -15,16 +15,13 @@ fn make_service(
     repo: Arc<MemoryIdeationSessionRepository>,
     config: VerificationReconciliationConfig,
 ) -> VerificationReconciliationService {
-    VerificationReconciliationService::new(
-        repo as Arc<dyn IdeationSessionRepository>,
-        config,
-    )
+    VerificationReconciliationService::new(repo as Arc<dyn IdeationSessionRepository>, config)
 }
 
 fn default_config() -> VerificationReconciliationConfig {
     VerificationReconciliationConfig {
-        stale_after_secs: 5400,                    // 90 min
-        auto_verify_stale_secs: 600,               // 10 min
+        stale_after_secs: 5400,      // 90 min
+        auto_verify_stale_secs: 600, // 10 min
         interval_secs: 300,
         external_session_stale_secs: 7200,         // 2 hours
         external_session_startup_grace_secs: None, // falls back to external_session_stale_secs
@@ -277,14 +274,24 @@ async fn test_reconciler_auto_verify_shorter_threshold() {
     };
 
     // Auto-verify session (generation > 0) stuck for 15 minutes — should be reset (> 10 min)
-    let auto_id =
-        setup_stuck_session(&repo, project_id.clone(), 1, 900, VerificationStatus::Reviewing)
-            .await;
+    let auto_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        1,
+        900,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     // Manual verify session (generation == 0) stuck for 15 minutes — should NOT be reset (< 90 min)
-    let manual_id =
-        setup_stuck_session(&repo, project_id.clone(), 0, 900, VerificationStatus::Reviewing)
-            .await;
+    let manual_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        0,
+        900,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     let svc = make_service(repo.clone(), config);
     let count = svc.scan_and_reset(false).await;
@@ -325,9 +332,14 @@ async fn test_reconciler_skips_imported_verified_sessions() {
     .await;
 
     // A normal Reviewing session that IS stale — should be reset
-    let stuck_id =
-        setup_stuck_session(&repo, project_id.clone(), 0, 10800, VerificationStatus::Reviewing)
-            .await;
+    let stuck_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        0,
+        10800,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     let svc = make_service(repo.clone(), default_config());
     let count = svc.scan_and_reset(false).await;
@@ -380,9 +392,14 @@ async fn test_orphaned_verification_child_reconciled() {
     let project_id = ProjectId::new();
 
     // Parent session stuck in verification for 2 hours (> 90-min threshold)
-    let parent_id =
-        setup_stuck_session(&repo, project_id.clone(), 1, 7200, VerificationStatus::Reviewing)
-            .await;
+    let parent_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        1,
+        7200,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     // Orphaned verification child session (not archived)
     let mut child = IdeationSession::new(project_id.clone());
@@ -399,7 +416,10 @@ async fn test_orphaned_verification_child_reconciled() {
 
     // Parent should be reset
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::Unverified);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Unverified
+    );
     assert!(!parent_after.verification_in_progress);
 
     // Child should be archived
@@ -473,31 +493,24 @@ async fn make_parent_child_pair(
 #[tokio::test]
 async fn test_reconcile_child_complete_convergence_zero_blocking() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::Reviewing,
-                true,
-                2,
-                5,
-                Some("zero_blocking"),
-                &[0],
-            )),
-        )
-        .await;
-
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::Reviewing,
+            true,
+            2,
+            5,
+            Some("zero_blocking"),
+            &[0],
+        )),
     )
     .await;
+
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -521,8 +534,7 @@ async fn test_reconcile_child_complete_convergence_zero_blocking() {
 #[tokio::test]
 async fn test_reconcile_child_complete_uses_native_verification_snapshot_when_metadata_missing() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     let (parent_id, child_id) = make_parent_child_pair(&repo, None).await;
     let parent = repo.get_by_id(&parent_id).await.unwrap().unwrap();
@@ -559,13 +571,8 @@ async fn test_reconcile_child_complete_uses_native_verification_snapshot_when_me
     .await
     .unwrap();
 
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
-    )
-    .await;
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -579,65 +586,54 @@ async fn test_reconcile_child_complete_uses_native_verification_snapshot_when_me
 #[tokio::test]
 async fn test_reconcile_child_complete_convergence_jaccard_converged() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::Reviewing,
-                true,
-                3,
-                5,
-                Some("jaccard_converged"),
-                &[],
-            )),
-        )
-        .await;
-
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::Reviewing,
+            true,
+            3,
+            5,
+            Some("jaccard_converged"),
+            &[],
+        )),
     )
     .await;
 
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
+
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::Verified);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Verified
+    );
     assert!(!parent_after.verification_in_progress);
 }
 
 #[tokio::test]
 async fn test_reconcile_child_complete_max_rounds_needs_revision() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::Reviewing,
-                true,
-                5,
-                5,
-                Some("max_rounds"),
-                &[],
-            )),
-        )
-        .await;
-
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::Reviewing,
+            true,
+            5,
+            5,
+            Some("max_rounds"),
+            &[],
+        )),
     )
     .await;
+
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -657,32 +653,27 @@ async fn test_reconcile_child_complete_max_rounds_needs_revision() {
 #[tokio::test]
 async fn test_reconcile_child_complete_actionable_needs_revision_requests_auto_continue() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::NeedsRevision,
-                true,
-                1,
-                5,
-                None,
-                &[4],
-            )),
-        )
-        .await;
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::NeedsRevision,
+            true,
+            1,
+            5,
+            None,
+            &[4],
+        )),
+    )
+    .await;
     repo.update_verification_state(&parent_id, VerificationStatus::NeedsRevision, true)
         .await
         .unwrap();
 
     let result = reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+        &parent_id, &child_id, &dyn_repo, None,
     )
     .await;
 
@@ -690,17 +681,21 @@ async fn test_reconcile_child_complete_actionable_needs_revision_requests_auto_c
         Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
             assert_eq!(request.snapshot.status, VerificationStatus::NeedsRevision);
             assert!(request.snapshot.in_progress);
-            assert!(
-                request
-                    .continuation_message
-                    .contains("Continue the active verification loop in this same session")
-            );
+            assert!(request
+                .continuation_message
+                .contains("Continue the active verification loop in this same session"));
         }
-        other => panic!("expected auto-continue outcome, got {:?}", other.map(|_| ())),
+        other => panic!(
+            "expected auto-continue outcome, got {:?}",
+            other.map(|_| ())
+        ),
     }
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::NeedsRevision);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::NeedsRevision
+    );
     assert!(
         parent_after.verification_in_progress,
         "auto-continue must keep parent verification marked in progress"
@@ -717,8 +712,7 @@ async fn test_reconcile_child_complete_actionable_needs_revision_requests_auto_c
 #[tokio::test]
 async fn test_reconcile_child_complete_pending_review_round_requests_auto_continue() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     let (parent_id, child_id) = make_parent_child_pair(
         &repo,
@@ -743,10 +737,7 @@ async fn test_reconcile_child_complete_pending_review_round_requests_auto_contin
         .unwrap();
 
     let result = reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+        &parent_id, &child_id, &dyn_repo, None,
     )
     .await;
 
@@ -755,17 +746,21 @@ async fn test_reconcile_child_complete_pending_review_round_requests_auto_contin
             assert_eq!(request.snapshot.status, VerificationStatus::Reviewing);
             assert!(request.snapshot.in_progress);
             assert_eq!(request.snapshot.current_round, 1);
-            assert!(
-                request
-                    .continuation_message
-                    .contains("required verification critics may still be settling")
-            );
+            assert!(request
+                .continuation_message
+                .contains("required verification critics may still be settling"));
         }
-        other => panic!("expected auto-continue outcome, got {:?}", other.map(|_| ())),
+        other => panic!(
+            "expected auto-continue outcome, got {:?}",
+            other.map(|_| ())
+        ),
     }
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::Reviewing);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Reviewing
+    );
     assert!(
         parent_after.verification_in_progress,
         "pending round must keep parent verification in progress"
@@ -782,31 +777,24 @@ async fn test_reconcile_child_complete_pending_review_round_requests_auto_contin
 #[tokio::test]
 async fn test_reconcile_child_complete_crashed_mid_round() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::Reviewing,
-                true,
-                2,
-                5,
-                None,
-                &[5],
-            )),
-        )
-        .await;
-
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::Reviewing,
+            true,
+            2,
+            5,
+            None,
+            &[5],
+        )),
     )
     .await;
+
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -829,19 +817,13 @@ async fn test_reconcile_child_complete_crashed_mid_round() {
 #[tokio::test]
 async fn test_reconcile_child_complete_no_snapshot() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     // No native snapshot at all — agent completed without any updates
     let (parent_id, child_id) = make_parent_child_pair(&repo, None).await;
 
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
-    )
-    .await;
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -862,8 +844,7 @@ async fn test_reconcile_child_complete_no_snapshot() {
 async fn test_reconcile_child_complete_imported_verified_guard() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
     let project_id = ProjectId::new();
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     // Parent is ImportedVerified — must not be reconciled
     let mut parent = IdeationSession::new(project_id.clone());
@@ -878,13 +859,8 @@ async fn test_reconcile_child_complete_imported_verified_guard() {
     let child_id = child.id.clone();
     repo.create(child).await.unwrap();
 
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
-    )
-    .await;
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -900,8 +876,7 @@ async fn test_reconcile_child_complete_imported_verified_guard() {
 async fn test_reconcile_child_complete_orphan_sibling_archived() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
     let project_id = ProjectId::new();
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     let mut parent = IdeationSession::new(project_id.clone());
     parent.verification_status = VerificationStatus::Reviewing;
@@ -923,13 +898,8 @@ async fn test_reconcile_child_complete_orphan_sibling_archived() {
     let child2_id = child2.id.clone();
     repo.create(child2).await.unwrap();
 
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child1_id,
-        &dyn_repo,
-        None,
-    )
-    .await;
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child1_id, &dyn_repo, None)
+        .await;
 
     let child1_after = repo.get_by_id(&child1_id).await.unwrap().unwrap();
     assert_eq!(
@@ -958,19 +928,34 @@ async fn test_scan_and_reset_cold_boot_ignores_ttl() {
     let project_id = ProjectId::new();
 
     // 5-minute-old auto-verify session — would NOT be reset by scan_and_reset(false)
-    let recent_auto_id =
-        setup_stuck_session(&repo, project_id.clone(), 1, 300, VerificationStatus::Reviewing)
-            .await;
+    let recent_auto_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        1,
+        300,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     // 30-minute-old manual-verify session — would NOT be reset by scan_and_reset(false)
-    let mid_manual_id =
-        setup_stuck_session(&repo, project_id.clone(), 0, 1800, VerificationStatus::Reviewing)
-            .await;
+    let mid_manual_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        0,
+        1800,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     // 2-hour-old session — would also be reset by scan_and_reset(false)
-    let old_id =
-        setup_stuck_session(&repo, project_id.clone(), 0, 7200, VerificationStatus::Reviewing)
-            .await;
+    let old_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        0,
+        7200,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     let svc = make_service(repo.clone(), default_config());
     let count = svc.scan_and_reset(true).await;
@@ -1016,9 +1001,14 @@ async fn test_scan_and_reset_cold_boot_skips_imported_verified() {
     .await;
 
     // Normal in-progress session (should be reset)
-    let normal_id =
-        setup_stuck_session(&repo, project_id.clone(), 0, 300, VerificationStatus::Reviewing)
-            .await;
+    let normal_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        0,
+        300,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     let svc = make_service(repo.clone(), default_config());
     let count = svc.scan_and_reset(true).await;
@@ -1039,7 +1029,10 @@ async fn test_scan_and_reset_cold_boot_skips_imported_verified() {
 
     // Normal session must be reset
     let normal_after = repo.get_by_id(&normal_id).await.unwrap().unwrap();
-    assert_eq!(normal_after.verification_status, VerificationStatus::Unverified);
+    assert_eq!(
+        normal_after.verification_status,
+        VerificationStatus::Unverified
+    );
     assert!(!normal_after.verification_in_progress);
 }
 
@@ -1050,9 +1043,14 @@ async fn test_scan_and_reset_cold_boot_archives_orphaned_children() {
     let project_id = ProjectId::new();
 
     // Parent with in-progress verification (5 minutes old — below any TTL threshold)
-    let parent_id =
-        setup_stuck_session(&repo, project_id.clone(), 0, 300, VerificationStatus::Reviewing)
-            .await;
+    let parent_id = setup_stuck_session(
+        &repo,
+        project_id.clone(),
+        0,
+        300,
+        VerificationStatus::Reviewing,
+    )
+    .await;
 
     // Orphaned verification child session
     let mut child = IdeationSession::new(project_id.clone());
@@ -1068,7 +1066,10 @@ async fn test_scan_and_reset_cold_boot_archives_orphaned_children() {
 
     // Parent must be reset and stale summary fields cleared.
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::Unverified);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Unverified
+    );
     assert!(!parent_after.verification_in_progress);
     assert_eq!(parent_after.verification_convergence_reason, None);
 
@@ -1155,8 +1156,7 @@ async fn test_scan_and_reset_cold_boot_clears_legacy_metadata() {
 #[tokio::test]
 async fn test_reset_verification_on_child_error_agent_error() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     let (parent_id, child_id) = make_parent_child_pair(&repo, None).await;
 
@@ -1187,50 +1187,48 @@ async fn test_reset_verification_on_child_error_agent_error() {
 #[tokio::test]
 async fn test_reset_verification_on_child_error_actionable_needs_revision_requests_auto_continue() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::NeedsRevision,
-                true,
-                2,
-                5,
-                None,
-                &[3],
-            )),
-        )
-        .await;
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::NeedsRevision,
+            true,
+            2,
+            5,
+            None,
+            &[3],
+        )),
+    )
+    .await;
     repo.update_verification_state(&parent_id, VerificationStatus::NeedsRevision, true)
         .await
         .unwrap();
 
-    let result = reset_verification_on_child_error::<tauri::Wry>(
-        &child_id,
-        &dyn_repo,
-        None,
-        "agent_error",
-    )
-    .await;
+    let result =
+        reset_verification_on_child_error::<tauri::Wry>(&child_id, &dyn_repo, None, "agent_error")
+            .await;
 
     match result {
         Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
             assert_eq!(request.snapshot.status, VerificationStatus::NeedsRevision);
             assert!(request.snapshot.in_progress);
-            assert!(
-                request
-                    .continuation_message
-                    .contains("Continue the active verification loop in this same session")
-            );
+            assert!(request
+                .continuation_message
+                .contains("Continue the active verification loop in this same session"));
         }
-        other => panic!("expected auto-continue outcome, got {:?}", other.map(|_| ())),
+        other => panic!(
+            "expected auto-continue outcome, got {:?}",
+            other.map(|_| ())
+        ),
     }
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::NeedsRevision);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::NeedsRevision
+    );
     assert!(
         parent_after.verification_in_progress,
         "auto-continue must keep parent verification marked in progress"
@@ -1247,8 +1245,7 @@ async fn test_reset_verification_on_child_error_actionable_needs_revision_reques
 #[tokio::test]
 async fn test_reset_verification_on_child_error_pending_review_round_requests_auto_continue() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     let (parent_id, child_id) = make_parent_child_pair(
         &repo,
@@ -1272,30 +1269,30 @@ async fn test_reset_verification_on_child_error_pending_review_round_requests_au
         .await
         .unwrap();
 
-    let result = reset_verification_on_child_error::<tauri::Wry>(
-        &child_id,
-        &dyn_repo,
-        None,
-        "agent_error",
-    )
-    .await;
+    let result =
+        reset_verification_on_child_error::<tauri::Wry>(&child_id, &dyn_repo, None, "agent_error")
+            .await;
 
     match result {
         Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
             assert_eq!(request.snapshot.status, VerificationStatus::Reviewing);
             assert!(request.snapshot.in_progress);
             assert_eq!(request.snapshot.current_round, 2);
-            assert!(
-                request
-                    .continuation_message
-                    .contains("required verification critics may still be settling")
-            );
+            assert!(request
+                .continuation_message
+                .contains("required verification critics may still be settling"));
         }
-        other => panic!("expected auto-continue outcome, got {:?}", other.map(|_| ())),
+        other => panic!(
+            "expected auto-continue outcome, got {:?}",
+            other.map(|_| ())
+        ),
     }
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::Reviewing);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Reviewing
+    );
     assert!(
         parent_after.verification_in_progress,
         "pending round must keep parent verification in progress"
@@ -1312,8 +1309,7 @@ async fn test_reset_verification_on_child_error_pending_review_round_requests_au
 #[tokio::test]
 async fn test_reset_verification_on_child_error_user_stopped() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     let (parent_id, child_id) = make_parent_child_pair(&repo, None).await;
 
@@ -1335,8 +1331,7 @@ async fn test_reset_verification_on_child_error_user_stopped() {
 async fn test_reset_verification_noop_for_non_verification_child() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
     let project_id = ProjectId::new();
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     // Parent with in_progress=true
     let mut parent = IdeationSession::new(project_id.clone());
@@ -1357,16 +1352,21 @@ async fn test_reset_verification_noop_for_non_verification_child() {
 
     // Parent should be unchanged (not a verification child)
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::Reviewing);
-    assert!(parent_after.verification_in_progress, "parent must be unchanged for general child");
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Reviewing
+    );
+    assert!(
+        parent_after.verification_in_progress,
+        "parent must be unchanged for general child"
+    );
 }
 
 #[tokio::test]
 async fn test_reset_verification_imported_verified_guard() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
     let project_id = ProjectId::new();
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
     // Parent is ImportedVerified — must not be reset
     let mut parent = IdeationSession::new(project_id.clone());
@@ -1395,31 +1395,24 @@ async fn test_reset_verification_imported_verified_guard() {
 #[tokio::test]
 async fn test_escalated_to_parent_maps_to_needs_revision() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::Reviewing,
-                true,
-                3,
-                5,
-                Some("escalated_to_parent"),
-                &[],
-            )),
-        )
-        .await;
-
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::Reviewing,
+            true,
+            3,
+            5,
+            Some("escalated_to_parent"),
+            &[],
+        )),
     )
     .await;
+
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -1436,31 +1429,24 @@ async fn test_escalated_to_parent_maps_to_needs_revision() {
 #[tokio::test]
 async fn test_user_stopped_maps_to_skipped() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
-    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> =
-        repo.clone();
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
 
-    let (parent_id, child_id) =
-        make_parent_child_pair(
-            &repo,
-            Some(make_snapshot(
-                0,
-                VerificationStatus::Reviewing,
-                true,
-                2,
-                5,
-                Some("user_stopped"),
-                &[],
-            )),
-        )
-        .await;
-
-    reconcile_verification_on_child_complete::<tauri::Wry>(
-        &parent_id,
-        &child_id,
-        &dyn_repo,
-        None,
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::Reviewing,
+            true,
+            2,
+            5,
+            Some("user_stopped"),
+            &[],
+        )),
     )
     .await;
+
+    reconcile_verification_on_child_complete::<tauri::Wry>(&parent_id, &child_id, &dyn_repo, None)
+        .await;
 
     let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
     assert_eq!(
@@ -2098,7 +2084,7 @@ async fn make_service_with_recovery(
     )
     .with_recovery_queue(Arc::new(queue))
     .with_running_agent_registry(
-        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>
     );
     (svc, registry, processor)
 }
@@ -2215,7 +2201,10 @@ async fn test_scan_for_recoverable_orphans_skips_non_verification_session() {
         .await;
 
     let claimed = svc.scan_for_recoverable_orphans().await;
-    assert!(claimed.is_empty(), "General purpose session must not be claimed");
+    assert!(
+        claimed.is_empty(),
+        "General purpose session must not be claimed"
+    );
 }
 
 #[tokio::test]
@@ -2394,7 +2383,10 @@ async fn test_scan_for_recoverable_orphans_no_registry_returns_empty() {
     // Service with no registry
     let svc = make_service(repo.clone(), default_config());
     let claimed = svc.scan_for_recoverable_orphans().await;
-    assert!(claimed.is_empty(), "Without registry, no orphans can be found");
+    assert!(
+        claimed.is_empty(),
+        "Without registry, no orphans can be found"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2443,7 +2435,7 @@ async fn make_service_with_tracking(
     )
     .with_recovery_queue(Arc::new(queue))
     .with_running_agent_registry(
-        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>
     );
     (svc, registry, processor, chat_service)
 }
@@ -2484,8 +2476,7 @@ async fn test_full_recovery_flow_sends_recovery_prompt_with_correct_round() {
     let child_id = child.id.clone();
     repo.create(child).await.unwrap();
 
-    let (svc, registry, processor, chat_service) =
-        make_service_with_tracking(repo.clone()).await;
+    let (svc, registry, processor, chat_service) = make_service_with_tracking(repo.clone()).await;
 
     // Register child with a dead pid (pid=0) to simulate stale running_agents row
     registry
@@ -2575,8 +2566,7 @@ async fn test_recovery_fallback_on_send_message_failure() {
     let child_id = child.id.clone();
     repo.create(child).await.unwrap();
 
-    let (svc, registry, processor, chat_service) =
-        make_service_with_tracking(repo.clone()).await;
+    let (svc, registry, processor, chat_service) = make_service_with_tracking(repo.clone()).await;
 
     // Make send_message fail — simulates recovery spawn failure
     chat_service.set_available(false).await;
@@ -2638,8 +2628,7 @@ async fn test_double_spawn_prevention_processor_cleans_stale_entry() {
     let child_id = child.id.clone();
     repo.create(child).await.unwrap();
 
-    let (svc, registry, processor, chat_service) =
-        make_service_with_tracking(repo.clone()).await;
+    let (svc, registry, processor, chat_service) = make_service_with_tracking(repo.clone()).await;
 
     registry
         .set_running(RunningAgentKey {
@@ -2652,7 +2641,9 @@ async fn test_double_spawn_prevention_processor_cleans_stale_entry() {
     let proc_task = tokio::spawn(processor.run());
     svc.startup_scan().await;
     drop(svc);
-    proc_task.await.expect("processor task must not panic on first pass");
+    proc_task
+        .await
+        .expect("processor task must not panic on first pass");
 
     // After first pass: stale running_agents row was cleaned by cleanup_stale_entry
     // in the processor. A second startup_scan must find no orphan.
@@ -2677,13 +2668,15 @@ async fn test_double_spawn_prevention_processor_cleans_stale_entry() {
     )
     .with_recovery_queue(Arc::new(queue2))
     .with_running_agent_registry(
-        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>
     );
 
     let proc_task2 = tokio::spawn(processor2.run());
     svc2.startup_scan().await;
     drop(svc2);
-    proc_task2.await.expect("processor task must not panic on second pass");
+    proc_task2
+        .await
+        .expect("processor task must not panic on second pass");
 
     // Second pass found no orphan (entry cleaned) — only 1 send_message call total
     assert_eq!(
@@ -2722,8 +2715,7 @@ async fn test_recovery_skips_orphan_when_parent_not_in_progress() {
     let child_id = child.id.clone();
     repo.create(child).await.unwrap();
 
-    let (svc, registry, processor, chat_service) =
-        make_service_with_tracking(repo.clone()).await;
+    let (svc, registry, processor, chat_service) = make_service_with_tracking(repo.clone()).await;
 
     registry
         .set_running(RunningAgentKey {
@@ -2799,7 +2791,9 @@ async fn test_mixed_recovery_verification_agent_spawned_after_ideation_placehold
         parent_session_id: None,
         metadata: RecoveryMetadata::default(),
     };
-    queue.submit(ideation_item).expect("ideation item submit must succeed");
+    queue
+        .submit(ideation_item)
+        .expect("ideation item submit must succeed");
 
     // Also submit a VerificationAgent item at lower priority
     let verification_item = RecoveryItem {
@@ -2815,7 +2809,9 @@ async fn test_mixed_recovery_verification_agent_spawned_after_ideation_placehold
             plan_artifact_id: None,
         },
     };
-    queue.submit(verification_item).expect("verification item submit must succeed");
+    queue
+        .submit(verification_item)
+        .expect("verification item submit must succeed");
 
     // Wrap queue in Arc for service (not actually needed for scanning — we submitted manually)
     let svc = VerificationReconciliationService::new(
@@ -2824,7 +2820,7 @@ async fn test_mixed_recovery_verification_agent_spawned_after_ideation_placehold
     )
     .with_recovery_queue(Arc::new(queue))
     .with_running_agent_registry(
-        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        registry.clone() as Arc<dyn crate::domain::services::RunningAgentRegistry>
     );
 
     let proc_task = tokio::spawn(processor.run());
@@ -2914,7 +2910,8 @@ async fn test_archive_resolved_parent_orphans_skips_when_parent_active() {
 }
 
 #[tokio::test]
-async fn test_archive_resolved_parent_orphans_prefers_native_active_round_over_stale_parent_summary() {
+async fn test_archive_resolved_parent_orphans_prefers_native_active_round_over_stale_parent_summary(
+) {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
     let project_id = ProjectId::new();
 
@@ -2987,7 +2984,10 @@ async fn test_archive_resolved_parent_orphans_preserves_queued_verification_chil
         crate::domain::entities::IdeationSessionStatus::Archived,
         "queued verification child must remain active for drain/hydration"
     );
-    assert_eq!(child_after.pending_initial_prompt.as_deref(), Some("queued verify"));
+    assert_eq!(
+        child_after.pending_initial_prompt.as_deref(),
+        Some("queued verify")
+    );
 }
 
 #[tokio::test]
@@ -2996,8 +2996,9 @@ async fn test_archive_resolved_parent_orphans_archives_when_parent_not_found() {
     let project_id = ProjectId::new();
 
     // Child with a parent_session_id that doesn't exist in the DB
-    let nonexistent_parent_id =
-        crate::domain::entities::IdeationSessionId::from_string("nonexistent-parent-id".to_string());
+    let nonexistent_parent_id = crate::domain::entities::IdeationSessionId::from_string(
+        "nonexistent-parent-id".to_string(),
+    );
 
     let mut child = IdeationSession::new(project_id);
     child.session_purpose = crate::domain::entities::SessionPurpose::Verification;

@@ -19,8 +19,9 @@ use crate::domain::entities::{
     InternalStatus, MergeValidationMode, Project, Task, TaskId,
 };
 use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
+use crate::domain::state_machine::services::{NotificationContext, Notifier, TaskNotification};
 
-use super::merge_completion::complete_merge_internal_with_pr_sync;
+use super::merge_completion::complete_merge_internal_with_pr_sync_and_notifier;
 use super::merge_helpers::{
     compute_merge_worktree_path, is_pr_branch_publication_conflict_routed_error, parse_metadata,
     task_has_pr_branch_publication_conflict,
@@ -120,7 +121,18 @@ async fn transition_to_merge_incomplete(
     task_id_str: &str,
     task_repo: &Arc<dyn TaskRepository>,
     event_emitter: &Arc<dyn super::super::services::EventEmitter>,
+    notifier: &Arc<dyn Notifier>,
 ) {
+    // `complete_merge_internal_with_pr_sync_and_notifier` can already have committed
+    // this terminal state after a PR-publication failure. Preserve its history-id-scoped
+    // notification instead of writing a duplicate MergeIncomplete entry/effect.
+    if task.internal_status == InternalStatus::MergeIncomplete {
+        event_emitter
+            .emit_status_change(task_id_str, "pending_merge", "merge_incomplete")
+            .await;
+        return;
+    }
+
     task.internal_status = InternalStatus::MergeIncomplete;
     task.touch();
 
@@ -128,7 +140,7 @@ async fn transition_to_merge_incomplete(
         tracing::error!(error = %e, "Failed to update task to MergeIncomplete status");
         return;
     }
-    if let Err(e) = task_repo
+    let history_entry_id = match task_repo
         .persist_status_change(
             task_id,
             InternalStatus::PendingMerge,
@@ -137,8 +149,22 @@ async fn transition_to_merge_incomplete(
         )
         .await
     {
-        tracing::warn!(error = %e, "Failed to record merge incomplete transition (non-fatal)");
-    }
+        Ok(history_entry_id) => history_entry_id,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to record merge incomplete transition; skipping notification effect");
+            return;
+        }
+    };
+    notifier
+        .notify(
+            NotificationContext {
+                task: task.clone(),
+                history_entry_id,
+                project_id: task.project_id.clone(),
+            },
+            TaskNotification::StateEntered(InternalStatus::MergeIncomplete),
+        )
+        .await;
     event_emitter
         .emit_status_change(task_id_str, "pending_merge", "merge_incomplete")
         .await;
@@ -459,7 +485,7 @@ impl<'a> super::TransitionHandler<'a> {
         let event_sink = self.machine.context.services.event_sink.as_deref();
         let external_events_repo = self.machine.context.services.external_events_repo.as_ref();
         let webhook_publisher = self.machine.context.services.webhook_publisher.as_ref();
-        if let Err(e) = complete_merge_internal_with_pr_sync(
+        if let Err(e) = complete_merge_internal_with_pr_sync_and_notifier(
             task,
             project,
             commit_sha,
@@ -475,6 +501,7 @@ impl<'a> super::TransitionHandler<'a> {
                     &self.machine.context.services,
                 ),
             ),
+            Some(&self.machine.context.services.notifier),
         )
         .await
         {
@@ -515,6 +542,7 @@ impl<'a> super::TransitionHandler<'a> {
                 task_id_str,
                 task_repo,
                 &self.machine.context.services.event_emitter,
+                &self.machine.context.services.notifier,
             )
             .await;
         } else {
@@ -834,6 +862,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_id_str,
             task_repo,
             &self.machine.context.services.event_emitter,
+            &self.machine.context.services.notifier,
         )
         .await;
     }
@@ -1036,6 +1065,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_id_str,
             task_repo,
             &self.machine.context.services.event_emitter,
+            &self.machine.context.services.notifier,
         )
         .await;
     }
@@ -1178,6 +1208,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_id_str,
             task_repo,
             &self.machine.context.services.event_emitter,
+            &self.machine.context.services.notifier,
         )
         .await;
     }

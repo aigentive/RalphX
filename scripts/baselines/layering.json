@@ -603,7 +603,7 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/source_update.rs",
         "target": "crate::application",
-        "text": "| crate::application::MergeResult::FastForward { commit_sha } => commit_sha.clone(),"
+        "text": "| crate::application::MergeResult::FastForward { commit_sha } => {"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/merge_helpers.rs",
@@ -1018,7 +1018,12 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/step_reset_on_enter_tests.rs",
         "target": "crate::application",
-        "text": "Arc::new(crate::application::MockChatService::new()) as Arc<dyn crate::application::ChatService>,"
+        "text": "Arc::new(crate::application::MockChatService::new())"
+      },
+      {
+        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/step_reset_on_enter_tests.rs",
+        "target": "crate::application",
+        "text": "as Arc<dyn crate::application::ChatService>,"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/step_reset_on_enter_tests.rs",
@@ -1083,12 +1088,12 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
         "target": "crate::application",
-        "text": ") -> crate::application::TaskTransitionService {"
+        "text": "crate::application::TaskTransitionService::new("
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
         "target": "crate::application",
-        "text": "crate::application::TaskTransitionService::new("
+        "text": "fn build_transition_service(app_state: &AppState) -> crate::application::TaskTransitionService {"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",

@@ -279,6 +279,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         external_events_repo: Arc::clone(&external_events_repo),
         webhook_publisher: webhook_publisher.clone(),
         session_merge_locks: Arc::clone(&session_merge_locks),
+        notification_service: Arc::new(app_state.notification_service()),
     };
     startup_phase_completed("startup_transition_factory_build", phase_started_at);
 
@@ -694,6 +695,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             pr_poller_registry: Arc::clone(&pr_poller_registry),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             review_repo: Arc::clone(&review_repo),
+            notification_service: Arc::new(app_state.notification_service()),
             app_handle: app_handle.clone(),
         },
     ));

@@ -17,7 +17,7 @@ pub(super) fn persist_status_change(
     to: InternalStatus,
     trigger: &str,
     now: DateTime<Utc>,
-) -> AppResult<()> {
+) -> AppResult<String> {
     // Update task status
     conn.execute(
         "UPDATE tasks SET internal_status = ?2, updated_at = ?3 WHERE id = ?1",
@@ -41,7 +41,7 @@ pub(super) fn persist_status_change(
     )
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    Ok(())
+    Ok(history_id)
 }
 
 /// Update the metadata of the most recent state history entry for a task

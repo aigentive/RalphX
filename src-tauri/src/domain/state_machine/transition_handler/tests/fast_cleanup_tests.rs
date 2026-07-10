@@ -9,7 +9,6 @@
 use super::helpers::*;
 use crate::domain::state_machine::transition_handler::cleanup_helpers::remove_worktree_fast;
 
-
 // ==================
 // remove_worktree_fast: basic functionality
 // ==================
@@ -44,7 +43,11 @@ async fn test_remove_worktree_fast_removes_existing_dir() {
         .unwrap();
 
     let result = remove_worktree_fast(&worktree_path, &repo_path).await;
-    assert!(result.is_ok(), "remove_worktree_fast should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "remove_worktree_fast should succeed: {:?}",
+        result.err()
+    );
     assert!(
         !worktree_path.exists(),
         "worktree directory should be removed"
@@ -96,13 +99,22 @@ async fn test_remove_worktree_fast_real_git_worktree() {
         .await
         .unwrap();
     tokio::process::Command::new("git")
-        .args(["worktree", "add", worktree_path.to_str().unwrap(), "-b", "test-branch"])
+        .args([
+            "worktree",
+            "add",
+            worktree_path.to_str().unwrap(),
+            "-b",
+            "test-branch",
+        ])
         .current_dir(&repo_path)
         .output()
         .await
         .unwrap();
 
-    assert!(worktree_path.exists(), "worktree should exist before removal");
+    assert!(
+        worktree_path.exists(),
+        "worktree should exist before removal"
+    );
 
     // Verify git knows about the worktree
     let list_output = tokio::process::Command::new("git")
@@ -119,7 +131,11 @@ async fn test_remove_worktree_fast_real_git_worktree() {
 
     // Now remove it fast
     let result = remove_worktree_fast(&worktree_path, &repo_path).await;
-    assert!(result.is_ok(), "remove_worktree_fast should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "remove_worktree_fast should succeed: {:?}",
+        result.err()
+    );
     assert!(
         !worktree_path.exists(),
         "worktree directory should be removed"
@@ -207,10 +223,9 @@ async fn test_settle_sleep_skipped_when_no_agents_running() {
 /// be skipped because any_agent_was_running will be false.
 #[tokio::test]
 async fn test_settle_sleep_conditional_on_agent_state() {
-    let (mut machine, _, _) =
-        setup_pending_merge_repos("Settle sleep test", Some("feature/test"))
-            .await
-            .into_machine();
+    let (mut machine, _, _) = setup_pending_merge_repos("Settle sleep test", Some("feature/test"))
+        .await
+        .into_machine();
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
 
     let start = std::time::Instant::now();

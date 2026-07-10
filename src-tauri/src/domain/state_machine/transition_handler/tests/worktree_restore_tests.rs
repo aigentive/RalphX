@@ -161,9 +161,7 @@ async fn re_review_worktree_restore() {
 // Shared helper: build a TaskTransitionService from AppState (mirrors freshness_return_path tests)
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn build_transition_service(
-    app_state: &AppState,
-) -> crate::application::TaskTransitionService {
+fn build_transition_service(app_state: &AppState) -> crate::application::TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
@@ -434,7 +432,9 @@ async fn on_enter_reviewing_restores_merge_prefixed_worktree() {
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "reviewing",
         "review",
@@ -573,7 +573,9 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "re_executing",
         "task_execution",
@@ -658,7 +660,9 @@ async fn on_enter_executing_repairs_wrong_existing_worktree_path_before_spawn() 
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "executing",
         "task_execution",
@@ -841,7 +845,9 @@ async fn on_enter_executing_adopts_existing_authoritative_worktree_path() {
     let sent_options = chat_service.get_sent_options().await;
     assert_eq!(sent_options.len(), 1, "expected exactly one bootstrap send");
     assert_task_runtime_bootstrap_metadata(
-        sent_options.first().and_then(|options| options.metadata.as_deref()),
+        sent_options
+            .first()
+            .and_then(|options| options.metadata.as_deref()),
         &task_id_str,
         "executing",
         "task_execution",

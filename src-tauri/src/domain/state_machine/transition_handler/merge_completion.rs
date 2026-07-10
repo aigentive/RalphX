@@ -18,7 +18,9 @@ use crate::domain::entities::{
     InternalStatus, Project, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::TaskRepository;
-use crate::domain::state_machine::services::WebhookPublisher;
+use crate::domain::state_machine::services::{
+    NotificationContext, Notifier, TaskNotification, WebhookPublisher,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -90,12 +92,13 @@ pub async fn complete_merge_internal(
         event_sink,
         session_title,
         None,
+        None,
     )
     .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn complete_merge_internal_with_pr_sync(
+pub(crate) async fn complete_merge_internal_with_pr_sync_and_notifier(
     task: &mut Task,
     project: &Project,
     commit_sha: &str,
@@ -107,6 +110,7 @@ pub(crate) async fn complete_merge_internal_with_pr_sync(
     event_sink: Option<&dyn EventSink>,
     session_title: Option<String>,
     pr_sync_services: Option<PlanBranchPrSyncServices>,
+    notifier: Option<&Arc<dyn Notifier>>,
 ) -> AppResult<()> {
     complete_merge_internal_impl(
         task,
@@ -120,6 +124,7 @@ pub(crate) async fn complete_merge_internal_with_pr_sync(
         event_sink,
         session_title,
         pr_sync_services,
+        notifier,
     )
     .await
 }
@@ -137,6 +142,7 @@ async fn complete_merge_internal_impl(
     event_sink: Option<&dyn EventSink>,
     session_title: Option<String>,
     pr_sync_services: Option<PlanBranchPrSyncServices>,
+    notifier: Option<&Arc<dyn Notifier>>,
 ) -> AppResult<()> {
     // Clone task_id early to avoid borrow conflicts with mutable task
     let task_id = task.id.clone();
@@ -260,14 +266,28 @@ async fn complete_merge_internal_impl(
                 task.internal_status = InternalStatus::MergeIncomplete;
                 task.touch();
                 task_repo.update(task).await?;
-                let _ = task_repo
+                if let Ok(history_entry_id) = task_repo
                     .persist_status_change(
                         &task_id,
                         old_status,
                         InternalStatus::MergeIncomplete,
                         "pr_branch_publication_failed",
                     )
-                    .await;
+                    .await
+                {
+                    if let Some(notifier) = notifier {
+                        notifier
+                            .notify(
+                                NotificationContext {
+                                    task: task.clone(),
+                                    history_entry_id,
+                                    project_id: task.project_id.clone(),
+                                },
+                                TaskNotification::StateEntered(InternalStatus::MergeIncomplete),
+                            )
+                            .await;
+                    }
+                }
                 return Err(error);
             }
         }

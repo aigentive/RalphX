@@ -778,7 +778,12 @@ impl AppState {
 
         let started_at = Instant::now();
         let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps)
-            .with_event_sink(Arc::clone(&self.events));
+            .with_event_sink(Arc::clone(&self.events))
+            .with_notifier(Arc::new(
+                crate::application::task_notification_producer::TaskPipelineNotificationProducer::new(
+                    self.notification_service(),
+                ),
+            ));
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service built"

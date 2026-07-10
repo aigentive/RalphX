@@ -132,7 +132,10 @@ pub(crate) async fn update_source_from_target(
     // (e.g., from a prior task execution), merge target directly there instead of
     // trying to create a new worktree (which would fail with "already used by worktree").
     if let Ok(worktrees) = GitService::list_worktrees(repo_path).await {
-        if let Some(wt) = worktrees.iter().find(|w| w.branch.as_deref() == Some(source_branch)) {
+        if let Some(wt) = worktrees
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(source_branch))
+        {
             let wt_path = PathBuf::from(&wt.path);
             if !wt_path.exists() {
                 tracing::warn!(
@@ -145,65 +148,69 @@ pub(crate) async fn update_source_from_target(
                 super::cleanup_helpers::git_worktree_prune(repo_path).await;
                 // Fall through to fresh worktree creation below
             } else {
-            tracing::info!(
-                task_id = task_id_str,
-                source_branch = %source_branch,
-                worktree_path = %wt_path.display(),
-                "Source branch already checked out in existing worktree — merging target there"
-            );
-            match GitService::merge_branch(&wt_path, target_branch, source_branch).await {
-                Ok(result) => {
-                    let sha = match &result {
-                        crate::application::MergeResult::Success { commit_sha }
-                        | crate::application::MergeResult::FastForward { commit_sha } => commit_sha.clone(),
-                        crate::application::MergeResult::Conflict { files } => {
-                            let _ = GitService::abort_merge(&wt_path).await;
-                            tracing::warn!(
+                tracing::info!(
+                    task_id = task_id_str,
+                    source_branch = %source_branch,
+                    worktree_path = %wt_path.display(),
+                    "Source branch already checked out in existing worktree — merging target there"
+                );
+                match GitService::merge_branch(&wt_path, target_branch, source_branch).await {
+                    Ok(result) => {
+                        let sha = match &result {
+                            crate::application::MergeResult::Success { commit_sha }
+                            | crate::application::MergeResult::FastForward { commit_sha } => {
+                                commit_sha.clone()
+                            }
+                            crate::application::MergeResult::Conflict { files } => {
+                                let _ = GitService::abort_merge(&wt_path).await;
+                                tracing::warn!(
                                 task_id = task_id_str,
                                 conflict_count = files.len(),
                                 "Conflicts detected updating source branch from target (existing worktree)"
                             );
-                            return SourceUpdateResult::Conflicts {
-                                conflict_files: files.iter().map(PathBuf::from).collect(),
-                            };
-                        }
-                    };
-                    tracing::info!(
-                        task_id = task_id_str,
-                        commit_sha = %sha,
-                        "Source branch updated from target (existing worktree)"
-                    );
-                    return SourceUpdateResult::Updated;
-                }
-                Err(e) => {
-                    // Check if the error is because the worktree already has a merge in
-                    // progress from a prior attempt.
-                    if GitService::is_merge_in_progress(&wt_path) {
-                        let conflict_files = GitService::get_conflict_files(&wt_path)
-                            .await
-                            .unwrap_or_default();
-                        tracing::warn!(
+                                return SourceUpdateResult::Conflicts {
+                                    conflict_files: files.iter().map(PathBuf::from).collect(),
+                                };
+                            }
+                        };
+                        tracing::info!(
                             task_id = task_id_str,
-                            conflict_count = conflict_files.len(),
-                            worktree_path = %wt_path.display(),
-                            "Source branch already in merge conflict state in existing worktree \
-                             (prior attempt) — routing to merger agent without aborting"
+                            commit_sha = %sha,
+                            "Source branch updated from target (existing worktree)"
                         );
-                        return SourceUpdateResult::Conflicts { conflict_files };
+                        return SourceUpdateResult::Updated;
                     }
-                    // Not a conflict — abort any partial state and return as error.
-                    let _ = GitService::abort_merge(&wt_path).await;
-                    return SourceUpdateResult::Error(format!(
-                        "merge in existing worktree failed: {}", e
-                    ));
+                    Err(e) => {
+                        // Check if the error is because the worktree already has a merge in
+                        // progress from a prior attempt.
+                        if GitService::is_merge_in_progress(&wt_path) {
+                            let conflict_files = GitService::get_conflict_files(&wt_path)
+                                .await
+                                .unwrap_or_default();
+                            tracing::warn!(
+                                task_id = task_id_str,
+                                conflict_count = conflict_files.len(),
+                                worktree_path = %wt_path.display(),
+                                "Source branch already in merge conflict state in existing worktree \
+                                 (prior attempt) — routing to merger agent without aborting"
+                            );
+                            return SourceUpdateResult::Conflicts { conflict_files };
+                        }
+                        // Not a conflict — abort any partial state and return as error.
+                        let _ = GitService::abort_merge(&wt_path).await;
+                        return SourceUpdateResult::Error(format!(
+                            "merge in existing worktree failed: {}",
+                            e
+                        ));
+                    }
                 }
-            }
             } // end else (wt_path.exists())
         }
     }
 
     // Use isolated worktree to merge target into source
-    let wt_path_str = super::merge_helpers::compute_source_update_worktree_path(project, task_id_str);
+    let wt_path_str =
+        super::merge_helpers::compute_source_update_worktree_path(project, task_id_str);
     let wt_path = PathBuf::from(&wt_path_str);
 
     // Clean up any stale worktree from a prior attempt

@@ -196,7 +196,11 @@ async fn gap2_two_phase_plan_update_then_task_merge() {
         .output();
 
     // Add a commit to main AFTER plan branch was created (plan becomes behind)
-    std::fs::write(path.join("hotfix.rs"), "// hotfix on main after plan branch").unwrap();
+    std::fs::write(
+        path.join("hotfix.rs"),
+        "// hotfix on main after plan branch",
+    )
+    .unwrap();
     let _ = std::process::Command::new("git")
         .args(["add", "hotfix.rs"])
         .current_dir(path)
@@ -449,7 +453,8 @@ async fn gap3_pre_merge_cleanup_deletes_all_worktree_types() {
     // Set task.worktree_path to merge-{id} (simulating a stale merge attempt)
     task.worktree_path = Some(merge_wt.clone());
     // Simulate a retry: set merge failure metadata so Phase 1 GUARD runs cleanup
-    task.metadata = Some(serde_json::json!({"merge_failure_source": "test_prior_failure"}).to_string());
+    task.metadata =
+        Some(serde_json::json!({"merge_failure_source": "test_prior_failure"}).to_string());
     task_repo.create(task).await.unwrap();
 
     // Verify all worktrees exist before cleanup
@@ -562,7 +567,10 @@ async fn gap4_post_conflict_incomplete_resolution_goes_to_merge_incomplete_or_me
     let project_repo = Arc::new(MemoryProjectRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut task = Task::new(project_id.clone(), "Gap4 post-conflict incomplete".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "Gap4 post-conflict incomplete".to_string(),
+    );
     task.internal_status = InternalStatus::PendingMerge;
     // The task branch still points to the original task branch, not the resolve branch
     task.task_branch = Some(git_repo.task_branch.clone());
@@ -713,8 +721,7 @@ async fn gap5_attempt_counter_persists_across_retry_cycles() {
 
     // Verify error field is present (merge failed)
     assert!(
-        final_meta.get("error").is_some()
-            || final_meta.get("merge_recovery").is_some(),
+        final_meta.get("error").is_some() || final_meta.get("merge_recovery").is_some(),
         "Final metadata should contain error or merge_recovery after 3 failed cycles. \
          Metadata: {:?}",
         final_meta,
@@ -824,7 +831,9 @@ async fn gap6_source_update_with_existing_worktree_no_crash() {
         }
         SourceUpdateResult::Conflicts { .. } => {
             // Also acceptable — could conflict
-            tracing::info!("Gap6: source update returned Conflicts (non-conflicting expected, but acceptable)");
+            tracing::info!(
+                "Gap6: source update returned Conflicts (non-conflicting expected, but acceptable)"
+            );
         }
         SourceUpdateResult::BranchMissing { branch } => {
             // Also acceptable — missing refs are now reported explicitly.

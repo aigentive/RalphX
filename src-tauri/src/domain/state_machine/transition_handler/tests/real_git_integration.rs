@@ -279,12 +279,15 @@ async fn test_source_update_error_routes_to_merge_incomplete() {
         "MergeIncomplete should preserve source-update error context. Metadata: {:?}",
         meta
     );
-    assert_eq!(meta.get("source_branch"), Some(&serde_json::json!(git_repo.task_branch)));
     assert_eq!(
-        meta.get("target_branch"),
-        Some(&serde_json::json!("main"))
+        meta.get("source_branch"),
+        Some(&serde_json::json!(git_repo.task_branch))
     );
-    assert_eq!(meta.get("source_update_error"), Some(&serde_json::json!(true)));
+    assert_eq!(meta.get("target_branch"), Some(&serde_json::json!("main")));
+    assert_eq!(
+        meta.get("source_update_error"),
+        Some(&serde_json::json!(true))
+    );
     assert_eq!(
         meta.get("merge_failure_source"),
         Some(&serde_json::json!("transient_git"))

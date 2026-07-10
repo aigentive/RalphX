@@ -19,28 +19,27 @@ pub mod recovery_queue;
 pub mod verification_handoff;
 pub mod verification_reconciliation;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::application::interactive_process_registry::InteractiveProcessRegistry;
-use crate::application::TaskTransitionService;
+use crate::application::{NotificationService, TaskTransitionService};
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskRepository,
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ExecutionSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 
+pub use policy::UserRecoveryAction;
 #[doc(hidden)]
 pub use policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, RecoveryPolicy,
 };
-pub use policy::UserRecoveryAction;
 
 pub struct ReconciliationRunner {
     pub(crate) task_repo: Arc<dyn TaskRepository>,
@@ -64,7 +63,10 @@ pub struct ReconciliationRunner {
     pub(crate) review_repo: Option<Arc<dyn ReviewRepository>>,
     pub(crate) app_handle: Option<AppHandle>,
     pub(crate) policy: RecoveryPolicy,
-    pub(crate) prompt_tracker: Arc<Mutex<HashSet<String>>>,
+    /// Optional application notification effect, injected for non-Tauri runners and tests.
+    pub(crate) notification_service: Option<Arc<NotificationService>>,
+    /// Active recovery prompt key -> concrete prompt instance id.
+    pub(crate) prompt_tracker: Arc<Mutex<HashMap<String, String>>>,
     /// PR poller registry for GitHub PR polling (own DI, separate from TaskServices — AD18).
     pub(crate) pr_poller_registry: Option<Arc<crate::application::PrPollerRegistry>>,
 }
@@ -111,13 +113,19 @@ impl ReconciliationRunner {
             review_repo: None,
             app_handle,
             policy: RecoveryPolicy,
-            prompt_tracker: Arc::new(Mutex::new(HashSet::new())),
+            notification_service: None,
+            prompt_tracker: Arc::new(Mutex::new(HashMap::new())),
             pr_poller_registry: None,
         }
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
+        self
+    }
+
+    pub fn with_notification_service(mut self, service: Arc<NotificationService>) -> Self {
+        self.notification_service = Some(service);
         self
     }
 

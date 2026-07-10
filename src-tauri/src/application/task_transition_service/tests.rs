@@ -1,5 +1,7 @@
 use super::*;
 use crate::application::agent_conversation_workspace::resolve_linked_plan_branch_agent_worktree_path;
+use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::AppState;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
@@ -8,21 +10,25 @@ use crate::domain::entities::{
     ArtifactId, ChatConversation, ChatConversationId, ExecutionFailureSource,
     ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoverySource, ExecutionRecoveryState, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-    ProjectId, Task, TaskCategory,
+    IdeationSessionId, InternalStatus, Notification, NotificationCategory, NotificationSeverity,
+    NotificationTargetKind, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task,
+    TaskCategory,
 };
+use crate::domain::repositories::{NotificationPage, NotificationRepository};
 use crate::domain::services::github_service::{PrHealth, PrHealthCheck};
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, PlanPrDescriptionDrafter,
     PrReviewState,
 };
+use crate::domain::state_machine::services::{ReviewStartResult, ReviewStarter};
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
 use ralphx_events::{EventSink, RecordingEventSink};
 use serde_json::Value;
+use std::sync::Mutex;
 
 #[test]
 fn test_tauri_event_emitter_creation() {
@@ -87,7 +93,7 @@ async fn enriched_event_emitter_routes_batchable_events_through_throttled_emitte
 
 #[test]
 fn test_logging_notifier() {
-    let _notifier = LoggingNotifier;
+    let _notifier = NoopNotifier;
     // Just verify it can be created
 }
 
@@ -227,6 +233,465 @@ fn build_test_service_with_execution_state(
     )
 }
 
+fn build_test_service_with_task_notifications(app_state: &AppState) -> TaskTransitionService {
+    build_test_service(app_state).with_notifier(Arc::new(TaskPipelineNotificationProducer::new(
+        app_state.notification_service(),
+    )))
+}
+
+struct FailingReviewStarter;
+
+#[async_trait]
+impl ReviewStarter for FailingReviewStarter {
+    async fn start_ai_review(&self, _task_id: &str, _project_id: &str) -> ReviewStartResult {
+        ReviewStartResult::Error("injected review startup failure".to_string())
+    }
+}
+
+struct RecordingNotifier {
+    contexts: Mutex<Vec<NotificationContext>>,
+    delegate: Arc<dyn Notifier>,
+}
+
+#[async_trait]
+impl Notifier for RecordingNotifier {
+    async fn notify(&self, context: NotificationContext, notification: TaskNotification) {
+        self.contexts.lock().unwrap().push(context.clone());
+        self.delegate.notify(context, notification).await;
+    }
+}
+
+async fn task_notifications(app_state: &AppState) -> Vec<Notification> {
+    app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("notification read should succeed")
+        .notifications
+}
+
+async fn assert_normal_task_notification(
+    from: InternalStatus,
+    to: InternalStatus,
+    category: NotificationCategory,
+    blocked_reason: Option<&str>,
+) {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), format!("{to:?} notification task"));
+    task.internal_status = from;
+    task.blocked_reason = blocked_reason.map(str::to_owned);
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, to)
+        .await
+        .unwrap_or_else(|error| panic!("{from:?} to {to:?} should succeed: {error}"));
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(rows.len(), 1, "{to:?} should create exactly one row");
+    assert_eq!(rows[0].category, category);
+    assert_eq!(rows[0].severity, NotificationSeverity::ActionRequired);
+    assert_eq!(rows[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(
+        rows[0].target.project_id.as_deref(),
+        Some(project.id.as_str())
+    );
+    assert_eq!(rows[0].target.task_id.as_deref(), Some(task_id.as_str()));
+    assert!(
+        rows[0]
+            .dedupe_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with(&format!("task:{}:{}:", task_id, to.as_str()))),
+        "dedupe key must be scoped to the committed transition history entry"
+    );
+}
+
+struct FailingNotificationRepository;
+
+#[async_trait]
+impl NotificationRepository for FailingNotificationRepository {
+    async fn create_with_dedupe(&self, _notification: Notification) -> AppResult<bool> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn list(
+        &self,
+        _project_id: Option<&str>,
+        _cursor: Option<&str>,
+        _limit: u32,
+    ) -> AppResult<NotificationPage> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn unread_count(&self, _project_id: Option<&str>) -> AppResult<u64> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_read(
+        &self,
+        _id: &str,
+        _read_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_all_read(
+        &self,
+        _project_id: Option<&str>,
+        _read_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn prune(
+        &self,
+        _read_before: chrono::DateTime<chrono::Utc>,
+        _max_rows: u32,
+    ) -> AppResult<()> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+}
+
+#[tokio::test]
+async fn task_pipeline_auto_transition_review_error_uses_auto_history_notification_context() {
+    let app_state = AppState::new_test();
+    let producer: Arc<dyn Notifier> = Arc::new(TaskPipelineNotificationProducer::new(
+        app_state.notification_service(),
+    ));
+    let recorder = Arc::new(RecordingNotifier {
+        contexts: Mutex::new(Vec::new()),
+        delegate: producer,
+    });
+    let service = build_test_service(&app_state)
+        .with_notifier(recorder.clone())
+        .with_review_starter(Arc::new(FailingReviewStarter));
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Auto review notification".to_string());
+    task.internal_status = InternalStatus::QaTesting;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::QaPassed)
+        .await
+        .expect("QA pass should enter the auto review path");
+
+    let contexts = recorder.contexts.lock().unwrap().clone();
+    assert!(
+        !contexts.is_empty(),
+        "the auto-entered pending-review error should notify"
+    );
+    let rows = task_notifications(&app_state).await;
+    let expected_key = format!(
+        "task:{task_id}:review_error:{}",
+        contexts[0].history_entry_id
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.dedupe_key.as_deref() == Some(expected_key.as_str())),
+        "the review-start alert must use the first auto-transition history id"
+    );
+
+    let history = app_state
+        .task_repo
+        .get_status_history(&task_id)
+        .await
+        .unwrap();
+    assert!(
+        history.len() >= 2,
+        "QA pass must be followed by its auto transition"
+    );
+    assert_eq!(history[0].to, InternalStatus::QaPassed);
+    assert_eq!(history[1].to, InternalStatus::PendingReview);
+}
+
+#[tokio::test]
+async fn task_pipeline_review_passed_reentry_records_distinct_history_scoped_notifications() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let worktree = tempfile::tempdir().expect("review worktree should be created");
+    let project = Project::new(
+        "Notification Project".to_string(),
+        worktree.path().to_string_lossy().to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Review loop task".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("first reviewing to review-passed transition should succeed");
+    service
+        .transition_task(&task_id, InternalStatus::RevisionNeeded)
+        .await
+        .expect("review-passed to revision-needed transition should succeed");
+    service
+        .transition_task(&task_id, InternalStatus::PendingReview)
+        .await
+        .expect("re-executing to pending-review transition should succeed through the revision auto-transition");
+    service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("second reviewing to review-passed transition should succeed");
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "each review-pass attempt should create one row"
+    );
+    assert!(rows.iter().all(|row| {
+        row.category == NotificationCategory::ReviewNeeded
+            && row.severity == NotificationSeverity::ActionRequired
+            && row.target.kind == NotificationTargetKind::Task
+            && row.target.project_id.as_deref() == Some(project.id.as_str())
+            && row.target.task_id.as_deref() == Some(task_id.as_str())
+    }));
+    assert_ne!(
+        rows[0].dedupe_key, rows[1].dedupe_key,
+        "re-entry must use the freshly committed history row rather than a stale latest row"
+    );
+}
+
+#[tokio::test]
+async fn task_pipeline_duplicate_transition_delivery_keeps_one_notification_row() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Duplicate delivery task".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("initial transition should succeed");
+    let duplicate = service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("duplicate delivery should be an authority-preserving no-op");
+
+    assert_eq!(duplicate.internal_status, InternalStatus::ReviewPassed);
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "duplicate transition delivery must not duplicate the row"
+    );
+    assert_eq!(rows[0].category, NotificationCategory::ReviewNeeded);
+}
+
+#[tokio::test]
+async fn task_pipeline_dependency_blocked_transition_records_no_notification() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Dependency-blocked task".to_string());
+    task.internal_status = InternalStatus::ReExecuting;
+    task.blocked_reason = Some("dependency: upstream task is still running".to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::Blocked)
+        .await
+        .expect("re-executing to blocked transition should succeed");
+
+    assert!(
+        task_notifications(&app_state).await.is_empty(),
+        "dependency blockers are not user-input blockers and must not notify"
+    );
+}
+
+#[tokio::test]
+async fn task_pipeline_merge_incomplete_normal_transition_records_actionable_row() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Merge incomplete task".to_string());
+    task.internal_status = InternalStatus::PendingMerge;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::MergeIncomplete)
+        .await
+        .expect("pending-merge to merge-incomplete transition should succeed");
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].category, NotificationCategory::MergeIncomplete);
+    assert_eq!(rows[0].severity, NotificationSeverity::ActionRequired);
+    assert_eq!(rows[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(rows[0].target.task_id.as_deref(), Some(task_id.as_str()));
+}
+
+#[tokio::test]
+async fn task_pipeline_corrective_failed_transition_records_actionable_row() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Corrective failure task".to_string());
+    task.internal_status = InternalStatus::Blocked;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task_corrective(&task_id, InternalStatus::Failed, None, "recovery")
+        .await
+        .expect("corrective transition should succeed");
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].category, NotificationCategory::TaskFailed);
+    assert_eq!(rows[0].severity, NotificationSeverity::ActionRequired);
+    assert_eq!(rows[0].target.task_id.as_deref(), Some(task_id.as_str()));
+}
+
+#[tokio::test]
+async fn task_pipeline_notification_repository_failure_does_not_fail_transition() {
+    let app_state = AppState::new_test();
+    let notification_service = NotificationService::new(
+        Arc::new(FailingNotificationRepository),
+        Arc::new(NoopNotificationEventEmitter),
+    );
+    let service = build_test_service(&app_state).with_notifier(Arc::new(
+        TaskPipelineNotificationProducer::new(notification_service),
+    ));
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Repository failure task".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let transitioned = service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("best-effort notification failure must not fail the committed transition");
+
+    assert_eq!(transitioned.internal_status, InternalStatus::ReviewPassed);
+    assert_eq!(
+        app_state
+            .task_repo
+            .get_by_id(&task_id)
+            .await
+            .unwrap()
+            .expect("transitioned task should remain persisted")
+            .internal_status,
+        InternalStatus::ReviewPassed
+    );
+}
+
+#[tokio::test]
+async fn task_pipeline_qa_failed_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::QaTesting,
+        InternalStatus::QaFailed,
+        NotificationCategory::QaFailed,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_escalated_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::Reviewing,
+        InternalStatus::Escalated,
+        NotificationCategory::ReviewEscalated,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_merge_conflict_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::Merging,
+        InternalStatus::MergeConflict,
+        NotificationCategory::MergeConflict,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_human_input_blocked_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::ReExecuting,
+        InternalStatus::Blocked,
+        NotificationCategory::TaskBlocked,
+        Some("human: approval is required"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_failed_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::Executing,
+        InternalStatus::Failed,
+        NotificationCategory::TaskFailed,
+        None,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn with_event_sink_rebuilds_status_change_emitter_without_external_events() {
     let app_state = AppState::new_test();
@@ -262,7 +727,10 @@ async fn with_event_sink_rebuilds_status_change_emitter_without_external_events(
 #[tokio::test]
 async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
     let app_state = AppState::new_test();
-    let project = Project::new("Dual Sink Project".to_string(), "/tmp/dual-sink".to_string());
+    let project = Project::new(
+        "Dual Sink Project".to_string(),
+        "/tmp/dual-sink".to_string(),
+    );
     app_state
         .project_repo
         .create(project.clone())
@@ -304,7 +772,10 @@ async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
 #[tokio::test]
 async fn corrective_transition_with_exit_emits_task_event_through_event_sink() {
     let app_state = AppState::new_test();
-    let project = Project::new("Corrective Sink Project".to_string(), "/tmp/corrective".to_string());
+    let project = Project::new(
+        "Corrective Sink Project".to_string(),
+        "/tmp/corrective".to_string(),
+    );
     app_state
         .project_repo
         .create(project.clone())

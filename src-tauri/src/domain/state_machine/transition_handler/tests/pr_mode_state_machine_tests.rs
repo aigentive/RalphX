@@ -28,8 +28,9 @@ use crate::domain::repositories::{
 use crate::domain::services::{
     github_service::GithubServiceTrait, PlanPrDescriptionDrafter, PrReviewState,
 };
+use crate::domain::state_machine::services::{NotificationContext, Notifier, TaskNotification};
 use crate::domain::state_machine::transition_handler::{
-    complete_merge_internal_with_pr_sync, PlanBranchPrSyncServices,
+    complete_merge_internal_with_pr_sync_and_notifier, PlanBranchPrSyncServices,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
 use crate::infrastructure::memory::{
@@ -282,6 +283,30 @@ impl PlanPrDescriptionDrafter for FailingPlanPrDescriptionDrafter {
         _review_state: PrReviewState,
     ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription> {
         Err(AppError::Infrastructure("draft failed".to_string()))
+    }
+}
+
+#[derive(Default)]
+struct RecordingNotifier {
+    notifications: std::sync::Mutex<Vec<(NotificationContext, TaskNotification)>>,
+}
+
+impl RecordingNotifier {
+    fn notifications(&self) -> Vec<(NotificationContext, TaskNotification)> {
+        self.notifications
+            .lock()
+            .expect("recording notifier lock should not be poisoned")
+            .clone()
+    }
+}
+
+#[async_trait]
+impl Notifier for RecordingNotifier {
+    async fn notify(&self, context: NotificationContext, notification: TaskNotification) {
+        self.notifications
+            .lock()
+            .expect("recording notifier lock should not be poisoned")
+            .push((context, notification));
     }
 }
 
@@ -1639,7 +1664,7 @@ async fn test_regular_plan_task_completion_creates_draft_pr_after_first_local_me
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync(
+    let result = complete_merge_internal_with_pr_sync_and_notifier(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -1659,11 +1684,12 @@ async fn test_regular_plan_task_completion_creates_draft_pr_after_first_local_me
             artifact_repo: None,
             plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         }),
+        None,
     )
     .await;
     assert!(
         result.is_ok(),
-        "complete_merge_internal_with_pr_sync should succeed: {:?}",
+        "complete_merge_internal_with_pr_sync_and_notifier should succeed: {:?}",
         result
     );
 
@@ -1742,7 +1768,7 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync(
+    let result = complete_merge_internal_with_pr_sync_and_notifier(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -1762,11 +1788,12 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
             artifact_repo: None,
             plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         }),
+        None,
     )
     .await;
     assert!(
         result.is_ok(),
-        "complete_merge_internal_with_pr_sync should succeed: {:?}",
+        "complete_merge_internal_with_pr_sync_and_notifier should succeed: {:?}",
         result
     );
 
@@ -1948,9 +1975,12 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
     mock_github.state().push_branch_result =
         Some(Err(AppError::GitOperation("push rejected".to_string())));
 
+    let recording_notifier = Arc::new(RecordingNotifier::default());
+    let notifier: Arc<dyn Notifier> = Arc::clone(&recording_notifier) as Arc<dyn Notifier>;
+
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync(
+    let result = complete_merge_internal_with_pr_sync_and_notifier(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -1970,6 +2000,7 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
             artifact_repo: None,
             plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         }),
+        Some(&notifier),
     )
     .await;
 
@@ -1984,6 +2015,28 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
         InternalStatus::MergeIncomplete,
         "failed PR branch publication must not mark the task Merged"
     );
+    let notifications = recording_notifier.notifications();
+    assert_eq!(notifications.len(), 1);
+    let (context, notification) = &notifications[0];
+    assert!(matches!(
+        notification,
+        TaskNotification::StateEntered(InternalStatus::MergeIncomplete)
+    ));
+    assert_eq!(context.task.id, task_id);
+    assert_eq!(context.project_id, final_task.project_id);
+    assert!(
+        uuid::Uuid::parse_str(&context.history_entry_id).is_ok(),
+        "the direct merge-completion path must receive the committed history entry id"
+    );
+    let history = task_repo
+        .get_status_history(&task_id)
+        .await
+        .expect("direct merge completion should persist status history");
+    assert!(history.iter().any(|entry| {
+        entry.from == InternalStatus::PendingMerge
+            && entry.to == InternalStatus::MergeIncomplete
+            && entry.trigger == "pr_branch_publication_failed"
+    }));
     let recovery = MergeRecoveryMetadata::from_task_metadata(final_task.metadata.as_deref())
         .unwrap()
         .unwrap_or_else(MergeRecoveryMetadata::new);
@@ -2047,7 +2100,7 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync(
+    let result = complete_merge_internal_with_pr_sync_and_notifier(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -2067,6 +2120,7 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
             artifact_repo: None,
             plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         }),
+        None,
     )
     .await;
 
@@ -2165,7 +2219,7 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync(
+    let result = complete_merge_internal_with_pr_sync_and_notifier(
         &mut task_for_merge,
         &project,
         &local_commit_sha,
@@ -2185,6 +2239,7 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
             artifact_repo: None,
             plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         }),
+        None,
     )
     .await;
 
@@ -2322,7 +2377,7 @@ async fn test_regular_plan_task_completion_without_github_service_does_not_mark_
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync(
+    let result = complete_merge_internal_with_pr_sync_and_notifier(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -2342,6 +2397,7 @@ async fn test_regular_plan_task_completion_without_github_service_does_not_mark_
             artifact_repo: None,
             plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         }),
+        None,
     )
     .await;
 

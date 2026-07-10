@@ -161,8 +161,11 @@ async fn test_rc1_merge_succeeds_despite_worktree_path_lsof_scan() {
         Arc::clone(&project_repo),
         execution_state,
     );
-    let context =
-        crate::domain::state_machine::context::TaskContext::new(task_id.as_str(), "proj-1", services);
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id.as_str(),
+        "proj-1",
+        services,
+    );
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
 
@@ -238,7 +241,8 @@ async fn test_rc1_cleanup_steps_run_after_lsof_step_with_stale_lock() {
     task.task_branch = Some(git_repo.task_branch.clone());
     task.worktree_path = Some(task_wt_path.to_string_lossy().to_string());
     // Simulate a retry so Phase 1 GUARD runs cleanup (stale lock + worktree removal)
-    task.metadata = Some(serde_json::json!({"merge_failure_source": "test_prior_failure"}).to_string());
+    task.metadata =
+        Some(serde_json::json!({"merge_failure_source": "test_prior_failure"}).to_string());
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
@@ -253,8 +257,11 @@ async fn test_rc1_cleanup_steps_run_after_lsof_step_with_stale_lock() {
         Arc::clone(&project_repo),
         execution_state,
     );
-    let context =
-        crate::domain::state_machine::context::TaskContext::new(task_id.as_str(), "proj-1", services);
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id.as_str(),
+        "proj-1",
+        services,
+    );
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
 
@@ -262,8 +269,11 @@ async fn test_rc1_cleanup_steps_run_after_lsof_step_with_stale_lock() {
 
     // If step 0b blocked all subsequent steps, step 1 would never remove index.lock
     // and git operations would fail → task would end up in MergeIncomplete, not Merged.
-    assert!(!lock_path.exists(), "Step 1 should have removed the stale index.lock \
-        (if it still exists, steps 1-5 were blocked by step 0b lsof scan)");
+    assert!(
+        !lock_path.exists(),
+        "Step 1 should have removed the stale index.lock \
+        (if it still exists, steps 1-5 were blocked by step 0b lsof scan)"
+    );
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
@@ -296,13 +306,15 @@ async fn test_rc2_retry_always_fires_when_running_count_positive() {
     let execution_state = Arc::new(ExecutionState::new());
     // Simulate: reviewer is active (running_count = 1)
     execution_state.increment_running();
-    assert_eq!(execution_state.running_count(), 1, "Precondition: one agent running");
+    assert_eq!(
+        execution_state.running_count(),
+        1,
+        "Precondition: one agent running"
+    );
 
     let scheduler = Arc::new(MockTaskScheduler::new());
     let services = TaskServices::new_mock()
-        .with_task_scheduler(
-            Arc::clone(&scheduler) as Arc<dyn TaskScheduler>,
-        )
+        .with_task_scheduler(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>)
         .with_execution_state(Arc::clone(&execution_state));
 
     let context = create_context_with_services("merge-task-1", "proj-1", services);
@@ -310,7 +322,9 @@ async fn test_rc2_retry_always_fires_when_running_count_positive() {
     let handler = TransitionHandler::new(&mut machine);
 
     // Simulate: merge task exits PendingMerge (e.g., completed via MergeIncomplete retry)
-    handler.on_exit(&State::PendingMerge, &State::MergeIncomplete).await;
+    handler
+        .on_exit(&State::PendingMerge, &State::MergeIncomplete)
+        .await;
 
     let sched = Arc::clone(&scheduler);
     assert!(
@@ -370,8 +384,11 @@ async fn test_rc2_merge_proceeds_correctly_while_agents_running() {
         Arc::clone(&project_repo),
         Arc::clone(&execution_state),
     );
-    let context =
-        crate::domain::state_machine::context::TaskContext::new(task_id.as_str(), "proj-1", services);
+    let context = crate::domain::state_machine::context::TaskContext::new(
+        task_id.as_str(),
+        "proj-1",
+        services,
+    );
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
 
@@ -450,8 +467,7 @@ async fn simulate_reviewer_exit_post_transition() -> (
     execution_state.increment_running();
 
     // Reviewer calls complete_review MCP → on_exit(Reviewing → Approved) fires → decrement
-    let services = TaskServices::new_mock()
-        .with_execution_state(Arc::clone(&execution_state));
+    let services = TaskServices::new_mock().with_execution_state(Arc::clone(&execution_state));
     let context = create_context_with_services("rc3-review-task", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -511,8 +527,7 @@ async fn test_rc3_running_count_not_leaked_after_reviewer_exits_post_transition(
     let count_after_handler = execution_state.running_count();
 
     assert_eq!(
-        count_after_handler,
-        0,
+        count_after_handler, 0,
         "RC3 Phase 1A: saturating decrement on count={} keeps count at 0. \
          Whether Phase 1B fired (skipped increment) or Phase 1A fired (balanced increment), \
          the invariant holds: count=0 after reviewer exits.",
@@ -603,8 +618,7 @@ async fn test_rc3_executing_and_merging_contexts_decrement_count_without_leak() 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.increment_running();
 
-        let services = TaskServices::new_mock()
-            .with_execution_state(Arc::clone(&execution_state));
+        let services = TaskServices::new_mock().with_execution_state(Arc::clone(&execution_state));
         let context = create_context_with_services("exec-task-rc3", "proj-1", services);
         let mut machine = TaskStateMachine::new(context);
         let handler = TransitionHandler::new(&mut machine);
@@ -627,8 +641,7 @@ async fn test_rc3_executing_and_merging_contexts_decrement_count_without_leak() 
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.increment_running();
 
-        let services = TaskServices::new_mock()
-            .with_execution_state(Arc::clone(&execution_state));
+        let services = TaskServices::new_mock().with_execution_state(Arc::clone(&execution_state));
         let context = create_context_with_services("merge-task-rc3", "proj-1", services);
         let mut machine = TaskStateMachine::new(context);
         let handler = TransitionHandler::new(&mut machine);

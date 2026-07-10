@@ -117,6 +117,7 @@ pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
+pub mod task_notification_producer;
 pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;

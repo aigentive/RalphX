@@ -32,9 +32,7 @@ fn make_services_for_guard_test(
         Arc::new(crate::application::MockChatService::new())
             as Arc<dyn crate::application::ChatService>,
     )
-    .with_task_scheduler(
-        Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>,
-    )
+    .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
 }
@@ -86,8 +84,7 @@ async fn step2_guard_merging_skips_task_worktree_deletion() {
         "Precondition: task worktree dir must exist before test"
     );
 
-    let services =
-        make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -135,8 +132,7 @@ async fn step2_guard_pending_merge_proceeds_with_task_worktree_deletion() {
         "Precondition: task worktree dir must exist before test"
     );
 
-    let services =
-        make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -213,8 +209,7 @@ async fn step4_guard_merging_skips_merge_worktree_deletion() {
         "Precondition: merge worktree dir must exist before test"
     );
 
-    let services =
-        make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
     let context = TaskContext::new(task_id_str.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -271,8 +266,7 @@ async fn step4_guard_pending_merge_proceeds_with_merge_worktree_deletion() {
         "Precondition: merge worktree dir must exist before test"
     );
 
-    let services =
-        make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
+    let services = make_services_for_guard_test(Arc::clone(&task_repo), Arc::clone(&project_repo));
     let context = TaskContext::new(task_id_str.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -300,7 +294,10 @@ async fn stale_path_cleanup_clears_worktree_path_when_not_merging() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut task = Task::new(project_id, "Stale path cleanup test: not merging".to_string());
+    let mut task = Task::new(
+        project_id,
+        "Stale path cleanup test: not merging".to_string(),
+    );
     task.internal_status = InternalStatus::PendingMerge;
     task.worktree_path = Some("/some/stale/worktree/path".to_string());
     let task_id = task.id.clone();

@@ -39,6 +39,11 @@ impl Blocker {
         self.id.starts_with("human:")
     }
 
+    /// Returns true when an optional stored blocker reason represents human input.
+    pub fn is_human_input_reason(reason: Option<&str>) -> bool {
+        reason.is_some_and(|reason| Self::new(reason).is_human_input())
+    }
+
     /// Resolves this blocker
     pub fn resolve(&mut self) {
         self.resolved = true;

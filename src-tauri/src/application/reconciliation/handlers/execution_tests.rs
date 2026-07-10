@@ -2,6 +2,7 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
+use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
 use crate::application::reconciliation::{RecoveryActionKind, RecoveryContext, RecoveryDecision};
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
 use crate::commands::ExecutionState;
@@ -9,9 +10,11 @@ use crate::domain::entities::{
     task_metadata::StopRetryingReason, ChatContextType, ExecutionFailureSource,
     ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
     ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus,
-    Project, Task,
+    NotificationCategory, NotificationSeverity, NotificationTargetKind, Project, Task,
 };
+use crate::domain::repositories::NotificationRepository;
 use crate::domain::services::RunningAgentKey;
+use crate::infrastructure::memory::MemoryNotificationRepository;
 
 use super::execution::is_deterministic_agent_command_error;
 
@@ -69,6 +72,73 @@ async fn seed_execution_task(app_state: &AppState, status: InternalStatus) -> Ta
     task.internal_status = status;
     app_state.task_repo.create(task.clone()).await.unwrap();
     task
+}
+
+#[tokio::test]
+async fn recovery_prompt_dedupes_active_instance_and_records_again_after_clear() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let notification_repo = Arc::new(MemoryNotificationRepository::new());
+    let notification_service = Arc::new(NotificationService::new(
+        Arc::clone(&notification_repo) as Arc<dyn NotificationRepository>,
+        Arc::new(NoopNotificationEventEmitter),
+    ));
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state)
+        .with_notification_service(notification_service);
+    let task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+
+    assert!(
+        reconciler
+            .emit_recovery_prompt(
+                &task,
+                InternalStatus::Executing,
+                RecoveryContext::Execution,
+                "restart required".to_string(),
+            )
+            .await
+    );
+    assert!(
+        !reconciler
+            .emit_recovery_prompt(
+                &task,
+                InternalStatus::Executing,
+                RecoveryContext::Execution,
+                "duplicate delivery".to_string(),
+            )
+            .await,
+        "an active recovery prompt must be delivered only once"
+    );
+
+    reconciler
+        .clear_prompt_marker(task.id.as_str(), InternalStatus::Executing)
+        .await;
+    assert!(
+        reconciler
+            .emit_recovery_prompt(
+                &task,
+                InternalStatus::Executing,
+                RecoveryContext::Execution,
+                "new recovery event".to_string(),
+            )
+            .await
+    );
+
+    let rows = notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("recovery prompt rows should be readable")
+        .notifications;
+    assert_eq!(rows.len(), 2, "clear/remit must produce a new prompt row");
+    assert!(rows.iter().all(|row| {
+        row.category == NotificationCategory::RecoveryPrompt
+            && row.severity == NotificationSeverity::ActionRequired
+            && row.target.kind == NotificationTargetKind::Task
+            && row.target.task_id.as_deref() == Some(task.id.as_str())
+    }));
+    assert_ne!(
+        rows[0].dedupe_key, rows[1].dedupe_key,
+        "separate recovery prompt instances require distinct dedupe keys"
+    );
 }
 
 #[tokio::test]

@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::domain::entities::InternalStatus;
+use crate::domain::state_machine::services::TaskNotification;
 use chrono::Utc;
 
 use super::super::machine::State;
@@ -181,12 +183,7 @@ async fn delete_existing_execution_worktree_or_block(
     GitService::delete_worktree(repo_path, worktree_path)
         .await
         .map_err(|e| {
-            stale_execution_worktree_cleanup_blocked_error(
-                task_id_str,
-                worktree_path,
-                e,
-                context,
-            )
+            stale_execution_worktree_cleanup_blocked_error(task_id_str, worktree_path, e, context)
         })
 }
 
@@ -308,6 +305,27 @@ struct MergePromptContext {
 
 impl<'a> super::TransitionHandler<'a> {
     pub(super) async fn on_enter_dispatch(&self, state: &State) -> AppResult<()> {
+        if let Some(context) = self.machine.context.services.notification_context.clone() {
+            let status = match state {
+                State::QaFailed(_) => Some(InternalStatus::QaFailed),
+                State::ReviewPassed => Some(InternalStatus::ReviewPassed),
+                State::Escalated => Some(InternalStatus::Escalated),
+                State::Failed(_) => Some(InternalStatus::Failed),
+                State::MergeConflict => Some(InternalStatus::MergeConflict),
+                State::MergeIncomplete => Some(InternalStatus::MergeIncomplete),
+                State::Blocked => Some(InternalStatus::Blocked),
+                _ => None,
+            };
+            if let Some(status) = status {
+                self.machine
+                    .context
+                    .services
+                    .notifier
+                    .notify(context, TaskNotification::StateEntered(status))
+                    .await;
+            }
+        }
+
         match state {
             State::Ready => {
                 // When entering Ready, spawn QA prep agent if enabled

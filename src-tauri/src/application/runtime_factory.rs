@@ -4,6 +4,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::application::chat_service::{AppChatService, StreamingStateCache};
+use crate::application::notification_service::NotificationService;
 use crate::application::{
     AgentClientBundle, AppState, AtlassianIntegrationService, GranolaIntegrationService,
     InteractiveProcessRegistry, LinearIntegrationService, PrPollerRegistry, TaskSchedulerService,
@@ -231,6 +232,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub notification_service: Option<Arc<NotificationService>>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -289,6 +291,7 @@ impl ChatRuntimeFactoryDeps {
             queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
+            notification_service: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
@@ -328,6 +331,11 @@ impl ChatRuntimeFactoryDeps {
         repo: Arc<dyn QueuedMessageRepository>,
     ) -> Self {
         self.queued_message_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_notification_service(mut self, service: Arc<NotificationService>) -> Self {
+        self.notification_service = Some(service);
         self
     }
 
@@ -541,6 +549,7 @@ impl ChatRuntimeFactoryDeps {
         )
         .with_chat_timeline_repo(Arc::clone(&state.chat_timeline_repo))
         .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
+        .with_notification_service(Arc::new(state.notification_service()))
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
@@ -610,6 +619,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.queued_message_repo.as_ref() {
         service = service.with_queued_message_repo(Arc::clone(repo));
+    }
+    if let Some(notification_service) = deps.notification_service.as_ref() {
+        service = service.with_notification_service(Arc::clone(notification_service));
     }
     if let Some(handle) = app_handle {
         service = service.with_app_handle(handle);

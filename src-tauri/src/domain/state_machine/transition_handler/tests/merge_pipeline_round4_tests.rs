@@ -43,14 +43,9 @@ async fn test_step3_timeout_is_nonfatal_subsequent_steps_run() {
     );
 
     // Subsequent steps (Step 4+) must still run — tracked via a flag after the call
-    let step4_result = run_cleanup_step(
-        "step4_simulation",
-        5,
-        "task-step3-test",
-        async {
-            Ok::<(), String>(())
-        },
-    )
+    let step4_result = run_cleanup_step("step4_simulation", 5, "task-step3-test", async {
+        Ok::<(), String>(())
+    })
     .await;
 
     assert!(
@@ -95,7 +90,7 @@ async fn test_settle_sleep_watchdog_fires_when_inner_sleep_exceeds_deadline() {
     let start = std::time::Instant::now();
 
     let result = os_thread_timeout(
-        Duration::from_millis(100), // watchdog: 100ms
+        Duration::from_millis(100),                  // watchdog: 100ms
         tokio::time::sleep(Duration::from_secs(60)), // inner sleep: 60s
     )
     .await;
@@ -125,7 +120,7 @@ async fn test_settle_sleep_completes_normally_before_watchdog() {
     let settle_secs = 0u64; // zero-duration settle (instant)
 
     let result = os_thread_timeout(
-        Duration::from_millis(500), // watchdog: 500ms grace
+        Duration::from_millis(500),                   // watchdog: 500ms grace
         tokio::time::sleep(Duration::from_millis(0)), // instant settle
     )
     .await;

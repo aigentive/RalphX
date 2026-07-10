@@ -127,9 +127,10 @@ pub(super) async fn ensure_plan_branch_exists(
                 "Lazily created plan branch for merge target"
             );
         }
-        Err(_) if GitService::branch_exists(repo_path, &pb.branch_name)
-            .await
-            .unwrap_or(false) => {}
+        Err(_)
+            if GitService::branch_exists(repo_path, &pb.branch_name)
+                .await
+                .unwrap_or(false) => {}
         Err(e) => {
             tracing::warn!(
                 task_id = task_id_str,

@@ -21,12 +21,11 @@ pub(super) fn task_attention_category(task: &Task) -> Option<NotificationCategor
         InternalStatus::MergeConflict => Some(NotificationCategory::MergeConflict),
         InternalStatus::MergeIncomplete => Some(NotificationCategory::MergeIncomplete),
         InternalStatus::Failed => Some(NotificationCategory::TaskFailed),
-        InternalStatus::Blocked => task
-            .blocked_reason
-            .as_deref()
-            .map(Blocker::new)
-            .filter(Blocker::is_human_input)
-            .map(|_| NotificationCategory::TaskBlocked),
+        InternalStatus::Blocked
+            if Blocker::is_human_input_reason(task.blocked_reason.as_deref()) =>
+        {
+            Some(NotificationCategory::TaskBlocked)
+        }
         _ => None,
     }
 }

@@ -88,10 +88,7 @@ impl ReviewRepository for MockReviewRepo {
             .cloned()
             .collect())
     }
-    async fn get_note_by_id(
-        &self,
-        _id: &entities::ReviewNoteId,
-    ) -> AppResult<Option<ReviewNote>> {
+    async fn get_note_by_id(&self, _id: &entities::ReviewNoteId) -> AppResult<Option<ReviewNote>> {
         Ok(None)
     }
     async fn get_by_status(
@@ -120,8 +117,7 @@ impl ReviewRepository for MockReviewRepo {
             if review.task_id == *task_id {
                 for action in actions.iter() {
                     if action.review_id == review.id
-                        && action.action_type
-                            == entities::ReviewActionType::CreatedFixTask
+                        && action.action_type == entities::ReviewActionType::CreatedFixTask
                     {
                         count += 1;
                     }
@@ -138,8 +134,7 @@ impl ReviewRepository for MockReviewRepo {
             if review.task_id == *task_id {
                 for action in actions.iter() {
                     if action.review_id == review.id
-                        && action.action_type
-                            == entities::ReviewActionType::CreatedFixTask
+                        && action.action_type == entities::ReviewActionType::CreatedFixTask
                     {
                         result.push(action.clone());
                     }
@@ -228,14 +223,14 @@ impl TaskRepository for MockTaskRepo {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<String> {
         self.status_history
             .write()
             .unwrap()
             .entry(id.as_str().to_string())
             .or_default()
             .push(repositories::StatusTransition::new(from, to, trigger));
-        Ok(())
+        Ok(uuid::Uuid::new_v4().to_string())
     }
     async fn get_status_history(
         &self,
@@ -632,9 +627,9 @@ async fn test_reject_fix_task_creates_new_fix() {
     assert_eq!(old_fix.internal_status, InternalStatus::Failed);
 
     let fix_history = task_repo.get_status_history(&fix_task_id).await.unwrap();
-    assert!(fix_history.iter().any(|entry| {
-        entry.to == InternalStatus::Failed && entry.trigger == "review_fix"
-    }));
+    assert!(fix_history
+        .iter()
+        .any(|entry| { entry.to == InternalStatus::Failed && entry.trigger == "review_fix" }));
 }
 
 #[tokio::test]
@@ -678,14 +673,14 @@ async fn test_reject_fix_task_max_attempts_moves_to_backlog() {
     assert_eq!(original.internal_status, InternalStatus::Backlog);
 
     let fix_history = task_repo.get_status_history(&fix_task_id).await.unwrap();
-    assert!(fix_history.iter().any(|entry| {
-        entry.to == InternalStatus::Failed && entry.trigger == "review_fix"
-    }));
+    assert!(fix_history
+        .iter()
+        .any(|entry| { entry.to == InternalStatus::Failed && entry.trigger == "review_fix" }));
 
     let original_history = task_repo.get_status_history(&task_id).await.unwrap();
-    assert!(original_history.iter().any(|entry| {
-        entry.to == InternalStatus::Backlog && entry.trigger == "review_fix"
-    }));
+    assert!(original_history
+        .iter()
+        .any(|entry| { entry.to == InternalStatus::Backlog && entry.trigger == "review_fix" }));
 }
 
 #[tokio::test]

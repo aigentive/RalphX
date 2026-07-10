@@ -78,7 +78,11 @@ fn setup_plan_conflict_repo() -> (RealGitRepo, String, tempfile::TempDir) {
         .args(["checkout", "plan/feature-1"])
         .current_dir(path)
         .output();
-    std::fs::write(path.join("shared.rs"), "// plan version\nfn shared() { todo!() }").unwrap();
+    std::fs::write(
+        path.join("shared.rs"),
+        "// plan version\nfn shared() { todo!() }",
+    )
+    .unwrap();
     let _ = std::process::Command::new("git")
         .args(["add", "shared.rs"])
         .current_dir(path)
@@ -126,7 +130,10 @@ async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
     let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut task = Task::new(project_id.clone(), "RC#6 plan update conflict test".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "RC#6 plan update conflict test".to_string(),
+    );
     task.internal_status = InternalStatus::PendingMerge;
     task.task_branch = Some(git_repo.task_branch.clone());
     task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
@@ -178,9 +185,10 @@ async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
     );
 
     // Verify: worktree_path is set and points to a merge-* directory
-    let wt_path = updated.worktree_path.as_ref().expect(
-        "worktree_path must be set after plan_update_conflict routing"
-    );
+    let wt_path = updated
+        .worktree_path
+        .as_ref()
+        .expect("worktree_path must be set after plan_update_conflict routing");
     assert!(
         wt_path.contains("merge-"),
         "worktree_path must contain 'merge-' prefix. Got: {}",
@@ -231,11 +239,15 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
     task_repo.create(task).await.unwrap();
 
     // Create stale plan-update worktree with plan branch checked out
-    let stale_wt_path = worktree_parent.path().join(slug).join(format!("plan-update-{}", task_id_str));
+    let stale_wt_path = worktree_parent
+        .path()
+        .join(slug)
+        .join(format!("plan-update-{}", task_id_str));
     std::fs::create_dir_all(stale_wt_path.parent().unwrap()).unwrap();
     let stale_output = std::process::Command::new("git")
         .args([
-            "worktree", "add",
+            "worktree",
+            "add",
             stale_wt_path.to_str().unwrap(),
             &plan_branch,
         ])
@@ -247,7 +259,10 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
         "Stale plan-update worktree creation must succeed: {}",
         String::from_utf8_lossy(&stale_output.stderr),
     );
-    assert!(stale_wt_path.exists(), "Stale plan-update worktree must exist");
+    assert!(
+        stale_wt_path.exists(),
+        "Stale plan-update worktree must exist"
+    );
 
     let mut project = Project::new("test-project".to_string(), git_repo.path_string());
     project.id = project_id;
@@ -283,7 +298,10 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
     );
 
     // Verify: merge-* worktree exists
-    let wt_path = updated.worktree_path.as_ref().expect("worktree_path must be set");
+    let wt_path = updated
+        .worktree_path
+        .as_ref()
+        .expect("worktree_path must be set");
     let wt_dir = std::path::PathBuf::from(wt_path);
     assert!(
         wt_dir.exists(),

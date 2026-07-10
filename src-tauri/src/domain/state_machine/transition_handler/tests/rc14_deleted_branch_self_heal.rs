@@ -12,8 +12,8 @@
 
 use super::helpers::*;
 use crate::application::git_service::GitService;
-use crate::domain::state_machine::transition_handler::merge_helpers::compute_task_worktree_path;
 use crate::domain::entities::{Project, ProjectId};
+use crate::domain::state_machine::transition_handler::merge_helpers::compute_task_worktree_path;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;

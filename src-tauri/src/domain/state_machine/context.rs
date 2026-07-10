@@ -6,21 +6,21 @@ use super::mocks::{
     MockTaskScheduler,
 };
 use super::services::{
-    AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStarter, TaskScheduler,
-    WebhookPublisher,
+    AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier, ReviewStarter,
+    TaskScheduler, WebhookPublisher,
 };
 use super::types::Blocker;
 use crate::application::ChatService;
 use crate::application::PrPollerRegistry;
 use crate::application::TaskTransitionService;
-use crate::domain::services::github_service::GithubServiceTrait;
-use crate::domain::services::PlanPrDescriptionDrafter;
 use crate::commands::ExecutionState;
 use crate::domain::entities::PlanBranchId;
 use crate::domain::repositories::{
     ActivityEventRepository, ArtifactRepository, IdeationSessionRepository, PlanBranchRepository,
     ProjectRepository, TaskRepository, TaskStepRepository,
 };
+use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::PlanPrDescriptionDrafter;
 use dashmap::DashMap;
 use ralphx_domain::repositories::ExternalEventsRepository;
 use ralphx_events::EventSink;
@@ -42,6 +42,9 @@ pub struct TaskServices {
 
     /// Service for sending notifications to users
     pub notifier: Arc<dyn Notifier>,
+
+    /// Context for the history row that authorized this entry action.
+    pub notification_context: Option<NotificationContext>,
 
     /// Service for managing task dependencies
     pub dependency_manager: Arc<dyn DependencyManager>,
@@ -161,6 +164,7 @@ impl TaskServices {
             agent_spawner,
             event_emitter,
             notifier,
+            notification_context: None,
             dependency_manager,
             review_starter,
             chat_service,
@@ -191,6 +195,11 @@ impl TaskServices {
     /// Set the execution state (builder pattern)
     pub fn with_execution_state(mut self, state: Arc<ExecutionState>) -> Self {
         self.execution_state = Some(state);
+        self
+    }
+
+    pub fn with_notification_context(mut self, context: NotificationContext) -> Self {
+        self.notification_context = Some(context);
         self
     }
 
@@ -296,10 +305,7 @@ impl TaskServices {
 
     /// Set the PR creation guard DashMap (builder pattern).
     /// Should be the same Arc as PrPollerRegistry::pr_creation_guard.
-    pub fn with_pr_creation_guard(
-        mut self,
-        guard: Arc<DashMap<PlanBranchId, ()>>,
-    ) -> Self {
+    pub fn with_pr_creation_guard(mut self, guard: Arc<DashMap<PlanBranchId, ()>>) -> Self {
         self.pr_creation_guard = Some(guard);
         self
     }
@@ -344,6 +350,7 @@ impl TaskServices {
             agent_spawner: Arc::new(MockAgentSpawner::new()),
             event_emitter: Arc::new(MockEventEmitter::new()),
             notifier: Arc::new(MockNotifier::new()),
+            notification_context: None,
             dependency_manager: Arc::new(MockDependencyManager::new()),
             review_starter: Arc::new(MockReviewStarter::new()),
             chat_service: Arc::new(MockChatService::new()),
@@ -452,11 +459,17 @@ impl std::fmt::Debug for TaskServices {
             )
             .field(
                 "transition_service",
-                &self.transition_service.as_ref().map(|_| "<TaskTransitionService>"),
+                &self
+                    .transition_service
+                    .as_ref()
+                    .map(|_| "<TaskTransitionService>"),
             )
             .field(
                 "webhook_publisher",
-                &self.webhook_publisher.as_ref().map(|_| "<WebhookPublisher>"),
+                &self
+                    .webhook_publisher
+                    .as_ref()
+                    .map(|_| "<WebhookPublisher>"),
             )
             .field(
                 "external_events_repo",

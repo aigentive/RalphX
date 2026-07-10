@@ -20,6 +20,7 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
+use crate::application::notification_service::NotificationService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
@@ -74,6 +75,7 @@ pub(super) struct BackgroundRunRepos {
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
+    pub notification_service: Option<Arc<NotificationService>>,
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -939,6 +941,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             task_proposal_repo,
             activity_event_repo,
             memory_event_repo,
+            notification_service,
             message_queue,
             running_agent_registry,
             task_step_repo,
@@ -1970,6 +1973,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &review_repo,
                     &task_step_repo,
                     &verification_child_registry,
+                    &notification_service,
                 )
                 .await;
 

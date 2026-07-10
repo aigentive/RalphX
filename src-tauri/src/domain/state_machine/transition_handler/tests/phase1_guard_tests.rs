@@ -61,7 +61,12 @@ async fn test_retry_attempt_with_failure_metadata_runs_cleanup() {
     let setup = setup_pending_merge_repos("Retry attempt", Some("feature/retry")).await;
 
     // Set merge failure metadata to simulate a prior failed attempt
-    let mut task = setup.task_repo.get_by_id(&setup.task_id).await.unwrap().unwrap();
+    let mut task = setup
+        .task_repo
+        .get_by_id(&setup.task_id)
+        .await
+        .unwrap()
+        .unwrap();
     task.metadata = Some(
         serde_json::json!({
             "merge_failure_source": "BranchFreshnessTimeout",
@@ -125,7 +130,12 @@ async fn test_prior_crash_metadata_triggers_cleanup() {
     let setup = setup_pending_merge_repos("Crash recovery", Some("feature/crash")).await;
 
     // Set the dedicated DB column (not JSON metadata)
-    let mut task = setup.task_repo.get_by_id(&setup.task_id).await.unwrap().unwrap();
+    let mut task = setup
+        .task_repo
+        .get_by_id(&setup.task_id)
+        .await
+        .unwrap()
+        .unwrap();
     task.merge_pipeline_active = Some(chrono::Utc::now().to_rfc3339());
     // Isolate: no metadata debris, no worktree on disk
     task.metadata = None;
@@ -420,7 +430,13 @@ async fn test_parallel_worktree_deletion_removes_all() {
         .unwrap();
 
     // Create 5 fake worktree directories (simulating task/merge/rebase/plan-update/source-update)
-    let worktree_names = vec!["task-wt", "merge-wt", "rebase-wt", "plan-update-wt", "source-update-wt"];
+    let worktree_names = vec![
+        "task-wt",
+        "merge-wt",
+        "rebase-wt",
+        "plan-update-wt",
+        "source-update-wt",
+    ];
     let mut worktree_paths = Vec::new();
     for name in &worktree_names {
         let wt_path = temp.path().join(name);
@@ -433,7 +449,11 @@ async fn test_parallel_worktree_deletion_removes_all() {
 
     // Verify all exist
     for wt in &worktree_paths {
-        assert!(wt.exists(), "Worktree should exist before deletion: {:?}", wt);
+        assert!(
+            wt.exists(),
+            "Worktree should exist before deletion: {:?}",
+            wt
+        );
     }
 
     // Delete all in parallel

@@ -32,6 +32,13 @@ fn test_blocker_is_human_input_false_for_task_blockers() {
 }
 
 #[test]
+fn test_blocker_is_human_input_reason_handles_human_task_and_absent_reasons() {
+    assert!(Blocker::is_human_input_reason(Some("human:Need approval")));
+    assert!(!Blocker::is_human_input_reason(Some("task-456")));
+    assert!(!Blocker::is_human_input_reason(None));
+}
+
+#[test]
 fn test_blocker_resolve_sets_resolved_true() {
     let mut blocker = Blocker::new("task-789");
     assert!(!blocker.resolved);

@@ -210,15 +210,12 @@ fn test_rc5_log_messages_are_distinct_constants() {
     let auto_transition_msg = "Auto-transition triggered";
 
     assert_ne!(
-        event_driven_msg,
-        auto_transition_msg,
+        event_driven_msg, auto_transition_msg,
         "RC5: event-driven and auto-transition log messages must be distinct for grep-ability"
     );
 
     // Verify the source file contains exactly one occurrence of each
-    let source = include_str!(
-        "../../../../application/task_transition_service.rs"
-    );
+    let source = include_str!("../../../../application/task_transition_service.rs");
 
     let event_count = source.matches(event_driven_msg).count();
     let auto_count = source.matches(auto_transition_msg).count();

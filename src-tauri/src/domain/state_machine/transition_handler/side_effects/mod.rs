@@ -10,9 +10,9 @@
 use super::merge_helpers::{
     plan_branch_has_reviewable_diff, resolve_merge_branches, validate_plan_merge_preconditions,
 };
-use crate::utils::truncate_str;
 use super::merge_orchestrator::ConcurrentGuardResult;
 use super::merge_validation::{format_validation_error_metadata, ValidationLogEntry};
+use crate::utils::truncate_str;
 
 use super::merge_validation::{emit_merge_progress, ValidationFailure};
 use crate::domain::entities::{ActivityEvent, ActivityEventRole, ActivityEventType};
@@ -20,21 +20,17 @@ use crate::domain::entities::{ActivityEvent, ActivityEventRole, ActivityEventTyp
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-
 use super::super::machine::State;
 use crate::application::GitService;
-use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 use crate::domain::entities::{
     merge_progress_event::{MergePhase, MergePhaseStatus},
     task_metadata::{CleanupPhase, MergeFailureSource},
-    InternalStatus, MergeValidationMode, PlanBranch, Project,
-    Task, TaskId,
+    InternalStatus, MergeValidationMode, PlanBranch, Project, Task, TaskId,
 };
-use crate::domain::repositories::{
-    PlanBranchRepository, TaskRepository,
-};
+use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::error::AppResult;
+use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 
 mod merge_attempt;
 mod transitions;
@@ -147,8 +143,13 @@ impl<'a> super::TransitionHandler<'a> {
         // so the clear below always executes.
         // heap-allocate to prevent stack overflow from large inlined future
         Box::pin(self.run_merge_pipeline_body(
-            &mut task, &project, task_id_str, task_repo, attempt_start,
-        )).await;
+            &mut task,
+            &project,
+            task_id_str,
+            task_repo,
+            attempt_start,
+        ))
+        .await;
 
         // Always clear the flag — reloads from DB to avoid clobbering concurrent changes.
         clear_merge_pipeline_active_from_db(task_id_str, task_repo).await;

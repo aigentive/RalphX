@@ -221,7 +221,10 @@ fn test_from_metadata_extracts_origin_state_for_routing() {
     let freshness = FreshnessMetadata::from_task_metadata(&meta);
 
     assert!(freshness.branch_freshness_conflict);
-    assert_eq!(freshness.freshness_origin_state.as_deref(), Some("reviewing"));
+    assert_eq!(
+        freshness.freshness_origin_state.as_deref(),
+        Some("reviewing")
+    );
     assert_eq!(freshness.freshness_conflict_count, 3);
 
     // Verify routing decision based on extracted state
@@ -241,7 +244,10 @@ fn test_from_metadata_extracts_re_executing_for_routing() {
     let freshness = FreshnessMetadata::from_task_metadata(&meta);
 
     assert!(freshness.branch_freshness_conflict);
-    assert_eq!(freshness.freshness_origin_state.as_deref(), Some("re_executing"));
+    assert_eq!(
+        freshness.freshness_origin_state.as_deref(),
+        Some("re_executing")
+    );
     assert!(freshness.source_update_conflict);
 
     let target = routing_target_for(freshness.freshness_origin_state.as_deref());
@@ -467,8 +473,7 @@ fn test_conflict_marker_scan_path_count_zero_baseline_incremented_to_one() {
     });
     let count = effective_count_after_handler(&meta);
     assert_eq!(
-        count,
-        1,
+        count, 1,
         "First conflict via marker scan path must yield count = 1"
     );
 }

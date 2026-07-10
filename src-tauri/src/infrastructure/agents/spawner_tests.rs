@@ -110,8 +110,8 @@ impl TaskRepository for MockTaskRepoForSpawner {
         _: crate::domain::entities::InternalStatus,
         _: crate::domain::entities::InternalStatus,
         _: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
     async fn get_status_history(&self, _: &TaskId) -> AppResult<Vec<StatusTransition>> {
         Ok(vec![])

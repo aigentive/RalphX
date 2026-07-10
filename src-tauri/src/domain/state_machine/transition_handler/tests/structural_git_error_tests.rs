@@ -10,12 +10,10 @@
 //         when given existing structural-error metadata.
 
 use super::helpers::*;
-use crate::domain::entities::{
-    ExecutionRecoveryMetadata, ExecutionRecoveryState, Project, Task,
-};
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
-use crate::domain::state_machine::{State, TaskStateMachine, TransitionHandler};
+use crate::domain::entities::{ExecutionRecoveryMetadata, ExecutionRecoveryState, Project, Task};
 use crate::domain::state_machine::types::FailedData;
+use crate::domain::state_machine::{State, TaskStateMachine, TransitionHandler};
 use crate::infrastructure::memory::MemoryTaskRepository;
 use std::sync::Arc;
 
@@ -157,10 +155,7 @@ async fn test_on_enter_failed_structural_error_skips_when_recovery_prewritten() 
         ExecutionRecoveryState::Retrying,
     );
     let recovery_json = serde_json::to_string(&pre_recovery).unwrap();
-    task.metadata = Some(format!(
-        r#"{{"execution_recovery":{}}}"#,
-        recovery_json
-    ));
+    task.metadata = Some(format!(r#"{{"execution_recovery":{}}}"#, recovery_json));
 
     let task_repo: Arc<dyn crate::domain::repositories::TaskRepository> =
         Arc::new(MemoryTaskRepository::new());

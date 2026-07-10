@@ -50,6 +50,7 @@ impl NotificationEventEmitter for TauriNotificationEventEmitter {
 }
 
 /// Best-effort notification effects: storage or event failures never fail workflow authority.
+#[derive(Clone)]
 pub struct NotificationService {
     repo: Arc<dyn NotificationRepository>,
     emitter: Arc<dyn NotificationEventEmitter>,

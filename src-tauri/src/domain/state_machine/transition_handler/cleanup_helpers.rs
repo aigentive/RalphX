@@ -128,7 +128,11 @@ pub(crate) async fn remove_worktree_fast(
     // Unlock first (ignore errors — worktree may not be locked, or path may be gone).
     // This allows `git worktree prune` to clean up stale locked metadata entries.
     let _ = tokio::process::Command::new(resolve_git_cli_path())
-        .args(["worktree", "unlock", worktree_path.to_str().unwrap_or_default()])
+        .args([
+            "worktree",
+            "unlock",
+            worktree_path.to_str().unwrap_or_default(),
+        ])
         .current_dir(repo_path)
         .output()
         .await;
@@ -137,7 +141,13 @@ pub(crate) async fn remove_worktree_fast(
     // -f -f overrides locks (git 2.17+); single --force only bypasses dirty-tree checks.
     // Ignore errors — path may already be gone.
     let _ = tokio::process::Command::new(resolve_git_cli_path())
-        .args(["worktree", "remove", "-f", "-f", worktree_path.to_str().unwrap_or_default()])
+        .args([
+            "worktree",
+            "remove",
+            "-f",
+            "-f",
+            worktree_path.to_str().unwrap_or_default(),
+        ])
         .current_dir(repo_path)
         .output()
         .await;

@@ -52,8 +52,8 @@ impl TaskRepository for MockTaskRepository {
         _from: InternalStatus,
         _to: InternalStatus,
         _trigger: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
 
     async fn get_status_history(&self, _id: &TaskId) -> AppResult<Vec<StatusTransition>> {

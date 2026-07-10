@@ -14,10 +14,12 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::application::git_service::GitService;
+use crate::application::notification_service::NotificationService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::AppState;
@@ -717,6 +719,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
+            notification_service: None,
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),
@@ -802,6 +805,20 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
     let app_state = handle.state::<AppState>();
     let execution_state = handle.state::<Arc<ExecutionState>>();
 
+    match app_state.app_state_repo.get().await {
+        Ok(settings) if settings.execution_halt_mode == ExecutionHaltMode::Paused => {
+            tracing::info!(
+                category = %category,
+                "Provider-triggered global pause already persists; suppressing duplicate delivery"
+            );
+            return true;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to read persisted halt state before provider-triggered pause");
+        }
+    }
+
     execution_state.pause();
     apply_global_rate_limit_backpressure(
         &Some(Arc::clone(execution_state.inner())),
@@ -810,13 +827,17 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         source_context_id,
     );
 
-    if let Err(error) = app_state
+    let pause_committed = match app_state
         .app_state_repo
         .set_execution_halt_mode(ExecutionHaltMode::Paused)
         .await
     {
-        tracing::warn!(error = %error, "Failed to persist provider-triggered global pause");
-    }
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to persist provider-triggered global pause");
+            false
+        }
+    };
 
     app_state.running_agent_registry.stop_all().await;
     app_state.interactive_process_registry.clear().await;
@@ -825,6 +846,58 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         .build_transition_service_with_execution_state(Arc::clone(execution_state.inner()));
 
     let paused_at = chrono::Utc::now().to_rfc3339();
+    // The pause timestamp is generated once per successful global-pause authority commit.
+    // Persist it on the source task before using it as the global notification instance key.
+    if pause_committed {
+        let source_task_id = TaskId::from_string(source_context_id.to_string());
+        match app_state.task_repo.get_by_id(&source_task_id).await {
+            Ok(Some(source_task)) => {
+                let source_pause_reason = super::PauseReason::ProviderError {
+                    category: category.clone(),
+                    message: message.to_string(),
+                    retry_after: retry_after.clone(),
+                    previous_status: source_task.internal_status.to_string(),
+                    paused_at: paused_at.clone(),
+                    auto_resumable: true,
+                    resume_attempts: 0,
+                };
+                let mut source_task_with_pause = source_task.clone();
+                source_task_with_pause.metadata = Some(
+                    source_pause_reason.write_to_task_metadata(source_task.metadata.as_deref()),
+                );
+                source_task_with_pause.touch();
+                match app_state.task_repo.update(&source_task_with_pause).await {
+                    Ok(()) => {
+                        app_state
+                            .notification_service()
+                            .record(
+                                TaskPipelineNotificationProducer::provider_paused_notification(
+                                    &source_task_with_pause,
+                                    &paused_at,
+                                    &category.to_string(),
+                                    message,
+                                ),
+                            )
+                            .await;
+                    }
+                    Err(error) => tracing::warn!(
+                        source_context_id,
+                        error = %error,
+                        "Failed to persist provider-pause notification instance"
+                    ),
+                }
+            }
+            Ok(None) => tracing::warn!(
+                source_context_id,
+                "Provider-triggered global pause has no source task for its notification"
+            ),
+            Err(error) => tracing::warn!(
+                source_context_id,
+                error = %error,
+                "Failed to load provider-pause source task for notification"
+            ),
+        }
+    }
     let projects = match app_state.project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
@@ -1822,6 +1895,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
+    notification_service: &Option<Arc<NotificationService>>,
 ) -> bool {
     let conversation_provider_session_ref =
         conversation.and_then(|conv| conv.provider_session_ref());
@@ -2991,6 +3065,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         "target_status": target_status.to_string(),
                                     }),
                                 );
+                            }
+                            if let Some(notification_service) = notification_service {
+                                notification_service
+                                    .record(
+                                        TaskPipelineNotificationProducer::task_stuck_notification(
+                                            &current_task,
+                                            agent_run_id,
+                                            format!(
+                                                "The automatic recovery transition failed: {retry_err}"
+                                            ),
+                                        ),
+                                    )
+                                    .await;
                             }
                         }
                     } else {
