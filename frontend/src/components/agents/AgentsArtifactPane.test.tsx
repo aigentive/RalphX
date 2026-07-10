@@ -2782,14 +2782,9 @@ describe("AgentsArtifactPane", () => {
     });
     await waitFor(() => expect(updateReviewButton).toBeDisabled());
     expect(
-      await screen.findByTestId("agents-review-action-disabled-reason"),
-    ).toHaveTextContent(
-      "Review is available after the current agent run finishes.",
-    );
-    expect(updateReviewButton).toHaveAttribute(
-      "aria-describedby",
-      "agents-review-action-disabled-reason",
-    );
+      screen.queryByTestId("agents-review-action-disabled-reason"),
+    ).not.toBeInTheDocument();
+    expect(updateReviewButton).not.toHaveAttribute("aria-describedby");
 
     fireEvent.click(updateReviewButton);
 

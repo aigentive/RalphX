@@ -6,7 +6,7 @@ import {
   extractComposerArtifactTokens,
   extractComposerIntegrationTokens,
   extractComposerPathTokens,
-  extractComposerSkillTokens,
+  extractComposerSlashSkillTokens,
   extractPastedAtlassianResourceUrls,
   normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
@@ -27,9 +27,9 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("detects skill triggers anywhere in a token", () => {
-    const text = "Use $workspace-swe here";
-    const cursor = "Use $workspace-swe".length;
+  it("detects slash skill triggers at the current token start", () => {
+    const text = "Use /workspace-swe here";
+    const cursor = "Use /workspace-swe".length;
 
     expect(detectAgentComposerTrigger(text, cursor)).toEqual({
       kind: "skill",
@@ -39,7 +39,36 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("detects slash commands only at the start of the current line", () => {
+  it("does not detect dollar skill triggers", () => {
+    const text = "Use $workspace-swe here";
+
+    expect(
+      detectAgentComposerTrigger(text, "Use $workspace-swe".length),
+    ).toBeNull();
+  });
+
+  it("ignores slash skill triggers with nested markers", () => {
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace/swe",
+        "Use /workspace/swe".length,
+      ),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace@swe",
+        "Use /workspace@swe".length,
+      ),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace$swe",
+        "Use /workspace$swe".length,
+      ),
+    ).toBeNull();
+  });
+
+  it("detects slash commands at line start and slash skills in message text", () => {
     expect(detectAgentComposerTrigger("/mod", 4)).toEqual({
       kind: "slash-command",
       query: "mod",
@@ -56,7 +85,12 @@ describe("agentComposerCore", () => {
     });
     expect(
       detectAgentComposerTrigger("Use /chat", "Use /chat".length),
-    ).toBeNull();
+    ).toEqual({
+      kind: "skill",
+      query: "chat",
+      rangeStart: "Use ".length,
+      rangeEnd: "Use /chat".length,
+    });
     expect(
       detectAgentComposerTrigger("/model spark", "/model spark".length),
     ).toBeNull();
@@ -70,6 +104,18 @@ describe("agentComposerCore", () => {
       integrationKind: "jira",
       query: "RX-42",
       rangeStart: "Attach ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("detects scoped integration triggers inside the current token", () => {
+    const text = "Attach foo@jira:RX-42";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "jira",
+      query: "RX-42",
+      rangeStart: "Attach foo".length,
       rangeEnd: text.length,
     });
   });
@@ -150,12 +196,7 @@ describe("agentComposerCore", () => {
         "Find @jira:RX-1$bad",
         "Find @jira:RX-1$bad".length,
       ),
-    ).toEqual({
-      kind: "skill",
-      query: "bad",
-      rangeStart: "Find @jira:RX-1".length,
-      rangeEnd: "Find @jira:RX-1$bad".length,
-    });
+    ).toBeNull();
   });
 
   it("replaces trigger ranges and consumes one trailing space", () => {
@@ -171,12 +212,12 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("extracts unique skill tokens", () => {
+  it("extracts unique slash skill tokens and ignores dollar tokens", () => {
     expect(
-      extractComposerSkillTokens(
-        "Use $review and $review plus $plan_2 $github:yeet",
+      extractComposerSlashSkillTokens(
+        "Use /review and /review plus /workspace-swe $github:yeet /github:yeet",
       ),
-    ).toEqual(["review", "plan_2", "github:yeet"]);
+    ).toEqual(["review", "workspace-swe", "github:yeet"]);
   });
 
   it("extracts unique path tokens", () => {
