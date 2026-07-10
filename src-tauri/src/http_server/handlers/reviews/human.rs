@@ -35,6 +35,17 @@ pub async fn approve_task(
         ));
     }
 
+    ensure_task_has_non_empty_captured_diff(&task, "human_approve_task")
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                task_id = %task_id.as_str(),
+                error = %error,
+                "Human approval rejected because task-owned diff is empty or unavailable"
+            );
+            (StatusCode::BAD_REQUEST, error.to_string())
+        })?;
+
     // 2. Create a human approval review note
     let review_note = ReviewNote::with_notes(
         task_id.clone(),

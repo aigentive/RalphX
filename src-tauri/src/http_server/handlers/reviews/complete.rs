@@ -128,6 +128,20 @@ pub async fn complete_review(
         (StatusCode::BAD_REQUEST, e.to_string())
     })?;
 
+    if matches!(outcome, ReviewToolOutcome::Approved) {
+        ensure_task_has_non_empty_captured_diff(&task, "complete_review_approved")
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    decision = %req.decision,
+                    error = %error,
+                    "complete_review rejected: approved code-change task has no captured-base diff"
+                );
+                (StatusCode::BAD_REQUEST, error.to_string())
+            })?;
+    }
+
     // 3. Get feedback - stored separately from issues now
     let feedback = req.feedback.clone();
 
@@ -378,38 +392,70 @@ pub async fn complete_review(
 
             // Git diff validation safety gate (BEFORE metadata persistence).
             // If the branch has code changes, fall back to standard Approved flow.
-            let has_code_changes =
-                if let (Some(ref project), Some(ref branch)) = (&project_opt, &task_branch) {
-                    let repo_path = std::path::Path::new(&project.working_directory);
-                    let base = project.base_branch_or_default();
-                    match GitService::branches_have_same_content(repo_path, branch, base).await {
-                        Ok(false) => {
-                            // Not same content → branch has code changes
-                            tracing::warn!(
-                                task_id = %task_id.as_str(),
-                                branch = %branch,
-                                base_branch = %base,
-                                "Reviewer marked approved_no_changes but branch has code changes \
-                                 — falling back to standard Approved flow"
-                            );
-                            true
-                        }
-                        Ok(true) => false, // Same content — no changes, proceed with no-changes path
-                        Err(e) => {
-                            // Git error — defensive: proceed with no-changes path
-                            tracing::warn!(
-                                task_id = %task_id.as_str(),
-                                error = %e,
-                                "Git diff validation failed — proceeding with \
-                                 no-changes path (defensive)"
-                            );
-                            false
-                        }
+            let has_code_changes = match read_captured_task_diff_stats(
+                &task,
+                "complete_review_approved_no_changes",
+            )
+            .await
+            {
+                Ok(Some(stats)) => {
+                    let has_changes = diff_stats_has_changes(&stats);
+                    if has_changes {
+                        tracing::warn!(
+                            task_id = %task_id.as_str(),
+                            base_ref = %task.task_branch_base_ref.as_deref().unwrap_or_default(),
+                            base_sha = %task.task_branch_base_sha.as_deref().unwrap_or_default(),
+                            files_changed = stats.files_changed,
+                            "Reviewer marked approved_no_changes but captured-base diff has code changes — falling back to standard Approved flow"
+                        );
                     }
-                } else {
-                    // No project or no branch — proceed with no-changes path (defensive)
-                    false
-                };
+                    has_changes
+                }
+                Ok(None) => {
+                    if let (Some(ref project), Some(ref branch)) = (&project_opt, &task_branch) {
+                        let repo_path = std::path::Path::new(&project.working_directory);
+                        let base = project.base_branch_or_default();
+                        match GitService::branches_have_same_content(repo_path, branch, base).await
+                        {
+                            Ok(false) => {
+                                // Not same content → branch has code changes
+                                tracing::warn!(
+                                    task_id = %task_id.as_str(),
+                                    branch = %branch,
+                                    base_branch = %base,
+                                    "Reviewer marked approved_no_changes but branch has code changes \
+                                     — falling back to standard Approved flow"
+                                );
+                                true
+                            }
+                            Ok(true) => false,
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = %task_id.as_str(),
+                                    error = %e,
+                                    "Git diff validation failed for approved_no_changes"
+                                );
+                                return Err((
+                                    StatusCode::BAD_REQUEST,
+                                    format!(
+                                        "Cannot approve as no-changes because git diff validation failed: {e}"
+                                    ),
+                                ));
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        task_id = %task_id.as_str(),
+                        error = %error,
+                        "complete_review rejected: approved_no_changes diff check failed"
+                    );
+                    return Err((StatusCode::BAD_REQUEST, error.to_string()));
+                }
+            };
 
             if has_code_changes {
                 // Fall back to standard Approved flow (reviewer decision treated as regular Approved)
