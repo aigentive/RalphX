@@ -200,6 +200,12 @@ impl MetadataUpdate {
         self
     }
 
+    /// Add a JSON value for a key.
+    pub fn with_value(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.entries.insert(key.into(), value);
+        self
+    }
+
     /// Merge this update into existing metadata, preserving existing keys.
     ///
     /// # Arguments

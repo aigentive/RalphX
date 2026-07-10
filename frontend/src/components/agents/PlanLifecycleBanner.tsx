@@ -7,6 +7,7 @@ import {
   Clock,
   Info,
   Loader2,
+  PauseCircle,
   RotateCcw,
   Zap,
 } from "lucide-react";
@@ -24,7 +25,13 @@ export interface PlanLifecycleAction {
   disabled?: boolean;
   loading?: boolean;
   primary?: boolean;
+  tone?: "default" | "danger";
   testId?: string;
+}
+
+export interface PlanLifecycleRuntimeCounts {
+  running: number;
+  paused: number;
 }
 
 interface PlanLifecycleBannerProps {
@@ -32,6 +39,8 @@ interface PlanLifecycleBannerProps {
   title: string;
   description: string;
   actions: readonly PlanLifecycleAction[];
+  acceptedFooterActions?: readonly PlanLifecycleAction[] | undefined;
+  acceptedRuntimeCounts?: PlanLifecycleRuntimeCounts | undefined;
   counts?: StatusCounts | undefined;
   acceptedAt?: string | null | undefined;
   onViewWork?: (() => void) | undefined;
@@ -86,6 +95,16 @@ function actionButtonStyle(
     };
   }
 
+  if (action.tone === "danger") {
+    return {
+      backgroundColor: withAlpha("var(--status-error)", 8),
+      borderColor: withAlpha("var(--status-error)", 35),
+      borderStyle: "solid",
+      borderWidth: "1px",
+      color: "var(--status-error)",
+    };
+  }
+
   return {
     backgroundColor: "transparent",
     borderColor: "var(--border-subtle)",
@@ -100,6 +119,8 @@ export function PlanLifecycleBanner({
   title,
   description,
   actions,
+  acceptedFooterActions = [],
+  acceptedRuntimeCounts,
   counts,
   acceptedAt = null,
   onViewWork,
@@ -109,6 +130,8 @@ export function PlanLifecycleBanner({
 }: PlanLifecycleBannerProps) {
   const config = LIFECYCLE_CONFIG[state];
   const Icon = config.icon;
+  const runningCount = acceptedRuntimeCounts?.running ?? counts?.active ?? 0;
+  const pausedCount = acceptedRuntimeCounts?.paused ?? 0;
   const rootStyle = {
     "--plan-lifecycle-accent": config.accent,
     backgroundColor: withAlpha(config.accent, 8),
@@ -242,64 +265,114 @@ export function PlanLifecycleBanner({
           </div>
         </div>
 
-        {state === "accepted" && counts ? (
+        {state === "accepted" && (counts || acceptedFooterActions.length > 0) ? (
           <div
-            className="flex flex-wrap items-center gap-4 pt-3"
+            className="flex flex-wrap items-center justify-between gap-3 pt-3"
             style={{
               borderTopColor: withAlpha(config.accent, 15),
               borderTopStyle: "solid",
               borderTopWidth: "1px",
             }}
           >
-            <span
-              className="text-[0.8125rem] font-medium"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {counts.total} {counts.total === 1 ? "task" : "tasks"}
-            </span>
-
-            {counts.active > 0 ? (
-              <div className="flex items-center gap-1.5">
-                <Zap
-                  className="h-3.5 w-3.5"
-                  style={{ color: "var(--accent-primary)" }}
-                />
+            {counts ? (
+              <div className="flex flex-wrap items-center gap-4">
                 <span
-                  className="text-[0.75rem] font-medium"
-                  style={{ color: "var(--accent-primary)" }}
+                  className="text-[0.8125rem] font-medium"
+                  style={{ color: "var(--text-secondary)" }}
                 >
-                  {counts.active} in progress
+                  {counts.total} {counts.total === 1 ? "task" : "tasks"}
                 </span>
+
+                {runningCount > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <Zap
+                      className="h-3.5 w-3.5"
+                      style={{ color: "var(--accent-primary)" }}
+                    />
+                    <span
+                      className="text-[0.75rem] font-medium"
+                      style={{ color: "var(--accent-primary)" }}
+                    >
+                      {runningCount} in progress
+                    </span>
+                  </div>
+                ) : null}
+
+                {pausedCount > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <PauseCircle
+                      className="h-3.5 w-3.5"
+                      style={{ color: "var(--text-muted)" }}
+                    />
+                    <span
+                      className="text-[0.75rem]"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {pausedCount} paused
+                    </span>
+                  </div>
+                ) : null}
+
+                {counts.done > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <CircleCheck
+                      className="h-3.5 w-3.5"
+                      style={{ color: STATUS_TOKEN_REFS.success }}
+                    />
+                    <span
+                      className="text-[0.75rem] font-medium"
+                      style={{ color: STATUS_TOKEN_REFS.success }}
+                    >
+                      {counts.done} completed
+                    </span>
+                  </div>
+                ) : null}
+
+                {counts.idle > 0 && runningCount === 0 && counts.done === 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <Clock
+                      className="h-3.5 w-3.5"
+                      style={{ color: "var(--text-muted)" }}
+                    />
+                    <span
+                      className="text-[0.75rem]"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {counts.idle} queued
+                    </span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
-            {counts.done > 0 ? (
-              <div className="flex items-center gap-1.5">
-                <CircleCheck
-                  className="h-3.5 w-3.5"
-                  style={{ color: STATUS_TOKEN_REFS.success }}
-                />
-                <span
-                  className="text-[0.75rem] font-medium"
-                  style={{ color: STATUS_TOKEN_REFS.success }}
-                >
-                  {counts.done} completed
-                </span>
-              </div>
-            ) : null}
+            {acceptedFooterActions.length > 0 ? (
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                {acceptedFooterActions.map((action) => {
+                  const ActionIcon = action.loading ? Loader2 : action.icon;
 
-            {counts.idle > 0 && counts.active === 0 && counts.done === 0 ? (
-              <div className="flex items-center gap-1.5">
-                <Clock
-                  className="h-3.5 w-3.5"
-                  style={{ color: "var(--text-muted)" }}
-                />
-                <span
-                  className="text-[0.75rem]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  {counts.idle} queued
-                </span>
+                  return (
+                    <button
+                      key={action.key}
+                      type="button"
+                      data-testid={action.testId}
+                      onClick={action.onClick}
+                      disabled={action.disabled || action.loading}
+                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[0.75rem] font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-60"
+                      style={actionButtonStyle(action)}
+                    >
+                      {ActionIcon ? (
+                        <ActionIcon
+                          className={
+                            action.loading
+                              ? "h-3.5 w-3.5 animate-spin"
+                              : "h-3.5 w-3.5"
+                          }
+                        />
+                      ) : null}
+                      {action.label}
+                    </button>
+                  );
+                })}
               </div>
             ) : null}
           </div>

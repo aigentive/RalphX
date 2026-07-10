@@ -74,11 +74,13 @@ use scheduling::schedule_ready_tasks_for_project;
 
 mod lifecycle;
 
-pub(crate) use lifecycle::prepare_resumed_task_for_entry_actions;
 pub use lifecycle::{
     __cmd__pause_execution, __cmd__resume_execution, __cmd__stop_execution,
     __tauri_command_name_pause_execution, __tauri_command_name_resume_execution,
     __tauri_command_name_stop_execution, pause_execution, resume_execution, stop_execution,
+};
+pub(crate) use lifecycle::{
+    determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
 
 mod settings;

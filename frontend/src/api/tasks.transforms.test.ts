@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { StateTransitionResponseSchemaRaw } from "./tasks.schemas";
-import { transformStateTransition } from "./tasks.transforms";
+import {
+  ExecutionPlanControlResponseSchemaRaw,
+  StateTransitionResponseSchemaRaw,
+} from "./tasks.schemas";
+import {
+  transformExecutionPlanControlResponse,
+  transformStateTransition,
+} from "./tasks.transforms";
 
 describe("task API transforms", () => {
   it("carries optional runtime context and transition identity metadata", () => {
@@ -42,6 +48,18 @@ describe("task API transforms", () => {
       toStatus: "ready",
       trigger: "user",
       timestamp: "2026-07-07T10:00:00Z",
+    });
+  });
+
+  it("maps execution-plan control responses to camelCase fields", () => {
+    const raw = ExecutionPlanControlResponseSchemaRaw.parse({
+      execution_plan_id: "exec-plan-1",
+      affected_count: 2,
+    });
+
+    expect(transformExecutionPlanControlResponse(raw)).toEqual({
+      executionPlanId: "exec-plan-1",
+      affectedCount: 2,
     });
   });
 });
