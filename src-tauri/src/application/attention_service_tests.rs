@@ -8,8 +8,8 @@ use crate::application::{PendingPermissionInfo, QuestionOption};
 use crate::domain::entities::{
     AgentWorkspacePrReviewMonitor, Automation, AutomationId, AutomationJudgeState,
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, ChatConversationId, IdeationSession,
-    Project, Task,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, ChatConversation, ChatConversationId,
+    IdeationSession, Project, Task,
 };
 use crate::domain::repositories::{PlanApprovalActor, PlanArtifactApprovalRepository};
 use crate::domain::state_machine::Blocker;

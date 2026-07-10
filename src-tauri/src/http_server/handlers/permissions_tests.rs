@@ -1,12 +1,23 @@
 use axum::http::StatusCode;
 use std::sync::Arc;
 
-use super::expire_permission_and_emit;
+use async_trait::async_trait;
+use axum::extract::State;
+use axum::Json;
+use chrono::{DateTime, Utc};
+
+use super::{expire_permission_and_emit, request_permission};
 use crate::application::app_state::AppState;
 use crate::application::permission_state::PendingPermissionInfo;
 use crate::application::{TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
-use crate::http_server::types::HttpServerState;
+use crate::domain::entities::Notification;
+use crate::domain::entities::{
+    ChatConversation, NotificationCategory, NotificationTargetKind, ProjectId,
+};
+use crate::domain::repositories::{NotificationPage, NotificationRepository};
+use crate::error::{AppError, AppResult};
+use crate::http_server::types::{HttpServerState, PermissionRequestInput};
 
 fn make_info(request_id: &str) -> PendingPermissionInfo {
     PendingPermissionInfo {
@@ -34,6 +45,146 @@ fn make_test_state() -> HttpServerState {
         team_service,
         delegation_service: Default::default(),
     }
+}
+
+struct FailingNotificationRepository;
+
+#[async_trait]
+impl NotificationRepository for FailingNotificationRepository {
+    async fn create_with_dedupe(&self, _notification: Notification) -> AppResult<bool> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn list(
+        &self,
+        _project_id: Option<&str>,
+        _cursor: Option<&str>,
+        _limit: u32,
+    ) -> AppResult<NotificationPage> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn unread_count(&self, _project_id: Option<&str>) -> AppResult<u64> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_read(
+        &self,
+        _id: &str,
+        _read_at: DateTime<Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_all_read(
+        &self,
+        _project_id: Option<&str>,
+        _read_at: DateTime<Utc>,
+    ) -> AppResult<u64> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn prune(&self, _read_before: DateTime<Utc>, _max_rows: u32) -> AppResult<()> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+}
+
+#[tokio::test]
+async fn request_permission_records_one_deduplicated_notification_without_event_listener() {
+    let state = make_test_state();
+    let conversation = ChatConversation::new_project(ProjectId::from_string("project-1".into()));
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+    let request = PermissionRequestInput {
+        request_id: Some("permission-request-1".into()),
+        tool_name: "Bash".into(),
+        tool_input: serde_json::json!({"command": "git status"}),
+        context: Some("Repository setup".into()),
+        agent_type: Some("worker".into()),
+        task_id: None,
+        context_type: Some("project".into()),
+        context_id: Some(conversation.id.to_string()),
+    };
+
+    let first = request_permission(State(state.clone()), Json(request))
+        .await
+        .0;
+    let second = request_permission(
+        State(state.clone()),
+        Json(PermissionRequestInput {
+            request_id: Some(first.request_id.clone()),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({}),
+            context: Some("Repository setup".into()),
+            agent_type: Some("worker".into()),
+            task_id: None,
+            context_type: Some("project".into()),
+            context_id: Some(conversation.id.to_string()),
+        }),
+    )
+    .await
+    .0;
+
+    assert_eq!(second.request_id, first.request_id);
+    let rows = state
+        .app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(rows.len(), 1, "server-side record must not need a listener");
+    let row = &rows[0];
+    assert_eq!(row.category, NotificationCategory::PermissionRequest);
+    assert_eq!(row.dedupe_key.as_deref(), Some("perm:permission-request-1"));
+    assert_eq!(row.target.kind, NotificationTargetKind::AgentConversation);
+    let conversation_id = conversation.id.as_str();
+    assert_eq!(
+        row.target.conversation_id.as_deref(),
+        Some(conversation_id.as_str())
+    );
+    assert_eq!(row.project_id.as_deref(), Some("project-1"));
+    assert!(row
+        .body
+        .as_deref()
+        .unwrap()
+        .contains("worker wants to run Bash"));
+}
+
+#[tokio::test]
+async fn request_permission_returns_after_notification_repository_failure() {
+    let mut app_state = AppState::new_test();
+    app_state.notification_repo = Arc::new(FailingNotificationRepository);
+    let state = HttpServerState::new_test(Arc::new(app_state));
+
+    let response = request_permission(
+        State(state.clone()),
+        Json(PermissionRequestInput {
+            request_id: Some("permission-failure".into()),
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({}),
+            context: None,
+            agent_type: None,
+            task_id: None,
+            context_type: None,
+            context_id: None,
+        }),
+    )
+    .await
+    .0;
+
+    assert_eq!(response.request_id, "permission-failure");
+    assert!(state
+        .app_state
+        .permission_state
+        .pending
+        .lock()
+        .await
+        .contains_key("permission-failure"));
 }
 
 /// Path 1 — pre-check timeout: elapsed >= timeout before first channel poll.

@@ -56,6 +56,7 @@ pub mod ideation_model_bootstrap;
 pub mod ideation_service;
 pub mod ideation_workspace;
 pub mod integration_reference_expansion;
+pub mod interactive_notification_producer;
 pub mod interactive_process_registry;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
@@ -65,6 +66,7 @@ pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod merge_pipeline_visibility;
 pub(crate) mod native_menu;
+pub mod notification_context_resolver;
 pub mod notification_service;
 #[cfg(test)]
 mod notification_service_tests;
@@ -203,6 +205,7 @@ pub use ideation_service::{
     UpdateSource,
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
+pub use notification_context_resolver::NotificationContextResolver;
 pub use linear_integration_service::{
     resolve_linear_label_ids, EmptyLinearApiClient, LinearApiClient, LinearAuthContext,
     LinearComment, LinearIntegrationService, LinearIntegrationSettings,

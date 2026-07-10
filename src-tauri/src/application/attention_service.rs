@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::application::{AppState, PermissionState, QuestionState};
+use crate::application::{AppState, NotificationContextResolver, PermissionState, QuestionState};
 use crate::domain::entities::{
     AgentWorkspacePrReviewMonitorStatus, AttentionItem, AutomationRunStatus, AutomationStatus,
-    ChatContextType, ChatConversation, ChatConversationId, IdeationSession, InternalStatus,
-    NotificationCategory, NotificationTarget, NotificationTargetKind, ProjectId, TaskId,
+    ChatContextType, InternalStatus, NotificationCategory, NotificationTarget,
+    NotificationTargetKind, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
@@ -35,6 +35,7 @@ pub struct AttentionService {
     agent_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     permission_state: Arc<PermissionState>,
     question_state: Arc<QuestionState>,
+    notification_context: NotificationContextResolver,
 }
 
 impl AttentionService {
@@ -50,6 +51,7 @@ impl AttentionService {
             agent_workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
             permission_state: Arc::clone(&state.permission_state),
             question_state: Arc::clone(&state.question_state),
+            notification_context: NotificationContextResolver::from_app_state(state),
         }
     }
 
@@ -139,13 +141,14 @@ impl AttentionService {
         items: &mut Vec<AttentionItem>,
     ) -> AppResult<()> {
         for permission in self.permission_state.get_pending_info_strict().await? {
-            let (project_id, target) = self
+            let resolved = self
+                .notification_context
                 .resolve_permission_target(
                     permission.task_id.as_deref(),
                     permission.context_id.as_deref(),
                 )
                 .await?;
-            if !is_in_scope(project_id.as_deref(), project_filter) {
+            if !is_in_scope(resolved.project_id.as_deref(), project_filter) {
                 continue;
             }
             items.push(AttentionItem {
@@ -153,9 +156,9 @@ impl AttentionService {
                 category: NotificationCategory::PermissionRequest,
                 title: format!("Permission needed: {}", permission.tool_name),
                 detail: permission.context,
-                project_id,
+                project_id: resolved.project_id,
                 created_at: Some(permission.created_at),
-                target,
+                target: resolved.target,
             });
         }
         Ok(())
@@ -167,9 +170,14 @@ impl AttentionService {
         items: &mut Vec<AttentionItem>,
     ) -> AppResult<()> {
         for question in self.question_state.get_pending_info_strict().await? {
-            let conversation_id = ChatConversationId::from_string(question.session_id.clone());
-            let (project_id, target) = self.resolve_conversation_target(&conversation_id).await?;
-            if !is_in_scope(project_id.as_deref(), project_filter) {
+            let conversation_id = crate::domain::entities::ChatConversationId::from_string(
+                question.session_id.clone(),
+            );
+            let resolved = self
+                .notification_context
+                .resolve_conversation_target(&conversation_id)
+                .await?;
+            if !is_in_scope(resolved.project_id.as_deref(), project_filter) {
                 continue;
             }
             items.push(AttentionItem {
@@ -179,9 +187,9 @@ impl AttentionService {
                     .header
                     .unwrap_or_else(|| "Agent has a question".to_string()),
                 detail: Some(question.question),
-                project_id,
+                project_id: resolved.project_id,
                 created_at: Some(question.created_at),
-                target,
+                target: resolved.target,
             });
         }
         Ok(())
@@ -237,8 +245,14 @@ impl AttentionService {
                 .await?
                 .is_some_and(|approval| approval.artifact_id == *plan_artifact_id);
             if current_artifact_approved
-                || self.session_is_automation_owned(&session).await?
-                || self.session_has_implementation_task(&session).await?
+                || self
+                    .notification_context
+                    .session_is_automation_owned(&session)
+                    .await?
+                || self
+                    .notification_context
+                    .session_has_implementation_task(&session)
+                    .await?
             {
                 continue;
             }
@@ -298,100 +312,6 @@ impl AttentionService {
             });
         }
         Ok(())
-    }
-
-    async fn resolve_permission_target(
-        &self,
-        task_id: Option<&str>,
-        context_id: Option<&str>,
-    ) -> AppResult<(Option<String>, NotificationTarget)> {
-        if let Some(task_id) = task_id {
-            if let Some(task) = self
-                .task_repo
-                .get_by_id(&TaskId::from_string(task_id.to_string()))
-                .await?
-            {
-                let project_id = task.project_id.to_string();
-                return Ok((
-                    Some(project_id.clone()),
-                    NotificationTarget {
-                        kind: NotificationTargetKind::Task,
-                        project_id: Some(project_id),
-                        task_id: Some(task.id.to_string()),
-                        conversation_id: None,
-                        setup_conversation_id: None,
-                        automation_id: None,
-                        run_id: None,
-                    },
-                ));
-            }
-        }
-        let Some(context_id) = context_id else {
-            return Ok((None, NotificationTarget::none()));
-        };
-        self.resolve_conversation_target(&ChatConversationId::from_string(context_id.to_string()))
-            .await
-    }
-
-    async fn resolve_conversation_target(
-        &self,
-        conversation_id: &ChatConversationId,
-    ) -> AppResult<(Option<String>, NotificationTarget)> {
-        let conversation = self
-            .chat_conversation_repo
-            .get_by_id(conversation_id)
-            .await?;
-        let Some(conversation) = conversation else {
-            return Ok((None, NotificationTarget::none()));
-        };
-        let project_id = self.project_id_for_conversation(&conversation).await?;
-        Ok((
-            project_id.clone(),
-            conversation_target(Some(&conversation), project_id),
-        ))
-    }
-
-    async fn project_id_for_conversation(
-        &self,
-        conversation: &ChatConversation,
-    ) -> AppResult<Option<String>> {
-        match conversation.context_type {
-            ChatContextType::Task
-            | ChatContextType::TaskExecution
-            | ChatContextType::Review
-            | ChatContextType::Merge => Ok(self
-                .task_repo
-                .get_by_id(&TaskId::from_string(conversation.context_id.clone()))
-                .await?
-                .map(|task| task.project_id.to_string())),
-            ChatContextType::Ideation => Ok(self
-                .ideation_session_repo
-                .get_by_id(&crate::domain::entities::IdeationSessionId::from_string(
-                    conversation.context_id.clone(),
-                ))
-                .await?
-                .map(|session| session.project_id.to_string())),
-            ChatContextType::Project => Ok(Some(conversation.context_id.clone())),
-            ChatContextType::Delegation => Ok(None),
-        }
-    }
-
-    async fn session_is_automation_owned(&self, session: &IdeationSession) -> AppResult<bool> {
-        Ok(self
-            .chat_conversation_repo
-            .get_by_context(ChatContextType::Ideation, session.id.as_str())
-            .await?
-            .into_iter()
-            .any(|conversation| conversation.automation_run_id.is_some()))
-    }
-
-    async fn session_has_implementation_task(&self, session: &IdeationSession) -> AppResult<bool> {
-        Ok(self
-            .task_repo
-            .get_by_ideation_session(&session.id)
-            .await?
-            .into_iter()
-            .any(|task| task.archived_at.is_none()))
     }
 }
 

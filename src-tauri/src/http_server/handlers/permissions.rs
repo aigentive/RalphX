@@ -7,14 +7,17 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::*;
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::permission_state::PendingPermissionInfo;
-use crate::application::PermissionDecision;
+use crate::application::{NotificationContextResolver, PermissionDecision};
 
 pub async fn request_permission(
     State(state): State<HttpServerState>,
     Json(input): Json<PermissionRequestInput>,
 ) -> Json<PermissionRequestResponse> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = input
+        .request_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let info = PendingPermissionInfo {
         request_id: request_id.clone(),
@@ -29,7 +32,30 @@ pub async fn request_permission(
     };
 
     // Store pending request with metadata
-    state.app_state.permission_state.register(info).await;
+    state
+        .app_state
+        .permission_state
+        .register(info.clone())
+        .await;
+
+    let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
+    match notification_context
+        .resolve_permission_target(info.task_id.as_deref(), info.context_id.as_deref())
+        .await
+    {
+        Ok(resolved) => {
+            state
+                .app_state
+                .notification_service()
+                .record(InteractiveNotificationProducer::permission_request(
+                    &info, resolved,
+                ))
+                .await;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, request_id = %request_id, "Failed to resolve permission notification context");
+        }
+    }
 
     crate::http_server::emit_http_event(
         &state,

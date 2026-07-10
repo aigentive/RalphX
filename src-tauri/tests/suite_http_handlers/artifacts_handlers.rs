@@ -14,10 +14,11 @@ use axum::Json;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    Artifact, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, IdeationSession,
-    IdeationSessionBuilder, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, Project,
-    ProjectId, SessionOrigin, SessionPurpose, VerificationConfirmationStatus,
-    VerificationRunSnapshot, VerificationStatus,
+    Artifact, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, AutomationRunId,
+    ChatConversation, IdeationSession, IdeationSessionBuilder, IdeationSessionFlow,
+    IdeationSessionId, IdeationSessionStatus, NotificationCategory, Project, ProjectId,
+    SessionOrigin, SessionPurpose, Task, VerificationConfirmationStatus, VerificationRunSnapshot,
+    VerificationStatus,
 };
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
@@ -153,6 +154,103 @@ fn make_active_session() -> IdeationSession {
         analysis: Default::default(),
         last_effective_model: None,
     }
+}
+
+async fn create_planning_session(state: &HttpServerState) -> IdeationSession {
+    let mut session = make_active_session();
+    session.session_flow = IdeationSessionFlow::Planning;
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap()
+}
+
+async fn plan_notifications(
+    state: &HttpServerState,
+) -> Vec<ralphx_lib::domain::entities::Notification> {
+    state
+        .app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications
+        .into_iter()
+        .filter(|notification| notification.category == NotificationCategory::PlanApproval)
+        .collect()
+}
+
+#[tokio::test]
+async fn create_plan_artifact_records_each_non_automation_planning_artifact() {
+    let state = setup_test_state().await;
+    let session = create_planning_session(&state).await;
+    let conversation = ChatConversation::new_ideation(session.id.clone());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+
+    let first =
+        create_plan_artifact_quiesced(&state, &session.id, "Draft one", "first draft").await;
+    let second =
+        create_plan_artifact_quiesced(&state, &session.id, "Draft two", "second draft").await;
+
+    let rows = plan_notifications(&state).await;
+    assert_eq!(rows.len(), 2);
+    let first_dedupe_key = format!("plan:{}:{}", session.id, first.id);
+    assert!(rows
+        .iter()
+        .any(|row| { row.dedupe_key.as_deref() == Some(first_dedupe_key.as_str()) }));
+    let second_dedupe_key = format!("plan:{}:{}", session.id, second.id);
+    assert!(rows
+        .iter()
+        .any(|row| { row.dedupe_key.as_deref() == Some(second_dedupe_key.as_str()) }));
+    let conversation_id = conversation.id.as_str();
+    assert!(rows
+        .iter()
+        .all(|row| row.target.conversation_id.as_deref() == Some(conversation_id.as_str())));
+}
+
+#[tokio::test]
+async fn create_plan_artifact_skips_automation_owned_and_implementation_sessions() {
+    let state = setup_test_state().await;
+
+    let automation_session = create_planning_session(&state).await;
+    let mut automation_conversation = ChatConversation::new_ideation(automation_session.id.clone());
+    automation_conversation.automation_run_id = Some(AutomationRunId::new());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(automation_conversation)
+        .await
+        .unwrap();
+    create_plan_artifact_quiesced(&state, &automation_session.id, "Automation plan", "draft").await;
+
+    let implementation_session = create_planning_session(&state).await;
+    let mut implementation_task = Task::new(
+        implementation_session.project_id.clone(),
+        "Implementation task".to_string(),
+    );
+    implementation_task.ideation_session_id = Some(implementation_session.id.clone());
+    state
+        .app_state
+        .task_repo
+        .create(implementation_task)
+        .await
+        .unwrap();
+    create_plan_artifact_quiesced(
+        &state,
+        &implementation_session.id,
+        "Implementation-linked plan",
+        "draft",
+    )
+    .await;
+
+    assert!(plan_notifications(&state).await.is_empty());
 }
 
 /// Create a parent session and its plan artifact.
@@ -3304,7 +3402,10 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
     assert_eq!(approved.id, created.id);
     assert_eq!(approved.version, created.version);
     assert_eq!(approved.plan_approval_status.as_deref(), Some("approved"));
-    assert_eq!(approved.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(
+        approved.plan_approved_artifact_id.as_deref(),
+        Some(created.id.as_str())
+    );
     assert_eq!(approved.plan_approved_version, Some(created.version));
     assert!(
         approved.plan_approved_at.is_some(),
@@ -3317,7 +3418,10 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
         .0
         .expect("planning session should have a plan");
     assert_eq!(current.plan_approval_status.as_deref(), Some("approved"));
-    assert_eq!(current.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(
+        current.plan_approved_artifact_id.as_deref(),
+        Some(created.id.as_str())
+    );
     assert_eq!(current.plan_approved_version, Some(created.version));
 }
 
@@ -3369,8 +3473,7 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
             score: 84,
             recommended_action: "create_proposals".to_string(),
             confidence: 0.91,
-            reason_summary: "Multiple dependent work items need tracked checkpoints."
-                .to_string(),
+            reason_summary: "Multiple dependent work items need tracked checkpoints.".to_string(),
             signals: Some(serde_json::json!({
                 "dependent_work_items": 4,
                 "cross_layer_scope": true
@@ -3393,14 +3496,12 @@ async fn test_submit_plan_complexity_assessment_persists_for_current_approved_pl
         "ralphx-utility-plan-complexity"
     );
 
-    let fetched = get_plan_complexity_assessment(
-        State(state.clone()),
-        Path(session_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_plan_complexity_assessment should succeed")
-    .0
-    .expect("assessment should be persisted for the current plan");
+    let fetched =
+        get_plan_complexity_assessment(State(state.clone()), Path(session_id.as_str().to_string()))
+            .await
+            .expect("get_plan_complexity_assessment should succeed")
+            .0
+            .expect("assessment should be persisted for the current plan");
     assert_eq!(fetched.id, submitted.assessment.id);
     assert_eq!(
         fetched.signals["dependent_work_items"],
@@ -3558,10 +3659,7 @@ async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
     )
     .await;
 
-    assert!(
-        result.is_err(),
-        "approving a stale artifact id should fail"
-    );
+    assert!(result.is_err(), "approving a stale artifact id should fail");
     let err = result.unwrap_err();
     assert_eq!(err.status, StatusCode::CONFLICT);
     let msg = err.message.expect("409 should include message body");
