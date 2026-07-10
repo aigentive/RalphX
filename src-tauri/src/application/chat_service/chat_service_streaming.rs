@@ -3624,14 +3624,23 @@ async fn process_codex_stream_background<R: Runtime>(
         }
     }
 
-    let stderr_content = {
+    let (stderr_content, status) = if codex_turn_completed {
+        detach_codex_completed_process_cleanup(child, stderr_task);
+        (String::new(), None)
+    } else {
         let raw = stderr_task.await.unwrap_or_default();
-        crate::utils::secret_redactor::redact(&raw)
+        let stderr_content = crate::utils::secret_redactor::redact(&raw);
+        let status = child.wait().await.map_err(|error| StreamError::AgentExit {
+            exit_code: None,
+            stderr: error.to_string(),
+        })?;
+        (stderr_content, Some(status))
     };
-    let status = child.wait().await.map_err(|error| StreamError::AgentExit {
-        exit_code: None,
-        stderr: error.to_string(),
-    })?;
+    let status_success = status
+        .as_ref()
+        .map(|status| status.success())
+        .unwrap_or(true);
+    let status_code = status.as_ref().and_then(|status| status.code());
 
     let outcome = StreamOutcome {
         response_text,
@@ -3659,7 +3668,7 @@ async fn process_codex_stream_background<R: Runtime>(
         &conversation_id_str,
         &assistant_message_id,
         &outcome.content_blocks,
-        if status.success() || codex_turn_completed || outcome.has_meaningful_output() {
+        if status_success || codex_turn_completed || outcome.has_meaningful_output() {
             ChatTimelineItemStatus::Finalized
         } else {
             ChatTimelineItemStatus::Error
@@ -3673,12 +3682,12 @@ async fn process_codex_stream_background<R: Runtime>(
     if let Some(stream_error) = super::chat_service_errors::classify_codex_stream_failure(
         &runtime_errors,
         &local_tool_errors,
-        status.code(),
+        status_code,
     ) {
         return Err(stream_error);
     }
 
-    if !status.success()
+    if !status_success
         && !codex_turn_completed
         && !outcome.has_meaningful_output()
         && !completion_signal_tracker.was_called()
@@ -3690,7 +3699,7 @@ async fn process_codex_stream_background<R: Runtime>(
             return Err(provider_error);
         }
         return Err(StreamError::AgentExit {
-            exit_code: status.code(),
+            exit_code: status_code,
             stderr: stderr_trimmed,
         });
     }
@@ -3713,6 +3722,23 @@ async fn process_codex_stream_background<R: Runtime>(
     }
 
     Ok(outcome)
+}
+
+fn detach_codex_completed_process_cleanup(
+    mut child: tokio::process::Child,
+    stderr_task: tokio::task::JoinHandle<String>,
+) {
+    std::mem::drop(tokio::spawn(async move {
+        let _ = child.start_kill();
+        if tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        }
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stderr_task).await;
+    }));
 }
 
 /// Determines whether the stream should be killed on timeout.
