@@ -101,7 +101,20 @@ async fn stored_task(state: &AppState, task_id: &TaskId) -> Task {
 
 fn fail_transition_for(fixture: &mut ControlFixture, task_id: TaskId) {
     let inner = Arc::clone(&fixture.state.task_repo);
-    fixture.state.task_repo = Arc::new(FailingTransitionTaskRepository { inner, task_id });
+    fixture.state.task_repo = Arc::new(FailingTaskRepository {
+        inner,
+        transition_task_id: Some(task_id),
+        fail_plan_task_query: false,
+    });
+}
+
+fn fail_plan_task_query(fixture: &mut ControlFixture) {
+    let inner = Arc::clone(&fixture.state.task_repo);
+    fixture.state.task_repo = Arc::new(FailingTaskRepository {
+        inner,
+        transition_task_id: None,
+        fail_plan_task_query: true,
+    });
 }
 
 #[tokio::test]
@@ -269,13 +282,118 @@ async fn stop_plan_propagates_transition_failure_without_stranding_task() {
     );
 }
 
-struct FailingTransitionTaskRepository {
+#[tokio::test]
+async fn pause_plan_preserves_halt_mode_when_plan_task_query_fails() {
+    let mut fixture = setup_control_fixture().await;
+    let task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Query failure pause task",
+    )
+    .await;
+    fail_plan_task_query(&mut fixture);
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service.pause_plan(scope(&fixture)).await;
+
+    assert!(result.is_err());
+
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+
+    let stored = stored_task(&fixture.state, &task.id).await;
+    assert_eq!(stored.internal_status, InternalStatus::Executing);
+    assert!(
+        PauseReason::from_task_metadata(stored.metadata.as_deref()).is_none(),
+        "failed plan task query must not leave pause metadata behind"
+    );
+}
+
+#[tokio::test]
+async fn stop_plan_preserves_halt_mode_when_plan_task_query_fails() {
+    let mut fixture = setup_control_fixture().await;
+    let task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Query failure stop task",
+    )
+    .await;
+    fail_plan_task_query(&mut fixture);
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service.stop_plan(scope(&fixture)).await;
+
+    assert!(result.is_err());
+
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+
+    let stored = stored_task(&fixture.state, &task.id).await;
+    assert_eq!(stored.internal_status, InternalStatus::Executing);
+    assert!(
+        stored.metadata.is_none(),
+        "failed plan task query must not write stop metadata"
+    );
+}
+
+#[tokio::test]
+async fn resume_plan_preserves_halt_mode_when_plan_task_query_fails() {
+    let mut fixture = setup_control_fixture().await;
+    fixture
+        .state
+        .execution_plan_repo
+        .set_halt_mode(&fixture.current_plan_id, ExecutionPlanHaltMode::Paused)
+        .await
+        .unwrap();
+    let task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Paused,
+        "Query failure resume task",
+    )
+    .await;
+    fail_plan_task_query(&mut fixture);
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service.resume_plan(scope(&fixture)).await;
+
+    assert!(result.is_err());
+
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Paused
+    );
+
+    let stored = stored_task(&fixture.state, &task.id).await;
+    assert_eq!(stored.internal_status, InternalStatus::Paused);
+}
+
+struct FailingTaskRepository {
     inner: Arc<dyn TaskRepository>,
-    task_id: TaskId,
+    transition_task_id: Option<TaskId>,
+    fail_plan_task_query: bool,
 }
 
 #[async_trait]
-impl TaskRepository for FailingTransitionTaskRepository {
+impl TaskRepository for FailingTaskRepository {
     async fn create(&self, task: Task) -> AppResult<Task> {
         self.inner.create(task).await
     }
@@ -297,7 +415,7 @@ impl TaskRepository for FailingTransitionTaskRepository {
         task: &Task,
         expected_status: InternalStatus,
     ) -> AppResult<bool> {
-        if task.id == self.task_id {
+        if self.transition_task_id.as_ref() == Some(&task.id) {
             return Err(AppError::Validation(
                 "forced transition failure".to_string(),
             ));
@@ -370,6 +488,11 @@ impl TaskRepository for FailingTransitionTaskRepository {
         &self,
         session_id: &IdeationSessionId,
     ) -> AppResult<Vec<Task>> {
+        if self.fail_plan_task_query {
+            return Err(AppError::Validation(
+                "forced plan task query failure".to_string(),
+            ));
+        }
         self.inner.get_by_ideation_session(session_id).await
     }
 

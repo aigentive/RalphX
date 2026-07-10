@@ -56,6 +56,7 @@ impl<'a> ExecutionPlanControlService<'a> {
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
         let previous_halt_mode = plan.halt_mode;
+        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Paused)
@@ -63,7 +64,7 @@ impl<'a> ExecutionPlanControlService<'a> {
 
         let transition_service = self.build_transition_service();
         let mut paused_count = 0usize;
-        for task in self.current_plan_tasks(&scope.project_id, &plan).await? {
+        for task in tasks {
             if !AGENT_ACTIVE_STATUSES.contains(&task.internal_status) {
                 continue;
             }
@@ -92,6 +93,7 @@ impl<'a> ExecutionPlanControlService<'a> {
         scope: ExecutionPlanControlScope,
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
+        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Running)
@@ -114,7 +116,7 @@ impl<'a> ExecutionPlanControlService<'a> {
             .with_task_scheduler(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
         let mut resumed_count = 0usize;
 
-        for task in self.current_plan_tasks(&scope.project_id, &plan).await? {
+        for task in tasks {
             if task.internal_status != InternalStatus::Paused {
                 continue;
             }
@@ -203,6 +205,7 @@ impl<'a> ExecutionPlanControlService<'a> {
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
         let previous_halt_mode = plan.halt_mode;
+        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Stopped)
@@ -210,7 +213,6 @@ impl<'a> ExecutionPlanControlService<'a> {
 
         let transition_service = self.build_transition_service();
         let mut stopped_count = 0usize;
-        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
         for task in &tasks {
             if !AGENT_ACTIVE_STATUSES.contains(&task.internal_status) {
                 continue;
