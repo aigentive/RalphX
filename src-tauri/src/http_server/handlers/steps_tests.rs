@@ -1,7 +1,7 @@
 use super::execution_complete_http;
 use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
-use crate::domain::entities::{ProjectId, Task, ValidationCacheMetadata};
+use crate::domain::entities::{Project, Task, ValidationCacheMetadata};
 use crate::http_server::types::{ExecutionCompleteRequest, HttpServerState, TestResultInput};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 use axum::{
@@ -98,6 +98,13 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
     }
 }
 
+async fn task_for_repo(app_state: &AppState, repo_path: &std::path::Path, title: &str) -> Task {
+    let mut project = Project::new(title.to_string(), repo_path.to_string_lossy().to_string());
+    project.base_branch = Some("main".to_string());
+    let project = app_state.project_repo.create(project).await.unwrap();
+    Task::new(project.id.clone(), title.to_string())
+}
+
 #[tokio::test]
 async fn execution_complete_rejects_dirty_worktree() {
     let tmp_dir = create_temp_git_repo();
@@ -111,7 +118,7 @@ async fn execution_complete_rejects_dirty_worktree() {
     let app_state = Arc::new(AppState::new_test());
     let state = test_http_state(Arc::clone(&app_state));
 
-    let mut task = Task::new(ProjectId::new(), "Dirty completion task".to_string());
+    let mut task = task_for_repo(&app_state, tmp_dir.path(), "Dirty completion task").await;
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
@@ -148,7 +155,7 @@ async fn execution_complete_accepts_clean_committed_worktree() {
     let app_state = Arc::new(AppState::new_test());
     let state = test_http_state(Arc::clone(&app_state));
 
-    let mut task = Task::new(ProjectId::new(), "Clean completion task".to_string());
+    let mut task = task_for_repo(&app_state, tmp_dir.path(), "Clean completion task").await;
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
     task.task_branch_base_ref = Some("main".to_string());
     task.task_branch_base_sha = Some(base_sha);
@@ -177,7 +184,7 @@ async fn execution_complete_rejects_empty_captured_base_diff() {
     let app_state = Arc::new(AppState::new_test());
     let state = test_http_state(Arc::clone(&app_state));
 
-    let mut task = Task::new(ProjectId::new(), "Empty captured diff task".to_string());
+    let mut task = task_for_repo(&app_state, tmp_dir.path(), "Empty captured diff task").await;
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
     task.task_branch_base_ref = Some("main".to_string());
     task.task_branch_base_sha = Some(base_sha);
@@ -216,7 +223,7 @@ async fn execution_complete_accepts_non_empty_captured_base_diff() {
     let app_state = Arc::new(AppState::new_test());
     let state = test_http_state(Arc::clone(&app_state));
 
-    let mut task = Task::new(ProjectId::new(), "Non-empty captured diff task".to_string());
+    let mut task = task_for_repo(&app_state, tmp_dir.path(), "Non-empty captured diff task").await;
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
     task.task_branch_base_ref = Some("main".to_string());
     task.task_branch_base_sha = Some(base_sha);
@@ -248,7 +255,7 @@ async fn execution_complete_writes_validation_cache_with_targeted_metadata_updat
     let app_state = Arc::new(AppState::new_test());
     let state = test_http_state(Arc::clone(&app_state));
 
-    let mut task = Task::new(ProjectId::new(), "Validation cache task".to_string());
+    let mut task = task_for_repo(&app_state, tmp_dir.path(), "Validation cache task").await;
     task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
     task.task_branch_base_ref = Some("main".to_string());
     task.task_branch_base_sha = Some(base_sha);
