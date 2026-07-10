@@ -24,6 +24,7 @@ pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review;
+pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_setup;
 pub mod app_paths;
 pub mod app_state;
@@ -280,6 +281,10 @@ mod agent_terminal_tests;
 mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_publish_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_review_publish_handoff_tests;
 #[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]

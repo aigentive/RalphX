@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
@@ -10,7 +11,11 @@ use tauri::{AppHandle, Emitter};
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
 };
-use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload;
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload_with_review_target;
+use crate::application::agent_workspace_review::resolve_review_target;
+use crate::application::agent_workspace_review_publish_handoff::{
+    resume_pr_fix_publish_after_passed_workspace_review, PrFixReviewPublishResumeOutcome,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
 use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
@@ -67,12 +72,22 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub app_handle: Option<AppHandle>,
+    pub pr_fix_review_publish_resumer: Option<Arc<dyn AgentWorkspacePrFixReviewPublishResumer>>,
+}
+
+#[async_trait]
+pub(crate) trait AgentWorkspacePrFixReviewPublishResumer: Send + Sync {
+    async fn publish_pr_fix_after_workspace_review(
+        &self,
+        conversation_id: ChatConversationId,
+    ) -> Result<Option<bool>, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentWorkspacePrSupervisionRecoveryOutcome {
     Skipped(&'static str),
     Recovered { pr_number: i64, head_sha: String },
+    ReviewPublished { pr_number: i64 },
     Terminal { pr_number: i64, pr_status: String },
 }
 
@@ -162,21 +177,6 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
     }
 
-    if workspace.mode == AgentConversationWorkspaceMode::Edit
-        && workspace.publication_push_status.as_deref() == Some("needs_agent")
-    {
-        workspace = recover_stale_publish_repair_for_workspace_and_reload(
-            Arc::clone(&deps.workspace_repo),
-            Arc::clone(&deps.agent_run_repo),
-            workspace,
-        )
-        .await?;
-    }
-
-    if let Some(reason) = blocked_pr_supervision_recovery_skip_reason(&workspace) {
-        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
-    }
-
     let Some(project) = deps.project_repo.get_by_id(&workspace.project_id).await? else {
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "project_missing",
@@ -191,6 +191,35 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "github_pr_disabled",
         ));
+    }
+
+    if workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.publication_push_status.as_deref() == Some("needs_agent")
+    {
+        let current_review_target = match resolve_review_target(&workspace, &project).await {
+            Ok(target) => target,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Could not resolve current Workspace Review target for PR supervision stale repair recovery"
+                );
+                None
+            }
+        };
+        let (recovered_workspace, _was_recovered) =
+            recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
+                Arc::clone(&deps.workspace_repo),
+                Arc::clone(&deps.agent_run_repo),
+                workspace,
+                current_review_target.as_ref(),
+            )
+            .await?;
+        workspace = recovered_workspace;
+    }
+
+    if let Some(reason) = blocked_pr_supervision_recovery_skip_reason(&workspace) {
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(reason));
     }
 
     if deps
@@ -263,6 +292,13 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
             "active_agent_run",
         ));
+    }
+
+    if let Some(outcome) =
+        resume_passed_pr_fix_review_handoff_if_ready(&deps, &conversation_id, &workspace, &project)
+            .await?
+    {
+        return Ok(outcome);
     }
 
     let target =
@@ -352,6 +388,64 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         pr_number: target.pr_number,
         head_sha: local_head_sha,
     })
+}
+
+async fn resume_passed_pr_fix_review_handoff_if_ready(
+    deps: &AgentWorkspacePrSupervisionRecoveryDeps,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+) -> AppResult<Option<AgentWorkspacePrSupervisionRecoveryOutcome>> {
+    let Some(resumer) = deps.pr_fix_review_publish_resumer.as_ref().map(Arc::clone) else {
+        return Ok(None);
+    };
+    let Some(monitor) = deps
+        .workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let current_target = resolve_review_target(workspace, project).await?;
+    let outcome = resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&deps.workspace_repo),
+        conversation_id,
+        workspace,
+        &monitor,
+        current_target.as_ref(),
+        move |conversation_id| {
+            let resumer = Arc::clone(&resumer);
+            async move {
+                resumer
+                    .publish_pr_fix_after_workspace_review(conversation_id)
+                    .await
+            }
+        },
+    )
+    .await?;
+    match outcome {
+        PrFixReviewPublishResumeOutcome::Skipped => Ok(None),
+        PrFixReviewPublishResumeOutcome::Published => {
+            let Some(pr_number) = workspace.publication_pr_number else {
+                return Ok(None);
+            };
+            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            Ok(Some(
+                AgentWorkspacePrSupervisionRecoveryOutcome::ReviewPublished { pr_number },
+            ))
+        }
+        PrFixReviewPublishResumeOutcome::Failed { error } => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace PR supervision recovery failed to resume passed Workspace Review publish handoff"
+            );
+            emit_workspace_changed(deps.app_handle.as_ref(), conversation_id);
+            Ok(Some(AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(
+                "pr_fix_review_publish_failed",
+            )))
+        }
+    }
 }
 
 async fn resolve_pr_supervision_recovery_target(

@@ -71,7 +71,8 @@ use crate::application::agent_workspace_pr_description::{
 };
 use crate::application::agent_workspace_pr_supervision_recovery::{
     pr_supervision_recovery_schedule_skip_reason, schedule_agent_workspace_pr_supervision_recovery,
-    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryTrigger,
+    AgentWorkspacePrFixReviewPublishResumer, AgentWorkspacePrSupervisionRecoveryDeps,
+    AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
@@ -911,6 +912,31 @@ fn emit_workspace_changed_when_done(
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct AgentWorkspacePrFixReviewPublishCommandResumer {
+    pub app_state: AppState,
+    pub execution_state: Arc<ExecutionState>,
+    pub team_service: Option<Arc<crate::application::TeamService>>,
+}
+
+#[async_trait::async_trait]
+impl AgentWorkspacePrFixReviewPublishResumer for AgentWorkspacePrFixReviewPublishCommandResumer {
+    async fn publish_pr_fix_after_workspace_review(
+        &self,
+        conversation_id: ChatConversationId,
+    ) -> Result<Option<bool>, String> {
+        publish_agent_conversation_workspace_for_app_state(
+            &self.app_state,
+            &self.execution_state,
+            self.team_service.clone(),
+            conversation_id,
+            false,
+        )
+        .await
+        .map(|result| result.workspace.pr_auto_merge_current)
+    }
+}
+
 pub(crate) async fn agent_workspace_response_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
@@ -998,6 +1024,7 @@ fn schedule_pr_supervision_recovery_for_workspace(
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
             app_handle: state.app_handle.clone(),
+            pr_fix_review_publish_resumer: None,
         },
         workspace.conversation_id.clone(),
         trigger,

@@ -27,6 +27,7 @@ use crate::application::agent_workspace_review::{
     start_agent_workspace_review_blocking_fixer, AgentWorkspaceReviewGoalContext,
     AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
+use crate::application::agent_workspace_review_publish_handoff::resume_pr_fix_publish_after_passed_workspace_review;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
@@ -3591,121 +3592,41 @@ async fn resume_pr_fix_publish_after_workspace_review(
     state: &HttpServerState,
     conversation_id: &ChatConversationId,
     workspace: &AgentConversationWorkspace,
-    monitor: &AgentWorkspaceReviewMonitor,
+    _monitor: &AgentWorkspaceReviewMonitor,
 ) -> Result<(), JsonError> {
-    if !pr_fix_publish_can_resume_after_workspace_review(workspace, monitor) {
-        return Ok(());
-    }
-
-    let publishing_message = "Workspace Review passed; publishing PR fix updates.";
-    state
-        .app_state
-        .agent_conversation_workspace_repo
-        .update_pr_auto_merge_state(
-            conversation_id,
-            workspace.pr_auto_merge_current,
-            Some("publishing"),
-            Some(publishing_message),
-        )
+    let review_context = load_agent_workspace_review_context(state.app_state.as_ref(), workspace)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    state
-        .app_state
-        .agent_conversation_workspace_repo
-        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
-            "pr_autofix_workspace_review_passed",
-            "publishing",
-            publishing_message,
-            Some("workspace_review_passed".to_string()),
-        ))
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-
-    match publish_agent_conversation_workspace_for_app_state(
-        state.app_state.as_ref(),
-        &state.execution_state,
-        Some(state.team_service.clone()),
-        conversation_id.clone(),
-        false,
+    let app_state = Arc::clone(&state.app_state);
+    let execution_state = Arc::clone(&state.execution_state);
+    let team_service = Some(Arc::clone(&state.team_service));
+    resume_pr_fix_publish_after_passed_workspace_review(
+        Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+        conversation_id,
+        workspace,
+        &review_context.monitor,
+        review_context.target.as_ref(),
+        move |conversation_id| {
+            let app_state = Arc::clone(&app_state);
+            let execution_state = Arc::clone(&execution_state);
+            let team_service = team_service.clone();
+            async move {
+                publish_agent_conversation_workspace_for_app_state(
+                    app_state.as_ref(),
+                    &execution_state,
+                    team_service,
+                    conversation_id,
+                    false,
+                )
+                .await
+                .map(|result| result.workspace.pr_auto_merge_current)
+            }
+        },
     )
     .await
-    {
-        Ok(result) => {
-            state
-                .app_state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    result.workspace.pr_auto_merge_current,
-                    Some("monitoring"),
-                    Some("Workspace Review passed and PR fix published; RalphX is monitoring the pull request."),
-                )
-                .await
-                .map_err(|error| {
-                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                })?;
-        }
-        Err(error) => {
-            state
-                .app_state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    conversation_id,
-                    workspace.pr_auto_merge_current,
-                    Some("blocked"),
-                    Some(&format!(
-                        "Workspace Review passed, but PR fix publish failed: {error}"
-                    )),
-                )
-                .await
-                .map_err(|repo_error| {
-                    json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        repo_error.to_string(),
-                        None,
-                    )
-                })?;
-            state
-                .app_state
-                .agent_conversation_workspace_repo
-                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                    conversation_id.clone(),
-                    "pr_autofix_publish_failed",
-                    "failed",
-                    error,
-                    Some("pr_autofix_publish_failed".to_string()),
-                ))
-                .await
-                .map_err(|repo_error| {
-                    json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        repo_error.to_string(),
-                        None,
-                    )
-                })?;
-        }
-    }
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 
     Ok(())
-}
-
-fn pr_fix_publish_can_resume_after_workspace_review(
-    workspace: &AgentConversationWorkspace,
-    monitor: &AgentWorkspaceReviewMonitor,
-) -> bool {
-    monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
-        && workspace.auto_publish_enabled
-        && workspace.publication_pr_number.is_some()
-        && !workspace.has_terminal_publication_pr_status()
-        && (workspace.pr_autofix_enabled
-            || workspace.pr_auto_merge_desired
-            || workspace.pr_auto_merge_current.is_some())
-        && match workspace.pr_supervision_status.as_deref() {
-            Some("reviewing") => true,
-            Some("blocked") => pr_supervision_block_is_workspace_review_gate(workspace),
-            _ => false,
-        }
 }
 
 /// R2: resume the INITIAL automation/armed publish once the workspace review passes.
@@ -3811,21 +3732,6 @@ fn workspace_review_block_detail(monitor: &AgentWorkspaceReviewMonitor) -> Optio
         (None, Some(summary)) => format!("Workspace review blocked: {summary}"),
         (None, None) => "Workspace review blocked".to_string(),
     })
-}
-
-fn pr_supervision_block_is_workspace_review_gate(workspace: &AgentConversationWorkspace) -> bool {
-    let Some(summary) = workspace.pr_supervision_summary.as_deref() else {
-        return false;
-    };
-    let summary = summary.trim();
-    let summary = summary
-        .strip_prefix("PR fix publish failed: ")
-        .unwrap_or(summary);
-    summary == "Workspace Review is required before publishing"
-        || summary == "Workspace Review is still running"
-        || summary == "Workspace Review failed"
-        || summary == "Workspace Review failed; retry before publishing"
-        || summary == "Workspace reviewer completed without writing a current Review"
 }
 
 async fn complete_pr_fix_for_terminal_pr(
@@ -5869,6 +5775,7 @@ mod tests {
         AgentWorkspaceReviewDiffSummary, AgentWorkspaceReviewHunkAnchor,
         AgentWorkspaceReviewPacket,
     };
+    use crate::application::agent_workspace_review_publish_handoff::pr_fix_publish_can_resume_after_workspace_review;
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
@@ -6550,6 +6457,35 @@ mod tests {
         )
     }
 
+    fn test_workspace_review_target() -> AgentWorkspaceReviewTarget {
+        AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            base_ref: "main".to_string(),
+            base_sha: Some("0".repeat(40)),
+            head_ref: "HEAD".to_string(),
+            head_sha: None,
+            diff_fingerprint: "workspace-diff-fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/pr-description-worktree"),
+            source_pull_request_number: None,
+            review_packet: Default::default(),
+        }
+    }
+
+    fn mark_monitor_current_passed(
+        monitor: &mut AgentWorkspaceReviewMonitor,
+        target: &AgentWorkspaceReviewTarget,
+    ) {
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+        monitor.reviewed_target_scope = Some(target.scope);
+        monitor.reviewed_head_sha = target.head_sha.clone();
+        monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
+        monitor.current_target_scope = Some(target.scope);
+        monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    }
+
     #[test]
     fn initial_auto_publish_resume_predicate_requires_armed_initial_flag_and_no_pr() {
         let conversation_id = ChatConversationId::new();
@@ -6609,17 +6545,24 @@ mod tests {
             Some("Workspace Review is required before publishing".to_string());
         let mut monitor =
             AgentWorkspaceReviewMonitor::new(conversation_id, workspace.project_id.clone());
-        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        let target = test_workspace_review_target();
+        mark_monitor_current_passed(&mut monitor, &target);
 
         assert!(pr_fix_publish_can_resume_after_workspace_review(
-            &workspace, &monitor
+            &workspace,
+            &monitor,
+            Some(&target),
+            &[]
         ));
 
         workspace.pr_supervision_summary =
             Some("Workspace reviewer completed without writing a current Review".to_string());
 
         assert!(pr_fix_publish_can_resume_after_workspace_review(
-            &workspace, &monitor
+            &workspace,
+            &monitor,
+            Some(&target),
+            &[]
         ));
 
         workspace.pr_supervision_summary = Some(
@@ -6628,13 +6571,19 @@ mod tests {
         );
 
         assert!(pr_fix_publish_can_resume_after_workspace_review(
-            &workspace, &monitor
+            &workspace,
+            &monitor,
+            Some(&target),
+            &[]
         ));
 
         workspace.pr_supervision_summary = Some("Required checks are still pending.".to_string());
 
         assert!(!pr_fix_publish_can_resume_after_workspace_review(
-            &workspace, &monitor
+            &workspace,
+            &monitor,
+            Some(&target),
+            &[]
         ));
     }
 
