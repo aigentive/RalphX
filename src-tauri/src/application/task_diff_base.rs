@@ -71,6 +71,27 @@ async fn resolve_live_task_base_ref(state: &AppState, task: &Task, project: &Pro
     project.base_branch_or_default().to_string()
 }
 
+pub(crate) async fn read_task_diff_stats_from_resolved_base(
+    state: &AppState,
+    task: &Task,
+    project: &Project,
+    context: &str,
+) -> AppResult<DiffStats> {
+    let repo_path = task_diff_repo_path(task, project, context)?;
+    let task_base = resolve_task_diff_base(state, task, project).await;
+    GitService::get_diff_stats(&repo_path, &task_base.effective_base_ref)
+        .await
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "failed to read task diff stats for task {} against base '{}' during {}: {}",
+                task.id.as_str(),
+                task_base.effective_base_ref,
+                context,
+                error
+            ))
+        })
+}
+
 pub(crate) fn diff_stats_has_changes(stats: &DiffStats) -> bool {
     stats.files_changed > 0
         || stats.insertions > 0
@@ -171,6 +192,22 @@ fn validate_task_worktree_path(worktree_path: &str, context: &str) -> AppResult<
             "task worktree path is not available during {}: {} ({error})",
             context,
             path.display()
+        ))
+    })
+}
+
+fn task_diff_repo_path(task: &Task, project: &Project, context: &str) -> AppResult<PathBuf> {
+    let repo_path = task
+        .worktree_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
+    let repo_path = validate_absolute_non_root_path(&repo_path, context)?;
+    std::fs::canonicalize(&repo_path).map_err(|error| {
+        AppError::Validation(format!(
+            "task diff repo path is not available during {}: {} ({error})",
+            context,
+            repo_path.display()
         ))
     })
 }

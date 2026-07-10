@@ -1,6 +1,7 @@
 use super::*;
 use crate::application::{
     merge_pipeline_visibility::ArchivedParentMergeVisibility,
+    task_diff_base::read_task_diff_stats_from_resolved_base,
     task_restart::prepare_terminal_task_for_ready_restart,
 };
 
@@ -288,9 +289,6 @@ pub async fn get_task_diff_http(
     scope: ProjectScope,
     Path(id): Path<String>,
 ) -> Result<Json<TaskDiffResponse>, StatusCode> {
-    use crate::application::GitService;
-    use std::path::PathBuf;
-
     let task_id = crate::domain::entities::TaskId::from_string(id);
 
     let task = state
@@ -331,23 +329,21 @@ pub async fn get_task_diff_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    let stats = GitService::get_diff_stats(&working_path, base_branch)
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to get diff stats for task {}: {}",
-                task_id.as_str(),
-                e
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let stats = read_task_diff_stats_from_resolved_base(
+        &state.app_state,
+        &task,
+        &project,
+        "external task diff stats",
+    )
+    .await
+    .map_err(|e| {
+        error!(
+            "Failed to get diff stats for task {}: {}",
+            task_id.as_str(),
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(TaskDiffResponse {
         task_id: task.id.to_string(),

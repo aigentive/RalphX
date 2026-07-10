@@ -178,6 +178,65 @@ fn scoped(ids: &[&str]) -> ProjectScope {
     ProjectScope(Some(vec))
 }
 
+fn run_task_diff_git(repo: &FsPath, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_task_diff_git_output(repo: &FsPath, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("git output is utf-8")
+        .trim()
+        .to_string()
+}
+
+fn setup_task_diff_repo_with_captured_base_and_advanced_main() -> (TempDir, String) {
+    let dir = TempDir::new().expect("create temp dir");
+    let repo = dir.path();
+
+    run_task_diff_git(repo, &["init", "-b", "main"]);
+    run_task_diff_git(repo, &["config", "user.email", "test@test.com"]);
+    run_task_diff_git(repo, &["config", "user.name", "Test"]);
+
+    fs::write(repo.join("README.md"), "# test repo\n").expect("write readme");
+    run_task_diff_git(repo, &["add", "."]);
+    run_task_diff_git(repo, &["commit", "-m", "initial commit"]);
+    let captured_base_sha = run_task_diff_git_output(repo, &["rev-parse", "HEAD"]);
+
+    run_task_diff_git(repo, &["checkout", "-b", "task/test"]);
+    fs::write(repo.join("task.txt"), "task work\n").expect("write task");
+    run_task_diff_git(repo, &["add", "."]);
+    run_task_diff_git(repo, &["commit", "-m", "feat: selected task work"]);
+
+    run_task_diff_git(repo, &["checkout", "main"]);
+    fs::write(repo.join("base.txt"), "base moved ahead\n").expect("write base");
+    run_task_diff_git(repo, &["add", "."]);
+    run_task_diff_git(repo, &["commit", "-m", "fix: unrelated base work"]);
+    run_task_diff_git(repo, &["checkout", "task/test"]);
+
+    (dir, captured_base_sha)
+}
+
 async fn setup_ideation_parent_workspace(
     state: &HttpServerState,
     project_id: &str,
@@ -2357,6 +2416,48 @@ async fn test_get_task_detail_not_found() {
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_get_task_diff_uses_captured_base_when_main_advances() {
+    let (repo, captured_base_sha) = setup_task_diff_repo_with_captured_base_and_advanced_main();
+    let state = setup_test_state().await;
+
+    let mut project = Project::new(
+        "External Diff Project".to_string(),
+        repo.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let mut task = Task::new(project.id.clone(), "External diff task".to_string());
+    task.task_branch = Some("task/test".to_string());
+    task.worktree_path = Some(repo.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(captured_base_sha);
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .expect("create task");
+
+    let response = get_task_diff_http(
+        State(state),
+        unrestricted_scope(),
+        Path(task.id.to_string()),
+    )
+    .await
+    .expect("external task diff should resolve from captured base")
+    .0;
+
+    assert_eq!(response.changed_files, vec!["task.txt"]);
+    assert_eq!(response.files_changed, 1);
 }
 
 // ============================================================================
