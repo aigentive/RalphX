@@ -183,6 +183,7 @@ pub enum LogicalEffort {
     #[serde(rename = "xhigh")]
     XHigh,
     Max,
+    Ultra,
 }
 
 impl fmt::Display for LogicalEffort {
@@ -193,6 +194,7 @@ impl fmt::Display for LogicalEffort {
             Self::High => write!(f, "high"),
             Self::XHigh => write!(f, "xhigh"),
             Self::Max => write!(f, "max"),
+            Self::Ultra => write!(f, "ultra"),
         }
     }
 }
@@ -207,8 +209,9 @@ impl FromStr for LogicalEffort {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             other => Err(format!(
-                "Invalid logical effort '{}'. Valid values: low, medium, high, xhigh, max",
+                "Invalid logical effort '{}'. Valid values: low, medium, high, xhigh, max, ultra",
                 other
             )),
         }
@@ -224,6 +227,7 @@ impl LogicalEffort {
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 }

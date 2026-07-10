@@ -10987,7 +10987,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn normalize_agent_runtime_uses_provider_defaults_for_unknown_model() {
+    async fn normalize_agent_runtime_keeps_codex_provider_supported_effort_for_unknown_model() {
         let state = AppState::new_test();
 
         let normalized = normalize_agent_runtime_selection(
@@ -10997,11 +10997,11 @@ mod tests {
             Some(LogicalEffort::Max),
         )
         .await
-        .expect("unknown model should use provider defaults");
+        .expect("unknown Codex model should use provider effort defaults");
 
         assert_eq!(
             normalized,
-            (Some("gpt-5.6".to_string()), Some(LogicalEffort::XHigh))
+            (Some("gpt-5.6".to_string()), Some(LogicalEffort::Max))
         );
     }
 

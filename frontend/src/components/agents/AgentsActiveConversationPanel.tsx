@@ -765,7 +765,8 @@ interface AgentsActiveConversationPanelProps {
   ) => void;
   onActiveProviderChange: (
     provider: AgentProvider,
-    providerSupportedEfforts?: readonly string[] | null
+    providerSupportedEfforts?: readonly string[] | null,
+    providerSupportedModelAliases?: readonly string[] | null
   ) => void;
   onAgentUserMessageSent: (event: {
     content: string;
@@ -2773,6 +2774,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               onActiveProviderChange(
                                 provider,
                                 supportedEffortsForProvider(
+                                  providerOptions,
+                                  provider,
+                                ),
+                                supportedModelAliasesForProvider(
                                   providerOptions,
                                   provider,
                                 ),

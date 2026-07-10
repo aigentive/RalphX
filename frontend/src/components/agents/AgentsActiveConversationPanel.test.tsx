@@ -1589,7 +1589,7 @@ describe("AgentsActiveConversationPanel", () => {
       "medium",
       "high",
       "xhigh",
-    ]);
+    ], null);
   });
 
   it("hides the composer runtime status for a single edit workspace runtime", async () => {

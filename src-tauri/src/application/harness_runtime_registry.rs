@@ -183,15 +183,19 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
             };
             let supports_fast_mode = capabilities.supports_fast_mode();
             let fast_mode_supported_models = capabilities.fast_mode_supported_models();
+            let supported_model_aliases =
+                non_empty_capability_values(capabilities.supported_model_aliases.clone());
+            let supported_efforts =
+                non_empty_capability_values(capabilities.supported_effort_labels());
             HarnessRuntimeProbe {
                 binary_path,
                 binary_found: true,
                 probe_succeeded: true,
                 available,
                 missing_core_exec_features,
-                cli_version: capabilities.version,
-                supported_model_aliases: None,
-                supported_efforts: None,
+                cli_version: capabilities.version.clone(),
+                supported_model_aliases,
+                supported_efforts,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -225,6 +229,14 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 error: Some(error),
             },
         },
+    }
+}
+
+fn non_empty_capability_values(values: Vec<String>) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
     }
 }
 
@@ -1066,6 +1078,10 @@ pub(crate) fn probe_codex_harness_with_capabilities(
             };
             let supports_fast_mode = capabilities.supports_fast_mode();
             let fast_mode_supported_models = capabilities.fast_mode_supported_models();
+            let supported_model_aliases =
+                non_empty_capability_values(capabilities.supported_model_aliases.clone());
+            let supported_efforts =
+                non_empty_capability_values(capabilities.supported_effort_labels());
             (
                 HarnessRuntimeProbe {
                     binary_path: Some(resolved.path.to_string_lossy().into_owned()),
@@ -1074,8 +1090,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     available,
                     missing_core_exec_features,
                     cli_version: capabilities.version.clone(),
-                    supported_model_aliases: None,
-                    supported_efforts: None,
+                    supported_model_aliases,
+                    supported_efforts,
                     supports_fast_mode,
                     fast_mode_supported_models,
                     error,
@@ -1274,6 +1290,14 @@ mod tests {
             supports_mcp_subcommand: true,
             supports_fast_mode_feature: true,
             fast_mode_supported_models: vec!["gpt-5.5".to_string()],
+            supported_model_aliases: vec!["gpt-5.5".to_string()],
+            supported_efforts: vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ],
+            model_supported_efforts: std::collections::BTreeMap::new(),
         }
     }
 

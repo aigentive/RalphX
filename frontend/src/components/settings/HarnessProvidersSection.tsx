@@ -716,7 +716,12 @@ export function HarnessProvidersSection() {
                 (model) => model.modelId === selectedModel,
               );
               const selectedModelId =
-                provider.model ?? defaultModelForProvider(agentProvider);
+                provider.model ??
+                defaultModelForProvider(
+                  agentProvider,
+                  undefined,
+                  provider.supportedModelAliases,
+                );
               const effortOptions = agentEffortOptionsForModel(
                 agentProvider,
                 selectedModelId,
