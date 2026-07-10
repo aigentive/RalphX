@@ -37,7 +37,15 @@ pub async fn approve_task(
     }
 
     if !task_allows_empty_captured_diff(&task) {
-        ensure_task_has_non_empty_captured_diff(&task, "human_approve_task")
+        let project = state
+            .app_state
+            .project_repo
+            .get_by_id(&task.project_id)
+            .await
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+        ensure_task_has_non_empty_captured_diff(&task, &project, "human_approve_task")
             .await
             .map_err(|error| {
                 tracing::warn!(

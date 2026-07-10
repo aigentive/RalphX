@@ -1236,18 +1236,38 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     );
                     let mut completion_blocked_error: Option<String> = None;
                     if completion_action == ExecutionCompletionAction::PendingReview {
-                        if let Err(error) = ensure_task_has_non_empty_captured_diff(
-                            &current_task_for_gate,
-                            "stream_success_completion",
-                        )
-                        .await
-                        {
+                        let project_for_gate = project_repo
+                            .get_by_id(&current_task_for_gate.project_id)
+                            .await;
+                        let diff_guard_result = match project_for_gate {
+                            Ok(Some(project)) => {
+                                ensure_task_has_non_empty_captured_diff(
+                                    &current_task_for_gate,
+                                    &project,
+                                    "stream_success_completion",
+                                )
+                                .await
+                                .map_err(|error| error.to_string())
+                            }
+                            Ok(None) => Err(format!(
+                                "empty_task_diff_guard: project {} for task {} was not found during stream_success_completion",
+                                current_task_for_gate.project_id.as_str(),
+                                task_id.as_str()
+                            )),
+                            Err(error) => Err(format!(
+                                "empty_task_diff_guard: failed to load project {} for task {} during stream_success_completion: {}",
+                                current_task_for_gate.project_id.as_str(),
+                                task_id.as_str(),
+                                error
+                            )),
+                        };
+                        if let Err(error) = diff_guard_result {
                             tracing::warn!(
                                 task_id = task_id.as_str(),
                                 error = %error,
                                 "Worker completion downgraded to failure because task-owned diff is empty or unavailable"
                             );
-                            completion_blocked_error = Some(error.to_string());
+                            completion_blocked_error = Some(error);
                             completion_action = ExecutionCompletionAction::Failed;
                         }
                     }

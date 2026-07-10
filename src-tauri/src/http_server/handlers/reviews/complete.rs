@@ -130,7 +130,15 @@ pub async fn complete_review(
     })?;
 
     if matches!(outcome, ReviewToolOutcome::Approved) {
-        ensure_task_has_non_empty_captured_diff(&task, "complete_review_approved")
+        let project = state
+            .app_state
+            .project_repo
+            .get_by_id(&task.project_id)
+            .await
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+        ensure_task_has_non_empty_captured_diff(&task, &project, "complete_review_approved")
             .await
             .map_err(|error| {
                 tracing::warn!(
@@ -384,17 +392,19 @@ pub async fn complete_review(
                 .unwrap_or(false);
 
             // Fetch project for repo_path and working_directory (needed for git diff + cleanup)
-            let project_opt = state
+            let project = state
                 .app_state
                 .project_repo
                 .get_by_id(&task.project_id)
                 .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
             // Git diff validation safety gate (BEFORE metadata persistence).
             // If the branch has code changes, fall back to standard Approved flow.
             let has_code_changes = match read_captured_task_diff_stats(
                 &task,
+                &project,
                 "complete_review_approved_no_changes",
             )
             .await
@@ -413,7 +423,7 @@ pub async fn complete_review(
                     has_changes
                 }
                 Ok(None) => {
-                    if let (Some(ref project), Some(ref branch)) = (&project_opt, &task_branch) {
+                    if let Some(ref branch) = task_branch {
                         let repo_path = std::path::Path::new(&project.working_directory);
                         let base = project.base_branch_or_default();
                         match GitService::branches_have_same_content(repo_path, branch, base).await
@@ -527,10 +537,7 @@ pub async fn complete_review(
                         task_id.as_str(),
                     );
 
-                    let project_working_dir = project_opt
-                        .as_ref()
-                        .map(|p| p.working_directory.clone())
-                        .unwrap_or_default();
+                    let project_working_dir = project.working_directory.clone();
 
                     tokio::spawn(deferred_merge_cleanup(
                         task_id.clone(),

@@ -649,6 +649,16 @@ pub async fn execution_complete_http(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(&task.project_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get project for task {}: {}", task_id_str, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     tracing::info!(
         "execution_complete received for task {}: summary={:?}",
@@ -692,7 +702,7 @@ pub async fn execution_complete_http(
         }
     }
 
-    ensure_task_has_non_empty_captured_diff(&task, "execution_complete")
+    ensure_task_has_non_empty_captured_diff(&task, &project, "execution_complete")
         .await
         .map_err(|e| {
             tracing::warn!(

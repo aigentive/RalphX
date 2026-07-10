@@ -105,21 +105,15 @@ pub(crate) fn task_allows_empty_captured_diff(task: &Task) -> bool {
 
 pub(crate) async fn read_captured_task_diff_stats(
     task: &Task,
+    project: &Project,
     context: &str,
 ) -> AppResult<Option<DiffStats>> {
     let Some(base) = captured_task_diff_base(task) else {
         return Ok(None);
     };
-    let worktree_path = task.worktree_path.as_deref().ok_or_else(|| {
-        AppError::ExecutionBlocked(format!(
-            "empty_task_diff_guard: task {} has captured base '{}' but no worktree path during {}",
-            task.id.as_str(),
-            base.effective_base_ref,
-            context
-        ))
-    })?;
-    let worktree_path = validate_task_worktree_path(worktree_path, context)?;
-    GitService::get_branch_sha(&worktree_path, &base.effective_base_ref)
+    let repo_path = task_diff_repo_path(task, project, context)?;
+    ensure_no_worktree_fallback_matches_task_branch(task, &repo_path, context).await?;
+    GitService::get_branch_sha(&repo_path, &base.effective_base_ref)
         .await
         .map_err(|error| {
             AppError::ExecutionBlocked(format!(
@@ -130,7 +124,7 @@ pub(crate) async fn read_captured_task_diff_stats(
                 error
             ))
         })?;
-    GitService::get_diff_stats(&worktree_path, &base.effective_base_ref)
+    GitService::get_diff_stats(&repo_path, &base.effective_base_ref)
         .await
         .map(Some)
         .map_err(|error| {
@@ -146,12 +140,13 @@ pub(crate) async fn read_captured_task_diff_stats(
 
 pub(crate) async fn ensure_task_has_non_empty_captured_diff(
     task: &Task,
+    project: &Project,
     context: &str,
 ) -> AppResult<()> {
     if task_allows_empty_captured_diff(task) {
         return Ok(());
     }
-    let Some(stats) = read_captured_task_diff_stats(task, context).await? else {
+    let Some(stats) = read_captured_task_diff_stats(task, project, context).await? else {
         let base_ref = task
             .task_branch_base_ref
             .as_deref()
@@ -185,17 +180,6 @@ pub(crate) async fn ensure_task_has_non_empty_captured_diff(
     )))
 }
 
-fn validate_task_worktree_path(worktree_path: &str, context: &str) -> AppResult<PathBuf> {
-    let path = validate_absolute_non_root_path(Path::new(worktree_path), context)?;
-    std::fs::canonicalize(&path).map_err(|error| {
-        AppError::Validation(format!(
-            "task worktree path is not available during {}: {} ({error})",
-            context,
-            path.display()
-        ))
-    })
-}
-
 fn task_diff_repo_path(task: &Task, project: &Project, context: &str) -> AppResult<PathBuf> {
     let repo_path = task
         .worktree_path
@@ -210,6 +194,46 @@ fn task_diff_repo_path(task: &Task, project: &Project, context: &str) -> AppResu
             repo_path.display()
         ))
     })
+}
+
+async fn ensure_no_worktree_fallback_matches_task_branch(
+    task: &Task,
+    repo_path: &Path,
+    context: &str,
+) -> AppResult<()> {
+    if task.worktree_path.is_some() {
+        return Ok(());
+    }
+    let Some(expected_branch) = task
+        .task_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let current_branch = GitService::get_current_branch(repo_path)
+        .await
+        .map_err(|error| {
+            AppError::ExecutionBlocked(format!(
+                "empty_task_diff_guard: failed to verify checkout branch for task {} during {}: {}",
+                task.id.as_str(),
+                context,
+                error
+            ))
+        })?;
+    if current_branch == expected_branch {
+        return Ok(());
+    }
+
+    Err(AppError::ExecutionBlocked(format!(
+        "empty_task_diff_guard: project checkout is on branch '{}' but task {} expects branch '{}' during {}; refusing to verify captured diff from the wrong checkout",
+        current_branch,
+        task.id.as_str(),
+        expected_branch,
+        context
+    )))
 }
 
 fn has_no_code_changes_metadata(task: &Task) -> bool {
