@@ -5,6 +5,7 @@ import {
   agentEffortOptionsForModel,
   agentModelOptions,
   defaultModelForProvider,
+  normalizeRuntimeForPersistence,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 
@@ -257,6 +258,42 @@ describe("agentOptions", () => {
       provider: "codex",
       modelId: "gpt-5.6-luna",
       effort: "max",
+    });
+  });
+
+  it("preserves known GPT-5.6 models for persistence without Codex aliases", () => {
+    expect(
+      normalizeRuntimeForPersistence({
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
+    });
+    expect(
+      normalizeRuntimeForPersistence({
+        provider: "codex",
+        modelId: "gpt-5.6-luna",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-luna",
+      effort: "max",
+    });
+    expect(
+      normalizeRuntimeForPersistence({
+        provider: "codex",
+        modelId: "gpt-5.6",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-sol",
+      effort: "ultra",
     });
   });
 

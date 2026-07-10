@@ -111,6 +111,45 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("preserves remembered GPT-5.6 runtimes during migration", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          runtimeByConversationId: {
+            "conversation-1": {
+              provider: "codex",
+              modelId: "gpt-5.6-terra",
+              effort: "ultra",
+            },
+          },
+          lastRuntimeByProjectId: {
+            "project-1": {
+              provider: "codex",
+              modelId: "gpt-5.6-luna",
+              effort: "ultra",
+            },
+          },
+        },
+        1,
+      ),
+    ).toMatchObject({
+      runtimeByConversationId: {
+        "conversation-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
+      },
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-luna",
+          effort: "max",
+        },
+      },
+    });
+  });
+
   it("returns persistedState unchanged when version is at-or-above current", () => {
     expect(migrateAgentSessionStore({ showAllProjects: false }, 99)).toEqual({
       showAllProjects: false,
@@ -557,6 +596,26 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
         modelId: "gpt-5.4-mini",
         effort: "medium",
+      });
+
+      setRuntimeForConversation("c2", "p3", {
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      });
+      expect(useAgentSessionStore.getState().runtimeByConversationId.c2).toEqual({
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      });
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectId.p3).toEqual({
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      });
+      expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
       });
     });
 
