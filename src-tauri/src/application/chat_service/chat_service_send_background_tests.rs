@@ -1608,6 +1608,15 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
     let agent_run_id = agent_run.id.as_str().to_string();
     let agent_run_repo = Arc::clone(&state.agent_run_repo);
     let agent_run_lookup_id = AgentRunId::from_string(agent_run_id.clone());
+    let message_queue = Arc::clone(&state.message_queue);
+    message_queue.queue_with_overrides(
+        ChatContextType::Project,
+        conversation_id.as_str(),
+        "resume in place after handled error".to_string(),
+        Some(r#"{"resume_in_place":true}"#.to_string()),
+        None,
+        None,
+    );
 
     let repos = super::BackgroundRunRepos {
         chat_message_repo: Arc::clone(&state.chat_message_repo),
@@ -1641,7 +1650,7 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),
         memory_event_repo: Arc::clone(&state.memory_event_repo),
-        message_queue: Arc::clone(&state.message_queue),
+        message_queue: Arc::clone(&message_queue),
         running_agent_registry: Arc::clone(&state.running_agent_registry),
         task_step_repo: Some(Arc::clone(&state.task_step_repo)),
         review_repo: Some(Arc::clone(&state.review_repo)),
@@ -1666,7 +1675,7 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         runtime_context_id: conversation_id.as_str().to_string(),
         conversation_id,
         agent_run_id,
-        stored_session_id: None,
+        stored_session_id: Some("sess-bg-error".to_string()),
         working_directory: Path::new(".").to_path_buf(),
         cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
         plugin_dir: Path::new(".").to_path_buf(),

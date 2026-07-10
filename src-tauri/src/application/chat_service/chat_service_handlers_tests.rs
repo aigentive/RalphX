@@ -11,12 +11,12 @@ use crate::application::{
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
+use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, ProviderSessionRef};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatConversationId, ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
-    ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
-    Project, ProjectId, Task, VerificationStatus,
+    ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
+    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
+    IdeationSessionId, InternalStatus, Project, ProjectId, Task, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -394,6 +394,62 @@ fn spawnable_env_value(spawnable: &SpawnableCommand, key: &str) -> Option<String
         .find_map(|(env_key, env_value)| {
             (env_key.to_string_lossy() == key).then(|| env_value.to_string_lossy().into_owned())
         })
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_claude_session_fixture(dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    let cli_path = dir.join("claude-session-fixture.sh");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '{}'\n",
+        serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{ "type": "text", "text": "recovered session" }]
+            },
+            "session_id": session_id,
+        }),
+        serde_json::json!({
+            "type": "result",
+            "session_id": session_id,
+            "is_error": false,
+            "result": "recovered session",
+            "cost_usd": 0.0,
+        })
+    );
+    std::fs::write(&cli_path, script).expect("write cli fixture");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("cli fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cli_path, permissions).expect("make cli fixture executable");
+    }
+
+    cli_path
 }
 
 #[tokio::test]
@@ -2890,6 +2946,123 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 
     let mut child = ctx.child;
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_runtime_repos() {
+    let _env = EnvVarGuard::set("ENABLE_SESSION_RECOVERY", "true");
+    let state = AppState::new_test();
+    let mut provider_settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    provider_settings.enabled = true;
+    provider_settings.is_default = true;
+    state
+        .agent_provider_settings_repo
+        .upsert(&provider_settings)
+        .await
+        .expect("enable Claude provider for recovery retry");
+
+    let project_id = ProjectId::new();
+    let project = Project::new("Recovered Project".into(), "/tmp/recovered-project".into());
+    state
+        .project_repo
+        .create(Project {
+            id: project_id.clone(),
+            ..project
+        })
+        .await
+        .expect("seed project");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "old-session".to_string(),
+    });
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    let mut historical_message = ChatMessage::user_in_project(project_id.clone(), "prior turn");
+    historical_message.conversation_id = Some(conversation_id.clone());
+    state
+        .chat_message_repo
+        .create(historical_message)
+        .await
+        .expect("seed recovery history");
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let agent_run_id = agent_run.id.as_str();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let cli_path = write_claude_session_fixture(temp_dir.path(), "recovered-session");
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+        "No conversation found with session ID old-session",
+        None,
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        agent_run_id.as_str(),
+        "message-id-stale-recovery-success",
+        &event_ctx,
+        Some("old-session"),
+        AgentHarnessKind::Claude,
+        false,
+        Some("retry after stale session"),
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        &cli_path,
+        temp_dir.path(),
+        temp_dir.path(),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &Some(Arc::clone(&state.task_proposal_repo)),
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(Arc::clone(&state.agent_lane_settings_repo)),
+        &Some(Arc::clone(&state.agent_provider_settings_repo)),
+        &app_handle,
+        Some("orchestrator"),
+        false,
+        Some("chain-stale-recovery".to_string()),
+        &None,
+        &Some(Arc::clone(&state.review_repo)),
+        &Some(Arc::clone(&state.task_step_repo)),
+        &None,
+    )
+    .await;
+
+    assert!(
+        recovery_spawned,
+        "successful stale-session recovery must spawn a retry instead of falling through"
+    );
 }
 
 #[tokio::test]
