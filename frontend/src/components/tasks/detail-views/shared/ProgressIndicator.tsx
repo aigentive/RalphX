@@ -9,6 +9,8 @@
 
 interface ProgressIndicatorProps {
   percentComplete: number;
+  activePercentComplete?: number;
+  animateActiveProgress?: boolean;
   completedSteps?: number;
   totalSteps?: number;
   variant?: "accent" | "success" | "info";
@@ -22,12 +24,21 @@ const VARIANT_COLORS = {
 
 export function ProgressIndicator({
   percentComplete,
+  activePercentComplete,
+  animateActiveProgress = false,
   completedSteps,
   totalSteps,
   variant = "accent",
 }: ProgressIndicatorProps) {
   const color = VARIANT_COLORS[variant];
   const showSteps = completedSteps !== undefined && totalSteps !== undefined && totalSteps > 0;
+  const completedWidth = Math.max(0, Math.min(100, percentComplete));
+  const activeWidth = Math.max(
+    completedWidth,
+    Math.min(100, activePercentComplete ?? completedWidth)
+  );
+  const activeSegmentWidth = activeWidth - completedWidth;
+  const showActiveSegment = animateActiveProgress && activeSegmentWidth > 0;
 
   return (
     <div className="space-y-2.5">
@@ -69,12 +80,26 @@ export function ProgressIndicator({
       >
         {/* Progress fill */}
         <div
+          data-testid="progress-completed-fill"
           className="absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out"
           style={{
-            width: `${Math.max(0, Math.min(100, percentComplete))}%`,
+            width: `${completedWidth}%`,
             backgroundColor: color,
           }}
         />
+        {showActiveSegment && (
+          <div
+            data-testid="progress-active-segment"
+            aria-hidden="true"
+            data-animated={animateActiveProgress ? "true" : "false"}
+            className="step-progress-active-segment absolute inset-y-0 rounded-full transition-all duration-500 ease-out"
+            style={{
+              left: `${completedWidth}%`,
+              width: `${activeSegmentWidth}%`,
+              backgroundColor: color,
+            }}
+          />
+        )}
       </div>
     </div>
   );
