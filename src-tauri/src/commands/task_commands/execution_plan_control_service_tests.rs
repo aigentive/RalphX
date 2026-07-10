@@ -351,7 +351,7 @@ async fn stop_plan_propagates_transition_failure_without_stranding_task() {
 }
 
 #[tokio::test]
-async fn pause_plan_preserves_halt_mode_when_plan_task_query_fails() {
+async fn pause_plan_sets_halt_mode_before_plan_task_query() {
     let mut fixture = setup_control_fixture().await;
     let task = create_plan_task(
         &fixture.state,
@@ -373,7 +373,7 @@ async fn pause_plan_preserves_halt_mode_when_plan_task_query_fails() {
 
     assert_eq!(
         current_plan_halt_mode(&fixture).await,
-        ExecutionPlanHaltMode::Running
+        ExecutionPlanHaltMode::Paused
     );
 
     let stored = stored_task(&fixture.state, &task.id).await;
@@ -385,7 +385,7 @@ async fn pause_plan_preserves_halt_mode_when_plan_task_query_fails() {
 }
 
 #[tokio::test]
-async fn stop_plan_preserves_halt_mode_when_plan_task_query_fails() {
+async fn stop_plan_sets_halt_mode_before_plan_task_query() {
     let mut fixture = setup_control_fixture().await;
     let task = create_plan_task(
         &fixture.state,
@@ -407,7 +407,7 @@ async fn stop_plan_preserves_halt_mode_when_plan_task_query_fails() {
 
     assert_eq!(
         current_plan_halt_mode(&fixture).await,
-        ExecutionPlanHaltMode::Running
+        ExecutionPlanHaltMode::Stopped
     );
 
     let stored = stored_task(&fixture.state, &task.id).await;

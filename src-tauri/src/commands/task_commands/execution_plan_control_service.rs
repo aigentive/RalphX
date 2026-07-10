@@ -56,11 +56,11 @@ impl<'a> ExecutionPlanControlService<'a> {
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
         let previous_halt_mode = plan.halt_mode;
-        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Paused)
             .await?;
+        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
 
         let transition_service = self.build_transition_service();
         let mut paused_count = 0usize;
@@ -205,11 +205,11 @@ impl<'a> ExecutionPlanControlService<'a> {
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
         let previous_halt_mode = plan.halt_mode;
-        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Stopped)
             .await?;
+        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
 
         let transition_service = self.build_transition_service();
         let mut stopped_count = 0usize;
