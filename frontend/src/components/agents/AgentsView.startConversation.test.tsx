@@ -1297,6 +1297,32 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("does not overwrite a remembered GPT-5.6 runtime when aliases are unavailable", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "gpt-5.5"
+      )
+    );
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
+    });
+  });
+
   it("revalidates stale GPT-5.6 runtime aliases before starting", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {

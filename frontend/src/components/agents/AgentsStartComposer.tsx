@@ -519,12 +519,9 @@ export function AgentsStartComposer({
     setProvider(selectableRuntime.provider);
     setModelId(selectableRuntime.modelId);
     setEffort(selectableRuntime.effort);
-    persistRuntimePreference(projectId, selectableRuntime);
   }, [
     effort,
     modelId,
-    persistRuntimePreference,
-    projectId,
     provider,
     providerSettingsReady,
     selectableRuntime,
