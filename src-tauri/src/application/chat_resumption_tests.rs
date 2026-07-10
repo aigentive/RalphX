@@ -862,6 +862,9 @@ async fn chat_resumption_skips_automation_owned_interrupted_conversation_and_res
 async fn durable_silent_completion_recovery_skips_automation_owned_conversation_and_recovers_sibling(
 ) {
     let (execution_state, app_state) = setup_test_state().await;
+    // Pause launches so the sibling recovery takes the queue path; the spawn path
+    // resolves the real Codex CLI, which is absent on CI runners.
+    execution_state.pause();
     let project_id = ProjectId::from_string("durable-automation-project".to_string());
     let (automation_conversation, _) = create_interrupted_project_conversation(
         &app_state,
@@ -919,15 +922,13 @@ async fn durable_silent_completion_recovery_skips_automation_owned_conversation_
             .await,
         "automation conversation must not spawn a durable recovery runtime"
     );
+    let sibling_queued = app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, &sibling_conversation.id.as_str());
     assert_eq!(
-        app_state
-            .chat_message_repo
-            .get_by_conversation(&sibling_conversation.id)
-            .await
-            .expect("sibling messages should load")
-            .len(),
-        2,
-        "non-automation sibling must still receive exactly one durable recovery message"
+        sibling_queued.len(),
+        1,
+        "non-automation sibling must queue exactly one durable recovery message"
     );
 }
 
