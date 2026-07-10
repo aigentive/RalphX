@@ -68,6 +68,38 @@ async fn test_get_interrupted_conversations_returns_orphaned_conversation() {
 }
 
 #[tokio::test]
+async fn test_get_interrupted_conversations_preserves_automation_ownership_markers() {
+    let (db, agent_run_repo) = setup_repo();
+    let automation_id = AutomationId::new();
+    let automation_run_id = AutomationRunId::new();
+    let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
+    conversation.claude_session_id = Some("automation-session".to_string());
+    conversation.automation_id = Some(automation_id.clone());
+    conversation.automation_run_id = Some(automation_run_id.clone());
+    let conversation = db.insert_conversation(conversation);
+    let mut run = AgentRun::new(conversation.id);
+    run.status = AgentRunStatus::Cancelled;
+    run.completed_at = Some(Utc::now());
+    run.error_message = Some("Orphaned on app restart".to_string());
+    agent_run_repo.create(run).await.unwrap();
+
+    let interrupted = agent_run_repo
+        .get_interrupted_conversations()
+        .await
+        .unwrap();
+
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(
+        interrupted[0].conversation.automation_id,
+        Some(automation_id)
+    );
+    assert_eq!(
+        interrupted[0].conversation.automation_run_id,
+        Some(automation_run_id)
+    );
+}
+
+#[tokio::test]
 async fn test_get_interrupted_conversations_returns_orphaned_codex_conversation() {
     let (db, agent_run_repo) = setup_repo();
     let conversation = seed_codex_ideation_conversation(&db, "codex-thread-1");

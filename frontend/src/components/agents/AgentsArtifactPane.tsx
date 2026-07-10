@@ -122,7 +122,12 @@ import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishS
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
+import type {
+  AgentsChatFocus,
+  AutomationRunFocusOptions,
+} from "./agentChatFocus";
 import {
+  AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
   prReviewContextForConversation,
@@ -478,6 +483,10 @@ interface AgentsArtifactPaneProps {
   isPublishingWorkspace?: boolean;
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
+  automationRunFocusTarget?: Extract<
+    AgentsChatFocus,
+    { type: "automation_run" }
+  > | null;
   onOpenAutomation?: (automationId: string) => void;
   onConversationModeSwitched?: (
     conversationId: string,
@@ -492,6 +501,7 @@ interface AgentsArtifactPaneProps {
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
@@ -519,6 +529,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   isPublishingWorkspace = false,
   publishFocusRequest = null,
   taskFocusRequest = null,
+  automationRunFocusTarget = null,
   onOpenAutomation,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
@@ -530,13 +541,35 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const automationId = conversation?.automationId ?? null;
+  const focusedRunTarget =
+    automationRunFocusTarget?.automationId === automationId
+      ? automationRunFocusTarget
+      : null;
+  const focusedAutomationRunId =
+    conversation?.automationRunId ?? focusedRunTarget?.runId ?? null;
+  const focusedAutomationRunConversationId =
+    conversation?.automationRunId && conversation?.id
+      ? conversation.id
+      : (focusedRunTarget?.conversationId ?? null);
+  const focusedRunWorkspaceQuery = useQuery({
+    queryKey: agentWorkspaceKeys.workspace(focusedAutomationRunConversationId),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspace(focusedAutomationRunConversationId!),
+    enabled: Boolean(focusedRunTarget && focusedAutomationRunConversationId),
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+  });
+  const scopedWorkspace = focusedRunTarget
+    ? (focusedRunWorkspaceQuery.data ?? null)
+    : workspace;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
     focusedIdeationSessionId ||
-    workspace?.mode === "ideation" ||
-    workspace?.mode === "plan" ||
-    workspace?.linkedIdeationSessionId ||
-    workspace?.linkedPlanBranchId,
+    focusedRunTarget ||
+    scopedWorkspace?.mode === "ideation" ||
+    scopedWorkspace?.mode === "plan" ||
+    scopedWorkspace?.linkedIdeationSessionId ||
+    scopedWorkspace?.linkedPlanBranchId,
   );
   const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
   const showPullRequestTab = workspaceHasPullRequest(workspace);
@@ -568,7 +601,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? resolveAttachedIdeationSessionId(
             conversation,
             conversationMessages,
-            workspace?.linkedIdeationSessionId ?? null,
+            scopedWorkspace?.linkedIdeationSessionId ?? null,
           )
         : null),
     [
@@ -576,7 +609,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       conversationMessages,
       focusedIdeationSessionId,
       shouldLoadIdeationData,
-      workspace?.linkedIdeationSessionId,
+      scopedWorkspace?.linkedIdeationSessionId,
     ],
   );
   const atlassianSettingsQuery = useQuery({
@@ -613,12 +646,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     } | null>(null);
   const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const conversationProjectId =
-    conversation?.projectId ?? workspace?.projectId ?? null;
+    conversation?.projectId ?? scopedWorkspace?.projectId ?? workspace?.projectId ?? null;
   const canStartPlan = Boolean(
     conversationId &&
     conversationProjectId &&
-    (workspace
-      ? workspace.mode === "edit" || workspace.mode === "plan"
+    (scopedWorkspace
+      ? scopedWorkspace.mode === "edit" || scopedWorkspace.mode === "plan"
       : conversation?.contextType === "project"),
   );
   const prReviewConversationId =
@@ -776,6 +809,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const taskProjectId =
     session?.projectId ??
     conversation?.projectId ??
+    scopedWorkspace?.projectId ??
     workspace?.projectId ??
     null;
   const activePlanSessionId = usePlanStore(selectActivePlanId(taskProjectId ?? ""));
@@ -798,7 +832,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     (activeExecutionPlanId ||
       hasProposalCreatedTasks ||
       session?.status === "accepted" ||
-      workspace?.linkedPlanBranchId),
+      scopedWorkspace?.linkedPlanBranchId),
   );
   const implementationTasksQuery = useTasks(taskProjectId ?? "", {
     enabled: shouldLoadImplementationTasks,
@@ -824,11 +858,30 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const visibleImplementationTaskCount = implementationTaskCounts.total;
   const hasImplementationAttempt = visibleImplementationTaskCount > 0;
-  const planArtifactId = shouldLoadIdeationData
-    ? (sessionData?.session.planArtifactId ??
-      sessionData?.session.inheritedPlanArtifactId ??
-      null)
-    : null;
+  const issueConversationId =
+    conversation?.contextType === "project" ? conversation.id : null;
+  const isAutomationRunConversation = Boolean(focusedAutomationRunId);
+  const automationDetailQuery = useAutomationDetail(automationId, {
+    enabled: Boolean(isAutomationRunConversation && automationId),
+  });
+  const focusedAutomationRun = useMemo(() => {
+    if (!focusedAutomationRunId) {
+      return null;
+    }
+    return (
+      automationDetailQuery.data?.runs.find(
+        (run) => run.id === focusedAutomationRunId,
+      ) ?? null
+    );
+  }, [automationDetailQuery.data?.runs, focusedAutomationRunId]);
+  const runPlanArtifactId = focusedAutomationRun?.planArtifactId ?? null;
+  const planArtifactId =
+    runPlanArtifactId ??
+    (shouldLoadIdeationData
+      ? (sessionData?.session.planArtifactId ??
+        sessionData?.session.inheritedPlanArtifactId ??
+        null)
+      : null);
   const sessionVerificationStatus =
     sessionData?.session.verificationStatus ?? "unverified";
   const hasVerificationEvidence = Boolean(
@@ -841,31 +894,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           displayedVerificationStatus.status !== "unverified"))),
   );
   const proposalCount = proposals.length;
-  const issueConversationId =
-    conversation?.contextType === "project" ? conversation.id : null;
-  const automationId = conversation?.automationId ?? null;
-  const isAutomationRunConversation = Boolean(conversation?.automationRunId);
-  const automationDetailQuery = useAutomationDetail(automationId, {
-    enabled: Boolean(isAutomationRunConversation && automationId),
-  });
-  const focusedAutomationRun = useMemo(() => {
-    const runId = conversation?.automationRunId ?? null;
-    if (!runId) {
-      return null;
-    }
-    return (
-      automationDetailQuery.data?.runs.find((run) => run.id === runId) ?? null
-    );
-  }, [automationDetailQuery.data?.runs, conversation?.automationRunId]);
   const automationRunTabPolicy = useMemo(
     () =>
       getAutomationConversationTabPolicy({
         surface: "run",
         runStatus: focusedAutomationRun?.status ?? null,
         judgeState: focusedAutomationRun?.judgeState ?? null,
-        workspaceMode: workspace?.mode ?? null,
+        workspaceMode: scopedWorkspace?.mode ?? null,
         availability: {
-          hasPlanArtifact: Boolean(focusedAutomationRun?.planArtifactId),
+          hasPlanArtifact: Boolean(planArtifactId),
           hasPullRequest: Boolean(
             focusedAutomationRun?.prNumber || focusedAutomationRun?.prUrl,
           ),
@@ -874,11 +911,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       }),
     [
       focusedAutomationRun?.judgeState,
-      focusedAutomationRun?.planArtifactId,
       focusedAutomationRun?.prNumber,
       focusedAutomationRun?.prUrl,
       focusedAutomationRun?.status,
-      workspace?.mode,
+      planArtifactId,
+      scopedWorkspace?.mode,
     ],
   );
   const conversationIssuesQuery =
@@ -1454,7 +1491,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       >
         <ArtifactContent
           activeTab={effectiveActiveTab}
-          workspace={workspace}
+          workspace={scopedWorkspace}
           conversationId={conversationId}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           conversationTitle={conversation?.title ?? null}
@@ -1537,6 +1574,7 @@ type ArtifactContentProps = {
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
   projectBaseBranch: string | null;
   isLoading: boolean;

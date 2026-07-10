@@ -20,13 +20,13 @@ use crate::application::automation::judge::{
     AutomationJudgeValidationContext, BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
 use crate::application::automation::plan_gate::{
-    approval_delivery_prompt, arm_plan_reminder, clear_plan_phase_publication_metadata,
+    approval_delivery_prompt, clear_plan_phase_publication_metadata,
     current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
     matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
     AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
-    AutomationPlanVerificationStarter, AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT,
-    PLAN_JUDGE_FAILED_PAUSED_REASON_CODE, PLAN_RESUME_FAILED_ERROR_CODE,
-    PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
+    AutomationPlanVerificationStarter, AutomationRunResumer, ResumeDelivery,
+    AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
+    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use crate::application::automation::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
@@ -125,6 +125,13 @@ impl Default for AutomationSchedulerConfig {
             plan_max_revision_rounds: default_automation_plan_max_revision_rounds(),
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanRedeliveryTrigger {
+    None,
+    LatestRunMissing,
+    RestartOrphan,
 }
 
 #[derive(Debug, Default)]
@@ -1816,10 +1823,18 @@ impl AutomationScheduler {
         let latest_agent_run = self
             .latest_agent_run_for_current_phase(conversation_id, run)
             .await?;
+        let latest_agent_run_is_restart_orphan = latest_agent_run
+            .as_ref()
+            .is_some_and(agent_run_is_restart_orphan);
 
-        if latest_agent_run.is_none() {
-            self.redeliver_plan_approval_after_crashed_resume(run, workspace.as_ref(), summary)
-                .await?;
+        if latest_agent_run.is_none() || latest_agent_run_is_restart_orphan {
+            self.redeliver_plan_approval_after_crashed_resume(
+                run,
+                workspace.as_ref(),
+                latest_agent_run.as_ref(),
+                summary,
+            )
+            .await?;
         }
 
         if automation.completion_signal == "agent_completed" {
@@ -1848,6 +1863,10 @@ impl AutomationScheduler {
                         summary,
                     )
                     .await?;
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Cancelled) if latest_agent_run_is_restart_orphan => {
+                    // Recover in place (F2); the approval redelivery above owns this orphan.
                     return Ok(());
                 }
                 Some(AgentRunStatus::Cancelled) => {
@@ -1950,7 +1969,10 @@ impl AutomationScheduler {
                     // review-unaware, so failing on `Completed` would kill healthy runs
                     // mid-review; the `max_run_duration` backstop covers the rare
                     // genuinely-stuck `Completed` case instead.
-                    if matches!(status, AgentRunStatus::Failed | AgentRunStatus::Cancelled) {
+                    // Recover in place (F2) before treating a restart orphan as terminal.
+                    if matches!(status, AgentRunStatus::Failed | AgentRunStatus::Cancelled)
+                        && !latest_agent_run_is_restart_orphan
+                    {
                         self.fail_running_run(
                             run,
                             "agent_failed",
@@ -1982,12 +2004,9 @@ impl AutomationScheduler {
             .latest_agent_run_for_current_phase(conversation_id, run)
             .await?;
 
-        let latest_agent_run_is_restart_orphan =
-            latest_agent_run.as_ref().is_some_and(|agent_run| {
-                agent_run.status == AgentRunStatus::Cancelled
-                    && agent_run.error_message.as_deref()
-                        == Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART)
-            });
+        let latest_agent_run_is_restart_orphan = latest_agent_run
+            .as_ref()
+            .is_some_and(agent_run_is_restart_orphan);
 
         match latest_agent_run.as_ref().map(|agent_run| agent_run.status) {
             Some(AgentRunStatus::Failed) => {
@@ -2003,7 +2022,7 @@ impl AutomationScheduler {
                 self.observe_recoverable_plan_phase_running_run(
                     run,
                     conversation_id,
-                    true,
+                    PlanRedeliveryTrigger::RestartOrphan,
                     summary,
                 )
                 .await?;
@@ -2047,7 +2066,11 @@ impl AutomationScheduler {
                 self.observe_recoverable_plan_phase_running_run(
                     run,
                     conversation_id,
-                    latest_agent_run.is_none(),
+                    if latest_agent_run.is_none() {
+                        PlanRedeliveryTrigger::LatestRunMissing
+                    } else {
+                        PlanRedeliveryTrigger::None
+                    },
                     summary,
                 )
                 .await?;
@@ -2061,7 +2084,7 @@ impl AutomationScheduler {
         &self,
         run: &AutomationRun,
         conversation_id: &ChatConversationId,
-        should_redeliver_plan_reminder: bool,
+        redelivery_trigger: PlanRedeliveryTrigger,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
         if running_run_has_exceeded(run, self.config.max_run_duration) {
@@ -2074,9 +2097,14 @@ impl AutomationScheduler {
             .await?;
             return Ok(());
         }
-        if should_redeliver_plan_reminder {
-            self.redeliver_plan_reminder_after_crashed_resume(run, conversation_id, summary)
-                .await?;
+        if redelivery_trigger != PlanRedeliveryTrigger::None {
+            self.redeliver_plan_reminder_after_crashed_resume(
+                run,
+                conversation_id,
+                redelivery_trigger,
+                summary,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -2168,12 +2196,17 @@ impl AutomationScheduler {
         }
     }
 
-    async fn redeliver_plan_approval_after_crashed_resume(
+    // pub(super) so scheduler_tests can exercise the defensive current-run guard directly.
+    pub(super) async fn redeliver_plan_approval_after_crashed_resume(
         &self,
         run: &AutomationRun,
         workspace: Option<&AgentConversationWorkspace>,
+        latest_agent_run: Option<&AgentRun>,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
+        if latest_agent_run.is_some_and(|agent_run| !agent_run_is_restart_orphan(agent_run)) {
+            return Ok(());
+        }
         if run.agent_phase_started_at.is_none() {
             return Ok(());
         }
@@ -2204,18 +2237,21 @@ impl AutomationScheduler {
 
         self.resumer.switch_to_edit(conversation_id).await?;
         let prompt = approval_delivery_prompt(&approval);
-        if let Err(error) = self
+        match self
             .resumer
             .resume_with_prompt(conversation_id, &prompt)
             .await
         {
-            self.fail_running_run(
-                run,
-                PLAN_RESUME_FAILED_ERROR_CODE,
-                &format!("Automation plan approval delivery failed: {error}"),
-                summary,
-            )
-            .await?;
+            Ok(ResumeDelivery::Delivered | ResumeDelivery::QueuedAndPurged) => {}
+            Err(error) => {
+                self.fail_running_run(
+                    run,
+                    PLAN_RESUME_FAILED_ERROR_CODE,
+                    &format!("Automation plan approval delivery failed: {error}"),
+                    summary,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -2224,9 +2260,13 @@ impl AutomationScheduler {
         &self,
         run: &AutomationRun,
         conversation_id: &ChatConversationId,
+        redelivery_trigger: PlanRedeliveryTrigger,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
-        if run.agent_phase_started_at.is_none() || run.plan_reminder_count == 0 {
+        if run.agent_phase_started_at.is_none()
+            || (run.plan_reminder_count == 0
+                && redelivery_trigger != PlanRedeliveryTrigger::RestartOrphan)
+        {
             return Ok(());
         }
         if self.resumer.is_agent_running(conversation_id).await? {
@@ -2236,18 +2276,26 @@ impl AutomationScheduler {
             return Ok(());
         }
 
-        if let Err(error) = self
+        match self
             .resumer
             .resume_with_prompt(conversation_id, AUTOMATION_PLAN_REMINDER_PROMPT)
             .await
         {
-            self.fail_running_run(
-                run,
-                "plan_reminder_failed",
-                &format!("Automation plan reminder failed: {error}"),
-                summary,
-            )
-            .await?;
+            Ok(ResumeDelivery::Delivered) => {
+                if run.plan_reminder_count == 0 {
+                    self.run_repo.set_plan_reminder_count(&run.id, 1).await?;
+                }
+            }
+            Ok(ResumeDelivery::QueuedAndPurged) => {}
+            Err(error) => {
+                self.fail_running_run(
+                    run,
+                    "plan_reminder_failed",
+                    &format!("Automation plan reminder failed: {error}"),
+                    summary,
+                )
+                .await?;
+            }
         }
 
         Ok(())
@@ -2280,19 +2328,26 @@ impl AutomationScheduler {
             return Ok(());
         }
 
-        arm_plan_reminder(&self.run_repo, run).await?;
-        if let Err(error) = self
+        match self
             .resumer
             .resume_with_prompt(conversation_id, AUTOMATION_PLAN_REMINDER_PROMPT)
             .await
         {
-            self.fail_running_run(
-                run,
-                "plan_reminder_failed",
-                &format!("Automation plan reminder failed: {error}"),
-                summary,
-            )
-            .await?;
+            Ok(ResumeDelivery::Delivered) => {
+                self.run_repo
+                    .set_plan_reminder_count(&run.id, run.plan_reminder_count.saturating_add(1))
+                    .await?;
+            }
+            Ok(ResumeDelivery::QueuedAndPurged) => {}
+            Err(error) => {
+                self.fail_running_run(
+                    run,
+                    "plan_reminder_failed",
+                    &format!("Automation plan reminder failed: {error}"),
+                    summary,
+                )
+                .await?;
+            }
         }
 
         Ok(())
@@ -2666,6 +2721,9 @@ impl AutomationScheduler {
 
         match run.plan_judge_state {
             AutomationPlanJudgeState::None => {
+                if run.plan_pending_instructions.is_some() {
+                    return Ok(());
+                }
                 if self
                     .transition_service
                     .transition_plan_judge_state(
@@ -2754,18 +2812,26 @@ impl AutomationScheduler {
         }
 
         let prompt = approval_delivery_prompt(approval);
-        if let Err(error) = self
+        match self
             .resumer
             .resume_with_prompt(conversation_id, &prompt)
             .await
         {
-            self.fail_running_run(
-                run,
-                PLAN_RESUME_FAILED_ERROR_CODE,
-                &format!("Automation plan approval delivery failed: {error}"),
-                summary,
-            )
-            .await?;
+            Ok(ResumeDelivery::Delivered) => {}
+            Ok(ResumeDelivery::QueuedAndPurged) => {
+                self.run_repo
+                    .set_agent_phase_started_at(&run.id, Some(Utc::now()))
+                    .await?;
+            }
+            Err(error) => {
+                self.fail_running_run(
+                    run,
+                    PLAN_RESUME_FAILED_ERROR_CODE,
+                    &format!("Automation plan approval delivery failed: {error}"),
+                    summary,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -2814,18 +2880,43 @@ impl AutomationScheduler {
             .await?;
 
         let prompt = revision_delivery_prompt(instructions);
-        if let Err(error) = self
+        match self
             .resumer
             .resume_with_prompt(conversation_id, &prompt)
             .await
         {
-            self.fail_running_run(
-                run,
-                PLAN_RESUME_FAILED_ERROR_CODE,
-                &format!("Automation plan revision delivery failed: {error}"),
-                summary,
-            )
-            .await?;
+            Ok(ResumeDelivery::Delivered) => {}
+            Ok(ResumeDelivery::QueuedAndPurged) => {
+                self.run_repo
+                    .set_plan_pending_instructions(&run.id, Some(instructions.to_string()))
+                    .await?;
+                if !self
+                    .transition_service
+                    .transition_run_status(
+                        &run.id,
+                        AutomationRunStatus::Running,
+                        AutomationRunStatus::AwaitingPlanApproval,
+                        None,
+                        None,
+                    )
+                    .await?
+                {
+                    tracing::warn!(
+                        run_id = %run.id,
+                        conversation_id = %conversation_id,
+                        "Failed to restore automation plan revision after queued delivery"
+                    );
+                }
+            }
+            Err(error) => {
+                self.fail_running_run(
+                    run,
+                    PLAN_RESUME_FAILED_ERROR_CODE,
+                    &format!("Automation plan revision delivery failed: {error}"),
+                    summary,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -3714,6 +3805,12 @@ fn running_run_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
 fn agent_run_is_current_for_phase(run: &AutomationRun, agent_run: &AgentRun) -> bool {
     run.agent_phase_started_at
         .is_none_or(|phase_started_at| agent_run.started_at >= phase_started_at)
+}
+
+fn agent_run_is_restart_orphan(agent_run: &AgentRun) -> bool {
+    agent_run.status == AgentRunStatus::Cancelled
+        && agent_run.error_message.as_deref()
+            == Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART)
 }
 
 fn judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {

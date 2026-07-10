@@ -280,7 +280,7 @@ function renderPanel({
     defaultOptions: { queries: { retry: false } },
   });
 
-  render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <AgentsAutomationPanel
         automationId="automation-1"
@@ -290,7 +290,7 @@ function renderPanel({
     </QueryClientProvider>,
   );
 
-  return { onOpenAutomation };
+  return { onOpenAutomation, unmount: rendered.unmount };
 }
 
 describe("AgentsAutomationPanel", () => {
@@ -794,8 +794,10 @@ describe("AgentsAutomationPanel", () => {
             runIndex: 3,
             status: "awaiting_plan_approval",
             planJudgeState: "in_progress",
+            planArtifactId: "plan-artifact-1",
             conversationId: "conversation-run-3",
             prNumber: null,
+            prUrl: null,
           }),
         ],
       }),
@@ -825,6 +827,11 @@ describe("AgentsAutomationPanel", () => {
       "automation-1",
       "run-3",
       "conversation-run-3",
+      expect.objectContaining({
+        runStatus: "awaiting_plan_approval",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+      }),
     );
   });
 
@@ -885,18 +892,33 @@ describe("AgentsAutomationPanel", () => {
       "automation-1",
       "run-running",
       "conversation-running",
+      expect.objectContaining({
+        runStatus: "running",
+        hasPlanArtifact: false,
+        hasPullRequest: false,
+      }),
     );
     expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
       2,
       "automation-1",
       "run-agent-failed",
       "conversation-agent-failed",
+      expect.objectContaining({
+        runStatus: "agent_failed",
+        hasPlanArtifact: false,
+        hasPullRequest: false,
+      }),
     );
     expect(onFocusAutomationRun).toHaveBeenNthCalledWith(
       3,
       "automation-1",
       "run-terminal",
       "conversation-terminal",
+      expect.objectContaining({
+        runStatus: "merged",
+        hasPlanArtifact: false,
+        hasPullRequest: true,
+      }),
     );
 
     const inertRow = screen.getByTestId("agents-automation-run-1");
@@ -955,8 +977,10 @@ describe("AgentsAutomationPanel", () => {
               id: "run-3",
               runIndex: 3,
               status: "awaiting_plan_approval",
+              planArtifactId: "plan-artifact-1",
               conversationId: "conversation-run-3",
               prNumber: null,
+              prUrl: null,
             }),
           ],
         }),
@@ -976,6 +1000,11 @@ describe("AgentsAutomationPanel", () => {
         "automation-1",
         "run-3",
         "conversation-run-3",
+        expect.objectContaining({
+          runStatus: "awaiting_plan_approval",
+          hasPlanArtifact: true,
+          hasPullRequest: false,
+        }),
       );
     },
   );
@@ -1391,6 +1420,53 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent("Run 3 in progress");
     expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-paused")).not.toBeInTheDocument();
+  });
+
+  it("surfaces an idle-after-cancelled banner only for active automations", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const activeView = renderPanel();
+
+    expect(screen.getByTestId("agents-automation-idle-after-cancelled")).toHaveTextContent(
+      "This automation is idle — its last run was cancelled and no new run will start on its own.",
+    );
+    activeView.unmount();
+
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "paused" }),
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    const pausedView = renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-automation-idle-after-cancelled"),
+    ).not.toBeInTheDocument();
+    pausedView.unmount();
+
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "running", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-automation-idle-after-cancelled"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders terminal automations without mutation controls", () => {

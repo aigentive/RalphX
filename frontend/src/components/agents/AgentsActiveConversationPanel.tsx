@@ -123,9 +123,11 @@ import {
   getFocusedAutomationRunConversationId,
   getFocusedChatSessionId,
   getFocusedWorkspaceReviewConversationId,
+  getAutomationRunFocusOptions,
   type AgentsChatFocus,
   type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
+  type AutomationRunFocusOptions,
 } from "./agentChatFocus";
 import {
   isTaskRuntimeContextType,
@@ -795,7 +797,8 @@ interface AgentsActiveConversationPanelProps {
   onFocusAutomationRun: (
     automationId: string,
     runId: string,
-    conversationId: string
+    conversationId: string,
+    options?: AutomationRunFocusOptions
   ) => void;
   onOpenTaskArtifact: (taskId: string) => void;
   onOpenAutomation?: (automationId: string) => void;
@@ -1509,7 +1512,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       if (run.status === "awaiting_plan_approval") {
         onSelectArtifact("plan");
       }
-      onFocusAutomationRun(automationId, run.id, run.conversationId);
+      onFocusAutomationRun(
+        automationId,
+        run.id,
+        run.conversationId,
+        getAutomationRunFocusOptions(run),
+      );
     },
     [onFocusAutomationRun, onSelectArtifact],
   );

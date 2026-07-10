@@ -86,6 +86,11 @@ fn build_transition_chat_service_fallback(
         Arc::new(crate::infrastructure::memory::MemoryArtifactRepository::new()),
         conversation_repo,
         agent_run_repo,
+        Arc::new(
+            crate::infrastructure::memory::MemoryAutomationRunRepository::new(
+                crate::infrastructure::memory::MemoryAutomationRepository::new_shared_state(),
+            ),
+        ),
         project_repo,
         task_repo,
         task_dep_repo,

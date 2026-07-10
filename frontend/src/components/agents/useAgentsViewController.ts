@@ -82,6 +82,7 @@ import {
   latestVerificationChildSessionIdQueryKey,
   type AgentsChatFocus,
   type AgentsChatFocusType,
+  type AutomationRunFocusOptions,
 } from "./agentChatFocus";
 
 interface UseAgentsViewControllerParams {
@@ -367,7 +368,12 @@ export function useAgentsViewController({
     [],
   );
   const handleFocusAutomationRun = useCallback(
-    (automationId: string, runId: string, conversationId: string) => {
+    (
+      automationId: string,
+      runId: string,
+      conversationId: string,
+      options?: AutomationRunFocusOptions,
+    ) => {
       const nextFocus: Extract<AgentsChatFocus, { type: "automation_run" }> = {
         type: "automation_run",
         automationId,
@@ -382,8 +388,23 @@ export function useAgentsViewController({
           ? current
           : nextFocus,
       );
+      if (selectedConversationId && options) {
+        const seededTab = getAutomationConversationTabPolicy({
+          surface: "run",
+          runStatus: options.runStatus,
+          judgeState: options.judgeState,
+          workspaceMode: options.workspaceMode,
+          availability: {
+            hasPlanArtifact: options.hasPlanArtifact,
+            hasPullRequest: options.hasPullRequest,
+            canStartPlan: false,
+          },
+        }).defaultTab;
+        seedAgentArtifactTab(selectedConversationId, seededTab, false);
+        automationRunFocusSeededConversationRef.current = selectedConversationId;
+      }
     },
-    [],
+    [selectedConversationId],
   );
   const handleFocusWorkspaceReview = useCallback((conversationId: string) => {
     setChatFocus((current) =>
@@ -1477,6 +1498,7 @@ export function useAgentsViewController({
       hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isArtifactResizing,
       openArtifactTab,
+      automationRunFocusTarget,
       panelDockElement: terminalPanelDockElement,
       publishFocusRequest,
       publishingConversationId,

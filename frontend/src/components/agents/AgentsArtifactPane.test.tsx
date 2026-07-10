@@ -2088,6 +2088,80 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByText("No ideation run attached")).toBeInTheDocument();
   });
 
+  it("keeps a focused automation run scoped to its Plan tab from the setup conversation", async () => {
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-3",
+            status: "awaiting_plan_approval",
+            planArtifactId: "plan-artifact-1",
+            conversationId: "conversation-run-3",
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+    );
+    getConversationWorkspaceMock.mockImplementation(async (conversationId: string) =>
+      conversationId === "conversation-run-3"
+        ? workspace({
+            conversationId,
+            mode: "plan",
+            linkedIdeationSessionId: "session-1",
+          })
+        : null,
+    );
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({ planArtifactId: "plan-artifact-1" }),
+    );
+    getSessionPlanMock.mockResolvedValue({
+      ...draftPlanArtifact(),
+      id: "plan-artifact-1",
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        conversationId: "conversation-setup",
+        mode: "automation",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        id: "conversation-setup",
+        title: "Ticket Attachment MCP Tools",
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+      {
+        automationRunFocusTarget: {
+          type: "automation_run",
+          automationId: "automation-1",
+          runId: "run-3",
+          conversationId: "conversation-run-3",
+        },
+      },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-tab-plan")).not.toHaveAttribute(
+        "aria-disabled",
+      ),
+    );
+    expect(
+      await screen.findByTestId("agents-artifact-content-plan"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(getConversationWorkspaceMock).toHaveBeenCalledWith(
+        "conversation-run-3",
+      ),
+    );
+    expect(screen.queryByTestId("agent-plan-start-panel")).not.toBeInTheDocument();
+  });
+
   it("keeps the empty Plan tab visible when Review is also available", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({

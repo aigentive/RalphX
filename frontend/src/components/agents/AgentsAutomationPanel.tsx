@@ -39,6 +39,7 @@ import {
   describeAutomationDeleteConsequences,
   describeRunFailure,
   getAutomationRunView,
+  isIdleAfterCancelledRun,
   latestRun,
   type AutomationRunStatusTone,
 } from "@/components/automations/automationStage";
@@ -87,6 +88,10 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
+import {
+  getAutomationRunFocusOptions,
+  type AutomationRunFocusOptions,
+} from "./agentChatFocus";
 
 interface AgentsAutomationPanelProps {
   automationId: string;
@@ -96,6 +101,7 @@ interface AgentsAutomationPanelProps {
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
 }
 
@@ -459,6 +465,7 @@ function AutomationRunsList({
     automationId: string,
     runId: string,
     conversationId: string,
+    options?: AutomationRunFocusOptions,
   ) => void;
 }) {
   if (runs.length === 0) {
@@ -552,6 +559,7 @@ function AutomationRunsList({
                             automationId,
                             run.id,
                             conversationId,
+                            getAutomationRunFocusOptions(run),
                           )
                         }
                         className="group cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
@@ -1028,6 +1036,7 @@ export function AgentsAutomationPanel({
   const activeGoalItem = findInProgressAutomationGoalItemFromItems(goalItems);
   const stage = runView.stageLabel;
   const failureReason = describeRunFailure(run);
+  const idleAfterCancelledRun = isIdleAfterCancelledRun(automation, run);
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
   const actionPending =
@@ -1273,6 +1282,7 @@ export function AgentsAutomationPanel({
                     automation.id,
                     planGatePausedRun.id,
                     planGatePausedRun.conversationId,
+                    getAutomationRunFocusOptions(planGatePausedRun),
                   )
                 : undefined
             }
@@ -1280,6 +1290,20 @@ export function AgentsAutomationPanel({
           >
             Open run conversation
           </Button>
+        </div>
+      ) : idleAfterCancelledRun ? (
+        <div
+          className="rounded-md px-3 py-2 text-xs"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-secondary)",
+          }}
+          data-testid="agents-automation-idle-after-cancelled"
+        >
+          This automation is idle — its last run was cancelled and no new run will start on its own.
         </div>
       ) : showGenericPausedReason ? (
         <div

@@ -15,12 +15,12 @@ use crate::domain::repositories::{
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
     AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    AutomationRunRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -220,6 +220,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
     pub task_repo: Arc<dyn TaskRepository>,
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
@@ -260,6 +261,7 @@ impl ChatRuntimeFactoryDeps {
         artifact_repo: Arc<dyn ArtifactRepository>,
         conversation_repo: Arc<dyn ChatConversationRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
+        automation_run_repo: Arc<dyn AutomationRunRepository>,
         project_repo: Arc<dyn ProjectRepository>,
         task_repo: Arc<dyn TaskRepository>,
         task_dependency_repo: Arc<dyn TaskDependencyRepository>,
@@ -276,6 +278,7 @@ impl ChatRuntimeFactoryDeps {
             artifact_repo,
             conversation_repo,
             agent_run_repo,
+            automation_run_repo,
             project_repo,
             task_repo,
             task_dependency_repo,
@@ -526,6 +529,7 @@ impl ChatRuntimeFactoryDeps {
             Arc::clone(&state.artifact_repo),
             Arc::clone(&state.chat_conversation_repo),
             Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.automation_run_repo),
             Arc::clone(&state.project_repo),
             Arc::clone(&state.task_repo),
             Arc::clone(&state.task_dependency_repo),
@@ -698,8 +702,7 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
         );
         if let Some(app_state) = app_state {
             let build_started_at = Instant::now();
-            let service =
-                app_state.build_transition_service_for_runtime(execution_state, None);
+            let service = app_state.build_transition_service_for_runtime(execution_state, None);
             tracing::info!(
                 elapsed_ms = build_started_at.elapsed().as_millis(),
                 total_elapsed_ms = total_started_at.elapsed().as_millis(),

@@ -1446,6 +1446,17 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             Arc::clone(&artifact_repo),
                             Arc::clone(&conversation_repo),
                             Arc::clone(&agent_run_repo),
+                            app_handle
+                                .as_ref()
+                                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                                .map(|app_state| Arc::clone(&app_state.automation_run_repo))
+                                .unwrap_or_else(|| {
+                                    Arc::new(
+                                        crate::infrastructure::memory::MemoryAutomationRunRepository::new(
+                                            crate::infrastructure::memory::MemoryAutomationRepository::new_shared_state(),
+                                        ),
+                                    )
+                                }),
                             Arc::clone(&project_repo),
                             Arc::clone(&task_repo),
                             Arc::clone(&task_dependency_repo),

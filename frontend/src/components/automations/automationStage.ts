@@ -7,6 +7,7 @@ export {
   getAutomationRunView,
   isAutomationRunCancellable,
   isAutomationDeletable,
+  isIdleAfterCancelledRun,
   isOpenAutomationRun,
   isAutomationRunComposerReadOnly,
   latestRunHoldsGoalAuthority,
