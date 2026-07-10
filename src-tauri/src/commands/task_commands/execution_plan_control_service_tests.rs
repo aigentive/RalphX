@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::execution_plan_control_service::{
@@ -8,8 +9,12 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanId, IdeationSession, IdeationSessionId,
-    InternalStatus, Project, ProjectId, Task,
+    InternalStatus, Project, ProjectId, Task, TaskId,
 };
+use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskRepository};
+use crate::error::{AppError, AppResult};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 struct ControlFixture {
     state: AppState,
@@ -79,6 +84,26 @@ fn scope(fixture: &ControlFixture) -> ExecutionPlanControlScope {
     }
 }
 
+async fn current_plan_halt_mode(fixture: &ControlFixture) -> ExecutionPlanHaltMode {
+    fixture
+        .state
+        .execution_plan_repo
+        .get_by_id(&fixture.current_plan_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .halt_mode
+}
+
+async fn stored_task(state: &AppState, task_id: &TaskId) -> Task {
+    state.task_repo.get_by_id(task_id).await.unwrap().unwrap()
+}
+
+fn fail_transition_for(fixture: &mut ControlFixture, task_id: TaskId) {
+    let inner = Arc::clone(&fixture.state.task_repo);
+    fixture.state.task_repo = Arc::new(FailingTransitionTaskRepository { inner, task_id });
+}
+
 #[tokio::test]
 async fn pause_plan_sets_halt_mode_and_pauses_only_current_plan_active_tasks() {
     let fixture = setup_control_fixture().await;
@@ -109,22 +134,12 @@ async fn pause_plan_sets_halt_mode_and_pauses_only_current_plan_active_tasks() {
     assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
     assert_eq!(outcome.affected_count, 1);
 
-    let current_plan = fixture
-        .state
-        .execution_plan_repo
-        .get_by_id(&fixture.current_plan_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(current_plan.halt_mode, ExecutionPlanHaltMode::Paused);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Paused
+    );
 
-    let current = fixture
-        .state
-        .task_repo
-        .get_by_id(&current_task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let current = stored_task(&fixture.state, &current_task.id).await;
     assert_eq!(current.internal_status, InternalStatus::Paused);
     let pause_reason = PauseReason::from_task_metadata(current.metadata.as_deref())
         .expect("pause metadata should be written");
@@ -140,13 +155,7 @@ async fn pause_plan_sets_halt_mode_and_pauses_only_current_plan_active_tasks() {
         PauseReason::ProviderError { .. } => panic!("expected user initiated pause reason"),
     }
 
-    let stale = fixture
-        .state
-        .task_repo
-        .get_by_id(&stale_task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let stale = stored_task(&fixture.state, &stale_task.id).await;
     assert_eq!(stale.internal_status, InternalStatus::Executing);
 }
 
@@ -180,30 +189,296 @@ async fn stop_plan_sets_halt_mode_and_stops_only_current_plan_active_tasks() {
     assert_eq!(outcome.execution_plan_id, fixture.current_plan_id);
     assert_eq!(outcome.affected_count, 1);
 
-    let current_plan = fixture
-        .state
-        .execution_plan_repo
-        .get_by_id(&fixture.current_plan_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(current_plan.halt_mode, ExecutionPlanHaltMode::Stopped);
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Stopped
+    );
 
-    let current = fixture
-        .state
-        .task_repo
-        .get_by_id(&current_task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let current = stored_task(&fixture.state, &current_task.id).await;
     assert_eq!(current.internal_status, InternalStatus::Stopped);
 
-    let stale = fixture
-        .state
-        .task_repo
-        .get_by_id(&stale_task.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let stale = stored_task(&fixture.state, &stale_task.id).await;
     assert_eq!(stale.internal_status, InternalStatus::Executing);
+}
+
+#[tokio::test]
+async fn pause_plan_propagates_transition_failure_without_stranding_task() {
+    let mut fixture = setup_control_fixture().await;
+    let task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Transition failure task",
+    )
+    .await;
+    fail_transition_for(&mut fixture, task.id.clone());
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service.pause_plan(scope(&fixture)).await;
+
+    assert!(result.is_err());
+
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+
+    let stored = stored_task(&fixture.state, &task.id).await;
+    assert_eq!(stored.internal_status, InternalStatus::Executing);
+    assert!(
+        PauseReason::from_task_metadata(stored.metadata.as_deref()).is_none(),
+        "failed pause transition must not leave pause metadata behind"
+    );
+}
+
+#[tokio::test]
+async fn stop_plan_propagates_transition_failure_without_stranding_task() {
+    let mut fixture = setup_control_fixture().await;
+    let task = create_plan_task(
+        &fixture.state,
+        &fixture.project_id,
+        &fixture.session_id,
+        &fixture.current_plan_id,
+        InternalStatus::Executing,
+        "Transition failure stop task",
+    )
+    .await;
+    fail_transition_for(&mut fixture, task.id.clone());
+
+    let service =
+        ExecutionPlanControlService::new(&fixture.state, Arc::new(ExecutionState::new()), None);
+
+    let result = service.stop_plan(scope(&fixture)).await;
+
+    assert!(result.is_err());
+
+    assert_eq!(
+        current_plan_halt_mode(&fixture).await,
+        ExecutionPlanHaltMode::Running
+    );
+
+    let stored = stored_task(&fixture.state, &task.id).await;
+    assert_eq!(stored.internal_status, InternalStatus::Executing);
+    assert!(
+        stored.metadata.is_none(),
+        "failed stop transition must not write stop metadata"
+    );
+}
+
+struct FailingTransitionTaskRepository {
+    inner: Arc<dyn TaskRepository>,
+    task_id: TaskId,
+}
+
+#[async_trait]
+impl TaskRepository for FailingTransitionTaskRepository {
+    async fn create(&self, task: Task) -> AppResult<Task> {
+        self.inner.create(task).await
+    }
+
+    async fn get_by_id(&self, id: &TaskId) -> AppResult<Option<Task>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<Task>> {
+        self.inner.get_by_project(project_id).await
+    }
+
+    async fn update(&self, task: &Task) -> AppResult<()> {
+        self.inner.update(task).await
+    }
+
+    async fn update_with_expected_status(
+        &self,
+        task: &Task,
+        expected_status: InternalStatus,
+    ) -> AppResult<bool> {
+        if task.id == self.task_id {
+            return Err(AppError::Validation(
+                "forced transition failure".to_string(),
+            ));
+        }
+        self.inner
+            .update_with_expected_status(task, expected_status)
+            .await
+    }
+
+    async fn update_metadata(&self, id: &TaskId, metadata: Option<String>) -> AppResult<()> {
+        self.inner.update_metadata(id, metadata).await
+    }
+
+    async fn delete(&self, id: &TaskId) -> AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn get_by_status(
+        &self,
+        project_id: &ProjectId,
+        status: InternalStatus,
+    ) -> AppResult<Vec<Task>> {
+        self.inner.get_by_status(project_id, status).await
+    }
+
+    async fn persist_status_change(
+        &self,
+        id: &TaskId,
+        from: InternalStatus,
+        to: InternalStatus,
+        trigger: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .persist_status_change(id, from, to, trigger)
+            .await
+    }
+
+    async fn get_status_history(&self, id: &TaskId) -> AppResult<Vec<StatusTransition>> {
+        self.inner.get_status_history(id).await
+    }
+
+    async fn get_status_history_batch(
+        &self,
+        task_ids: &[TaskId],
+    ) -> AppResult<HashMap<TaskId, Vec<StatusTransition>>> {
+        self.inner.get_status_history_batch(task_ids).await
+    }
+
+    async fn get_status_entered_at(
+        &self,
+        task_id: &TaskId,
+        status: InternalStatus,
+    ) -> AppResult<Option<DateTime<Utc>>> {
+        self.inner.get_status_entered_at(task_id, status).await
+    }
+
+    async fn get_status_last_entered_at(
+        &self,
+        task_id: &TaskId,
+        status: InternalStatus,
+    ) -> AppResult<Option<DateTime<Utc>>> {
+        self.inner.get_status_last_entered_at(task_id, status).await
+    }
+
+    async fn get_next_executable(&self, project_id: &ProjectId) -> AppResult<Option<Task>> {
+        self.inner.get_next_executable(project_id).await
+    }
+
+    async fn get_by_ideation_session(
+        &self,
+        session_id: &IdeationSessionId,
+    ) -> AppResult<Vec<Task>> {
+        self.inner.get_by_ideation_session(session_id).await
+    }
+
+    async fn get_by_project_filtered(
+        &self,
+        project_id: &ProjectId,
+        include_archived: bool,
+    ) -> AppResult<Vec<Task>> {
+        self.inner
+            .get_by_project_filtered(project_id, include_archived)
+            .await
+    }
+
+    async fn archive(&self, task_id: &TaskId) -> AppResult<Task> {
+        self.inner.archive(task_id).await
+    }
+
+    async fn restore(&self, task_id: &TaskId) -> AppResult<Task> {
+        self.inner.restore(task_id).await
+    }
+
+    async fn get_archived_count(
+        &self,
+        project_id: &ProjectId,
+        ideation_session_id: Option<&str>,
+    ) -> AppResult<u32> {
+        self.inner
+            .get_archived_count(project_id, ideation_session_id)
+            .await
+    }
+
+    async fn list_paginated(
+        &self,
+        project_id: &ProjectId,
+        statuses: Option<Vec<InternalStatus>>,
+        offset: u32,
+        limit: u32,
+        include_archived: bool,
+        ideation_session_id: Option<&str>,
+        execution_plan_id: Option<&str>,
+        categories: Option<&[String]>,
+    ) -> AppResult<Vec<Task>> {
+        self.inner
+            .list_paginated(
+                project_id,
+                statuses,
+                offset,
+                limit,
+                include_archived,
+                ideation_session_id,
+                execution_plan_id,
+                categories,
+            )
+            .await
+    }
+
+    async fn count_tasks(
+        &self,
+        project_id: &ProjectId,
+        include_archived: bool,
+        ideation_session_id: Option<&str>,
+        execution_plan_id: Option<&str>,
+    ) -> AppResult<u32> {
+        self.inner
+            .count_tasks(
+                project_id,
+                include_archived,
+                ideation_session_id,
+                execution_plan_id,
+            )
+            .await
+    }
+
+    async fn search(
+        &self,
+        project_id: &ProjectId,
+        query: &str,
+        include_archived: bool,
+    ) -> AppResult<Vec<Task>> {
+        self.inner.search(project_id, query, include_archived).await
+    }
+
+    async fn get_oldest_ready_task(&self) -> AppResult<Option<Task>> {
+        self.inner.get_oldest_ready_task().await
+    }
+
+    async fn get_oldest_ready_tasks(&self, limit: u32) -> AppResult<Vec<Task>> {
+        self.inner.get_oldest_ready_tasks(limit).await
+    }
+
+    async fn get_stale_ready_tasks(&self, threshold_secs: u64) -> AppResult<Vec<Task>> {
+        self.inner.get_stale_ready_tasks(threshold_secs).await
+    }
+
+    async fn update_latest_state_history_metadata(
+        &self,
+        task_id: &TaskId,
+        metadata: &StateHistoryMetadata,
+    ) -> AppResult<()> {
+        self.inner
+            .update_latest_state_history_metadata(task_id, metadata)
+            .await
+    }
+
+    async fn has_task_in_states(
+        &self,
+        project_id: &ProjectId,
+        statuses: &[InternalStatus],
+    ) -> AppResult<bool> {
+        self.inner.has_task_in_states(project_id, statuses).await
+    }
 }

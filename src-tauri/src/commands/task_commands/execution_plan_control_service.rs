@@ -15,6 +15,7 @@ use crate::domain::entities::{
 };
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,7 @@ impl<'a> ExecutionPlanControlService<'a> {
         scope: ExecutionPlanControlScope,
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
+        let previous_halt_mode = plan.halt_mode;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Paused)
@@ -66,22 +68,17 @@ impl<'a> ExecutionPlanControlService<'a> {
                 continue;
             }
 
-            self.stop_task_runtime_contexts(&task.id).await;
-            self.write_pause_reason(&task).await?;
-
-            match transition_service
-                .transition_task(&task.id, InternalStatus::Paused)
-                .await
-            {
-                Ok(_) => paused_count += 1,
-                Err(error) => {
-                    tracing::warn!(
-                        task_id = task.id.as_str(),
-                        error = %error,
-                        "Failed to pause task for execution-plan scoped pause"
-                    );
-                }
+            if let Err(error) = self.pause_active_task(&transition_service, &task).await {
+                self.restore_halt_mode_if_no_tasks_changed(
+                    &plan.id,
+                    previous_halt_mode,
+                    paused_count,
+                    "pause",
+                )
+                .await;
+                return Err(error);
             }
+            paused_count += 1;
         }
 
         Ok(ExecutionPlanControlOutcome {
@@ -205,6 +202,7 @@ impl<'a> ExecutionPlanControlService<'a> {
         scope: ExecutionPlanControlScope,
     ) -> AppResult<ExecutionPlanControlOutcome> {
         let plan = self.resolve_execution_plan(&scope).await?;
+        let previous_halt_mode = plan.halt_mode;
         self.state
             .execution_plan_repo
             .set_halt_mode(&plan.id, ExecutionPlanHaltMode::Stopped)
@@ -212,31 +210,30 @@ impl<'a> ExecutionPlanControlService<'a> {
 
         let transition_service = self.build_transition_service();
         let mut stopped_count = 0usize;
-        for task in self.current_plan_tasks(&scope.project_id, &plan).await? {
-            self.clear_task_queues(&task.id).await?;
-
+        let tasks = self.current_plan_tasks(&scope.project_id, &plan).await?;
+        for task in &tasks {
             if !AGENT_ACTIVE_STATUSES.contains(&task.internal_status) {
                 continue;
             }
 
-            self.stop_task_runtime_contexts(&task.id).await;
-            match transition_service
-                .transition_to_stopped_with_context(
-                    &task.id,
-                    task.internal_status,
-                    Some("Stopped from accepted plan controls".to_string()),
+            if let Err(error) = self.stop_active_task(&transition_service, task).await {
+                self.restore_halt_mode_if_no_tasks_changed(
+                    &plan.id,
+                    previous_halt_mode,
+                    stopped_count,
+                    "stop",
                 )
-                .await
-            {
-                Ok(_) => stopped_count += 1,
-                Err(error) => {
-                    tracing::warn!(
-                        task_id = task.id.as_str(),
-                        error = %error,
-                        "Failed to stop task for execution-plan scoped stop"
-                    );
-                }
+                .await;
+                return Err(error);
             }
+            stopped_count += 1;
+        }
+
+        for task in tasks
+            .iter()
+            .filter(|task| !AGENT_ACTIVE_STATUSES.contains(&task.internal_status))
+        {
+            self.clear_task_queues(&task.id).await?;
         }
 
         Ok(ExecutionPlanControlOutcome {
@@ -250,6 +247,106 @@ impl<'a> ExecutionPlanControlService<'a> {
             Arc::clone(&self.execution_state),
             self.app_handle.clone(),
         )
+    }
+
+    async fn pause_active_task(
+        &self,
+        transition_service: &crate::application::TaskTransitionService,
+        task: &Task,
+    ) -> AppResult<()> {
+        let paused_task = transition_service
+            .transition_task_with_metadata(
+                &task.id,
+                InternalStatus::Paused,
+                Some(Self::pause_metadata(task)?),
+            )
+            .await?;
+        Self::ensure_transition_result(
+            &task.id,
+            paused_task.internal_status,
+            InternalStatus::Paused,
+            "pause",
+        )?;
+        self.stop_task_runtime_contexts(&task.id).await;
+        Ok(())
+    }
+
+    async fn stop_active_task(
+        &self,
+        transition_service: &crate::application::TaskTransitionService,
+        task: &Task,
+    ) -> AppResult<()> {
+        let stopped_task = transition_service
+            .transition_to_stopped_with_context(
+                &task.id,
+                task.internal_status,
+                Some("Stopped from accepted plan controls".to_string()),
+            )
+            .await?;
+        Self::ensure_transition_result(
+            &task.id,
+            stopped_task.internal_status,
+            InternalStatus::Stopped,
+            "stop",
+        )?;
+        self.stop_task_runtime_contexts(&task.id).await;
+        self.clear_task_queues(&task.id).await
+    }
+
+    fn pause_metadata(task: &Task) -> AppResult<MetadataUpdate> {
+        let pause_reason = crate::application::chat_service::PauseReason::UserInitiated {
+            previous_status: task.internal_status.to_string(),
+            paused_at: chrono::Utc::now().to_rfc3339(),
+            scope: "execution_plan".to_string(),
+        };
+        let value = serde_json::to_value(pause_reason).map_err(|error| {
+            AppError::Validation(format!("Failed to serialize pause metadata: {error}"))
+        })?;
+        Ok(MetadataUpdate::new().with_value("pause_reason", value))
+    }
+
+    fn ensure_transition_result(
+        task_id: &TaskId,
+        actual: InternalStatus,
+        expected: InternalStatus,
+        operation: &str,
+    ) -> AppResult<()> {
+        if actual == expected {
+            return Ok(());
+        }
+
+        Err(AppError::Validation(format!(
+            "Execution-plan scoped {operation} for task {} did not reach expected status {} (actual: {})",
+            task_id.as_str(),
+            expected.as_str(),
+            actual.as_str()
+        )))
+    }
+
+    async fn restore_halt_mode_if_no_tasks_changed(
+        &self,
+        plan_id: &ExecutionPlanId,
+        previous_halt_mode: ExecutionPlanHaltMode,
+        affected_count: usize,
+        operation: &str,
+    ) {
+        if affected_count != 0 {
+            return;
+        }
+
+        if let Err(error) = self
+            .state
+            .execution_plan_repo
+            .set_halt_mode(plan_id, previous_halt_mode)
+            .await
+        {
+            tracing::warn!(
+                execution_plan_id = plan_id.as_str(),
+                previous_halt_mode = previous_halt_mode.to_db_string(),
+                error = %error,
+                "Failed to restore execution-plan halt mode after scoped {operation} failed"
+            );
+        }
     }
 
     async fn resolve_execution_plan(
@@ -324,19 +421,6 @@ impl<'a> ExecutionPlanControlService<'a> {
             .filter(|task| task.project_id == *project_id)
             .filter(|task| task.execution_plan_id.as_ref() == Some(&plan.id))
             .collect())
-    }
-
-    async fn write_pause_reason(&self, task: &Task) -> AppResult<()> {
-        let pause_reason = crate::application::chat_service::PauseReason::UserInitiated {
-            previous_status: task.internal_status.to_string(),
-            paused_at: chrono::Utc::now().to_rfc3339(),
-            scope: "execution_plan".to_string(),
-        };
-        let mut task_to_update = task.clone();
-        task_to_update.metadata =
-            Some(pause_reason.write_to_task_metadata(task_to_update.metadata.as_deref()));
-        task_to_update.touch();
-        self.state.task_repo.update(&task_to_update).await
     }
 
     async fn stop_task_runtime_contexts(&self, task_id: &TaskId) -> bool {
