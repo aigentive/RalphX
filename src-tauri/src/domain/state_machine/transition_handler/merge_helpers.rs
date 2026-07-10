@@ -73,6 +73,25 @@ const COMMIT_HOOK_POLICY_PATTERNS: &[&str] = &[
     "error:",
 ];
 
+const GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY: &str =
+    "github_auto_merge_disabled_for_correction";
+const GITHUB_AUTO_MERGE_PR_NUMBER_KEY: &str = "github_auto_merge_pr_number";
+const GITHUB_AUTO_MERGE_METHOD_KEY: &str = "github_auto_merge_method";
+const GITHUB_AUTO_MERGE_DISABLED_AT_KEY: &str = "github_auto_merge_disabled_at";
+const GITHUB_AUTO_MERGE_DISABLED_SOURCE_KEY: &str = "github_auto_merge_disabled_source";
+const GITHUB_AUTO_MERGE_REENABLED_AT_KEY: &str = "github_auto_merge_reenabled_at";
+const GITHUB_AUTO_MERGE_REENABLED_SOURCE_KEY: &str = "github_auto_merge_reenabled_source";
+const GITHUB_AUTO_MERGE_REENABLED_METHOD_KEY: &str = "github_auto_merge_reenabled_method";
+const GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY: &str = "github_auto_merge_reenable_failed_at";
+const GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY: &str = "github_auto_merge_reenable_error";
+const GITHUB_AUTO_MERGE_REENABLE_SOURCE: &str = "pr_mode_pending_merge";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEARED_AT_KEY: &str = "github_auto_merge_terminal_cleared_at";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEARED_SOURCE_KEY: &str =
+    "github_auto_merge_terminal_cleared_source";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEARED_STATUS_KEY: &str =
+    "github_auto_merge_terminal_cleared_status";
+const GITHUB_AUTO_MERGE_TERMINAL_CLEAR_SOURCE: &str = "pr_terminal_state";
+
 lazy_static! {
     static ref ANSI_ESCAPE_RE: Regex =
         Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").expect("valid ansi escape regex");
@@ -242,6 +261,178 @@ pub(crate) fn merge_metadata_into(task: &mut Task, new_fields: &serde_json::Valu
         }
     }
     task.metadata = Some(existing.to_string());
+}
+
+struct TaskPrAutoMergeRestore {
+    pr_number: i64,
+    method: String,
+}
+
+fn normalize_github_auto_merge_method(method: Option<&str>) -> String {
+    match method.map(str::to_ascii_lowercase).as_deref() {
+        Some("merge") => "merge".to_string(),
+        Some("rebase") => "rebase".to_string(),
+        _ => "squash".to_string(),
+    }
+}
+
+fn task_pr_auto_merge_restore_marker(
+    task: &Task,
+    fallback_pr_number: i64,
+) -> Option<TaskPrAutoMergeRestore> {
+    let metadata = task
+        .metadata
+        .as_deref()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())?;
+    let disabled = metadata
+        .get(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !disabled {
+        return None;
+    }
+
+    let pr_number = metadata
+        .get(GITHUB_AUTO_MERGE_PR_NUMBER_KEY)
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(fallback_pr_number);
+    let method = normalize_github_auto_merge_method(
+        metadata
+            .get(GITHUB_AUTO_MERGE_METHOD_KEY)
+            .and_then(serde_json::Value::as_str),
+    );
+
+    Some(TaskPrAutoMergeRestore { pr_number, method })
+}
+
+pub(crate) fn clear_github_auto_merge_correction_marker_for_terminal_pr(
+    task: &mut Task,
+    pr_status: &str,
+) -> bool {
+    let mut metadata = parse_metadata(task).unwrap_or_else(|| serde_json::json!({}));
+    let Some(object) = metadata.as_object_mut() else {
+        return false;
+    };
+    let disabled = object
+        .get(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !disabled {
+        return false;
+    }
+
+    object.remove(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY);
+    object.remove(GITHUB_AUTO_MERGE_PR_NUMBER_KEY);
+    object.remove(GITHUB_AUTO_MERGE_METHOD_KEY);
+    object.remove(GITHUB_AUTO_MERGE_DISABLED_AT_KEY);
+    object.remove(GITHUB_AUTO_MERGE_DISABLED_SOURCE_KEY);
+    object.remove(GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY);
+    object.remove(GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY);
+    object.insert(
+        GITHUB_AUTO_MERGE_TERMINAL_CLEARED_AT_KEY.to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    object.insert(
+        GITHUB_AUTO_MERGE_TERMINAL_CLEARED_SOURCE_KEY.to_string(),
+        serde_json::Value::String(GITHUB_AUTO_MERGE_TERMINAL_CLEAR_SOURCE.to_string()),
+    );
+    object.insert(
+        GITHUB_AUTO_MERGE_TERMINAL_CLEARED_STATUS_KEY.to_string(),
+        serde_json::Value::String(pr_status.to_string()),
+    );
+    task.metadata = Some(metadata.to_string());
+    task.touch();
+    true
+}
+
+pub(crate) async fn restore_github_auto_merge_after_pr_correction(
+    task: &mut Task,
+    task_id_str: &str,
+    working_dir: &Path,
+    fallback_pr_number: i64,
+    task_repo: &Arc<dyn TaskRepository>,
+    github_service: &Arc<dyn GithubServiceTrait>,
+) -> AppResult<()> {
+    let Some(restore) = task_pr_auto_merge_restore_marker(task, fallback_pr_number) else {
+        return Ok(());
+    };
+
+    match github_service
+        .enable_pr_auto_merge(working_dir, restore.pr_number, &restore.method)
+        .await
+    {
+        Ok(()) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut metadata = task
+                .metadata
+                .as_deref()
+                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(object) = metadata.as_object_mut() {
+                object.remove(GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY);
+                object.remove(GITHUB_AUTO_MERGE_METHOD_KEY);
+                object.remove(GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY);
+                object.remove(GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY);
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLED_AT_KEY.to_string(),
+                    serde_json::Value::String(now),
+                );
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLED_SOURCE_KEY.to_string(),
+                    serde_json::Value::String(GITHUB_AUTO_MERGE_REENABLE_SOURCE.to_string()),
+                );
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLED_METHOD_KEY.to_string(),
+                    serde_json::Value::String(restore.method),
+                );
+            }
+            task.metadata = Some(metadata.to_string());
+            task.touch();
+            task_repo.update(task).await?;
+            tracing::info!(
+                task_id = task_id_str,
+                pr_number = restore.pr_number,
+                "PR mode: re-enabled GitHub auto-merge after correction"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let error_text = error.to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut metadata = task
+                .metadata
+                .as_deref()
+                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(object) = metadata.as_object_mut() {
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLE_FAILED_AT_KEY.to_string(),
+                    serde_json::Value::String(now),
+                );
+                object.insert(
+                    GITHUB_AUTO_MERGE_REENABLE_ERROR_KEY.to_string(),
+                    serde_json::Value::String(error_text.clone()),
+                );
+            }
+            task.metadata = Some(metadata.to_string());
+            task.touch();
+            if let Err(update_error) = task_repo.update(task).await {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    pr_number = restore.pr_number,
+                    error = %update_error,
+                    "PR mode: failed to persist auto-merge re-enable failure metadata"
+                );
+            }
+            tracing::warn!(
+                task_id = task_id_str,
+                pr_number = restore.pr_number,
+                error = %error_text,
+                "PR mode: failed to re-enable GitHub auto-merge after correction"
+            );
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn is_commit_hook_merge_error_text(message: &str) -> bool {
@@ -1646,6 +1837,60 @@ impl PlanBranchPrSyncServices {
     }
 }
 
+async fn restore_plan_merge_task_auto_merge_after_pr_ready(
+    project: &Project,
+    plan_branch: &PlanBranch,
+    pr_number: i64,
+    services: &PlanBranchPrSyncServices,
+) {
+    let Some(task_repo) = services.task_repo.as_ref() else {
+        return;
+    };
+    let Some(github_service) = services.github_service.as_ref() else {
+        return;
+    };
+    let Some(merge_task_id) = plan_branch.merge_task_id.as_ref() else {
+        return;
+    };
+
+    match task_repo.get_by_id(merge_task_id).await {
+        Ok(Some(mut merge_task)) => {
+            if let Err(error) = restore_github_auto_merge_after_pr_correction(
+                &mut merge_task,
+                merge_task_id.as_str(),
+                Path::new(&project.working_directory),
+                pr_number,
+                task_repo,
+                github_service,
+            )
+            .await
+            {
+                tracing::warn!(
+                    task_id = merge_task_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "PR mode: auto-merge restore after correction will retry when plan merge resumes"
+                );
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(
+                task_id = merge_task_id.as_str(),
+                pr_number,
+                "PR mode: cannot restore auto-merge because plan merge task is missing"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = merge_task_id.as_str(),
+                pr_number,
+                error = %error,
+                "PR mode: failed to load plan merge task for auto-merge restore"
+            );
+        }
+    }
+}
+
 pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
     task: &Task,
     project: &Project,
@@ -1729,16 +1974,27 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
         }
         if ready_for_review {
             if let Some(pr_number) = refreshed_plan_branch.pr_number {
-                if let Err(e) = github_service
+                match github_service
                     .mark_pr_ready(Path::new(&project.working_directory), pr_number)
                     .await
                 {
-                    tracing::warn!(
-                        task_id = task.id.as_str(),
-                        pr_number,
-                        error = %e,
-                        "PR mode: failed to mark PR ready after final plan task merge"
-                    );
+                    Ok(()) => {
+                        restore_plan_merge_task_auto_merge_after_pr_ready(
+                            project,
+                            &refreshed_plan_branch,
+                            pr_number,
+                            services,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            task_id = task.id.as_str(),
+                            pr_number,
+                            error = %e,
+                            "PR mode: failed to mark PR ready after final plan task merge"
+                        );
+                    }
                 }
             }
         }
@@ -1778,16 +2034,27 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                         return Ok(PlanBranchPrSyncOutcome::Complete);
                     }
                     if let Some(pr_number) = refreshed_plan_branch.pr_number {
-                        if let Err(e) = github_service
+                        match github_service
                             .mark_pr_ready(Path::new(&project.working_directory), pr_number)
                             .await
                         {
-                            tracing::warn!(
-                                task_id = task.id.as_str(),
-                                pr_number,
-                                error = %e,
-                                "PR mode: failed to mark newly-created PR ready after final plan task merge"
-                            );
+                            Ok(()) => {
+                                restore_plan_merge_task_auto_merge_after_pr_ready(
+                                    project,
+                                    &refreshed_plan_branch,
+                                    pr_number,
+                                    services,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = task.id.as_str(),
+                                    pr_number,
+                                    error = %e,
+                                    "PR mode: failed to mark newly-created PR ready after final plan task merge"
+                                );
+                            }
                         }
                     }
                 }

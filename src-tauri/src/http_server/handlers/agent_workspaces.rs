@@ -2759,6 +2759,7 @@ async fn complete_ideation_plan_pr_fix_for_terminal_pr(
         .update_pr_status(&plan_branch.id, db_status)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    clear_terminal_plan_pr_auto_merge_marker(state, plan_branch, terminal_status).await;
     state
         .agent_conversation_workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
@@ -2794,6 +2795,46 @@ async fn complete_ideation_plan_pr_fix_for_terminal_pr(
         pr_number: Some(target.pr_number),
         pr_url: target.pr_url.clone(),
     }))
+}
+
+async fn clear_terminal_plan_pr_auto_merge_marker(
+    state: &AppState,
+    plan_branch: &PlanBranch,
+    pr_status: &str,
+) {
+    let Some(task_id) = plan_branch.merge_task_id.as_ref() else {
+        return;
+    };
+
+    let mut task = match state.task_repo.get_by_id(task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                pr_status,
+                error = %error,
+                "complete_agent_workspace_pr_fix: failed to load terminal auto-merge correction marker task"
+            );
+            return;
+        }
+    };
+
+    let changed =
+        crate::domain::state_machine::transition_handler::clear_github_auto_merge_correction_marker_for_terminal_pr(
+            &mut task,
+            pr_status,
+        );
+    if changed {
+        if let Err(error) = state.task_repo.update(&task).await {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                pr_status,
+                error = %error,
+                "complete_agent_workspace_pr_fix: failed to clear terminal auto-merge correction marker"
+            );
+        }
+    }
 }
 
 async fn complete_ideation_plan_pr_fix_publish(

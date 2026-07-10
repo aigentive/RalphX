@@ -932,11 +932,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE mode = 'edit'
                        AND linked_plan_branch_id IS NULL
-                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
                        AND (
                          (
                            status = 'active'
                            AND publication_pr_number IS NULL
+                           AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
                            AND COALESCE(publication_push_status, 'pushed') NOT IN (
                                'needs_agent', 'pending', 'failed', 'description_failed'
                            )

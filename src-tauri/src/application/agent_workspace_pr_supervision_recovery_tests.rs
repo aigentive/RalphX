@@ -25,9 +25,10 @@ use crate::domain::entities::plan_branch::{
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    AgentRunStatus, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
+    Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
@@ -1067,8 +1068,8 @@ async fn recovery_noops_when_workspace_is_missing_or_startup_has_no_candidates()
 }
 
 #[tokio::test]
-async fn skips_recovery_before_git_when_workspace_or_project_state_blocks_it() {
-    let (_temp_dir, mut project, workspace, _head_sha) =
+async fn skips_recovery_when_workspace_or_project_state_blocks_it() {
+    let (_temp_dir, mut project, workspace, head_sha) =
         setup_recovery_workspace("pr-supervision-project-skips").await;
     let conversation_id = workspace.conversation_id.clone();
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -1077,6 +1078,7 @@ async fn skips_recovery_before_git_when_workspace_or_project_state_blocks_it() {
         .await
         .expect("seed workspace");
     let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
 
     let active_run_repo = Arc::new(MemoryAgentRunRepository::new());
     active_run_repo
@@ -1101,6 +1103,7 @@ async fn skips_recovery_before_git_when_workspace_or_project_state_blocks_it() {
         outcome,
         AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("active_agent_run")
     );
+    assert_eq!(github.state().check_pr_sync_state_calls, 1);
 
     let outcome = recover_agent_workspace_pr_supervision(
         recovery_deps(
@@ -1157,7 +1160,173 @@ async fn skips_recovery_before_git_when_workspace_or_project_state_blocks_it() {
         outcome,
         AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("github_pr_disabled")
     );
-    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    assert_eq!(github.state().check_pr_sync_state_calls, 1);
+}
+
+#[tokio::test]
+async fn active_run_does_not_hide_terminal_pr_during_supervision_recovery() {
+    let (_temp_dir, project, workspace, _head_sha) =
+        setup_recovery_workspace("pr-supervision-active-terminal").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let github = Arc::new(MockGithubService::new());
+    let mut sync_state = open_sync_state(&workspace.branch_name, "remote-head");
+    sync_state.status = PrStatus::Merged {
+        merged_at: None,
+        merge_commit_sha: None,
+    };
+    github.will_return_sync_state(sync_state);
+
+    let active_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = active_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active run");
+    let chat = Arc::new(MockChatService::new());
+    let mut deps = recovery_deps(
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryProjectRepository::with_projects(
+            vec![project.clone()],
+        )),
+        Arc::clone(&github),
+        Arc::clone(&active_run_repo),
+    );
+    deps.chat_service =
+        Some(Arc::clone(&chat) as Arc<dyn crate::application::chat_service::ChatService>);
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("terminal PR should recover");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+            pr_number: 257,
+            pr_status: "merged".to_string(),
+        }
+    );
+    assert_eq!(
+        chat.get_stop_agent_calls().await,
+        vec![(
+            crate::domain::entities::ChatContextType::Project,
+            conversation_id.as_str()
+        )]
+    );
+    let updated_run = active_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup should succeed")
+        .expect("run should exist");
+    assert_eq!(updated_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        updated_run.error_message.as_deref(),
+        Some("Agent stopped because the workspace pull request was merged")
+    );
+    let updated_workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(
+        updated_workspace.publication_pr_status.as_deref(),
+        Some("merged")
+    );
+}
+
+#[tokio::test]
+async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_recovery() {
+    let (_temp_dir, project, workspace, plan_branch, _head_sha) =
+        setup_linked_plan_recovery_workspace("pr-supervision-active-plan-terminal", 704).await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    let plan_branch_id = plan_branch.id.clone();
+    plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("seed plan branch");
+    let github = Arc::new(MockGithubService::new());
+    let mut sync_state = open_sync_state(&workspace.branch_name, "remote-head");
+    sync_state.status = PrStatus::Merged {
+        merged_at: None,
+        merge_commit_sha: None,
+    };
+    github.will_return_sync_state(sync_state);
+
+    let active_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = active_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active run");
+    let chat = Arc::new(MockChatService::new());
+    let deps = AgentWorkspacePrSupervisionRecoveryDeps {
+        workspace_repo: Arc::clone(&workspace_repo)
+            as Arc<dyn AgentConversationWorkspaceRepository>,
+        project_repo: Arc::new(MemoryProjectRepository::with_projects(
+            vec![project.clone()],
+        )),
+        plan_branch_repo: Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
+        github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        pr_poller_registry: None,
+        transition_service: None,
+        chat_service: Some(
+            Arc::clone(&chat) as Arc<dyn crate::application::chat_service::ChatService>
+        ),
+        agent_run_repo: Arc::clone(&active_run_repo) as Arc<dyn AgentRunRepository>,
+        app_handle: None,
+        pr_fix_review_publish_resumer: None,
+    };
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("terminal linked plan PR should recover");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+            pr_number: 704,
+            pr_status: "merged".to_string(),
+        }
+    );
+    assert_eq!(
+        chat.get_stop_agent_calls().await,
+        vec![(
+            crate::domain::entities::ChatContextType::Project,
+            conversation_id.as_str()
+        )]
+    );
+    let updated_run = active_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup should succeed")
+        .expect("run should exist");
+    assert_eq!(updated_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        updated_run.error_message.as_deref(),
+        Some("Agent stopped because the workspace pull request was merged")
+    );
+    let updated_plan = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .expect("plan branch lookup should succeed")
+        .expect("plan branch should exist");
+    assert_eq!(updated_plan.pr_status, Some(PlanPrStatus::Merged));
 }
 
 #[tokio::test]
