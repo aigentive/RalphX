@@ -4602,17 +4602,27 @@ async fn automation_scheduler_purges_queued_delivery_prompt_without_failing_run(
 }
 
 #[tokio::test]
-async fn automation_scheduler_retries_queued_plan_revision_without_reinvoking_judge() {
+async fn automation_scheduler_retries_queued_plan_revision_from_done_verdict_without_reinvoking_judge(
+) {
     let scenario =
         ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
     scenario.use_automatic_plan_approval("claude").await;
     let instructions = "Add a concrete rollback test before approval.";
+    let run_id = AutomationRunId::from_string("run-1");
     scenario
         .run_repo
-        .set_plan_pending_instructions(
-            &AutomationRunId::from_string("run-1"),
-            Some(instructions.to_string()),
+        .compare_and_swap_plan_judge_state(
+            &run_id,
+            AutomationPlanJudgeState::None,
+            AutomationPlanJudgeState::Done,
+            Some(valid_plan_revise_verdict("plan-artifact-1", instructions)),
+            None,
         )
+        .await
+        .unwrap();
+    scenario
+        .run_repo
+        .set_plan_pending_instructions(&run_id, Some(instructions.to_string()))
         .await
         .unwrap();
     scenario.resumer.queue_next_send();
@@ -4635,6 +4645,26 @@ async fn automation_scheduler_retries_queued_plan_revision_without_reinvoking_ju
     );
     assert_eq!(plan_judge.call_count(), 0);
 
+    scenario.resumer.set_launches_paused(true);
+    scheduler.tick_once().await.unwrap();
+
+    let still_pending = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        still_pending.status,
+        AutomationRunStatus::AwaitingPlanApproval
+    );
+    assert_eq!(
+        still_pending.plan_pending_instructions.as_deref(),
+        Some(instructions)
+    );
+    assert_eq!(plan_judge.call_count(), 0);
+
+    scenario.resumer.set_launches_paused(false);
     scheduler.tick_once().await.unwrap();
 
     let delivered = scenario
@@ -6436,6 +6466,47 @@ async fn automation_scheduler_recovers_agent_completed_restart_orphan_in_edit_ph
     assert_eq!(latest.status, AutomationRunStatus::Running);
     assert!(latest.error_code.is_none());
     assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_retries_queued_restart_orphan_edit_redelivery_without_restamping_phase(
+) {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.approve("plan-artifact-1", 1);
+    let phase_started_at = prepare_edit_phase(&scenario).await;
+    seed_restart_orphan(&scenario, phase_started_at).await;
+    scenario.resumer.queue_next_send();
+    let scheduler = scenario.scheduler();
+
+    let first = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(first.failed_runs, 0);
+    let queued = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(queued.status, AutomationRunStatus::Running);
+    assert!(queued.error_code.is_none());
+    assert_eq!(queued.agent_phase_started_at, Some(phase_started_at));
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+    assert_eq!(scenario.resumer.purged_queued_messages(), 1);
+
+    let second = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(second.failed_runs, 0);
+    let redelivered = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(redelivered.status, AutomationRunStatus::Running);
+    assert!(redelivered.error_code.is_none());
+    assert_eq!(redelivered.agent_phase_started_at, Some(phase_started_at));
+    assert_eq!(scenario.resumer.prompts().len(), 2);
 }
 
 #[tokio::test]
