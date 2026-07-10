@@ -30,6 +30,7 @@ import {
   useAgentSessionStore,
   type AgentArtifactState,
   type AgentArtifactTab,
+  type AgentRuntimeProviderContext,
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -57,7 +58,10 @@ import {
   buildAgentStartConversationRetryInput,
   parseLinkedSetupFailure,
 } from "./agentStartErrors";
-import { normalizeRuntimeSelection } from "./agentOptions";
+import {
+  normalizeRuntimeForPersistence,
+  normalizeRuntimeSelection,
+} from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
 type SupportedStartIntegrationTab = Extract<
@@ -139,6 +143,7 @@ export function useStartAgentConversation({
       projectId: targetProjectId,
       content,
       runtime,
+      runtimeProviderContext,
       mode,
       base,
       files,
@@ -151,6 +156,7 @@ export function useStartAgentConversation({
       projectId: string;
       content: string;
       runtime: AgentRuntimeSelection;
+      runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
@@ -160,7 +166,16 @@ export function useStartAgentConversation({
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
-      const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
+      const persistenceRuntime = normalizeRuntimeForPersistence(
+        runtime,
+        modelRegistry,
+      );
+      const normalizedRuntime = normalizeRuntimeSelection(
+        persistenceRuntime,
+        modelRegistry,
+        runtimeProviderContext?.supportedEfforts,
+        runtimeProviderContext?.supportedModelAliases,
+      );
       const startIntegrationTab = getSupportedStartIntegrationTab(
         composerIntegrationReferences,
       );
@@ -556,6 +571,7 @@ export function useStartAgentConversation({
               projectId: targetProjectId,
               content,
               runtime: normalizedRuntime,
+              runtimeProviderContext,
               mode,
               base,
               codexFastMode,

@@ -8,6 +8,7 @@ import {
   agentModelOptionsForProvider,
   defaultEffortForModel,
   defaultModelForProvider,
+  normalizeAgentRuntimeForPersistence,
   normalizeAgentRuntimeSelection,
   type AgentModelRegistry,
 } from "@/lib/agent-models";
@@ -46,6 +47,13 @@ export function normalizeRuntimeSelection(
     providerSupportedEfforts,
     providerSupportedModelAliases
   );
+}
+
+export function normalizeRuntimeForPersistence(
+  runtime: unknown,
+  registry?: AgentModelRegistry
+): AgentRuntimeSelection {
+  return normalizeAgentRuntimeForPersistence(runtime, registry);
 }
 
 export function agentModelOptions(

@@ -26,7 +26,7 @@ import {
   agentWorkspaceKeys,
   canInspectAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
-import { normalizeRuntimeSelection } from "./agentOptions";
+import { normalizeRuntimeForPersistence } from "./agentOptions";
 import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
@@ -74,7 +74,10 @@ export function useAgentsWorkspaceModel({
         runtimeByConversationId[focusedWorkspaceReviewConversationId] ?? null,
       )
     : workspaceRuntime;
-  const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime, modelRegistry);
+  const normalizedActiveRuntime = normalizeRuntimeForPersistence(
+    activeRuntime,
+    modelRegistry,
+  );
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
   const canInspectActiveWorkspaceFreshness =

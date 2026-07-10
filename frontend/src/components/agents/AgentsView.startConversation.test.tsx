@@ -1254,6 +1254,147 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("starts with a remembered GPT-5.6 runtime when Codex reports the model alias", async () => {
+    mockAgentViewData();
+    const baseSettings = agentProviderSettings();
+    mockHarnessProviders(
+      agentProviderSettings({
+        providers: [
+          {
+            ...baseSettings.providers[0]!,
+            supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            supportedModelAliases: ["gpt-5.6-terra"],
+          },
+          baseSettings.providers[1]!,
+        ],
+      }),
+    );
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "use remembered GPT-5.6 runtime" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerHarness: "codex",
+          modelId: "gpt-5.6-terra",
+          logicalEffort: "ultra",
+        })
+      )
+    );
+  });
+
+  it("does not overwrite a remembered GPT-5.6 runtime when aliases are unavailable", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "gpt-5.5"
+      )
+    );
+    expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
+    });
+  });
+
+  it("revalidates stale GPT-5.6 runtime aliases before starting", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const seededConversation = conversation({
+      id: "conversation-stale-gpt56",
+      contextId: "project-1",
+      title: null,
+    });
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-stale-gpt56",
+      }),
+      sendResult: {
+        conversationId: "conversation-stale-gpt56",
+        agentRunId: "run-stale-gpt56",
+        isNewConversation: true,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start after aliases changed",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      },
+      runtimeProviderContext: {
+        supportedEfforts: ["low", "medium", "high", "xhigh"],
+        supportedModelAliases: ["gpt-5.5"],
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+    });
+
+    expect(startAgentConversationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "xhigh",
+      })
+    );
+  });
+
   it("falls back to the default runtime when the remembered provider is no longer valid", async () => {
     mockAgentViewData();
     resetAgentSessionState({
