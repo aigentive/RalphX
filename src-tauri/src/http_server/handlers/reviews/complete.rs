@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::task_diff_base::task_allows_empty_captured_diff;
 
 pub async fn ensure_task_still_reviewing_before_transition(
     state: &HttpServerState,
@@ -462,6 +463,30 @@ pub async fn complete_review(
                 transition_ai_review_approval(&state, &transition_service, &task_id, require_human)
                     .await?
             } else {
+                if !task_allows_empty_captured_diff(&task) {
+                    let base_ref = task
+                        .task_branch_base_ref
+                        .as_deref()
+                        .unwrap_or("<unknown-base-ref>");
+                    let base_sha = task
+                        .task_branch_base_sha
+                        .as_deref()
+                        .unwrap_or("<unknown-base-sha>");
+                    tracing::warn!(
+                        task_id = %task_id.as_str(),
+                        base_ref = %base_ref,
+                        base_sha = %base_sha,
+                        "complete_review rejected: approved_no_changes requires explicit no-code classification"
+                    );
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "empty_task_diff_against_captured_base: task {} cannot be approved as no-changes because it is not explicitly classified as no-code/no-change",
+                            task_id.as_str()
+                        ),
+                    ));
+                }
+
                 // No code changes confirmed — set metadata and skip merge pipeline.
                 // Re-fetch task for a fresh mutable copy to avoid borrow conflicts.
                 let mut fresh_task = state
