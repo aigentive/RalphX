@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
 use crate::application::git_service::GitService;
+use crate::application::task_diff_base::resolve_task_diff_base;
 use crate::application::validation_events::{
     emit_task_validation_event, read_stream_with_events, TaskValidationEventPayload,
     ValidationCommandEventContext,
@@ -156,7 +157,8 @@ impl TaskValidationService {
         let repo_path = resolve_validation_repo_path(&task, &project)?;
         let current_head_sha = GitService::get_head_sha(&repo_path).await.ok();
         let status_episode_entered_at = latest_execution_episode_entered_at(state, &task_id).await;
-        let base_ref = resolve_validation_base_ref(state, &task, &project).await;
+        let task_diff_base = resolve_task_diff_base(state, &task, &project).await;
+        let base_ref = Some(task_diff_base.effective_base_ref.clone());
         let purpose = ValidationPurpose::parse(request.purpose.as_deref().unwrap_or("final"));
         let context_type =
             ValidationContextType::parse(request.context_type.as_deref().unwrap_or("execution"));
@@ -175,7 +177,7 @@ impl TaskValidationService {
             mode,
             policy_enabled: settings.run_task_validations,
             head_sha: current_head_sha.clone(),
-            base_ref,
+            base_ref: base_ref.clone(),
             analysis_fingerprint: request.analysis_fingerprint.clone(),
             status_episode_entered_at,
             started_at,
@@ -199,6 +201,7 @@ impl TaskValidationService {
                 &project,
                 &repo_path,
                 current_head_sha.as_deref(),
+                base_ref.as_deref(),
                 request.analysis_fingerprint.as_deref(),
                 status_episode_entered_at,
                 mode,
@@ -326,6 +329,7 @@ async fn build_or_run_command(
     project: &Project,
     repo_path: &Path,
     head_sha: Option<&str>,
+    base_ref: Option<&str>,
     analysis_fingerprint: Option<&str>,
     status_episode_entered_at: Option<DateTime<Utc>>,
     mode: ValidationRunMode,
@@ -347,6 +351,7 @@ async fn build_or_run_command(
         &command,
         category,
         head_sha,
+        base_ref,
         analysis_fingerprint,
         status_episode_entered_at,
     );
@@ -599,28 +604,6 @@ fn resolve_command_cwd(repo_path: &Path, cwd: Option<&str>) -> AppResult<PathBuf
     Ok(resolved)
 }
 
-async fn resolve_validation_base_ref(
-    state: &AppState,
-    task: &Task,
-    project: &Project,
-) -> Option<String> {
-    if let Some(exec_plan_id) = &task.execution_plan_id {
-        if let Ok(Some(plan_branch)) = state
-            .plan_branch_repo
-            .get_by_execution_plan_id(exec_plan_id)
-            .await
-        {
-            return Some(plan_branch.branch_name);
-        }
-    }
-    if let Some(session_id) = &task.ideation_session_id {
-        if let Ok(Some(plan_branch)) = state.plan_branch_repo.get_by_session_id(session_id).await {
-            return Some(plan_branch.branch_name);
-        }
-    }
-    Some(project.base_branch_or_default().to_string())
-}
-
 async fn latest_execution_episode_entered_at(
     state: &AppState,
     task_id: &TaskId,
@@ -657,6 +640,7 @@ fn validation_cache_key(
     command: &str,
     category: ValidationCommandCategory,
     head_sha: Option<&str>,
+    base_ref: Option<&str>,
     analysis_fingerprint: Option<&str>,
     status_episode_entered_at: Option<DateTime<Utc>>,
 ) -> String {
@@ -664,6 +648,7 @@ fn validation_cache_key(
     hasher.update(task.id.as_str().as_bytes());
     hasher.update(project.id.as_str().as_bytes());
     hasher.update(head_sha.unwrap_or("unknown-head").as_bytes());
+    hasher.update(base_ref.unwrap_or("unknown-base").as_bytes());
     hasher.update(cwd.to_string_lossy().as_bytes());
     hasher.update(command.as_bytes());
     hasher.update(category.as_str().as_bytes());

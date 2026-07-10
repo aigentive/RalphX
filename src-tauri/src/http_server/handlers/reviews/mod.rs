@@ -6,7 +6,13 @@ use axum::{
 use std::sync::Arc;
 
 use super::*;
-use crate::application::{GitService, TaskTransitionService};
+use crate::application::{
+    task_diff_base::{
+        diff_stats_has_changes, ensure_task_has_non_empty_captured_diff,
+        read_captured_task_diff_stats,
+    },
+    GitService, TaskTransitionService,
+};
 use crate::domain::entities::{
     canonicalize_agent_conversation_issue, AgentConversationIssue,
     AgentConversationIssueCanonicalInput, AgentConversationIssueOccurrence, ChatConversationId,

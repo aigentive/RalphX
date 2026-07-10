@@ -102,8 +102,8 @@ impl SqliteTestDb {
     pub fn insert_task(&self, task: Task) -> Task {
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                "INSERT INTO tasks (id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, task_branch_base_ref, task_branch_base_sha, worktree_path, merge_commit_sha, metadata, merge_pipeline_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                 rusqlite::params![
                     task.id.as_str(),
                     task.project_id.as_str(),
@@ -124,6 +124,8 @@ impl SqliteTestDb {
                     task.archived_at.as_ref().map(|dt| dt.to_rfc3339()),
                     task.blocked_reason.as_deref(),
                     task.task_branch.as_deref(),
+                    task.task_branch_base_ref.as_deref(),
+                    task.task_branch_base_sha.as_deref(),
                     task.worktree_path.as_deref(),
                     task.merge_commit_sha.as_deref(),
                     task.metadata.as_deref(),

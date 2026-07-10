@@ -112,6 +112,9 @@ pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
+pub(crate) mod task_diff_base;
+#[cfg(test)]
+mod task_diff_base_tests;
 pub mod pull_request_detail;
 pub mod task_restart;
 pub mod task_scheduler_service;
