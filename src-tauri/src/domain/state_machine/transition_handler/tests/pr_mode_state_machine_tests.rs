@@ -14,7 +14,9 @@
 use super::helpers::*;
 use crate::application::PrPollerRegistry;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
-use crate::domain::entities::task_metadata::{MergeRecoveryEventKind, MergeRecoveryMetadata};
+use crate::domain::entities::task_metadata::{
+    MergeFailureSource, MergeRecoveryEventKind, MergeRecoveryMetadata,
+};
 use crate::domain::entities::{
     types::IdeationSessionId, Artifact, ArtifactId, ArtifactType, IdeationSession, InternalStatus,
     PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
@@ -702,8 +704,10 @@ async fn test_pr_mode_with_existing_pr_number_push_failure_stays_merge_incomplet
     plan_branch_repo.create(pb).await.unwrap();
 
     let mock_github = Arc::new(MockGithubService::new());
-    mock_github.state().push_branch_result =
-        Some(Err(AppError::GitOperation("push rejected".to_string())));
+    mock_github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+            .to_string(),
+    )));
 
     let services = TaskServices::new_mock()
         .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
@@ -752,6 +756,25 @@ async fn test_pr_mode_with_existing_pr_number_push_failure_stays_merge_incomplet
         updated_plan_branch.pr_push_status,
         PrPushStatus::Failed,
         "failed push should be durable on the plan branch"
+    );
+
+    let recovery = MergeRecoveryMetadata::from_task_metadata(updated_task.metadata.as_deref())
+        .expect("task metadata should parse")
+        .expect("merge recovery metadata should be persisted");
+    let attempt_failed = recovery
+        .events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.kind, MergeRecoveryEventKind::AttemptFailed))
+        .expect("PR push failure should record an AttemptFailed recovery event");
+    assert_eq!(
+        attempt_failed.failure_source,
+        Some(MergeFailureSource::AuthFailure),
+        "auth-shaped PR push failures must preserve the classified source"
+    );
+    assert!(
+        attempt_failed.message.contains("PR operation failed"),
+        "structured event should keep the PR operation context"
     );
 }
 
