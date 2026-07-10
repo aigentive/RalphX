@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use crate::application::agent_conversation_workspace::{
     resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
@@ -8,9 +11,11 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_supervision_recovery::{
     pr_supervision_recovery_schedule_skip_reason, recover_agent_workspace_pr_supervision,
     recover_recent_agent_workspace_pr_supervision_on_startup,
-    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryDeps,
-    AgentWorkspacePrSupervisionRecoveryOutcome, AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrFixReviewPublishResumer,
+    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryOutcome,
+    AgentWorkspacePrSupervisionRecoveryTrigger,
 };
+use crate::application::agent_workspace_review::resolve_review_target;
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::services::PrPollerRegistry;
@@ -18,9 +23,11 @@ use crate::domain::entities::plan_branch::{
     PrPushStatus as PlanPrPushStatus, PrStatus as PlanPrStatus,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
@@ -132,6 +139,56 @@ fn recovery_deps(
         chat_service: None,
         agent_run_repo,
         app_handle: None,
+        pr_fix_review_publish_resumer: None,
+    }
+}
+
+struct RecordingReviewPublishResumer {
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    calls: AtomicUsize,
+}
+
+impl RecordingReviewPublishResumer {
+    fn new(workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>) -> Self {
+        Self {
+            workspace_repo,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentWorkspacePrFixReviewPublishResumer for RecordingReviewPublishResumer {
+    async fn publish_pr_fix_after_workspace_review(
+        &self,
+        conversation_id: ChatConversationId,
+    ) -> Result<Option<bool>, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.workspace_repo
+            .update_publication(
+                &conversation_id,
+                Some(681),
+                Some("https://github.com/owner/repo/pull/681"),
+                Some("open"),
+                Some("pushed"),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id,
+                "published",
+                "succeeded",
+                "Mock publish completed.",
+                Some("published:681".to_string()),
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Some(true))
     }
 }
 
@@ -388,6 +445,7 @@ async fn recovers_blocked_pr_supervision_when_remote_head_matches_local_workspac
             chat_service: Some(Arc::new(MockChatService::new())),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
+            pr_fix_review_publish_resumer: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
@@ -491,6 +549,7 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
+            pr_fix_review_publish_resumer: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
@@ -588,6 +647,7 @@ async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr()
                 chat_service: None,
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
                 app_handle: None,
+                pr_fix_review_publish_resumer: None,
             },
             conversation_id.clone(),
             AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
@@ -682,6 +742,7 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
                 chat_service: None,
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
                 app_handle: None,
+                pr_fix_review_publish_resumer: None,
             },
             conversation_id,
             AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
@@ -945,6 +1006,7 @@ async fn skips_blocked_pr_supervision_recovery_when_worktree_is_dirty() {
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
+            pr_fix_review_publish_resumer: None,
         },
         conversation_id.clone(),
         AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
@@ -1225,6 +1287,220 @@ async fn startup_recovery_processes_candidates_and_skips_blocked_projects() {
 }
 
 #[tokio::test]
+async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
+    let (_temp_dir, project, mut workspace, base_sha) =
+        setup_recovery_workspace("pr-supervision-startup-review-handoff").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(base_sha);
+    std::fs::write(
+        Path::new(&workspace.worktree_path).join("fix.txt"),
+        "reviewed fix\n",
+    )
+    .expect("write workspace review target");
+    let review_target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("resolve review target")
+        .expect("workspace review target should exist");
+    workspace.publication_pr_number = Some(681);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/681".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("failed".to_string());
+    workspace.auto_publish_enabled = true;
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary =
+        Some("Recovered stale PR autofix state; no active fixer run is running.".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_workspace_review",
+            "reviewing",
+            "PR fix completed; Workspace Review started before publishing resumes.",
+            Some("workspace_review_started".to_string()),
+        ))
+        .await
+        .expect("seed pending review handoff");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id.clone());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-current"));
+    monitor.reviewed_target_scope = Some(review_target.scope);
+    monitor.reviewed_head_sha = review_target.head_sha.clone();
+    monitor.reviewed_diff_fingerprint = Some(review_target.diff_fingerprint.clone());
+    monitor.current_target_scope = Some(review_target.scope);
+    monitor.current_diff_fingerprint = Some(review_target.diff_fingerprint);
+    monitor.workspace_head_sha = review_target.head_sha;
+    workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("seed passed review monitor");
+
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let publish_resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
+        &workspace_repo,
+    )));
+
+    recover_recent_agent_workspace_pr_supervision_on_startup(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo,
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
+                as Arc<dyn PlanBranchRepository>,
+            github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            pr_poller_registry: None,
+            transition_service: None,
+            chat_service: None,
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            app_handle: None,
+            pr_fix_review_publish_resumer: Some(
+                Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
+            ),
+        },
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert_eq!(publish_resumer.calls(), 1);
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_autofix_workspace_review_passed"
+            && event.status == "publishing"
+            && event.classification.as_deref() == Some("workspace_review_passed")
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event.step == "published" && event.status == "succeeded"));
+}
+
+#[tokio::test]
+async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint() {
+    let (_temp_dir, project, mut workspace, base_sha) =
+        setup_recovery_workspace("pr-supervision-startup-stale-review-handoff").await;
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.base_commit = Some(base_sha);
+    let reviewed_path = Path::new(&workspace.worktree_path).join("fix.txt");
+    std::fs::write(&reviewed_path, "reviewed fix\n").expect("write reviewed workspace change");
+    let reviewed_target = resolve_review_target(&workspace, &project)
+        .await
+        .expect("resolve reviewed target")
+        .expect("reviewed target should exist");
+    std::fs::write(&reviewed_path, "changed after review\n").expect("write stale workspace change");
+
+    workspace.publication_pr_number = Some(681);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/681".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("failed".to_string());
+    workspace.auto_publish_enabled = true;
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary =
+        Some("Recovered stale PR autofix state; no active fixer run is running.".to_string());
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_workspace_review",
+            "reviewing",
+            "PR fix completed; Workspace Review started before publishing resumes.",
+            Some("workspace_review_started".to_string()),
+        ))
+        .await
+        .expect("seed pending review handoff");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id.clone());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-stale"));
+    monitor.reviewed_target_scope = Some(reviewed_target.scope);
+    monitor.reviewed_head_sha = reviewed_target.head_sha.clone();
+    monitor.reviewed_diff_fingerprint = Some(reviewed_target.diff_fingerprint.clone());
+    monitor.current_target_scope = Some(reviewed_target.scope);
+    monitor.current_diff_fingerprint = Some(reviewed_target.diff_fingerprint);
+    monitor.workspace_head_sha = reviewed_target.head_sha;
+    workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("seed stale passed review monitor");
+
+    let github = Arc::new(MockGithubService::new());
+    let publish_resumer = Arc::new(RecordingReviewPublishResumer::new(Arc::clone(
+        &workspace_repo,
+    )));
+    let outcome = recover_agent_workspace_pr_supervision(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo: Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            plan_branch_repo: Arc::new(MemoryPlanBranchRepository::new())
+                as Arc<dyn PlanBranchRepository>,
+            github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            pr_poller_registry: None,
+            transition_service: None,
+            chat_service: None,
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            app_handle: None,
+            pr_fix_review_publish_resumer: Some(
+                Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
+            ),
+        },
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::Startup,
+    )
+    .await
+    .expect("recover supervision");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("worktree_dirty")
+    );
+    assert_eq!(
+        publish_resumer.calls(),
+        0,
+        "stale passed review fingerprint must not authorize PR fix publish"
+    );
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("list publication events");
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.step == "pr_autofix_workspace_review_passed"),
+        "stale review handoff must remain unclosed until a current review passes"
+    );
+}
+
+#[tokio::test]
 async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
     let (_temp_dir, project, workspace, plan_branch, head_sha) =
         setup_linked_plan_recovery_workspace("pr-supervision-startup-linked", 704).await;
@@ -1256,6 +1532,7 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
+            pr_fix_review_publish_resumer: None,
         },
         Arc::new(HashSet::new()),
     )

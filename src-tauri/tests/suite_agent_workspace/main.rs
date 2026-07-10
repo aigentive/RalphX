@@ -13,6 +13,7 @@ mod support;
 #[path = "../common/mod.rs"]
 mod common;
 
+mod agent_workspace_pr_fix_review_autopublish;
 mod agent_workspace_publish_recovery;
 mod agent_workspace_repair_auto_publish;
 mod agent_workspace_review;
