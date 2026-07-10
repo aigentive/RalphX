@@ -47,6 +47,27 @@ describe("agentComposerCore", () => {
     ).toBeNull();
   });
 
+  it("ignores slash skill triggers with nested markers", () => {
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace/swe",
+        "Use /workspace/swe".length,
+      ),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace@swe",
+        "Use /workspace@swe".length,
+      ),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace$swe",
+        "Use /workspace$swe".length,
+      ),
+    ).toBeNull();
+  });
+
   it("detects slash commands at line start and slash skills in message text", () => {
     expect(detectAgentComposerTrigger("/mod", 4)).toEqual({
       kind: "slash-command",
@@ -83,6 +104,18 @@ describe("agentComposerCore", () => {
       integrationKind: "jira",
       query: "RX-42",
       rangeStart: "Attach ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("detects scoped integration triggers inside the current token", () => {
+    const text = "Attach foo@jira:RX-42";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "jira",
+      query: "RX-42",
+      rangeStart: "Attach foo".length,
       rangeEnd: text.length,
     });
   });
