@@ -384,6 +384,78 @@ async fn test_get_step_progress() {
 }
 
 #[tokio::test]
+async fn get_step_progress_command_excludes_skipped_steps_from_percent() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let mut steps = Vec::new();
+    for (sort_order, title) in [
+        "Done",
+        "Active",
+        "Pending",
+        "Skipped A",
+        "Skipped B",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        steps.push(
+            create_task_step(
+                task_id.as_str().to_string(),
+                CreateTaskStepInput {
+                    title: title.to_string(),
+                    description: None,
+                    sort_order: Some(sort_order as i32),
+                },
+                app.state::<AppState>(),
+            )
+            .await
+            .expect("step creates"),
+        );
+    }
+
+    start_step(steps[0].id.clone(), app.state::<AppState>())
+        .await
+        .expect("first step starts");
+    complete_step(
+        steps[0].id.clone(),
+        Some("done".to_string()),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("first step completes");
+    start_step(steps[1].id.clone(), app.state::<AppState>())
+        .await
+        .expect("second step starts");
+    skip_step(
+        steps[3].id.clone(),
+        "not needed".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("fourth step skips");
+    skip_step(
+        steps[4].id.clone(),
+        "not needed".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("fifth step skips");
+
+    let progress = get_step_progress(task_id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("progress loads");
+
+    assert_eq!(progress.total, 5);
+    assert_eq!(progress.completed, 1);
+    assert_eq!(progress.in_progress, 1);
+    assert_eq!(progress.pending, 1);
+    assert_eq!(progress.skipped, 2);
+    assert!((progress.percent_complete - 33.333332).abs() < 0.001);
+}
+
+#[tokio::test]
 async fn get_step_progress_command_summarizes_current_and_next_steps() {
     let app = task_step_command_app();
     let project = create_test_project(app.state::<AppState>().inner()).await;

@@ -6,6 +6,7 @@
  */
 
 import { useStepProgress } from "@/hooks/useTaskSteps";
+import { getStepProgressDisplay } from "@/types/task-step";
 
 interface StepProgressBarProps {
   taskId: string;
@@ -75,9 +76,21 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
     return null;
   }
 
-  const { total, completed, skipped, failed, inProgress } = progress;
-  const completedAndSkipped = completed + skipped;
-  const percentComplete = Math.round((completedAndSkipped / total) * 100);
+  const { total: rawTotal, completed, skipped, failed, inProgress } = progress;
+  const progressDisplay = getStepProgressDisplay(progress);
+
+  if (progressDisplay.total === 0) {
+    return null;
+  }
+
+  const percentComplete = Math.round(progressDisplay.completedPercent);
+  const activeSegmentStart = Math.max(0, Math.min(100, progressDisplay.completedPercent));
+  const activeSegmentEnd = Math.max(
+    activeSegmentStart,
+    Math.min(100, progressDisplay.activePercent)
+  );
+  const activeSegmentWidth = activeSegmentEnd - activeSegmentStart;
+  const showActiveSegment = inProgress > 0 && activeSegmentWidth > 0;
 
   // Determine if task is in terminal state (merged or approved)
   // Default to true for backward compatibility: show completed dots as green unless explicitly set to non-terminal state
@@ -86,23 +99,35 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
 
   // Compact mode: progress bar + percentage + dots for TaskCard
   if (compact) {
-    const visibleDotCount = Math.min(total, COMPACT_DOT_CAP);
-    const hiddenDotCount = Math.max(0, total - COMPACT_DOT_CAP);
+    const visibleDotCount = Math.min(rawTotal, COMPACT_DOT_CAP);
+    const hiddenDotCount = Math.max(0, rawTotal - COMPACT_DOT_CAP);
     return (
       <div className="flex-1 space-y-1.5">
         {/* Progress bar row with percentage */}
         <div className="flex items-center gap-2">
           <div
-            className="flex-1 h-1 rounded-full overflow-hidden"
+            className="relative flex-1 h-1 rounded-full overflow-hidden"
             style={{ backgroundColor: "var(--kanban-progress-track)" }}
           >
             <div
-              className="h-full rounded-full transition-all duration-300"
+              className="absolute inset-y-0 left-0 rounded-full transition-all duration-300"
               style={{
-                width: `${percentComplete}%`,
+                width: `${activeSegmentStart}%`,
                 backgroundColor: "var(--status-success)",
               }}
             />
+            {showActiveSegment && (
+              <div
+                className="step-progress-active-segment absolute inset-y-0 rounded-full transition-all duration-300"
+                data-animated="true"
+                aria-hidden="true"
+                style={{
+                  left: `${activeSegmentStart}%`,
+                  width: `${activeSegmentWidth}%`,
+                  backgroundColor: "var(--status-success)",
+                }}
+              />
+            )}
           </div>
           <span
             className="text-[0.625rem] tabular-nums shrink-0"
@@ -146,7 +171,7 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
     <div className="flex items-center gap-2">
       {/* Progress dots */}
       <div className="flex items-center gap-1">
-        {Array.from({ length: total }).map((_, index) => (
+        {Array.from({ length: rawTotal }).map((_, index) => (
           <div
             key={index}
             className={`h-1.5 w-1.5 rounded-full transition-colors ${getStepDotColor(
@@ -164,7 +189,7 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
 
       {/* Text summary */}
       <span className="text-xs text-text-muted">
-        {completedAndSkipped}/{total}
+        {progressDisplay.completed}/{progressDisplay.total}
       </span>
     </div>
   );

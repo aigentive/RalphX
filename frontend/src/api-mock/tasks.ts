@@ -6,7 +6,11 @@
  */
 
 import type { Task, TaskListResponse, CreateTask, UpdateTask, InternalStatus } from "@/types/task";
-import type { TaskStep, StepProgressSummary } from "@/types/task-step";
+import {
+  getStepProgressDisplay,
+  type TaskStep,
+  type StepProgressSummary,
+} from "@/types/task-step";
 import type { CleanupReport, InjectTaskResponse, InjectTaskInput, StateTransition, UnblockTaskResponse } from "@/api/tasks";
 import { AGENT_WORKER } from "@/constants/agents";
 import { createMockTask, generateTestUuid } from "@/test/mock-data";
@@ -471,6 +475,13 @@ export const mockStepsApi = {
     const currentStep = steps.find((s) => s.status === "in_progress") ?? null;
     const nextStep = steps.find((s) => s.status === "pending") ?? null;
 
+    const display = getStepProgressDisplay({
+      total,
+      completed,
+      inProgress,
+      skipped,
+    });
+
     return {
       taskId,
       total,
@@ -481,7 +492,7 @@ export const mockStepsApi = {
       failed,
       currentStep,
       nextStep,
-      percentComplete: total > 0 ? Math.round((completed / total) * 100) : 0,
+      percentComplete: display.completedPercent,
     };
   },
 

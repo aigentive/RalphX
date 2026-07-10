@@ -215,7 +215,19 @@ describe("StepProgressBar", () => {
       });
 
       // Should not contain text summary
-      expect(screen.queryByText("3/7")).not.toBeInTheDocument();
+      expect(screen.queryByText("2/6")).not.toBeInTheDocument();
+    });
+
+    it("uses completable steps for compact percent", async () => {
+      mockApi.steps.getProgress.mockResolvedValue(mockProgress);
+
+      render(<StepProgressBar taskId="task-1" compact />, {
+        wrapper: createWrapper(),
+      });
+
+      await vi.waitFor(() => {
+        expect(screen.getByText("33%")).toBeInTheDocument();
+      });
     });
 
     it("caps visible dots and shows +X more for large step counts", async () => {
@@ -252,12 +264,11 @@ describe("StepProgressBar", () => {
       });
 
       await vi.waitFor(() => {
-        // completed (2) + skipped (1) = 3
-        expect(screen.getByText("3/7")).toBeInTheDocument();
+        expect(screen.getByText("2/6")).toBeInTheDocument();
       });
     });
 
-    it("calculates completed + skipped correctly", async () => {
+    it("excludes skipped steps from the total count", async () => {
       const progress: StepProgressSummary = {
         ...mockProgress,
         total: 10,
@@ -275,8 +286,7 @@ describe("StepProgressBar", () => {
       });
 
       await vi.waitFor(() => {
-        // 4 completed + 2 skipped = 6
-        expect(screen.getByText("6/10")).toBeInTheDocument();
+        expect(screen.getByText("4/8")).toBeInTheDocument();
       });
     });
   });

@@ -639,7 +639,15 @@ describe("chat widget families without prior direct coverage", () => {
         />
         <StepIndicator
           toolCall={makeToolCall("get_step_progress", {
-            result: { total: 4, completed: 2, skipped: 0, pending: 2, percent_complete: 50 },
+            result: {
+              total: 5,
+              completed: 1,
+              in_progress: 1,
+              skipped: 2,
+              pending: 1,
+              failed: 0,
+              percent_complete: 60,
+            },
           })}
         />
         <StepsManifestWidget
@@ -657,7 +665,13 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByText("Approved")).toBeInTheDocument();
     expect(screen.getByText("Audit widget registry")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
-    expect(screen.getByText("2/4 steps")).toBeInTheDocument();
+    expect(screen.getByText("1/3 steps")).toBeInTheDocument();
+    expect(screen.queryByText("3/5 steps")).not.toBeInTheDocument();
+    expect(screen.getByText("33%")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Step progress" })).toHaveAttribute(
+      "aria-valuenow",
+      "33",
+    );
     expect(screen.getByTestId("steps-manifest-widget")).toBeInTheDocument();
   });
 

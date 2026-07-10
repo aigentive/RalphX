@@ -14,6 +14,7 @@
  */
 
 import React from "react";
+import { getStepProgressDisplay } from "@/types/task-step";
 import { StepLine, Badge, InlineIndicator } from "./shared";
 import { colors, getString, getNumber } from "./shared.constants";
 import type { ToolCallWidgetProps, StepLineVariant } from "./shared.constants";
@@ -94,7 +95,6 @@ interface StepProgressData {
   pending: number;
   skipped: number;
   failed: number;
-  percentComplete: number;
 }
 
 /** Extract progress data from get_step_progress result */
@@ -113,14 +113,13 @@ function extractProgress(toolCall: ToolCallWidgetProps["toolCall"]): StepProgres
     pending: getNumber(result, "pending") ?? 0,
     skipped: getNumber(result, "skipped") ?? 0,
     failed: getNumber(result, "failed") ?? 0,
-    percentComplete: getNumber(result, "percent_complete") ?? 0,
   };
 }
 
 function StepProgressIndicator({ progress, compact }: { progress: StepProgressData; compact?: boolean }) {
-  const done = progress.completed + progress.skipped;
-  const barWidth = progress.total > 0 ? (done / progress.total) * 100 : 0;
-  const allDone = done === progress.total;
+  const display = getStepProgressDisplay(progress);
+  const percentComplete = Math.round(display.completedPercent);
+  const allDone = display.total > 0 && display.completed === display.total;
 
   return (
     <div
@@ -134,6 +133,12 @@ function StepProgressIndicator({ progress, compact }: { progress: StepProgressDa
     >
       {/* Progress bar */}
       <div
+        aria-label="Step progress"
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={percentComplete}
+        aria-valuetext={`${display.completed}/${display.total} steps`}
+        role="progressbar"
         style={{
           flex: 1,
           height: 3,
@@ -144,7 +149,7 @@ function StepProgressIndicator({ progress, compact }: { progress: StepProgressDa
       >
         <div
           style={{
-            width: `${barWidth}%`,
+            width: `${display.completedPercent}%`,
             height: "100%",
             borderRadius: 2,
             background: allDone ? colors.success : colors.accent,
@@ -163,12 +168,12 @@ function StepProgressIndicator({ progress, compact }: { progress: StepProgressDa
           flexShrink: 0,
         }}
       >
-        {done}/{progress.total} steps
+        {display.completed}/{display.total} steps
       </span>
 
       {/* Percentage badge */}
       <Badge variant={allDone ? "success" : "muted"} compact>
-        {progress.percentComplete}%
+        {percentComplete}%
       </Badge>
     </div>
   );
