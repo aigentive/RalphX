@@ -675,6 +675,32 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByTestId("steps-manifest-widget")).toBeInTheDocument();
   });
 
+  it("renders skipped-only step progress without a zero denominator", () => {
+    render(
+      <StepIndicator
+        toolCall={makeToolCall("get_step_progress", {
+          result: {
+            total: 2,
+            completed: 0,
+            in_progress: 0,
+            skipped: 2,
+            pending: 0,
+            failed: 0,
+            percent_complete: 0,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("No steps to complete")).toBeInTheDocument();
+    expect(screen.queryByText("0/0 steps")).not.toBeInTheDocument();
+    expect(screen.queryByText("0%")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Step progress" })).toHaveAttribute(
+      "aria-valuetext",
+      "No steps to complete",
+    );
+  });
+
   it("renders TeamTaskWidgets and MCP context widgets", async () => {
     const user = userEvent.setup();
     render(

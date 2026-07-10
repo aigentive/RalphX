@@ -119,7 +119,11 @@ function extractProgress(toolCall: ToolCallWidgetProps["toolCall"]): StepProgres
 function StepProgressIndicator({ progress, compact }: { progress: StepProgressData; compact?: boolean }) {
   const display = getStepProgressDisplay(progress);
   const percentComplete = Math.round(display.completedPercent);
-  const allDone = display.total > 0 && display.completed === display.total;
+  const hasCompletableSteps = display.total > 0;
+  const allDone = hasCompletableSteps && display.completed === display.total;
+  const progressText = hasCompletableSteps
+    ? `${display.completed}/${display.total} steps`
+    : "No steps to complete";
 
   return (
     <div
@@ -137,7 +141,7 @@ function StepProgressIndicator({ progress, compact }: { progress: StepProgressDa
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={percentComplete}
-        aria-valuetext={`${display.completed}/${display.total} steps`}
+        aria-valuetext={progressText}
         role="progressbar"
         style={{
           flex: 1,
@@ -168,13 +172,15 @@ function StepProgressIndicator({ progress, compact }: { progress: StepProgressDa
           flexShrink: 0,
         }}
       >
-        {display.completed}/{display.total} steps
+        {progressText}
       </span>
 
       {/* Percentage badge */}
-      <Badge variant={allDone ? "success" : "muted"} compact>
-        {percentComplete}%
-      </Badge>
+      {hasCompletableSteps ? (
+        <Badge variant={allDone ? "success" : "muted"} compact>
+          {percentComplete}%
+        </Badge>
+      ) : null}
     </div>
   );
 }
