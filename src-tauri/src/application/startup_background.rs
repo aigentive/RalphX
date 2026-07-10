@@ -14,7 +14,7 @@ use crate::application::agent_workspace_bridge::{
 };
 use crate::application::automation::plan_gate::{
     AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
-    AutomationPlanVerificationStarter, AutomationRunResumer,
+    AutomationPlanVerificationStarter, AutomationRunResumer, ResumeDelivery,
 };
 use crate::application::automation::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
@@ -178,7 +178,7 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
         &self,
         conversation_id: &ChatConversationId,
         prompt: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<ResumeDelivery> {
         let chat_service = self.chat_service();
         resume_automation_run_with_prompt_via_chat_service(
             &self.state,
@@ -323,7 +323,7 @@ pub(crate) async fn resume_automation_run_with_prompt_via_chat_service<S: ChatSe
     chat_service: &S,
     conversation_id: &ChatConversationId,
     prompt: &str,
-) -> AppResult<()> {
+) -> AppResult<ResumeDelivery> {
     let conversation = state
         .chat_conversation_repo
         .get_by_id(conversation_id)
@@ -376,12 +376,10 @@ pub(crate) async fn resume_automation_run_with_prompt_via_chat_service<S: ChatSe
                 );
             }
         }
-        return Err(AppError::Infrastructure(
-            "automation plan gate send was queued instead of spawning".to_string(),
-        ));
+        return Ok(ResumeDelivery::QueuedAndPurged);
     }
 
-    Ok(())
+    Ok(ResumeDelivery::Delivered)
 }
 
 pub async fn recover_memory_archive_jobs_on_startup(

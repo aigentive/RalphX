@@ -10,10 +10,11 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository,
+    AgentRunRepository, ArtifactRepository, AutomationRunRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -94,6 +95,7 @@ pub(crate) fn build_startup_recovery_chat_service(
 
 pub(crate) struct StartupChatResumptionDeps {
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
+    pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     pub task_repo: Arc<dyn TaskRepository>,
     pub execution_state: Arc<ExecutionState>,
     pub chat_runtime_deps: ChatRuntimeFactoryDeps,
@@ -110,6 +112,7 @@ pub(crate) fn build_startup_chat_resumption_runner(
 ) -> ChatResumptionRunner {
     ChatResumptionRunner::new(
         deps.agent_run_repo,
+        deps.automation_run_repo,
         deps.task_repo,
         deps.execution_state,
         deps.chat_runtime_deps,

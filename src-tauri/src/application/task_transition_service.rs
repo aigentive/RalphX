@@ -86,6 +86,11 @@ fn build_transition_chat_service_fallback(
         Arc::new(crate::infrastructure::memory::MemoryArtifactRepository::new()),
         conversation_repo,
         agent_run_repo,
+        Arc::new(
+            crate::infrastructure::memory::MemoryAutomationRunRepository::new(
+                crate::infrastructure::memory::MemoryAutomationRepository::new_shared_state(),
+            ),
+        ),
         project_repo,
         task_repo,
         task_dep_repo,
@@ -1228,9 +1233,7 @@ impl TaskTransitionService {
         let app_state = app_handle
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>());
-        let event_sink = app_state
-            .as_ref()
-            .map(|state| Arc::clone(&state.events));
+        let event_sink = app_state.as_ref().map(|state| Arc::clone(&state.events));
         let throttled_emitter = app_handle.as_ref().and_then(|handle| {
             handle
                 .try_state::<Arc<crate::application::ThrottledEmitter>>()
@@ -1580,14 +1583,13 @@ impl TaskTransitionService {
             .as_ref()
             .expect("ideation_session_repo set in new()")
             .clone();
-        let emitter =
-            EnrichedEventEmitter::new(self.event_sink.as_ref().map(Arc::clone))
-                .with_external_events(
-                    Arc::clone(&repo),
-                    Arc::clone(&self.task_repo),
-                    Arc::clone(&self.project_repo),
-                    ideation_session_repo,
-                );
+        let emitter = EnrichedEventEmitter::new(self.event_sink.as_ref().map(Arc::clone))
+            .with_external_events(
+                Arc::clone(&repo),
+                Arc::clone(&self.task_repo),
+                Arc::clone(&self.project_repo),
+                ideation_session_repo,
+            );
         let emitter = if let Some(ref pub_) = self.webhook_publisher {
             emitter.with_webhook_publisher(Arc::clone(pub_))
         } else {

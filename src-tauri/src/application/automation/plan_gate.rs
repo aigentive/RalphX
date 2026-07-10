@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Utc;
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -23,6 +22,12 @@ pub(crate) const PLAN_RESUME_FAILED_ERROR_CODE: &str = "plan_resume_failed";
 pub(crate) const AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE: &str =
     "[ralphx:automation_plan_gate_paused]";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeDelivery {
+    Delivered,
+    QueuedAndPurged,
+}
+
 #[async_trait]
 pub trait AutomationRunResumer: Send + Sync {
     async fn is_agent_running(&self, conversation_id: &ChatConversationId) -> AppResult<bool>;
@@ -35,7 +40,7 @@ pub trait AutomationRunResumer: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
         prompt: &str,
-    ) -> AppResult<()>;
+    ) -> AppResult<ResumeDelivery>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,17 +207,4 @@ pub(crate) async fn refresh_plan_park_baseline(
     }
 
     Ok(true)
-}
-
-pub(crate) async fn arm_plan_reminder(
-    run_repo: &Arc<dyn AutomationRunRepository>,
-    run: &AutomationRun,
-) -> AppResult<()> {
-    run_repo
-        .set_plan_reminder_count(&run.id, run.plan_reminder_count.saturating_add(1))
-        .await?;
-    run_repo
-        .set_agent_phase_started_at(&run.id, Some(Utc::now()))
-        .await?;
-    Ok(())
 }

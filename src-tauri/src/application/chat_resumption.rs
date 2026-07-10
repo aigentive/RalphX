@@ -37,7 +37,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    ExecutionSettingsRepository, PlanBranchRepository, TaskRepository,
+    AutomationRunRepository, ExecutionSettingsRepository, PlanBranchRepository, TaskRepository,
 };
 use crate::domain::services::RunningAgentKey;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -51,6 +51,7 @@ const DURABLE_SILENT_COMPLETION_RECOVERY_MESSAGE_LIMIT: u32 = 20;
 /// and resumes them by sending a message with `--resume` to continue the provider session.
 pub struct ChatResumptionRunner {
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    automation_run_repo: Arc<dyn AutomationRunRepository>,
     chat_runtime_deps: ChatRuntimeFactoryDeps,
     task_repo: Arc<dyn TaskRepository>,
     execution_state: Arc<ExecutionState>,
@@ -66,12 +67,18 @@ impl ChatResumptionRunner {
     /// Create a new ChatResumptionRunner with all required dependencies.
     pub(crate) fn new(
         agent_run_repo: Arc<dyn AgentRunRepository>,
+        automation_run_repo: Arc<dyn AutomationRunRepository>,
         task_repo: Arc<dyn TaskRepository>,
         execution_state: Arc<ExecutionState>,
         chat_runtime_deps: ChatRuntimeFactoryDeps,
     ) -> Self {
+        debug_assert!(
+            Arc::ptr_eq(&automation_run_repo, &chat_runtime_deps.automation_run_repo,),
+            "chat resumption automation repository must match runtime factory dependencies"
+        );
         Self {
             agent_run_repo,
+            automation_run_repo,
             chat_runtime_deps,
             task_repo,
             execution_state,
@@ -164,6 +171,12 @@ impl ChatResumptionRunner {
 
             // 4. Resume each (skip if handled by task resumption)
             for conv in sorted {
+                if !self
+                    .is_non_automation_resume_candidate(&conv.conversation)
+                    .await
+                {
+                    continue;
+                }
                 if self.is_handled_by_task_resumption(&conv).await {
                     info!(
                         conversation_id = conv.conversation.id.as_str(),
@@ -253,6 +266,9 @@ impl ChatResumptionRunner {
 
         let mut recovered = 0u32;
         for conversation in conversations {
+            if !self.is_non_automation_resume_candidate(&conversation).await {
+                continue;
+            }
             let runtime_context_id = conversation.id.as_str();
             if self
                 .has_active_runtime_for_context(ChatContextType::Project, &runtime_context_id)
@@ -380,6 +396,39 @@ impl ChatResumptionRunner {
             }
         }
         recovered
+    }
+
+    async fn is_non_automation_resume_candidate(&self, conversation: &ChatConversation) -> bool {
+        if conversation.automation_id.is_some() {
+            info!(
+                conversation_id = conversation.id.as_str(),
+                "[CHAT_RESUMPTION] Skipping automation-owned conversation; recovery is scheduler-owned"
+            );
+            return false;
+        }
+
+        match self
+            .automation_run_repo
+            .find_run_by_conversation_id(&conversation.id)
+            .await
+        {
+            Ok(Some(_)) => {
+                info!(
+                    conversation_id = conversation.id.as_str(),
+                    "[CHAT_RESUMPTION] Skipping automation-owned conversation found by run lookup; recovery is scheduler-owned"
+                );
+                false
+            }
+            Ok(None) => true,
+            Err(error) => {
+                warn!(
+                    conversation_id = conversation.id.as_str(),
+                    error = %error,
+                    "[CHAT_RESUMPTION] Failed to determine automation ownership; skipping candidate"
+                );
+                false
+            }
+        }
     }
 
     async fn blocked_agent_workspace_resume_reason(

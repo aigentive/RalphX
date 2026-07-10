@@ -1178,6 +1178,44 @@ describe("AutomationDetailView", () => {
     expect(screen.getByLabelText("Run now")).not.toBeDisabled();
   });
 
+  it("surfaces an idle-after-cancelled banner and runs the automation from its CTA", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-cancelled", status: "cancelled", judgeState: "none" })],
+      usage,
+    });
+
+    const banner = await screen.findByTestId("automation-idle-after-cancelled");
+    expect(banner).toHaveTextContent(
+      "This automation is idle — its last run was cancelled and no new run will start on its own.",
+    );
+
+    await userEvent.click(within(banner).getByRole("button", { name: "Run now" }));
+
+    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+  });
+
+  it("hides the idle-after-cancelled banner for paused and running automations", async () => {
+    const pausedView = renderDetail({
+      automation: automation({ status: "paused" }),
+      runs: [run({ id: "run-paused-cancelled", status: "cancelled", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.queryByTestId("automation-idle-after-cancelled")).not.toBeInTheDocument();
+    pausedView.unmount();
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-running", status: "running", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.queryByTestId("automation-idle-after-cancelled")).not.toBeInTheDocument();
+  });
+
   it("disables delete for active automations", async () => {
     renderDetail({
       automation: automation({ status: "active" }),

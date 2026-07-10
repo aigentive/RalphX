@@ -39,6 +39,7 @@ import {
   describeAutomationDeleteConsequences,
   describeRunFailure,
   getAutomationRunView,
+  isIdleAfterCancelledRun,
   latestRun,
   type AutomationRunStatusTone,
 } from "@/components/automations/automationStage";
@@ -1035,6 +1036,7 @@ export function AgentsAutomationPanel({
   const activeGoalItem = findInProgressAutomationGoalItemFromItems(goalItems);
   const stage = runView.stageLabel;
   const failureReason = describeRunFailure(run);
+  const idleAfterCancelledRun = isIdleAfterCancelledRun(automation, run);
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
   const actionPending =
@@ -1288,6 +1290,20 @@ export function AgentsAutomationPanel({
           >
             Open run conversation
           </Button>
+        </div>
+      ) : idleAfterCancelledRun ? (
+        <div
+          className="rounded-md px-3 py-2 text-xs"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-secondary)",
+          }}
+          data-testid="agents-automation-idle-after-cancelled"
+        >
+          This automation is idle — its last run was cancelled and no new run will start on its own.
         </div>
       ) : showGenericPausedReason ? (
         <div

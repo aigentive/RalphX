@@ -1,4 +1,4 @@
-use super::automation::plan_gate::AutomationRunResumer;
+use super::automation::plan_gate::{AutomationRunResumer, ResumeDelivery};
 use super::chat_service::{MockChatService, SendCallerContext};
 use super::startup_background::{
     automation_run_resumer_for_test, automation_run_starter_for_test,
@@ -19,9 +19,7 @@ async fn automation_run_starter_validates_request_before_runtime_start() {
     let starter = automation_run_starter_for_test(AppState::new_test());
     let request = AutomationRunStartRequest {
         project_id: "project-1".to_string(),
-        conversation_id: ChatConversationId::from_string(
-            "11111111-1111-4111-8111-111111111111",
-        ),
+        conversation_id: ChatConversationId::from_string("11111111-1111-4111-8111-111111111111"),
         run_prompt: "Run the automation".to_string(),
         provider_harness: "codex".to_string(),
         model_id: "gpt-5.4".to_string(),
@@ -43,21 +41,21 @@ async fn automation_run_starter_validates_request_before_runtime_start() {
 }
 
 #[tokio::test]
-async fn automation_run_resumer_purges_queued_prompt_then_returns_error() {
+async fn automation_run_resumer_purges_queued_prompt_then_returns_queued_and_purged() {
     let (state, conversation_id) = seed_project_conversation().await;
     let chat_service = MockChatService::new();
     chat_service.set_already_running_after(0).await;
 
-    let error = resume_automation_run_with_prompt_via_chat_service(
+    let outcome = resume_automation_run_with_prompt_via_chat_service(
         &state,
         &chat_service,
         &conversation_id,
         "approved plan prompt",
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(error, AppError::Infrastructure(message) if message.contains("send was queued")));
+    assert_eq!(outcome, ResumeDelivery::QueuedAndPurged);
     let delete_calls = chat_service.get_delete_queued_message_calls().await;
     assert_eq!(
         delete_calls,
@@ -80,22 +78,22 @@ async fn automation_run_resumer_purges_queued_prompt_then_returns_error() {
 }
 
 #[tokio::test]
-async fn automation_run_resumer_returns_error_even_when_queued_prompt_purge_fails() {
+async fn automation_run_resumer_returns_queued_and_purged_when_queued_prompt_purge_fails() {
     let (state, conversation_id) = seed_project_conversation().await;
     let chat_service = MockChatService::new();
     chat_service.set_already_running_after(0).await;
     chat_service.fail_next_delete_queued_message().await;
 
-    let error = resume_automation_run_with_prompt_via_chat_service(
+    let outcome = resume_automation_run_with_prompt_via_chat_service(
         &state,
         &chat_service,
         &conversation_id,
         "approved plan prompt",
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
-    assert!(matches!(error, AppError::Infrastructure(message) if message.contains("send was queued")));
+    assert_eq!(outcome, ResumeDelivery::QueuedAndPurged);
     let delete_calls = chat_service.get_delete_queued_message_calls().await;
     assert_eq!(delete_calls.len(), 1);
     assert_eq!(delete_calls[0].2, "mock-queued-id");

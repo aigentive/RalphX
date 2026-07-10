@@ -2,6 +2,8 @@ use std::sync::{Arc, RwLock};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(test)]
+use std::{collections::HashSet, sync::Mutex};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -295,6 +297,8 @@ pub struct MemoryAutomationRunRepository {
     lose_next_published_to_merged_cas: AtomicBool,
     #[cfg(test)]
     published_run_error_updates: AtomicUsize,
+    #[cfg(test)]
+    failed_find_run_conversation_ids: Mutex<HashSet<String>>,
 }
 
 impl MemoryAutomationRunRepository {
@@ -308,6 +312,8 @@ impl MemoryAutomationRunRepository {
             lose_next_published_to_merged_cas: AtomicBool::new(false),
             #[cfg(test)]
             published_run_error_updates: AtomicUsize::new(0),
+            #[cfg(test)]
+            failed_find_run_conversation_ids: Mutex::new(HashSet::new()),
         }
     }
 
@@ -326,6 +332,14 @@ impl MemoryAutomationRunRepository {
     #[cfg(test)]
     pub fn published_run_error_update_count(&self) -> usize {
         self.published_run_error_updates.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn fail_find_run_for_conversation(&self, conversation_id: &ChatConversationId) {
+        self.failed_find_run_conversation_ids
+            .lock()
+            .unwrap()
+            .insert(conversation_id.as_str());
     }
 
     fn has_conflicting_open_run(runs: &[AutomationRun], candidate: &AutomationRun) -> bool {
@@ -408,6 +422,17 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AutomationRun>> {
+        #[cfg(test)]
+        if self
+            .failed_find_run_conversation_ids
+            .lock()
+            .unwrap()
+            .contains(&conversation_id.as_str())
+        {
+            return Err(AppError::Infrastructure(
+                "configured automation run lookup failure".to_string(),
+            ));
+        }
         Ok(self
             .runs
             .read()

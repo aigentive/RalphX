@@ -12,6 +12,7 @@ import {
   describeAutomationRunPrState,
   getAutomationRunView,
   isAutomationRunComposerReadOnly,
+  isIdleAfterCancelledRun,
   latestRunHoldsGoalAuthority,
 } from "./automationRunView";
 
@@ -155,6 +156,21 @@ describe("automationRunView", () => {
     expect(
       isAutomationRunComposerReadOnly(run({ status: "merged", judgeState: "skipped" })),
     ).toBe(false);
+  });
+
+  it("identifies active automations idling after a cancelled latest run", () => {
+    expect(isIdleAfterCancelledRun(automation(), run({ status: "cancelled" }))).toBe(true);
+    expect(
+      isIdleAfterCancelledRun(automation({ status: "paused" }), run({ status: "cancelled" })),
+    ).toBe(false);
+    expect(
+      isIdleAfterCancelledRun(automation({ status: "stopped" }), run({ status: "cancelled" })),
+    ).toBe(false);
+    expect(
+      isIdleAfterCancelledRun(automation({ status: "completed" }), run({ status: "cancelled" })),
+    ).toBe(false);
+    expect(isIdleAfterCancelledRun(automation(), run({ status: "running" }))).toBe(false);
+    expect(isIdleAfterCancelledRun(automation(), null)).toBe(false);
   });
 
   it("collects the core run view flags from one selector", () => {
