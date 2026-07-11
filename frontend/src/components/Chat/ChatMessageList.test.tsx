@@ -24,8 +24,8 @@ vi.mock("@/hooks/useMessageAttachments", () => ({
 }));
 
 vi.mock("./MessageItem", () => ({
-  MessageItem: ({ content }: { content: string }) => (
-    <article data-chat-message-item="true">{content}</article>
+  MessageItem: ({ content, children }: { content: string; children?: React.ReactNode }) => (
+    <article data-chat-message-item="true">{content}{children}</article>
   ),
   MessageMeta: () => null,
 }));
@@ -269,6 +269,22 @@ describe("ChatMessageList controller integration", () => {
     flushAnimationFrames();
 
     expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 530 }));
+  });
+
+  it("does not pin again when a later total-height measurement shrinks", () => {
+    renderList();
+    const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
+    primeAtBottom();
+
+    act(() => totalListHeightChanged(1_000));
+    flushAnimationFrames();
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+    act(() => totalListHeightChanged(900));
+    flushAnimationFrames();
+
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
   });
 
   it("unfollows on wheel-up, exposes the bottom control, and ignores later growth", () => {
@@ -540,6 +556,181 @@ describe("ChatMessageList controller integration", () => {
 
     expect(scroller).toHaveAttribute("tabindex", "0");
     expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 540 }));
+  });
+
+  it("unfollows for transcript PageUp while leaving editable key presses pinned", () => {
+    renderList();
+    const scroller = primeAtBottom();
+    const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
+    const input = document.createElement("input");
+    scroller.append(input);
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+
+    fireEvent.keyDown(input, { key: "PageUp" });
+    fireEvent.keyDown(scroller, { key: "PageUp" });
+    fireEvent.keyDown(scroller, { key: "PageDown" });
+    scrollWrites.mockClear();
+    act(() => totalListHeightChanged(1_040));
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
+    expect(scrollWrites).not.toHaveBeenCalled();
+  });
+
+  it("unfollows after pointer-driven upward scrolling and ignores growth after pointer release", () => {
+    renderList();
+    const scroller = primeAtBottom();
+    const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
+
+    fireEvent.pointerDown(scroller);
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    fireEvent.scroll(scroller);
+    fireEvent.pointerUp(scroller);
+    scrollWrites.mockClear();
+    act(() => totalListHeightChanged(1_040));
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
+    expect(scrollWrites).not.toHaveBeenCalled();
+  });
+
+  it("re-pins a following transcript after its scroller resize observer reports growth", () => {
+    let onResize: ResizeObserverCallback | null = null;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          onResize = callback;
+        }
+
+        disconnect(): void {}
+        observe(): void {}
+        unobserve(): void {}
+      },
+    );
+    renderList();
+    const scroller = primeAtBottom();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 500 });
+    scrollWrites.mockClear();
+
+    act(() => onResize?.([], {} as ResizeObserver));
+
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+    expect(scroller.scrollTop).toBe(600);
+  });
+
+  it("pins on streaming start only while the reader is still following", () => {
+    const { rerender } = renderList();
+    const scroller = primeAtBottom();
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 500 });
+    rerender(<ChatMessageList {...defaultProps} isAgentRunning />);
+    flushAnimationFrames();
+
+    // isAgentRunning appends a streaming timeline row, so the last index is 3.
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 3, align: "end" }),
+    );
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 220 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+    rerender(<ChatMessageList {...defaultProps} isAgentRunning={false} />);
+    rerender(<ChatMessageList {...defaultProps} isAgentRunning />);
+    flushAnimationFrames();
+
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("pins a following reader when the finalized provider message is revealed", () => {
+    const providerMessages: ChatMessageData[] = [
+      ...messages(2),
+      {
+        id: "provider-empty",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 10).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+      },
+    ];
+    const { rerender } = renderList({ messages: providerMessages, isAgentRunning: true });
+    const scroller = primeAtBottom();
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+
+    // Grow content so the reveal pin must actually write (a pin at true bottom is a no-op).
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 500 });
+    rerender(<ChatMessageList {...defaultProps} messages={providerMessages} isAgentRunning={false} />);
+    flushAnimationFrames();
+
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 2, align: "end" }),
+    );
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
+  });
+
+  it("restores the captured at-bottom anchor while expanding a persisted tool-call group", () => {
+    const toolCallMessages: ChatMessageData[] = [
+      ...messages(1),
+      {
+        id: "tool-call-1",
+        role: "assistant",
+        content: "First tool call",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: [{ type: "tool_use", id: "tool-1", name: "read_file", arguments: {} }],
+        timelineSequence: 10,
+      },
+      {
+        id: "tool-call-2",
+        role: "assistant",
+        content: "Second tool call",
+        createdAt: new Date(2026, 0, 1, 12, 2).toISOString(),
+        toolCalls: null,
+        contentBlocks: [{ type: "tool_use", id: "tool-2", name: "read_file", arguments: {} }],
+        timelineSequence: 11,
+      },
+    ];
+    renderList({ messages: toolCallMessages });
+    primeAtBottom();
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+
+    const toggle = screen.getByTestId("tool-call-group-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("tool-call-group-toggle")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("First tool call")).toBeInTheDocument();
+    expect(screen.getByText("Second tool call")).toBeInTheDocument();
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 2, align: "end" }),
+    );
+  });
+
+  it("forwards wheel movement from the bottom control to its scroller", () => {
+    renderList();
+    const scroller = primeAtBottom();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    scrollWrites.mockClear();
+    Object.defineProperty(scroller, "scrollBy", { configurable: true, value: undefined });
+
+    fireEvent.wheel(screen.getByTestId("chat-scroll-to-bottom-button"), { deltaY: 30, deltaX: 4 });
+
+    expect(scrollWrites).toHaveBeenCalledWith(
+      expect.objectContaining({ left: 4, top: 250, behavior: "auto" }),
+    );
+    expect(scroller.scrollTop).toBe(250);
   });
 
   it("does not treat wheel-up inside a nested scrollable block as an away intent", () => {

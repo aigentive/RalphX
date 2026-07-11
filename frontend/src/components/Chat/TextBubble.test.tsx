@@ -7,7 +7,7 @@
  * - Copy button functionality
  */
 
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, it, expect, vi } from "vitest";
@@ -159,6 +159,27 @@ describe("TextBubble", () => {
       rerender(<TextBubble text="**third**" isUser={false} isStreaming />);
 
       expect(markdownRenderProbe).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes only the latest streaming markdown update after the throttle window", async () => {
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      await screen.findByText("first");
+      vi.useFakeTimers();
+
+      rerender(<TextBubble text="**intermediate**" isUser={false} isStreaming />);
+      rerender(<TextBubble text="**latest**" isUser={false} isStreaming />);
+
+      expect(screen.queryByText("intermediate")).not.toBeInTheDocument();
+      expect(screen.getByText("first")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+
+      expect(screen.getByText("latest")).toBeInTheDocument();
+      expect(screen.queryByText("intermediate")).not.toBeInTheDocument();
+      vi.useRealTimers();
     });
 
     it("flushes the latest throttled streaming text immediately when finalizing", async () => {

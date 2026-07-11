@@ -77,6 +77,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let pinBehavior: "auto" | "smooth" = "auto";
   let pinReasons: string[] = [];
   let suppressFreeBottomReentry = false;
+  let detached = false;
 
   const getElement = (): HTMLElement | null => deps.getScrollElement() ?? attachedElement;
 
@@ -185,7 +186,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   };
 
   const performPin = (reason: string, behavior: "auto" | "smooth"): void => {
-    if (state === "free" || prependEpoch || zeroSizeEpoch) return;
+    if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     const element = getElement();
     beginBottomIntent();
     deps.scrollToIndex({ index: deps.getLastIndex(), align: "end", behavior });
@@ -201,7 +202,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   };
 
   const schedulePin = (reason: string, behavior: "auto" | "smooth"): void => {
-    if (state === "free" || prependEpoch || zeroSizeEpoch) return;
+    if (detached || state === "free" || prependEpoch || zeroSizeEpoch) return;
     pinBehavior = behavior;
     pinReasons.push(reason);
     if (pinFrame !== null) return;
@@ -264,6 +265,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
 
   return {
     attach(el) {
+      detached = false;
       attachedElement = el;
       previousScrollTop = el.scrollTop;
       zeroSizeEpoch = el.clientHeight === 0;
@@ -273,6 +275,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     },
 
     detach() {
+      detached = true;
       cancelPendingPin();
       cancelSettle();
       cancelJumpSettle();

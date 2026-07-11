@@ -460,4 +460,169 @@ describe("ChatScrollController", () => {
     expect(vi.getTimerCount()).toBe(0);
     vi.useRealTimers();
   });
+
+  it("treats keyboard away input as cancelling a returning bottom intent", () => {
+    const harness = createHarness(createElement({ scrollTop: 100 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.controller.notifyKeyScroll("up");
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("free");
+    expect(harness.scrollCalls).toHaveLength(0);
+  });
+
+  it("re-arms a returning descent when the true bottom moves before it settles", () => {
+    const harness = createHarness(createElement({ scrollTop: 100 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 1300 });
+    harness.flushNextFrame();
+    harness.flushNextFrame();
+
+    expect(harness.controller.getState()).toBe("returning");
+    expect(harness.scrollCalls).toEqual([
+      { index: 9, align: "end", behavior: "auto" },
+      { index: 9, align: "end", behavior: "auto" },
+    ]);
+    expect(harness.element.scrollTop).toBe(800);
+  });
+
+  it("waits through changing prepend compensation before treating later growth as followable", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.notifyPrepend();
+    harness.element.setGeometry({ scrollTop: 600 });
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollTop: 700 });
+    harness.flushNextFrame();
+    harness.flushNextFrame();
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(500);
+  });
+
+  it("pins its timeline target safely when the scroll element disappears", () => {
+    const element = createElement();
+    const scrollToIndex = vi.fn();
+    const controller = createChatScrollController({
+      cancelFrame: vi.fn(),
+      getLastIndex: () => 4,
+      getScrollElement: () => null,
+      requestFrame: (callback) => {
+        callback();
+        return 1;
+      },
+      scrollToIndex,
+    });
+
+    controller.requestPin("reconnect", "auto");
+
+    expect(scrollToIndex).toHaveBeenCalledExactlyOnceWith({
+      index: 4,
+      align: "end",
+      behavior: "auto",
+    });
+    expect(element.directWrites).toBe(0);
+  });
+
+  it("keeps a free reader free when an automatic pin is requested", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.scrollCalls.length = 0;
+    const writesBeforeRequest = harness.element.directWrites;
+
+    harness.controller.requestPin("streaming-started", "auto");
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("free");
+    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.directWrites).toBe(writesBeforeRequest);
+  });
+
+  it("coalesces repeated bottom-control clicks into one returning descent", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.controller.scrollToBottomClicked();
+    harness.flushFrames();
+
+    expect(harness.controller.getState()).toBe("pinned");
+    expect(harness.scrollCalls).toEqual([{ index: 9, align: "end", behavior: "auto" }]);
+  });
+
+  it("keeps a missing fallback anchor as a restore no-op", () => {
+    const harness = createHarness();
+    attach(harness);
+    const writesBeforeRestore = harness.element.directWrites;
+
+    harness.controller.captureAnchor();
+    harness.controller.restoreAnchor();
+
+    expect(harness.element.directWrites).toBe(writesBeforeRestore);
+    expect(harness.controller.getState()).toBe("pinned");
+  });
+
+  it("keeps a returning anchor restore on intent when its scroll write replays synchronously", () => {
+    const element = createElement();
+    const harness = createHarness(element);
+    const anchor = document.createElement("button");
+    let anchorTop = 100;
+    anchor.getBoundingClientRect = () => new DOMRect(0, anchorTop, 20, 20);
+    element.append(anchor);
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.controller.scrollToBottomClicked();
+    harness.flushNextFrame();
+    element.setGeometry({ scrollTop: 400 });
+    let replayTop = 400;
+    Object.defineProperty(element, "scrollTop", {
+      configurable: true,
+      get: () => replayTop,
+      set: (next: number) => {
+        anchorTop -= next - replayTop;
+        replayTop = next;
+        harness.controller.notifyScroll();
+      },
+    });
+
+    harness.controller.captureAnchor(anchor);
+    anchorTop = 160;
+    harness.controller.restoreAnchor();
+
+    expect(harness.controller.getState()).toBe("returning");
+    expect(element.scrollTop).toBe(460);
+  });
+
+  it("keeps detached controller notifications harmless and idempotent", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+    harness.controller.detach();
+    harness.controller.detach();
+    const writesAfterDetach = harness.element.directWrites;
+
+    harness.controller.notifyContainerResize();
+    harness.controller.notifyContentGrowth();
+    harness.controller.notifyPrepend();
+    harness.controller.notifyScroll();
+    harness.flushFrames();
+
+    expect(harness.element.directWrites).toBe(writesAfterDetach);
+    expect(harness.scrollCalls).toHaveLength(0);
+  });
 });
