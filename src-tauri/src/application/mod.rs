@@ -58,6 +58,8 @@ pub mod ideation_service;
 pub mod ideation_workspace;
 pub mod integration_reference_expansion;
 pub mod interactive_notification_producer;
+#[cfg(test)]
+mod interactive_notification_producer_tests;
 pub mod interactive_process_registry;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;

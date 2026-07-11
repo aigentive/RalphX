@@ -89,6 +89,23 @@ impl DesktopNotifier for FailingDesktopNotifier {
     }
 }
 
+#[derive(Default)]
+struct RecordingUpdateEmitter(Mutex<Vec<Option<String>>>);
+
+impl NotificationEventEmitter for RecordingUpdateEmitter {
+    fn emit_created(&self, _notification: &Notification) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn emit_updated(&self, notification: Option<&Notification>) -> AppResult<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(notification.map(|row| row.id.clone()));
+        Ok(())
+    }
+}
+
 async fn desktop_service(
     settings: NotificationSettings,
     focus_state: Arc<WindowFocusState>,
@@ -287,6 +304,33 @@ async fn desktop_coalescer_sends_one_summary_for_three_items_with_group_counts()
         sent[0].1.as_deref(),
         Some("2 reviews, 1 permission request, 1 merge conflict — project-1")
     );
+}
+
+#[tokio::test]
+async fn desktop_summary_omits_project_suffix_for_mixed_or_global_projects() {
+    let notifier = Arc::new(RecordingDesktopNotifier::default());
+    let (service, _, _) = desktop_service(
+        NotificationSettings::default(),
+        Arc::new(WindowFocusState::default()),
+        notifier.clone(),
+        StdDuration::from_millis(1),
+    )
+    .await;
+
+    for project_id in [Some("project-1"), Some("project-2"), None] {
+        let mut notification = notification_for(
+            NotificationCategory::ReviewNeeded,
+            NotificationSeverity::ActionRequired,
+            None,
+        );
+        notification.project_id = project_id.map(str::to_string);
+        service.record_ephemeral(notification).await;
+    }
+    settle_desktop_dispatch().await;
+
+    let sent = notifier.0.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1.as_deref(), Some("3 reviews"));
 }
 
 #[tokio::test]
@@ -500,6 +544,44 @@ async fn record_swallows_repository_failures_without_emitting() {
         NotificationService::new(Arc::new(FailingNotificationRepository), emitter.clone());
     service.record(new_notification(None)).await;
     assert!(emitter.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mark_read_emits_only_for_a_changed_row_and_swallows_repository_failures() {
+    let repo: Arc<dyn NotificationRepository> = Arc::new(MemoryNotificationRepository::new());
+    let emitter = Arc::new(RecordingUpdateEmitter::default());
+    let service = NotificationService::new(Arc::clone(&repo), emitter.clone());
+    let row = new_notification(Some("mark-read")).into_notification(Utc::now());
+    repo.create_with_dedupe(row.clone()).await.unwrap();
+
+    service.mark_read(&row.id).await;
+    service.mark_read(&row.id).await;
+    service.mark_read("missing").await;
+    assert_eq!(emitter.0.lock().unwrap().as_slice(), [Some(row.id.clone())]);
+
+    let failing_emitter: Arc<dyn NotificationEventEmitter> = emitter.clone();
+    let failing_service =
+        NotificationService::new(Arc::new(FailingNotificationRepository), failing_emitter);
+    failing_service.mark_read("fails").await;
+    assert_eq!(emitter.0.lock().unwrap().as_slice(), [Some(row.id)]);
+}
+
+#[tokio::test]
+async fn mark_all_read_emits_only_when_rows_changed_and_keeps_project_scope() {
+    let repo: Arc<dyn NotificationRepository> = Arc::new(MemoryNotificationRepository::new());
+    let emitter = Arc::new(RecordingUpdateEmitter::default());
+    let service = NotificationService::new(Arc::clone(&repo), emitter.clone());
+    let project_a = new_notification(Some("mark-all-a")).into_notification(Utc::now());
+    let mut project_b_input = new_notification(Some("mark-all-b"));
+    project_b_input.project_id = Some("project-2".to_string());
+    let project_b = project_b_input.into_notification(Utc::now());
+    repo.create_with_dedupe(project_a).await.unwrap();
+    repo.create_with_dedupe(project_b).await.unwrap();
+
+    service.mark_all_read(Some("project-1")).await;
+    service.mark_all_read(Some("project-1")).await;
+    assert_eq!(emitter.0.lock().unwrap().as_slice(), [None]);
+    assert_eq!(repo.unread_count(Some("project-2")).await.unwrap(), 1);
 }
 
 #[tokio::test]

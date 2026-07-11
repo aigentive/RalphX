@@ -957,4 +957,120 @@ mod with_repo {
         assert_eq!(repo_pending.len(), 1);
         assert_eq!(repo_pending[0].request_id, "fresh-req-1");
     }
+
+    #[tokio::test]
+    async fn strict_pending_read_merges_durable_and_live_questions_without_duplicates() {
+        let repo = Arc::new(MemoryQuestionRepository::new());
+        let durable = PendingQuestionInfo {
+            request_id: "durable-question".to_string(),
+            session_id: "session-1".to_string(),
+            question: "Persisted question?".to_string(),
+            header: None,
+            options: vec![],
+            multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: None,
+            created_at: "2026-07-11T00:00:00Z".to_string(),
+        };
+        repo.create_pending(&durable).await.unwrap();
+        let state = QuestionState::with_repo(repo);
+        state
+            .register(
+                "live-question".to_string(),
+                "session-2".to_string(),
+                "Live question?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+        state
+            .register(
+                "durable-question".to_string(),
+                "session-1".to_string(),
+                "Duplicate live question?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+
+        let pending = state.get_pending_info_strict().await.unwrap();
+        let request_ids: std::collections::HashSet<_> = pending
+            .iter()
+            .map(|question| question.request_id.as_str())
+            .collect();
+
+        assert_eq!(
+            request_ids,
+            std::collections::HashSet::from(["durable-question", "live-question"])
+        );
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn strict_pending_read_returns_durable_repository_failure() {
+        use crate::error::AppError;
+
+        struct FailingReadRepo(MemoryQuestionRepository);
+
+        #[async_trait::async_trait]
+        impl QuestionRepository for FailingReadRepo {
+            async fn create_pending(
+                &self,
+                info: &PendingQuestionInfo,
+            ) -> crate::error::AppResult<()> {
+                self.0.create_pending(info).await
+            }
+            async fn resolve(
+                &self,
+                request_id: &str,
+                answer: &QuestionAnswer,
+            ) -> crate::error::AppResult<bool> {
+                self.0.resolve(request_id, answer).await
+            }
+            async fn get_pending(&self) -> crate::error::AppResult<Vec<PendingQuestionInfo>> {
+                Err(AppError::Database("durable read failed".to_string()))
+            }
+            async fn get_by_request_id(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<PendingQuestionInfo>> {
+                self.0.get_by_request_id(request_id).await
+            }
+            async fn expire_all_pending(&self) -> crate::error::AppResult<u64> {
+                self.0.expire_all_pending().await
+            }
+            async fn expire_by_request_id(&self, request_id: &str) -> crate::error::AppResult<()> {
+                self.0.expire_by_request_id(request_id).await
+            }
+            async fn remove(&self, request_id: &str) -> crate::error::AppResult<bool> {
+                self.0.remove(request_id).await
+            }
+            async fn get_resolved_answer(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<QuestionAnswer>> {
+                self.0.get_resolved_answer(request_id).await
+            }
+        }
+
+        let repo = Arc::new(FailingReadRepo(MemoryQuestionRepository::new()));
+        let state = QuestionState::with_repo(repo);
+        state
+            .register(
+                "live-question".to_string(),
+                "session-1".to_string(),
+                "Still live?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+
+        let error = state.get_pending_info_strict().await.unwrap_err();
+        assert!(matches!(error, AppError::Database(message) if message == "durable read failed"));
+    }
 }

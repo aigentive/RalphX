@@ -5,14 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationCenterPanel } from "./NotificationCenterPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
+import { useNotificationReadActions } from "@/hooks/useNotificationHistory";
 import { useTaskStore } from "@/stores/taskStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { AttentionItem } from "@/types/notifications";
 import type { Task } from "@/types/task";
 import type { Project } from "@/types/project";
 
 vi.mock("@/hooks/useAttentionItems", () => ({ useAttentionItems: vi.fn() }));
+vi.mock("@/hooks/useNotificationHistory", () => ({ useNotificationReadActions: vi.fn() }));
 vi.mock("@/components/reviews/ReviewDetailModal", () => ({ ReviewDetailModal: ({ taskId }: { taskId: string }) => <div data-testid="review-detail-modal">{taskId}</div> }));
+
+const markAllRead = vi.fn();
 
 const item: AttentionItem = {
   id: "task:task-1:failed", category: "task_failed", title: "Task failed",
@@ -27,13 +32,15 @@ function renderPanel(isOpen: boolean, onClose = vi.fn()) {
 
 describe("NotificationCenterPanel first-paint behavior", () => {
   beforeEach(() => {
+    markAllRead.mockReset();
     vi.useFakeTimers();
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0) as unknown as number);
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
     vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false } as ReturnType<typeof useAttentionItems>);
+    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markReadBatch: vi.fn(), markAllRead });
   });
 
-  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  afterEach(() => { useUiStore.getState().closeModal(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("renders the 400px shell and tab chrome synchronously on first open", () => {
     renderPanel(true);
@@ -92,6 +99,45 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     });
     expect(screen.getByRole("menuitem", { name: "Mark all read" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Notification settings" })).toBeInTheDocument();
+  });
+
+  it("marks all history read from the overflow menu", () => {
+    renderPanel(true);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Notification actions" }), { button: 0, ctrlKey: false });
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Mark all read" }));
+
+    expect(markAllRead).toHaveBeenCalledOnce();
+  });
+
+  it("closes the drawer and opens the notification settings section from the overflow menu", () => {
+    const onClose = vi.fn();
+    renderPanel(true, onClose);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Notification actions" }), { button: 0, ctrlKey: false });
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Notification settings" }));
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "notifications" });
+  });
+
+  it("shows an empty action state once a loaded global attention query has no supported groups", () => {
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true);
+    act(() => { vi.runAllTimers(); });
+
+    expect(screen.getByTestId("attention-empty-state")).toHaveTextContent("Nothing needs your attention.");
+  });
+
+  it("closes the panel from Escape and its explicit close button", () => {
+    const onClose = vi.fn();
+    renderPanel(true, onClose);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByTestId("notifications-panel-close"));
+
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("keeps content through visual close then unmounts it after paint", () => {

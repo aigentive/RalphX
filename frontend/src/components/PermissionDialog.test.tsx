@@ -693,4 +693,28 @@ describe("PermissionDialog", () => {
     expect(mockToastInfo).toHaveBeenCalledTimes(1);
     expect(mockToastInfo).toHaveBeenCalledWith("Permission request timed out");
   });
+
+  it("re-opens from a notification by merging pending requests and moving the selected request first", async () => {
+    const user = userEvent.setup();
+    const selected = makeRequest({ request_id: "from-notification", tool_input: { command: "selected command" } });
+    const pending = makeRequest({ request_id: "from-backend", tool_name: "Read", tool_input: { file_path: "/tmp/pending" } });
+    mockGetPendingPermissions.mockResolvedValueOnce([]).mockResolvedValueOnce([pending, selected]);
+
+    render(<PermissionDialog />);
+    await waitFor(() => expect(mockGetPendingPermissions).toHaveBeenCalledOnce());
+    emitEvent("permission:request", makeRequest({ request_id: "already-visible", tool_input: { command: "existing command" } }));
+    await waitFor(() => expect(screen.getByText("existing command")).toBeInTheDocument());
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("ralphx:open-permission-dialog", { detail: { requestId: "from-notification" } }));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByText("selected command")).toBeInTheDocument());
+    expect(mockGetPendingPermissions).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("+2 more permission request(s) waiting")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Hide"));
+    await waitFor(() => expect(screen.getByText("existing command")).toBeInTheDocument());
+  });
 });

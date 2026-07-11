@@ -446,4 +446,75 @@ mod with_repo {
         // Should not panic when no repo
         state.expire_stale_on_startup().await;
     }
+
+    #[tokio::test]
+    async fn strict_pending_read_merges_durable_and_live_permissions_without_duplicates() {
+        let repo = Arc::new(MemoryPermissionRepository::new());
+        repo.create_pending(&make_info("durable-permission", "Bash"))
+            .await
+            .unwrap();
+        let state = PermissionState::with_repo(repo);
+        state.register(make_info("live-permission", "Edit")).await;
+        state
+            .register(make_info("durable-permission", "Duplicate"))
+            .await;
+
+        let pending = state.get_pending_info_strict().await.unwrap();
+        let request_ids: std::collections::HashSet<_> = pending
+            .iter()
+            .map(|permission| permission.request_id.as_str())
+            .collect();
+
+        assert_eq!(
+            request_ids,
+            std::collections::HashSet::from(["durable-permission", "live-permission"])
+        );
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn strict_pending_read_returns_durable_repository_failure() {
+        use crate::error::AppError;
+
+        struct FailingReadRepo(MemoryPermissionRepository);
+
+        #[async_trait::async_trait]
+        impl PermissionRepository for FailingReadRepo {
+            async fn create_pending(
+                &self,
+                info: &PendingPermissionInfo,
+            ) -> crate::error::AppResult<()> {
+                self.0.create_pending(info).await
+            }
+            async fn resolve(
+                &self,
+                request_id: &str,
+                decision: &PermissionDecision,
+            ) -> crate::error::AppResult<bool> {
+                self.0.resolve(request_id, decision).await
+            }
+            async fn get_pending(&self) -> crate::error::AppResult<Vec<PendingPermissionInfo>> {
+                Err(AppError::Database("durable read failed".to_string()))
+            }
+            async fn get_by_request_id(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<PendingPermissionInfo>> {
+                self.0.get_by_request_id(request_id).await
+            }
+            async fn expire_all_pending(&self) -> crate::error::AppResult<u64> {
+                self.0.expire_all_pending().await
+            }
+            async fn remove(&self, request_id: &str) -> crate::error::AppResult<bool> {
+                self.0.remove(request_id).await
+            }
+        }
+
+        let repo = Arc::new(FailingReadRepo(MemoryPermissionRepository::new()));
+        let state = PermissionState::with_repo(repo);
+        state.register(make_info("live-permission", "Bash")).await;
+
+        let error = state.get_pending_info_strict().await.unwrap_err();
+        assert!(matches!(error, AppError::Database(message) if message == "durable read failed"));
+    }
 }

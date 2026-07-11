@@ -15,6 +15,266 @@ use crate::domain::repositories::{PlanApprovalActor, PlanArtifactApprovalReposit
 use crate::domain::state_machine::Blocker;
 use crate::infrastructure::memory::MemoryPlanArtifactApprovalRepository;
 
+#[test]
+fn attention_item_helpers_keep_unknown_categories_global_and_unmapped_items_last() {
+    use super::attention_service_items::{attention_group, conversation_target, is_in_scope};
+
+    let missing_conversation = conversation_target(None, Some("project-1".to_string()));
+
+    assert_eq!(missing_conversation, NotificationTarget::none());
+    assert!(is_in_scope(
+        None,
+        Some(&ProjectId::from_string("project-1".to_string()))
+    ));
+    assert!(is_in_scope(
+        Some("project-1"),
+        Some(&ProjectId::from_string("project-1".to_string()))
+    ));
+    assert!(!is_in_scope(
+        Some("project-2"),
+        Some(&ProjectId::from_string("project-1".to_string()))
+    ));
+    assert_eq!(attention_group(NotificationCategory::AgentQuestion), 0);
+    assert_eq!(attention_group(NotificationCategory::AgentWaiting), 5);
+}
+
+#[tokio::test]
+async fn notification_context_resolver_resolves_task_permission_before_fallback_context() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-task").await;
+    let task = Task::new(project.id.clone(), "Review release notes".to_string());
+    state.task_repo.create(task.clone()).await.unwrap();
+    let resolver = NotificationContextResolver::from_app_state(&state);
+
+    let resolved = resolver
+        .resolve_permission_target(Some(task.id.as_str()), Some("missing-conversation"))
+        .await
+        .unwrap();
+
+    assert_eq!(resolved.project_id.as_deref(), Some(project.id.as_str()));
+    assert_eq!(
+        resolved.context_label.as_deref(),
+        Some("Review release notes")
+    );
+    assert_eq!(resolved.target.kind, NotificationTargetKind::Task);
+    assert_eq!(resolved.target.task_id.as_deref(), Some(task.id.as_str()));
+}
+
+#[tokio::test]
+async fn notification_context_resolver_returns_none_for_missing_and_unknown_contexts() {
+    let state = AppState::new_test();
+    let resolver = NotificationContextResolver::from_app_state(&state);
+
+    let missing = resolver
+        .resolve_permission_target(None, None)
+        .await
+        .unwrap();
+    let unknown = resolver
+        .resolve_context_target("unsupported_context", "missing")
+        .await
+        .unwrap();
+    let absent = resolver
+        .resolve_context_target("task", "missing-task")
+        .await
+        .unwrap();
+
+    for resolved in [missing, unknown, absent] {
+        assert_eq!(resolved.target, NotificationTarget::none());
+        assert!(resolved.project_id.is_none());
+        assert!(resolved.context_label.is_none());
+    }
+}
+
+#[tokio::test]
+async fn notification_context_resolver_resolves_project_ideation_and_delegation_contexts() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-contexts").await;
+    let mut project_conversation = ChatConversation::new_project(project.id.clone());
+    project_conversation.title = Some("Project planning".to_string());
+    state
+        .chat_conversation_repo
+        .create(project_conversation.clone())
+        .await
+        .unwrap();
+    let session = IdeationSession::builder()
+        .project_id(project.id.clone())
+        .title("Launch plan")
+        .build();
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+    let mut ideation_conversation = ChatConversation::new_ideation(session.id.clone());
+    ideation_conversation.title = Some("Ideation chat".to_string());
+    state
+        .chat_conversation_repo
+        .create(ideation_conversation.clone())
+        .await
+        .unwrap();
+    let mut delegation = ChatConversation::new_project(project.id.clone());
+    delegation.context_type = ChatContextType::Delegation;
+    delegation.title = Some("Delegate report".to_string());
+    state
+        .chat_conversation_repo
+        .create(delegation.clone())
+        .await
+        .unwrap();
+    let resolver = NotificationContextResolver::from_app_state(&state);
+
+    let project_target = resolver
+        .resolve_conversation_target(&project_conversation.id)
+        .await
+        .unwrap();
+    let ideation_target = resolver
+        .resolve_conversation_target(&ideation_conversation.id)
+        .await
+        .unwrap();
+    let delegation_target = resolver
+        .resolve_conversation_target(&delegation.id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        project_target.project_id.as_deref(),
+        Some(project.id.as_str())
+    );
+    assert_eq!(
+        project_target.context_label.as_deref(),
+        Some("Project planning")
+    );
+    assert_eq!(
+        ideation_target.project_id.as_deref(),
+        Some(project.id.as_str())
+    );
+    assert_eq!(
+        ideation_target.context_label.as_deref(),
+        Some("Launch plan")
+    );
+    assert!(delegation_target.project_id.is_none());
+    assert_eq!(
+        delegation_target.context_label.as_deref(),
+        Some("Delegate report")
+    );
+}
+
+#[tokio::test]
+async fn notification_context_resolver_handles_task_context_variants_and_missing_owners() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-task-variants").await;
+    let task = Task::new(project.id.clone(), "Shared task owner".to_string());
+    state.task_repo.create(task.clone()).await.unwrap();
+    let mut conversations = vec![
+        ChatConversation::new_task(task.id.clone()),
+        ChatConversation::new_task_execution(task.id.clone()),
+        ChatConversation::new_task_execution(task.id.clone()),
+    ];
+    conversations[1].context_type = ChatContextType::Review;
+    conversations[2].context_type = ChatContextType::Merge;
+    let mut missing_task = ChatConversation::new_task_execution(
+        crate::domain::entities::TaskId::from_string("missing-task".to_string()),
+    );
+    missing_task.context_type = ChatContextType::Review;
+    for conversation in conversations.iter().chain(std::iter::once(&missing_task)) {
+        state
+            .chat_conversation_repo
+            .create(conversation.clone())
+            .await
+            .unwrap();
+    }
+    let missing_session = ChatConversation::new_ideation(
+        crate::domain::entities::IdeationSessionId::from_string("missing-session".to_string()),
+    );
+    state
+        .chat_conversation_repo
+        .create(missing_session.clone())
+        .await
+        .unwrap();
+    let resolver = NotificationContextResolver::from_app_state(&state);
+
+    for conversation in conversations {
+        let resolved = resolver
+            .resolve_conversation_target(&conversation.id)
+            .await
+            .unwrap();
+        assert_eq!(resolved.project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(resolved.context_label.as_deref(), Some("Shared task owner"));
+    }
+    let missing_task_target = resolver
+        .resolve_conversation_target(&missing_task.id)
+        .await
+        .unwrap();
+    let missing_session_target = resolver
+        .resolve_conversation_target(&missing_session.id)
+        .await
+        .unwrap();
+
+    assert!(missing_task_target.project_id.is_none());
+    assert!(missing_task_target.context_label.is_none());
+    assert!(missing_session_target.project_id.is_none());
+    assert!(missing_session_target.context_label.is_none());
+}
+
+#[tokio::test]
+async fn notification_context_resolver_uses_session_fallback_and_ownership_predicates() {
+    let state = AppState::new_test();
+    let project = create_project(&state, "resolver-sessions").await;
+    let session = IdeationSession::builder()
+        .project_id(project.id.clone())
+        .title("Fallback plan")
+        .build();
+    state
+        .ideation_session_repo
+        .create(session.clone())
+        .await
+        .unwrap();
+    let automation_session = IdeationSession::builder()
+        .project_id(project.id.clone())
+        .title("Automation plan")
+        .build();
+    state
+        .ideation_session_repo
+        .create(automation_session.clone())
+        .await
+        .unwrap();
+    let mut automation_conversation = ChatConversation::new_ideation(automation_session.id.clone());
+    automation_conversation.automation_run_id = Some(AutomationRunId::from_string("run-owned"));
+    state
+        .chat_conversation_repo
+        .create(automation_conversation)
+        .await
+        .unwrap();
+    let mut implementation_task = Task::new(project.id.clone(), "Implementation".to_string());
+    implementation_task.ideation_session_id = Some(session.id.clone());
+    state.task_repo.create(implementation_task).await.unwrap();
+    let resolver = NotificationContextResolver::from_app_state(&state);
+
+    let fallback = resolver
+        .resolve_ideation_session_target(&session)
+        .await
+        .unwrap();
+
+    assert_eq!(fallback.project_id.as_deref(), Some(project.id.as_str()));
+    assert_eq!(fallback.target, NotificationTarget::none());
+    assert_eq!(fallback.context_label.as_deref(), Some("Fallback plan"));
+    assert!(resolver
+        .session_has_implementation_task(&session)
+        .await
+        .unwrap());
+    assert!(!resolver
+        .session_is_automation_owned(&session)
+        .await
+        .unwrap());
+    assert!(resolver
+        .session_is_automation_owned(&automation_session)
+        .await
+        .unwrap());
+    assert!(!resolver
+        .session_has_implementation_task(&automation_session)
+        .await
+        .unwrap());
+}
+
 fn automation(project_id: ProjectId, id: &str, status: AutomationStatus) -> Automation {
     let now = Utc::now();
     Automation {
