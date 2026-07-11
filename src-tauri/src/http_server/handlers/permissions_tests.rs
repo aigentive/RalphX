@@ -169,11 +169,10 @@ async fn request_permission_records_one_deduplicated_notification_without_event_
         Some(conversation_id.as_str())
     );
     assert_eq!(row.project_id.as_deref(), Some("project-1"));
-    assert!(row
-        .body
-        .as_deref()
-        .unwrap()
-        .contains("worker wants to run Bash"));
+    assert_eq!(
+        row.body.as_deref(),
+        Some("worker wants to run Bash on “Repository setup” — expires in 5m")
+    );
 }
 
 #[tokio::test]

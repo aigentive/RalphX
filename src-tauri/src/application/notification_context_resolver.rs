@@ -3,10 +3,10 @@ use std::sync::Arc;
 use crate::application::AppState;
 use crate::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, IdeationSession, IdeationSessionId,
-    NotificationTarget, NotificationTargetKind, TaskId,
+    NotificationTarget, NotificationTargetKind, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
-    ChatConversationRepository, IdeationSessionRepository, TaskRepository,
+    ChatConversationRepository, IdeationSessionRepository, ProjectRepository, TaskRepository,
 };
 use crate::error::AppResult;
 
@@ -15,6 +15,8 @@ pub struct ResolvedNotificationTarget {
     pub project_id: Option<String>,
     pub target: NotificationTarget,
     pub context_label: Option<String>,
+    pub project_name: Option<String>,
+    pub context_kind: Option<ChatContextType>,
 }
 
 /// Shared resolver for notification producers and attention aggregation.
@@ -25,6 +27,7 @@ pub struct NotificationContextResolver {
     task_repo: Arc<dyn TaskRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
 }
 
 impl NotificationContextResolver {
@@ -33,6 +36,7 @@ impl NotificationContextResolver {
             task_repo: Arc::clone(&state.task_repo),
             ideation_session_repo: Arc::clone(&state.ideation_session_repo),
             chat_conversation_repo: Arc::clone(&state.chat_conversation_repo),
+            project_repo: Arc::clone(&state.project_repo),
         }
     }
 
@@ -48,6 +52,7 @@ impl NotificationContextResolver {
                 .await?
             {
                 let project_id = task.project_id.to_string();
+                let project_name = self.project_name(&project_id).await;
                 return Ok(ResolvedNotificationTarget {
                     project_id: Some(project_id.clone()),
                     target: NotificationTarget {
@@ -60,6 +65,8 @@ impl NotificationContextResolver {
                         run_id: None,
                     },
                     context_label: Some(task.title),
+                    project_name,
+                    context_kind: Some(ChatContextType::Task),
                 });
             }
         }
@@ -68,6 +75,8 @@ impl NotificationContextResolver {
                 project_id: None,
                 target: NotificationTarget::none(),
                 context_label: None,
+                project_name: None,
+                context_kind: None,
             });
         };
         self.resolve_conversation_target(&ChatConversationId::from_string(context_id.to_string()))
@@ -87,14 +96,22 @@ impl NotificationContextResolver {
                 project_id: None,
                 target: NotificationTarget::none(),
                 context_label: None,
+                project_name: None,
+                context_kind: None,
             });
         };
         let project_id = self.project_id_for_conversation(&conversation).await?;
         let context_label = self.conversation_context_label(&conversation).await?;
+        let project_name = match project_id.as_deref() {
+            Some(project_id) => self.project_name(project_id).await,
+            None => None,
+        };
         Ok(ResolvedNotificationTarget {
             target: conversation_target(&conversation, project_id.clone()),
             project_id,
             context_label,
+            project_name,
+            context_kind: Some(conversation.context_type.clone()),
         })
     }
 
@@ -114,6 +131,8 @@ impl NotificationContextResolver {
                 project_id: Some(session.project_id.to_string()),
                 target: NotificationTarget::none(),
                 context_label: session.title.clone(),
+                project_name: self.project_name(session.project_id.as_str()).await,
+                context_kind: Some(ChatContextType::Ideation),
             }),
         }
     }
@@ -128,6 +147,8 @@ impl NotificationContextResolver {
                 project_id: None,
                 target: NotificationTarget::none(),
                 context_label: None,
+                project_name: None,
+                context_kind: None,
             });
         };
         let conversation = self
@@ -142,6 +163,8 @@ impl NotificationContextResolver {
                 project_id: None,
                 target: NotificationTarget::none(),
                 context_label: None,
+                project_name: None,
+                context_kind: None,
             }),
         }
     }
@@ -214,6 +237,20 @@ impl NotificationContextResolver {
                 .and_then(|session| session.title)),
             ChatContextType::Project | ChatContextType::Delegation => {
                 Ok(conversation.title.clone())
+            }
+        }
+    }
+
+    async fn project_name(&self, project_id: &str) -> Option<String> {
+        match self
+            .project_repo
+            .get_by_id(&ProjectId::from_string(project_id.to_string()))
+            .await
+        {
+            Ok(project) => project.map(|project| project.name),
+            Err(error) => {
+                tracing::warn!(error = %error, project_id, "Failed to resolve notification project name");
+                None
             }
         }
     }

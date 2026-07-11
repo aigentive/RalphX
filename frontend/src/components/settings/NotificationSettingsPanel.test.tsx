@@ -77,6 +77,23 @@ describe("NotificationSettingsPanel", () => {
     expect(screen.getByText(/badge and Needs-action list always stay on/i)).toBeInTheDocument();
   });
 
+  it("rechecks granted macOS permission when desktop notifications are enabled on mount", async () => {
+    renderPanel();
+
+    await screen.findByLabelText("Enable desktop notifications");
+    await waitFor(() => expect(isPermissionGrantedMock).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("warns when macOS permission was revoked while desktop notifications stayed enabled", async () => {
+    isPermissionGrantedMock.mockResolvedValue(false);
+    renderPanel();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Desktop notification permission is denied",
+    );
+  });
+
   it("disables desktop children when the desktop master setting is off", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "get_notification_settings") {

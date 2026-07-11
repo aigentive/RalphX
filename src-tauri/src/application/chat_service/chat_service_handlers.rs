@@ -1036,10 +1036,8 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
                             .notification_service()
                             .record(
                                 TaskPipelineNotificationProducer::provider_paused_notification(
-                                    &source_task_with_pause,
                                     &paused_at,
                                     &category.to_string(),
-                                    message,
                                 ),
                             )
                             .await;

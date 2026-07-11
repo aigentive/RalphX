@@ -10,9 +10,11 @@ use tokio::sync::Mutex;
 
 use crate::domain::entities::{
     notification_category_group, NewNotification, Notification, NotificationCategory,
-    NotificationCategoryGroup,
+    NotificationCategoryGroup, ProjectId,
 };
-use crate::domain::repositories::{NotificationRepository, NotificationSettingsRepository};
+use crate::domain::repositories::{
+    NotificationRepository, NotificationSettingsRepository, ProjectRepository,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::stream_timeouts;
 
@@ -134,15 +136,21 @@ struct DesktopNotificationCoalescer {
     flush_scheduled: AtomicBool,
     window: Duration,
     notifier: Arc<dyn DesktopNotifier>,
+    project_repo: Option<Arc<dyn ProjectRepository>>,
 }
 
 impl DesktopNotificationCoalescer {
-    fn new(window: Duration, notifier: Arc<dyn DesktopNotifier>) -> Self {
+    fn new(
+        window: Duration,
+        notifier: Arc<dyn DesktopNotifier>,
+        project_repo: Option<Arc<dyn ProjectRepository>>,
+    ) -> Self {
         Self {
             pending: Mutex::new(Vec::new()),
             flush_scheduled: AtomicBool::new(false),
             window,
             notifier,
+            project_repo,
         }
     }
 
@@ -161,7 +169,7 @@ impl DesktopNotificationCoalescer {
         let notifications = std::mem::take(&mut *self.pending.lock().await);
         self.flush_scheduled.store(false, Ordering::Release);
         if notifications.len() >= 3 {
-            let (title, body) = desktop_summary(&notifications);
+            let (title, body) = desktop_summary(&notifications, self.project_repo.as_deref()).await;
             self.send(&title, Some(&body));
             return;
         }
@@ -177,19 +185,25 @@ impl DesktopNotificationCoalescer {
     }
 }
 
-fn desktop_summary(notifications: &[Notification]) -> (String, String) {
+async fn desktop_summary(
+    notifications: &[Notification],
+    project_repo: Option<&dyn ProjectRepository>,
+) -> (String, String) {
     let mut counts = HashMap::<&'static str, usize>::new();
     let mut order = Vec::<&'static str>::new();
     for notification in notifications {
-        let label = desktop_summary_label(notification.category);
-        if !counts.contains_key(label) {
-            order.push(label);
+        let group = desktop_summary_group(notification.category);
+        if !counts.contains_key(group) {
+            order.push(group);
         }
-        *counts.entry(label).or_default() += 1;
+        *counts.entry(group).or_default() += 1;
     }
     let details = order
         .into_iter()
-        .map(|label| format!("{} {label}", counts[&label]))
+        .map(|group| {
+            let count = counts[&group];
+            format!("{count} {}", desktop_summary_count_label(group, count))
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let project = notifications
@@ -200,8 +214,22 @@ fn desktop_summary(notifications: &[Notification]) -> (String, String) {
                 .iter()
                 .all(|notification| notification.project_id.as_deref() == Some(*project))
         });
-    let body = project
-        .map(|project| format!("{details} — {project}"))
+    let project_name = match (project, project_repo) {
+        (Some(project_id), Some(project_repo)) => match project_repo
+            .get_by_id(&ProjectId::from_string(project_id.to_string()))
+            .await
+        {
+            Ok(Some(project)) => Some(project.name),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(error = %error, project_id, "Failed to resolve desktop summary project name");
+                None
+            }
+        },
+        _ => None,
+    };
+    let body = project_name
+        .map(|project_name| format!("{details} — {project_name}"))
         .unwrap_or(details);
     (
         format!("{} items need your attention", notifications.len()),
@@ -209,7 +237,7 @@ fn desktop_summary(notifications: &[Notification]) -> (String, String) {
     )
 }
 
-fn desktop_summary_label(category: NotificationCategory) -> &'static str {
+fn desktop_summary_group(category: NotificationCategory) -> &'static str {
     match category {
         NotificationCategory::ReviewNeeded
         | NotificationCategory::ReviewEscalated
@@ -227,6 +255,21 @@ fn desktop_summary_label(category: NotificationCategory) -> &'static str {
             NotificationCategoryGroup::AutomationRunCompletions => "automation completions",
             NotificationCategoryGroup::GitGithub => "GitHub items",
         },
+    }
+}
+
+fn desktop_summary_count_label(group: &'static str, count: usize) -> &'static str {
+    match (group, count == 1) {
+        ("reviews", true) => "review",
+        ("permission request", false) => "permission requests",
+        ("agent question", false) => "agent questions",
+        ("merge conflict", false) => "merge conflicts",
+        ("agent requests", true) => "agent request",
+        ("task failures", true) => "task failure",
+        ("automation approvals", true) => "automation approval",
+        ("automation completions", true) => "automation completion",
+        ("GitHub items", true) => "GitHub item",
+        (group, _) => group,
     }
 }
 
@@ -272,6 +315,7 @@ impl NotificationService {
             Arc::new(WindowFocusState::default()),
             Arc::new(NoopDesktopNotifier),
             Duration::from_secs(stream_timeouts().desktop_notification_coalesce_window_secs),
+            None,
         )
     }
 
@@ -282,13 +326,18 @@ impl NotificationService {
         focus_state: Arc<WindowFocusState>,
         notifier: Arc<dyn DesktopNotifier>,
         coalesce_window: Duration,
+        project_repo: Option<Arc<dyn ProjectRepository>>,
     ) -> Self {
         Self {
             repo,
             emitter,
             settings_repo,
             focus_state,
-            coalescer: Arc::new(DesktopNotificationCoalescer::new(coalesce_window, notifier)),
+            coalescer: Arc::new(DesktopNotificationCoalescer::new(
+                coalesce_window,
+                notifier,
+                project_repo,
+            )),
         }
     }
     pub fn repository(&self) -> Arc<dyn NotificationRepository> {

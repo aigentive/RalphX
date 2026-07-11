@@ -475,6 +475,9 @@ async fn transition_service_records_automation_run_notifications_only_after_winn
     assert!(rows
         .iter()
         .any(|row| row.dedupe_key.as_deref() == Some("run:failed:failed:timeout")));
+    assert!(rows.iter().any(|row| {
+        row.body.as_deref() == Some("Run #1 of “Automation automation-failed”: run timed out")
+    }));
     assert!(rows
         .iter()
         .any(|row| row.dedupe_key.as_deref() == Some("run:completed:completed")));

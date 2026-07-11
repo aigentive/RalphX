@@ -133,23 +133,19 @@ impl TaskPipelineNotificationProducer {
         })
     }
 
-    pub(crate) fn provider_paused_notification(
-        task: &Task,
-        paused_at: &str,
-        category: &str,
-        message: &str,
-    ) -> NewNotification {
-        Self::task_notification(
-            task,
-            NotificationCategory::ProviderPaused,
-            NotificationSeverity::Warning,
-            "Provider paused",
-            format!(
-                "“{}” paused because of a {category} provider error: {message}",
-                task.title
-            ),
-            format!("provider:{category}:paused:{paused_at}"),
-        )
+    pub(crate) fn provider_paused_notification(paused_at: &str, category: &str) -> NewNotification {
+        NewNotification {
+            project_id: None,
+            category: NotificationCategory::ProviderPaused,
+            severity: NotificationSeverity::Warning,
+            title: "Agents paused".to_string(),
+            body: Some(format!(
+                "{} reached — queue paused, auto-resumes",
+                provider_pause_label(category)
+            )),
+            target: NotificationTarget::none(),
+            dedupe_key: Some(format!("provider:{category}:paused:{paused_at}")),
+        }
     }
 
     pub(crate) fn recovery_prompt_notification(
@@ -183,7 +179,11 @@ impl TaskPipelineNotificationProducer {
             NotificationCategory::TaskStuck,
             NotificationSeverity::Warning,
             "Task needs attention",
-            format!("“{}”: {}", task.title, message.into()),
+            format!(
+                "Recovery failed on “{}” — task may be stuck. {}",
+                task.title,
+                message.into()
+            ),
             format!("task:{}:stuck:{instance_id}", task.id),
         )
     }
@@ -214,6 +214,14 @@ impl TaskPipelineNotificationProducer {
             dedupe_key: Some(dedupe_key),
         }
     }
+}
+
+fn provider_pause_label(category: &str) -> String {
+    let mut label = category.replace('_', " ");
+    if let Some(first) = label.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    label
 }
 
 #[async_trait]

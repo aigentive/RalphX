@@ -6,7 +6,7 @@ use axum::Json;
 use super::request_question;
 use crate::application::app_state::AppState;
 use crate::domain::entities::{
-    ChatConversation, NotificationCategory, NotificationTargetKind, ProjectId,
+    ChatConversation, NotificationCategory, NotificationTargetKind, Project,
 };
 use crate::http_server::types::{HttpServerState, QuestionRequestInput};
 
@@ -17,7 +17,14 @@ fn make_test_state() -> HttpServerState {
 #[tokio::test]
 async fn request_question_records_plan_mode_question_once_without_event_listener() {
     let state = make_test_state();
-    let conversation = ChatConversation::new_project(ProjectId::from_string("project-2".into()));
+    let project = Project::new("acme-app".into(), "/tmp/acme-app".into());
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let conversation = ChatConversation::new_project(project.id.clone());
     state
         .app_state
         .chat_conversation_repo
@@ -80,9 +87,9 @@ async fn request_question_records_plan_mode_question_once_without_event_listener
         row.target.conversation_id.as_deref(),
         Some(conversation_id.as_str())
     );
-    assert_eq!(row.project_id.as_deref(), Some("project-2"));
+    assert_eq!(row.project_id.as_deref(), Some(project.id.as_str()));
     assert_eq!(
         row.body.as_deref(),
-        Some("Should the proposal include a migration?")
+        Some("project on acme-app: “Should the proposal include a migration?”")
     );
 }

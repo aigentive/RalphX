@@ -10,7 +10,8 @@ use super::*;
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::permission_state::PendingPermissionInfo;
 use crate::application::{
-    NotificationContextResolver, PermissionDecision, PERMISSION_RESOLVED_EVENT,
+    NotificationContextResolver, PermissionDecision, PERMISSION_REQUEST_TTL,
+    PERMISSION_RESOLVED_EVENT,
 };
 
 pub async fn request_permission(
@@ -117,8 +118,8 @@ pub async fn await_permission(
         }
     };
 
-    // Wait for decision with 5 minute timeout
-    let timeout = tokio::time::Duration::from_secs(300);
+    // Wait for decision with the shared permission-request timeout.
+    let timeout = PERMISSION_REQUEST_TTL;
     let start = tokio::time::Instant::now();
 
     // Use loop to poll for changes

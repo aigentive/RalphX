@@ -10,14 +10,14 @@ use super::notification_service::{
 use super::AppState;
 use crate::domain::entities::{
     NewNotification, Notification, NotificationCategory, NotificationSettings,
-    NotificationSeverity, NotificationTarget,
+    NotificationSeverity, NotificationTarget, Project, ProjectId,
 };
 use crate::domain::repositories::{
-    NotificationPage, NotificationRepository, NotificationSettingsRepository,
+    NotificationPage, NotificationRepository, NotificationSettingsRepository, ProjectRepository,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
-    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
+    MemoryNotificationRepository, MemoryNotificationSettingsRepository, MemoryProjectRepository,
 };
 
 #[derive(Default)]
@@ -118,6 +118,10 @@ async fn desktop_service(
 ) {
     let repo: Arc<dyn NotificationRepository> = Arc::new(MemoryNotificationRepository::new());
     let settings_repo = Arc::new(MemoryNotificationSettingsRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let mut project = Project::new("acme-app".into(), "/tmp/acme-app".into());
+    project.id = ProjectId::from_string("project-1".into());
+    project_repo.create(project).await.unwrap();
     let settings_repo_dyn: Arc<dyn NotificationSettingsRepository> = settings_repo.clone();
     let emitter: Arc<dyn NotificationEventEmitter> = Arc::new(RecordingEmitter::default());
     let service = NotificationService::new_with_desktop_dispatch(
@@ -127,6 +131,7 @@ async fn desktop_service(
         focus_state,
         notifier,
         window,
+        Some(project_repo),
     );
     settings_repo.update_settings(&settings).await.unwrap();
     (service, settings_repo, repo)
@@ -302,7 +307,7 @@ async fn desktop_coalescer_sends_one_summary_for_three_items_with_group_counts()
     assert_eq!(sent[0].0, "4 items need your attention");
     assert_eq!(
         sent[0].1.as_deref(),
-        Some("2 reviews, 1 permission request, 1 merge conflict — project-1")
+        Some("2 reviews, 1 permission request, 1 merge conflict — acme-app")
     );
 }
 
@@ -328,9 +333,26 @@ async fn desktop_summary_omits_project_suffix_for_mixed_or_global_projects() {
     }
     settle_desktop_dispatch().await;
 
+    {
+        let sent = notifier.0.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1.as_deref(), Some("3 reviews"));
+    }
+
+    for _ in 0..3 {
+        let mut notification = notification_for(
+            NotificationCategory::ReviewNeeded,
+            NotificationSeverity::ActionRequired,
+            None,
+        );
+        notification.project_id = Some("unresolved-project".to_string());
+        service.record_ephemeral(notification).await;
+    }
+    settle_desktop_dispatch().await;
+
     let sent = notifier.0.lock().unwrap();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].1.as_deref(), Some("3 reviews"));
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].1.as_deref(), Some("3 reviews"));
 }
 
 #[tokio::test]

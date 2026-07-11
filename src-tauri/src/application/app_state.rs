@@ -412,6 +412,7 @@ impl AppState {
                 crate::infrastructure::agents::claude::stream_timeouts()
                     .desktop_notification_coalesce_window_secs,
             ),
+            Some(Arc::clone(&self.project_repo)),
         )
     }
 

@@ -524,14 +524,14 @@ fn paused_reason_label(reason: &str) -> &'static str {
 
 fn run_error_label(error_code: Option<&str>) -> &'static str {
     match error_code {
-        Some("no_changes") => "No changes to publish",
-        Some("publish_failed") => "Publish failed",
-        Some("timeout") => "Run timed out",
-        Some("agent_failed") => "Agent run failed",
-        Some("plan_not_submitted") => "Plan not submitted",
-        Some("plan_reminder_failed") => "Plan reminder failed",
-        Some("plan_resume_failed") => "Plan resume failed",
-        _ => "Run failed",
+        Some("no_changes") => "no changes to publish",
+        Some("publish_failed") => "publish failed",
+        Some("timeout") => "run timed out",
+        Some("agent_failed") => "agent run failed",
+        Some("plan_not_submitted") => "plan not submitted",
+        Some("plan_reminder_failed") => "plan reminder failed",
+        Some("plan_resume_failed") => "plan resume failed",
+        _ => "run failed",
     }
 }
 

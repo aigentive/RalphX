@@ -1635,6 +1635,11 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
         notifications[0].category,
         NotificationCategory::ProviderPaused
     );
+    assert_eq!(notifications[0].title, "Agents paused");
+    assert_eq!(
+        notifications[0].body.as_deref(),
+        Some("Rate limit reached — queue paused, auto-resumes")
+    );
     assert!(
         notifications[0]
             .dedupe_key
@@ -5110,6 +5115,12 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         "both failed fallback attempts describe one recovery-failed instance"
     );
     assert_eq!(task_stuck[0].severity, NotificationSeverity::Warning);
+    let body = task_stuck[0]
+        .body
+        .as_deref()
+        .expect("recovery failure needs notification copy");
+    assert!(body.starts_with("Recovery failed on “Recovery-failed task” — task may be stuck."));
+    assert!(body.contains("The automatic recovery transition failed:"));
     assert_eq!(task_stuck[0].target.kind, NotificationTargetKind::Task);
     assert_eq!(
         task_stuck[0].target.task_id.as_deref(),

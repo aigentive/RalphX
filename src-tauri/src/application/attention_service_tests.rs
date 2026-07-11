@@ -144,12 +144,25 @@ async fn notification_context_resolver_resolves_project_ideation_and_delegation_
         Some("Project planning")
     );
     assert_eq!(
+        project_target.project_name.as_deref(),
+        Some("resolver-contexts")
+    );
+    assert_eq!(project_target.context_kind, Some(ChatContextType::Project));
+    assert_eq!(
         ideation_target.project_id.as_deref(),
         Some(project.id.as_str())
     );
     assert_eq!(
         ideation_target.context_label.as_deref(),
         Some("Launch plan")
+    );
+    assert_eq!(
+        ideation_target.project_name.as_deref(),
+        Some("resolver-contexts")
+    );
+    assert_eq!(
+        ideation_target.context_kind,
+        Some(ChatContextType::Ideation)
     );
     assert!(delegation_target.project_id.is_none());
     assert_eq!(

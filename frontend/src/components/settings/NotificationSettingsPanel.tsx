@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Bell, Info, TriangleAlert } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -156,6 +156,14 @@ export function NotificationSettingsPanel() {
     const permission = await requestPermission();
     setPermissionDenied(permission !== "granted");
   };
+
+  useEffect(() => {
+    if (!data?.desktop_enabled) return;
+
+    void isPermissionGranted().then((granted) => {
+      setPermissionDenied(!granted);
+    });
+  }, [data?.desktop_enabled]);
 
   const updateDesktopEnabled = async (enabled: boolean) => {
     if (enabled) {

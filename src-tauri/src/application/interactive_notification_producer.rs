@@ -1,5 +1,6 @@
 use crate::application::notification_context_resolver::ResolvedNotificationTarget;
-use crate::application::permission_state::PendingPermissionInfo;
+use crate::application::permission_state::{PendingPermissionInfo, PERMISSION_REQUEST_TTL};
+use crate::domain::entities::ChatContextType;
 use crate::domain::entities::{
     NewNotification, NotificationCategory, NotificationSeverity, NotificationTarget,
 };
@@ -53,8 +54,9 @@ impl InteractiveNotificationProducer {
             severity: NotificationSeverity::ActionRequired,
             title: "Permission needed".to_string(),
             body: Some(format!(
-                "{actor} wants to run {}{location}",
-                request.tool_name
+                "{actor} wants to run {}{location} — expires in {}m",
+                request.tool_name,
+                PERMISSION_REQUEST_TTL.as_secs() / 60,
             )),
             target: resolved.target,
             dedupe_key: Some(format!("perm:{}", request.request_id)),
@@ -66,12 +68,13 @@ impl InteractiveNotificationProducer {
         question: &str,
         resolved: ResolvedNotificationTarget,
     ) -> NewNotification {
+        let body = agent_question_body(&resolved, truncate_question(question));
         NewNotification {
             project_id: resolved.project_id,
             category: NotificationCategory::AgentQuestion,
             severity: NotificationSeverity::ActionRequired,
             title: "Agent has a question".to_string(),
-            body: Some(truncate_question(question)),
+            body: Some(body),
             target: resolved.target,
             dedupe_key: Some(format!("question:{request_id}")),
         }
@@ -110,6 +113,32 @@ impl InteractiveNotificationProducer {
             target: resolved.target,
             dedupe_key: Some(format!("team-plan:{plan_id}")),
         }
+    }
+}
+
+fn agent_question_body(resolved: &ResolvedNotificationTarget, question: String) -> String {
+    let quoted_question = format!("“{question}”");
+    match (
+        resolved
+            .context_kind
+            .as_ref()
+            .and_then(question_context_kind),
+        resolved.project_name.as_deref(),
+    ) {
+        (Some(kind), Some(project_name)) => format!("{kind} on {project_name}: {quoted_question}"),
+        _ => quoted_question,
+    }
+}
+
+fn question_context_kind(context_type: &ChatContextType) -> Option<&'static str> {
+    match context_type {
+        ChatContextType::Ideation => Some("ideation"),
+        ChatContextType::Project => Some("project"),
+        ChatContextType::Task
+        | ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge => Some("task"),
+        ChatContextType::Delegation => None,
     }
 }
 

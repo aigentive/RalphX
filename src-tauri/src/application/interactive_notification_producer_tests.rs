@@ -2,7 +2,8 @@ use super::interactive_notification_producer::InteractiveNotificationProducer;
 use super::notification_context_resolver::ResolvedNotificationTarget;
 use crate::application::PendingPermissionInfo;
 use crate::domain::entities::{
-    NotificationCategory, NotificationSeverity, NotificationTarget, NotificationTargetKind,
+    ChatContextType, NotificationCategory, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
 };
 
 fn resolved_target(label: Option<&str>) -> ResolvedNotificationTarget {
@@ -18,6 +19,8 @@ fn resolved_target(label: Option<&str>) -> ResolvedNotificationTarget {
             run_id: None,
         },
         context_label: label.map(str::to_string),
+        project_name: Some("acme-app".to_string()),
+        context_kind: Some(ChatContextType::Ideation),
     }
 }
 
@@ -72,11 +75,11 @@ fn permission_request_prefers_resolved_context_and_falls_back_to_request_context
     assert_eq!(resolved.severity, NotificationSeverity::ActionRequired);
     assert_eq!(
         resolved.body.as_deref(),
-        Some("Planner wants to run Bash on “Resolved task”")
+        Some("Planner wants to run Bash on “Resolved task” — expires in 5m")
     );
     assert_eq!(
         fallback.body.as_deref(),
-        Some("Planner wants to run Bash on “fallback context”")
+        Some("Planner wants to run Bash on “fallback context” — expires in 5m")
     );
     assert_eq!(resolved.dedupe_key.as_deref(), Some("perm:permission-1"));
 }
@@ -94,12 +97,26 @@ fn agent_question_preserves_short_copy_and_truncates_long_copy_at_char_boundary(
         &long_question,
         resolved_target(None),
     );
+    let mut unresolved = resolved_target(None);
+    unresolved.project_name = None;
+    let without_project_name = InteractiveNotificationProducer::agent_question(
+        "question-unresolved-project",
+        "Should this expose an ID?",
+        unresolved,
+    );
 
     assert_eq!(
         short.body.as_deref(),
-        Some("Which deployment window works?")
+        Some("ideation on acme-app: “Which deployment window works?”")
     );
-    assert_eq!(long.body, Some(format!("{}…", "x".repeat(240))));
+    assert_eq!(
+        long.body,
+        Some(format!("ideation on acme-app: “{}…”", "x".repeat(240)))
+    );
+    assert_eq!(
+        without_project_name.body.as_deref(),
+        Some("“Should this expose an ID?”")
+    );
     assert_eq!(long.dedupe_key.as_deref(), Some("question:question-long"));
 }
 
