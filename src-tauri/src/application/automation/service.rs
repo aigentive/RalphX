@@ -201,7 +201,7 @@ impl AutomationService {
         run_repo: Arc<dyn AutomationRunRepository>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
-        notification_service: NotificationService,
+        notification_service: Arc<NotificationService>,
     ) -> Self {
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),

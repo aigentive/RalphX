@@ -352,7 +352,7 @@ impl ReconciliationRunner {
             self.app_handle.as_ref().and_then(|handle| {
                 handle
                     .try_state::<crate::application::AppState>()
-                    .map(|state| std::sync::Arc::new(state.notification_service()))
+                    .map(|state| state.notification_service())
             })
         });
         if notification_service.is_none() && self.app_handle.is_none() {

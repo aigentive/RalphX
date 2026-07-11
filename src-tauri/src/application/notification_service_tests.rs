@@ -7,6 +7,7 @@ use chrono::{Duration, Utc};
 use super::notification_service::{
     DesktopNotifier, NotificationEventEmitter, NotificationService, WindowFocusState,
 };
+use super::AppState;
 use crate::domain::entities::{
     NewNotification, Notification, NotificationCategory, NotificationSettings,
     NotificationSeverity, NotificationTarget,
@@ -286,6 +287,81 @@ async fn desktop_coalescer_sends_one_summary_for_three_items_with_group_counts()
         sent[0].1.as_deref(),
         Some("2 reviews, 1 permission request, 1 merge conflict — project-1")
     );
+}
+
+#[tokio::test]
+async fn app_state_notification_service_coalesces_records_across_separate_callers() {
+    let state = AppState::new_test();
+    let notifier = Arc::new(RecordingDesktopNotifier::default());
+    let (service, _, _) = desktop_service(
+        NotificationSettings::default(),
+        Arc::clone(&state.window_focus_state),
+        notifier.clone(),
+        StdDuration::from_millis(10),
+    )
+    .await;
+    state.install_notification_service_for_test(Arc::new(service));
+
+    let first_caller = state.notification_service();
+    let second_caller = state.notification_service();
+    assert!(Arc::ptr_eq(&first_caller, &second_caller));
+
+    first_caller
+        .record_ephemeral(notification_for(
+            NotificationCategory::ReviewNeeded,
+            NotificationSeverity::ActionRequired,
+            None,
+        ))
+        .await;
+    second_caller
+        .record_ephemeral(notification_for(
+            NotificationCategory::PermissionRequest,
+            NotificationSeverity::ActionRequired,
+            None,
+        ))
+        .await;
+    first_caller
+        .record_ephemeral(notification_for(
+            NotificationCategory::MergeConflict,
+            NotificationSeverity::ActionRequired,
+            None,
+        ))
+        .await;
+    settle_desktop_dispatch().await;
+
+    let sent = notifier.0.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "3 items need your attention");
+}
+
+#[tokio::test]
+async fn app_state_pre_handle_notification_service_does_not_block_later_dispatch_installation() {
+    let state = AppState::new_test();
+    let early_service = state.notification_service();
+    assert!(!state.has_cached_notification_service_for_test());
+
+    let notifier = Arc::new(RecordingDesktopNotifier::default());
+    let (service, _, _) = desktop_service(
+        NotificationSettings::default(),
+        Arc::clone(&state.window_focus_state),
+        notifier.clone(),
+        StdDuration::from_millis(1),
+    )
+    .await;
+    state.install_notification_service_for_test(Arc::new(service));
+
+    let upgraded_service = state.notification_service();
+    assert!(!Arc::ptr_eq(&early_service, &upgraded_service));
+    upgraded_service
+        .record_ephemeral(notification_for(
+            NotificationCategory::ReviewNeeded,
+            NotificationSeverity::ActionRequired,
+            None,
+        ))
+        .await;
+    settle_desktop_dispatch().await;
+
+    assert_eq!(notifier.0.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

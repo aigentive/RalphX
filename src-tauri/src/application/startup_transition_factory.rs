@@ -61,7 +61,7 @@ impl StartupTransitionFactory {
             &deps,
         );
         service = service.with_notifier(Arc::new(TaskPipelineNotificationProducer::new(
-            self.notification_service.as_ref().clone(),
+            Arc::clone(&self.notification_service),
         )));
         Self::log_build_step("startup_transition_base_service", started_at);
 

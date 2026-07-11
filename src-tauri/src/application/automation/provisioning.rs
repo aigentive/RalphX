@@ -190,7 +190,7 @@ impl AutomationRunProvisioner {
         starter: Arc<dyn AutomationRunStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
-        notification_service: NotificationService,
+        notification_service: Arc<NotificationService>,
     ) -> Self {
         let service = AutomationService::new(
             Arc::clone(&automation_repo),

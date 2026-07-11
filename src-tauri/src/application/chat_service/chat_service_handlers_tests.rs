@@ -5002,7 +5002,7 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
 #[tokio::test]
 async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
     let app_state = AppState::new_test();
-    let notification_service = Arc::new(app_state.notification_service());
+    let notification_service = app_state.notification_service();
     let notification_repo = notification_service.repository();
     let execution_state = Arc::new(ExecutionState::new());
     let mut task = Task::new(ProjectId::new(), "Recovery-failed task".to_string());

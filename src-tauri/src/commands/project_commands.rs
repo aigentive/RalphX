@@ -959,7 +959,7 @@ fn gh_web_login_args() -> [&'static str; 8] {
 async fn run_gh_web_login_command(
     app_handle: tauri::AppHandle,
     deadline: Duration,
-    notification_service: NotificationService,
+    notification_service: Arc<NotificationService>,
 ) -> Result<(), String> {
     let mut child =
         tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
@@ -1020,7 +1020,7 @@ async fn run_gh_web_login_command(
 pub async fn collect_gh_auth_login_output<S, R>(
     stream: Option<S>,
     app_handle: tauri::AppHandle<R>,
-    notification_service: NotificationService,
+    notification_service: Arc<NotificationService>,
 ) -> Vec<String>
 where
     S: AsyncRead + Unpin,

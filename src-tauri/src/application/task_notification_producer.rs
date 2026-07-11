@@ -27,10 +27,8 @@ pub struct TaskPipelineNotificationProducer {
 }
 
 impl TaskPipelineNotificationProducer {
-    pub fn new(service: NotificationService) -> Self {
-        Self {
-            service: Arc::new(service),
-        }
+    pub fn new(service: Arc<NotificationService>) -> Self {
+        Self { service }
     }
 
     fn state_notification(

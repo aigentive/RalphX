@@ -601,10 +601,10 @@ async fn task_pipeline_corrective_failed_transition_records_actionable_row() {
 #[tokio::test]
 async fn task_pipeline_notification_repository_failure_does_not_fail_transition() {
     let app_state = AppState::new_test();
-    let notification_service = NotificationService::new(
+    let notification_service = Arc::new(NotificationService::new(
         Arc::new(FailingNotificationRepository),
         Arc::new(NoopNotificationEventEmitter),
-    );
+    ));
     let service = build_test_service(&app_state).with_notifier(Arc::new(
         TaskPipelineNotificationProducer::new(notification_service),
     ));

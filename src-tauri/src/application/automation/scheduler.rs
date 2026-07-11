@@ -1398,7 +1398,7 @@ impl AutomationScheduler {
         plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
-        notification_service: NotificationService,
+        notification_service: Arc<NotificationService>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {

@@ -225,6 +225,8 @@ pub fn build_http_app_state(
     http_app_state_inner.session_merge_locks = Arc::clone(&app_state.session_merge_locks);
     // INVARIANT: both AppStates must observe the same native focus transitions.
     http_app_state_inner.window_focus_state = shared_window_focus_state;
+    // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
+    // connection; a per-connection refactor would silently split notification storage.
     Ok(Arc::new(http_app_state_inner))
 }
 

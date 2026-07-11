@@ -104,7 +104,7 @@ pub(crate) async fn run_startup_git_auth_preflight_with_notifications<R: Runtime
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     app_handle: &AppHandle<R>,
-    notification_service: Option<NotificationService>,
+    notification_service: Option<Arc<NotificationService>>,
 ) -> StartupGitAuthPreflightSummary {
     let started_at = Instant::now();
     let active_project_id = app_state_repo

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
@@ -281,6 +281,9 @@ pub struct AppState {
     pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
     /// Shared native window-focus signal used by desktop notification delivery.
     pub window_focus_state: Arc<WindowFocusState>,
+    /// Lazily initialized desktop dispatch service for this AppState.
+    /// Pre-AppHandle calls intentionally do not populate this cache, so later calls can use Tauri.
+    notification_service_cache: Arc<OnceLock<Arc<NotificationService>>>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories
@@ -371,16 +374,32 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Builds the notification service with the emitter available in this app context.
-    /// Both the Tauri and HTTP AppStates carry the same AppHandle in production.
-    pub fn notification_service(&self) -> NotificationService {
-        let emitter: Arc<dyn NotificationEventEmitter> = match self.app_handle.as_ref() {
+    /// Returns this AppState's shared notification service when an AppHandle is available.
+    /// A pre-AppHandle call returns a transient Noop-backed service and is never cached.
+    pub fn notification_service(&self) -> Arc<NotificationService> {
+        if let Some(service) = self.notification_service_cache.get() {
+            return Arc::clone(service);
+        }
+
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return Arc::new(self.build_notification_service(None));
+        };
+
+        Arc::clone(
+            self.notification_service_cache.get_or_init(|| {
+                Arc::new(self.build_notification_service(Some(app_handle.clone())))
+            }),
+        )
+    }
+
+    fn build_notification_service(&self, app_handle: Option<AppHandle>) -> NotificationService {
+        let emitter: Arc<dyn NotificationEventEmitter> = match app_handle.as_ref() {
             Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
             None => Arc::new(NoopNotificationEventEmitter),
         };
         let desktop_notifier: Arc<dyn crate::application::notification_service::DesktopNotifier> =
-            match self.app_handle.as_ref() {
-                Some(app_handle) => Arc::new(TauriDesktopNotifier::new(app_handle.clone())),
+            match app_handle {
+                Some(app_handle) => Arc::new(TauriDesktopNotifier::new(app_handle)),
                 None => Arc::new(NoopDesktopNotifier),
             };
         NotificationService::new_with_desktop_dispatch(
@@ -394,6 +413,19 @@ impl AppState {
                     .desktop_notification_coalesce_window_secs,
             ),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_notification_service_for_test(&self, service: Arc<NotificationService>) {
+        assert!(
+            self.notification_service_cache.set(service).is_ok(),
+            "test notification service cache must be empty"
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_cached_notification_service_for_test(&self) -> bool {
+        self.notification_service_cache.get().is_some()
     }
 
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
@@ -1250,6 +1282,7 @@ impl AppState {
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1520,6 +1553,7 @@ impl AppState {
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1686,6 +1720,7 @@ impl AppState {
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1861,6 +1896,7 @@ impl AppState {
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -2033,6 +2069,7 @@ impl AppState {
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),

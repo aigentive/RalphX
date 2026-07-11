@@ -151,7 +151,7 @@ pub struct AutomationTransitionService {
     automation_repo: Arc<dyn AutomationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     event_emitter: Arc<dyn AutomationEventEmitter>,
-    notification_service: NotificationService,
+    notification_service: Arc<NotificationService>,
 }
 
 impl AutomationTransitionService {
@@ -159,7 +159,7 @@ impl AutomationTransitionService {
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
-        notification_service: NotificationService,
+        notification_service: Arc<NotificationService>,
     ) -> Self {
         Self {
             automation_repo,

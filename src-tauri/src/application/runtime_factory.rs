@@ -549,7 +549,7 @@ impl ChatRuntimeFactoryDeps {
         )
         .with_chat_timeline_repo(Arc::clone(&state.chat_timeline_repo))
         .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
-        .with_notification_service(Arc::new(state.notification_service()))
+        .with_notification_service(state.notification_service())
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
