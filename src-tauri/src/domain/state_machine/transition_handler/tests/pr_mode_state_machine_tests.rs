@@ -40,6 +40,7 @@ use crate::infrastructure::memory::{
 use crate::tests::mock_github_service::MockGithubService;
 use crate::AppError;
 use async_trait::async_trait;
+use serde_json::Value;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -713,6 +714,191 @@ async fn test_pr_mode_with_existing_pr_number_calls_push_and_mark_ready() {
         InternalStatus::WaitingOnPr,
         "PR-backed final merge should wait on the GitHub PR instead of entering local Merging"
     );
+}
+
+#[tokio::test]
+async fn pr_mode_pending_merge_reenables_auto_merge_after_review_correction() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    setup_project(&project_repo).await;
+    let task_id = create_pending_merge_task(&task_repo, "task-pr-auto-merge-restore").await;
+    let mut task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    task.metadata = Some(
+        serde_json::json!({
+            "github_auto_merge_disabled_for_correction": true,
+            "github_auto_merge_pr_number": 42,
+            "github_auto_merge_method": "rebase",
+            "github_auto_merge_disabled_at": "2026-07-10T12:00:00Z",
+            "github_auto_merge_disabled_source": "github_review_feedback",
+        })
+        .to_string(),
+    );
+    task_repo.update(&task).await.unwrap();
+
+    let pb = make_pr_eligible_plan_branch(&task_id, Some(42), false);
+    plan_branch_repo.create(pb).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
+        .with_github_service(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>)
+        .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter::default()));
+
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::PendingMerge).await;
+    assert!(
+        result.is_ok(),
+        "on_enter(PendingMerge) should succeed: {:?}",
+        result
+    );
+
+    {
+        let state = mock_github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(state.mark_pr_ready_calls, 1);
+        assert_eq!(state.enable_pr_auto_merge_calls, 1);
+        assert_eq!(
+            state.last_enable_pr_auto_merge_args.as_ref(),
+            Some(&(42, "rebase".to_string()))
+        );
+    }
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(updated_task.internal_status, InternalStatus::WaitingOnPr);
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("metadata should exist"),
+    )
+    .expect("metadata should be valid JSON");
+    assert!(
+        metadata
+            .get("github_auto_merge_disabled_for_correction")
+            .is_none(),
+        "active disabled marker should be consumed after successful restore"
+    );
+    assert!(metadata.get("github_auto_merge_method").is_none());
+    assert_eq!(
+        metadata["github_auto_merge_reenabled_source"],
+        Value::String("pr_mode_pending_merge".to_string())
+    );
+    assert_eq!(
+        metadata["github_auto_merge_reenabled_method"],
+        Value::String("rebase".to_string())
+    );
+    assert!(
+        metadata["github_auto_merge_reenabled_at"].is_string(),
+        "successful restore should record an audit timestamp"
+    );
+}
+
+#[tokio::test]
+async fn pr_mode_pending_merge_keeps_auto_merge_marker_when_reenable_fails() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    setup_project(&project_repo).await;
+    let task_id = create_pending_merge_task(&task_repo, "task-pr-auto-merge-restore-fails").await;
+    let mut task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    task.metadata = Some(
+        serde_json::json!({
+            "github_auto_merge_disabled_for_correction": true,
+            "github_auto_merge_pr_number": 42,
+            "github_auto_merge_method": "squash",
+            "github_auto_merge_disabled_at": "2026-07-10T12:00:00Z",
+            "github_auto_merge_disabled_source": "github_review_feedback",
+        })
+        .to_string(),
+    );
+    task_repo.update(&task).await.unwrap();
+
+    let pb = make_pr_eligible_plan_branch(&task_id, Some(42), false);
+    let plan_branch_id = pb.id.clone();
+    plan_branch_repo.create(pb).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    mock_github.state().enable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+        "auto-merge enable denied".to_string(),
+    )));
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
+        .with_github_service(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>)
+        .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter::default()));
+
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::PendingMerge).await;
+    assert!(
+        result.is_ok(),
+        "on_enter(PendingMerge) should surface restore failure as merge-incomplete state: {:?}",
+        result
+    );
+
+    {
+        let state = mock_github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(state.mark_pr_ready_calls, 1);
+        assert_eq!(state.enable_pr_auto_merge_calls, 1);
+    }
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete
+    );
+    let metadata: Value = serde_json::from_str(
+        updated_task
+            .metadata
+            .as_deref()
+            .expect("metadata should exist"),
+    )
+    .expect("metadata should be valid JSON");
+    assert_eq!(
+        metadata["github_auto_merge_disabled_for_correction"],
+        Value::Bool(true),
+        "failed restore must keep the active marker for a later retry"
+    );
+    assert_eq!(
+        metadata["github_auto_merge_reenable_error"],
+        Value::String("Infrastructure error: auto-merge enable denied".to_string())
+    );
+    assert!(metadata["github_auto_merge_reenable_failed_at"].is_string());
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
 }
 
 #[tokio::test]
@@ -1742,8 +1928,29 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
+    let mut merge_task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "Plan PR merge".to_string(),
+    );
+    merge_task.id = TaskId::from_string("task-programmatic-plan-pr-sync-merge".to_string());
+    merge_task.internal_status = InternalStatus::Blocked;
+    merge_task.category = TaskCategory::PlanMerge;
+    merge_task.metadata = Some(
+        serde_json::json!({
+            "github_auto_merge_disabled_for_correction": true,
+            "github_auto_merge_pr_number": 789,
+            "github_auto_merge_method": "merge",
+            "github_auto_merge_disabled_at": "2026-07-10T12:00:00Z",
+            "github_auto_merge_disabled_source": "github_review_feedback",
+        })
+        .to_string(),
+    );
+    let merge_task_id = merge_task.id.clone();
+    task_repo.create(merge_task).await.unwrap();
+
     let mut plan_branch =
         make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
+    plan_branch.merge_task_id = Some(merge_task_id.clone());
     plan_branch.pr_eligible = true;
     plan_branch.pr_number = Some(789);
     plan_branch.pr_url = Some("https://github.com/owner/repo/pull/789".to_string());
@@ -1808,6 +2015,14 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
             "existing PR-backed branches should sync instead of creating another PR"
         );
         assert_eq!(
+            state.enable_pr_auto_merge_calls, 1,
+            "regular correction completion should restore disabled PR auto-merge"
+        );
+        assert_eq!(
+            state.last_enable_pr_auto_merge_args.as_ref(),
+            Some(&(789, "merge".to_string()))
+        );
+        assert_eq!(
             state.last_push_branch_name.as_deref(),
             Some(branch_name),
             "push should target the plan branch"
@@ -1822,6 +2037,29 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
     assert_eq!(
         updated_plan_branch.pr_push_status,
         crate::domain::entities::plan_branch::PrPushStatus::Pushed
+    );
+
+    let updated_merge_task = task_repo
+        .get_by_id(&merge_task_id)
+        .await
+        .unwrap()
+        .expect("merge task should exist");
+    let metadata: Value = serde_json::from_str(
+        updated_merge_task
+            .metadata
+            .as_deref()
+            .expect("metadata should exist"),
+    )
+    .expect("metadata should be valid JSON");
+    assert!(
+        metadata
+            .get("github_auto_merge_disabled_for_correction")
+            .is_none(),
+        "successful regular correction PR sync should consume the active marker"
+    );
+    assert_eq!(
+        metadata["github_auto_merge_reenabled_method"],
+        Value::String("merge".to_string())
     );
 }
 

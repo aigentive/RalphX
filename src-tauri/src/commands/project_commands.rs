@@ -1188,10 +1188,21 @@ pub async fn resume_deferred_git_startup(
     execution_state: State<'_, Arc<ExecutionState>>,
     active_project_state: State<'_, Arc<ActiveProjectState>>,
 ) -> Result<bool, String> {
+    let pr_fix_review_publish_resumer = Arc::new(
+        crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
+            app_state: state.inner().clone(),
+            execution_state: Arc::clone(&execution_state),
+            team_service: None,
+        },
+    )
+        as Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >;
     crate::application::startup_pipeline_launch::resume_deferred_git_startup_pipeline(
         &state,
         Arc::clone(&execution_state),
         Arc::clone(&active_project_state),
+        Some(pr_fix_review_publish_resumer),
     )
     .await
 }

@@ -29,6 +29,15 @@ struct BundledRuntimePaths {
     generated_plugin_dir: PathBuf,
 }
 
+type StartupPrFixReviewPublishResumer = Arc<
+    dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+>;
+pub(crate) type StartupPrFixReviewPublishResumerFactory = Box<
+    dyn Fn(&AppState, Arc<ExecutionState>) -> Option<StartupPrFixReviewPublishResumer>
+        + Send
+        + Sync,
+>;
+
 fn resolve_bundled_runtime_paths(
     resource_dir: &Path,
     app_data_dir: &Path,
@@ -110,6 +119,7 @@ pub(crate) fn run_app_setup(
     init_execution_state: Arc<ExecutionState>,
     startup_execution_state: Arc<ExecutionState>,
     startup_active_project_state: Arc<ActiveProjectState>,
+    startup_pr_fix_review_publish_resumer_factory: StartupPrFixReviewPublishResumerFactory,
     http_execution_state: Arc<ExecutionState>,
     http_team_tracker: TeamStateTracker,
     service_team_tracker: TeamStateTracker,
@@ -147,6 +157,10 @@ pub(crate) fn run_app_setup(
     app_state.webhook_publisher = Some(Arc::clone(&webhook_publisher));
     initialize_settings_defaults(&app_state, init_execution_state);
     run_startup_cleanup(&app_state);
+    let pr_fix_review_publish_resumer = startup_pr_fix_review_publish_resumer_factory(
+        &app_state,
+        Arc::clone(&startup_execution_state),
+    );
     start_server_boot(
         &app_state,
         app_handle,
@@ -158,6 +172,7 @@ pub(crate) fn run_app_setup(
         &app_state,
         startup_execution_state,
         startup_active_project_state,
+        pr_fix_review_publish_resumer,
     );
 
     register_managed_state(app, app_state, service_team_tracker);

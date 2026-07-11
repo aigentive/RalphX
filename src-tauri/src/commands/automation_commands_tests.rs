@@ -457,6 +457,32 @@ async fn automation_detail_response_falls_back_to_parked_plan_artifact() {
 }
 
 #[tokio::test]
+async fn automation_run_response_falls_back_to_parked_plan_artifact_without_conversation() {
+    let state = AppState::new_test();
+    let automation = automation();
+    let mut run = automation_run(&automation.id);
+    run.id = AutomationRunId::from_string("run-4");
+    run.run_index = 4;
+    run.status = AutomationRunStatus::AwaitingPlanApproval;
+    run.judge_state = AutomationJudgeState::None;
+    run.conversation_id = None;
+    run.plan_last_parked_artifact_id = Some("plan-artifact-parked".to_string());
+
+    let response = automation_run_response_for_state(run, &state)
+        .await
+        .unwrap();
+
+    assert!(!response.plan_phase);
+    assert_eq!(
+        response.plan_artifact_id.as_deref(),
+        Some("plan-artifact-parked")
+    );
+    assert!(response.plan_approved_by.is_none());
+    assert!(response.plan_approved_artifact_version.is_none());
+    assert!(response.plan_approved_at.is_none());
+}
+
+#[tokio::test]
 async fn automation_detail_response_keeps_terminal_run_plan_artifact_auditable_only() {
     let state = AppState::new_sqlite_test();
     let automation = automation();

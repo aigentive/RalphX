@@ -52,7 +52,7 @@ use crate::application::notification_service::NotificationService;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink,
@@ -5023,12 +5023,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "Unified ideation chat service requires agent lane settings repo".to_string(),
                 ));
             };
+            let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() else {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(
+                    "Unified ideation chat service requires agent provider settings repo"
+                        .to_string(),
+                ));
+            };
+            let probes =
+                match crate::application::provider_aware_runtime_probes_for_repo(provider_repo)
+                    .await
+                {
+                    Ok(probes) => probes,
+                    Err(error) => cleanup_and_err!(ChatServiceError::SpawnFailed(error)),
+                };
+            let lane_config = crate::application::resolve_lane_harness_config(
+                lane_repo,
+                project_id.as_deref(),
+                AgentLane::IdeationPrimary,
+            )
+            .await;
             let lane_availability =
-                crate::application::resolve_primary_ideation_harness_availability(
-                    lane_repo,
-                    project_id.as_deref(),
-                )
-                .await;
+                crate::application::build_lane_harness_availability(lane_config, &probes);
             if !lane_availability.available {
                 let error = lane_availability
                     .error
@@ -5077,26 +5092,38 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let provider_spawn_check_started = Instant::now();
         let provider_settings_for_spawn =
             if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
-            if let Err(error) = crate::application::ensure_provider_spawn_enabled(
-                provider_repo,
-                resolved_spawn_settings.effective_harness,
-                "send_agent_message",
-            )
-            .await
-            {
-                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
-            }
-            match provider_repo
-                .get(resolved_spawn_settings.effective_harness)
+                if let Err(error) = crate::application::ensure_provider_spawn_enabled(
+                    provider_repo,
+                    resolved_spawn_settings.effective_harness,
+                    "send_agent_message",
+                )
                 .await
-                .map_err(|error| error.to_string())
-            {
-                Ok(settings) => settings,
-                Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
-            }
-        } else {
-            None
-        };
+                {
+                    cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+                }
+                match provider_repo
+                    .get(resolved_spawn_settings.effective_harness)
+                    .await
+                    .map_err(|error| error.to_string())
+                {
+                    Ok(settings) => settings,
+                    Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
+                }
+            } else if uses_execution_slot(context_type) {
+                tracing::error!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    harness = %resolved_spawn_settings.effective_harness,
+                    "Provider settings repository missing for slot-consuming runtime spawn"
+                );
+                cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                    "Provider settings were unavailable for {} runtime; spawn blocked to avoid bypassing disabled-provider policy.",
+                    context_type
+                )));
+            } else {
+                None
+            };
         if options.service_tier_override.is_none() && resolved_spawn_settings.service_tier.is_none()
         {
             if let Some(service_tier) = provider_settings_for_spawn
@@ -5467,6 +5494,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 delegated_session_repo: Arc::clone(&self.delegated_session_repo),
                 execution_settings_repo: self.execution_settings_repo.clone(),
                 agent_lane_settings_repo: self.agent_lane_settings_repo.clone(),
+                agent_provider_settings_repo: self.agent_provider_settings_repo.clone(),
                 ideation_effort_settings_repo: self.ideation_effort_settings_repo.clone(),
                 ideation_model_settings_repo: self.ideation_model_settings_repo.clone(),
                 agent_conversation_workspace_repo: self
@@ -6739,6 +6767,136 @@ fi
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod fake codex");
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_spawn_gate_tests {
+    use super::{AppChatService, ChatService, SendMessageOptions};
+    use crate::application::AppState;
+    use crate::commands::ExecutionState;
+    use crate::domain::entities::{ChatContextType, InternalStatus, Project, Task};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn slot_runtime_spawn_fails_closed_without_provider_settings_repo() {
+        let state = AppState::new_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let temp_dir = tempfile::tempdir().expect("project dir");
+        let worktree_dir = tempfile::tempdir().expect("worktree dir");
+        let project = state
+            .project_repo
+            .create(Project::new(
+                "provider gate project".into(),
+                temp_dir.path().to_string_lossy().into_owned(),
+            ))
+            .await
+            .expect("create project");
+        let mut task = Task::new(project.id.clone(), "review task".into());
+        task.internal_status = InternalStatus::Reviewing;
+        task.worktree_path = Some(worktree_dir.path().to_string_lossy().into_owned());
+        let task_id = task.id.clone();
+        state.task_repo.create(task).await.expect("create task");
+
+        let service: AppChatService = AppChatService::new(
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.project_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.task_dependency_repo),
+            Arc::clone(&state.ideation_session_repo),
+            Arc::clone(&state.delegated_session_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.memory_event_repo),
+        )
+        .with_execution_state(Arc::clone(&execution_state))
+        .with_execution_settings_repo(Arc::clone(&state.execution_settings_repo))
+        .with_agent_lane_settings_repo(Arc::clone(&state.agent_lane_settings_repo))
+        .with_task_step_repo(Arc::clone(&state.task_step_repo))
+        .with_review_repo(Arc::clone(&state.review_repo));
+
+        let error = service
+            .send_message(
+                ChatContextType::Review,
+                task_id.as_str(),
+                "review the task",
+                SendMessageOptions::default(),
+            )
+            .await
+            .expect_err("missing provider repo should block runtime spawn");
+
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("Provider settings were unavailable for review runtime"),
+            "unexpected error: {error_message}"
+        );
+        assert_eq!(
+            execution_state.running_count(),
+            0,
+            "failed provider-policy gate must clean up the execution slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn slot_runtime_spawn_fails_closed_without_provider_settings_repo_without_execution_state() {
+        let state = AppState::new_test();
+        let temp_dir = tempfile::tempdir().expect("project dir");
+        let worktree_dir = tempfile::tempdir().expect("worktree dir");
+        let project = state
+            .project_repo
+            .create(Project::new(
+                "provider gate project".into(),
+                temp_dir.path().to_string_lossy().into_owned(),
+            ))
+            .await
+            .expect("create project");
+        let mut task = Task::new(project.id.clone(), "review task".into());
+        task.internal_status = InternalStatus::Reviewing;
+        task.worktree_path = Some(worktree_dir.path().to_string_lossy().into_owned());
+        let task_id = task.id.clone();
+        state.task_repo.create(task).await.expect("create task");
+
+        let service: AppChatService = AppChatService::new(
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.project_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.task_dependency_repo),
+            Arc::clone(&state.ideation_session_repo),
+            Arc::clone(&state.delegated_session_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.memory_event_repo),
+        )
+        .with_execution_settings_repo(Arc::clone(&state.execution_settings_repo))
+        .with_agent_lane_settings_repo(Arc::clone(&state.agent_lane_settings_repo))
+        .with_task_step_repo(Arc::clone(&state.task_step_repo))
+        .with_review_repo(Arc::clone(&state.review_repo));
+
+        let error = service
+            .send_message(
+                ChatContextType::Review,
+                task_id.as_str(),
+                "review the task",
+                SendMessageOptions::default(),
+            )
+            .await
+            .expect_err("missing provider repo should block runtime spawn");
+
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("Provider settings were unavailable for review runtime"),
+            "unexpected error: {error_message}"
+        );
     }
 }
 

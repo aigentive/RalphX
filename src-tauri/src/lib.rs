@@ -183,6 +183,18 @@ pub fn run() {
                 Arc::clone(&init_execution_state),
                 Arc::clone(&startup_execution_state),
                 Arc::clone(&startup_active_project_state),
+                Box::new(|app_state, execution_state| {
+                    Some(Arc::new(
+                        commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
+                            app_state: app_state.clone(),
+                            execution_state,
+                            team_service: None,
+                        },
+                    )
+                        as Arc<
+                            dyn application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+                        >)
+                }),
                 Arc::clone(&http_execution_state),
                 http_team_tracker.clone(),
                 service_team_tracker.clone(),

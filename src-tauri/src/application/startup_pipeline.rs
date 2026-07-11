@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
-use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
+use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup_for_state;
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::runtime_factory::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
@@ -93,6 +93,11 @@ pub(crate) struct StartupPipelineDeps {
     pub app_handle: tauri::AppHandle,
     pub git_auth_recovery_state: Arc<StartupGitAuthRecoveryState>,
     pub mode: StartupPipelineMode,
+    pub pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
 }
 
 fn startup_previous_session_cutoff() -> chrono::DateTime<chrono::Utc> {
@@ -208,6 +213,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         git_auth_recovery_state,
         mode,
         app_state,
+        pr_fix_review_publish_resumer,
     } = deps;
 
     let phase_started_at = startup_phase_started("git_auth_preflight");
@@ -584,20 +590,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     startup_phase_completed("workspace_review_startup_reconciliation", phase_started_at);
 
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
-    recover_stale_agent_workspace_publish_repairs_on_startup(
-        Arc::clone(&agent_conversation_workspace_repo),
-        Arc::clone(&agent_run_repo),
-    )
-    .await;
+    recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
 
     {
-        let workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
-        let periodic_agent_run_repo = Arc::clone(&agent_run_repo);
+        let periodic_app_state = app_state.clone();
         tauri::async_runtime::spawn(async move {
             crate::application::agent_workspace_publish_recovery::run_periodic_workspace_publish_recovery(
-                workspace_repo,
-                periodic_agent_run_repo,
+                periodic_app_state,
             )
             .await;
         });
@@ -616,6 +616,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
                 app_handle: Some(app_handle.clone()),
+                pr_fix_review_publish_resumer: pr_fix_review_publish_resumer.clone(),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         tauri::async_runtime::spawn(async move {

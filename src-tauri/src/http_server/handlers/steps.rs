@@ -8,6 +8,7 @@ use tracing::error;
 use super::*;
 use crate::application::git_service::GitService;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
+use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
 use crate::domain::entities::{
     StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
     ValidationCacheMetadata,
@@ -648,6 +649,16 @@ pub async fn execution_complete_http(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(&task.project_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get project for task {}: {}", task_id_str, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     tracing::info!(
         "execution_complete received for task {}: summary={:?}",
@@ -690,6 +701,17 @@ pub async fn execution_complete_http(
             return Err(StatusCode::CONFLICT);
         }
     }
+
+    ensure_task_has_non_empty_captured_diff(&task, &project, "execution_complete")
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                task_id = %task_id_str,
+                error = %e,
+                "Rejecting execution_complete because task-owned diff is empty or unavailable"
+            );
+            StatusCode::CONFLICT
+        })?;
 
     // If test_result provided, capture HEAD SHA and store validation cache in metadata
     if let Some(ref test_result) = req.test_result {

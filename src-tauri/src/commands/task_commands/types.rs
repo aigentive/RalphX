@@ -165,6 +165,22 @@ pub struct BulkResumeResponse {
     pub resumed_count: usize,
 }
 
+/// Input for execution-plan-scoped lifecycle controls.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionPlanControlInput {
+    pub project_id: String,
+    pub session_id: String,
+    pub execution_plan_id: Option<String>,
+}
+
+/// Response for execution-plan-scoped lifecycle controls.
+#[derive(Debug, Serialize)]
+pub struct ExecutionPlanControlResponse {
+    pub execution_plan_id: String,
+    pub affected_count: usize,
+}
+
 /// Response for bulk archive operations
 #[derive(Debug, Serialize)]
 pub struct BulkArchiveResponse {

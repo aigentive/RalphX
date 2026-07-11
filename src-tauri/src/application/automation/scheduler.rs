@@ -2201,7 +2201,8 @@ impl AutomationScheduler {
         }
     }
 
-    async fn redeliver_plan_approval_after_crashed_resume(
+    // pub(super) so scheduler_tests can exercise the defensive current-run guard directly.
+    pub(super) async fn redeliver_plan_approval_after_crashed_resume(
         &self,
         run: &AutomationRun,
         workspace: Option<&AgentConversationWorkspace>,

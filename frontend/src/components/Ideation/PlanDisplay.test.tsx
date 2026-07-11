@@ -770,7 +770,7 @@ describe("PlanDisplay", () => {
       expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     });
 
-    it("renders the proposal count toggle after the approved badge in chromeless mode", () => {
+    it("renders explicit Overview and Proposals controls after the approved badge", () => {
       const onBodyModeChange = vi.fn();
       render(
         <PlanDisplay
@@ -784,16 +784,25 @@ describe("PlanDisplay", () => {
       );
 
       const approvedBadge = screen.getByText("Plan Approved");
+      const overviewButton = screen.getByRole("button", {
+        name: /Overview/i,
+      });
       const proposalsButton = screen.getByRole("button", {
         name: /2 Proposals/i,
       });
-      expect(approvedBadge.compareDocumentPosition(proposalsButton)).toBe(
+      expect(approvedBadge.compareDocumentPosition(overviewButton)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
+      expect(overviewButton).toHaveAttribute("aria-pressed", "true");
+      expect(proposalsButton).toHaveAttribute("aria-pressed", "false");
 
       fireEvent.click(proposalsButton);
+      fireEvent.click(proposalsButton);
+      fireEvent.click(overviewButton);
 
-      expect(onBodyModeChange).toHaveBeenCalledWith("proposals");
+      expect(onBodyModeChange).toHaveBeenNthCalledWith(1, "proposals");
+      expect(onBodyModeChange).toHaveBeenNthCalledWith(2, "proposals");
+      expect(onBodyModeChange).toHaveBeenNthCalledWith(3, "plan");
     });
 
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {

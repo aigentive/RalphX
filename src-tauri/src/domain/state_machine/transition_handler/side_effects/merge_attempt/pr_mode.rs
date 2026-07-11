@@ -1,3 +1,4 @@
+use super::super::super::merge_helpers::restore_github_auto_merge_after_pr_correction;
 use super::*;
 use crate::application::publish_resilience::push_publish_branch;
 use crate::domain::entities::plan_branch::PrPushStatus;
@@ -274,6 +275,20 @@ impl<'a> TransitionHandler<'a> {
                     }
                 }
             };
+
+        let pr_op_result = match pr_op_result {
+            Ok(pr_number) => restore_github_auto_merge_after_pr_correction(
+                task,
+                task_id_str,
+                &working_dir,
+                pr_number,
+                task_repo,
+                github_service,
+            )
+            .await
+            .map(|()| pr_number),
+            Err(error) => Err(error),
+        };
 
         // 7. Handle result
         match pr_op_result {

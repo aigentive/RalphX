@@ -24,6 +24,7 @@ pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review;
+pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
 pub mod app_setup;
 pub mod app_state;
@@ -120,6 +121,9 @@ pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
 pub mod task_notification_producer;
+pub(crate) mod task_diff_base;
+#[cfg(test)]
+mod task_diff_base_tests;
 pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
@@ -192,13 +196,13 @@ pub use granola_integration_service::{
     GranolaIntegrationService, GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary,
     GranolaTranscriptEntry, UnavailableGranolaApiClient,
 };
-pub(crate) use harness_runtime_registry::probe_supported_harnesses;
 pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
-    build_lane_harness_availability, resolve_lane_harness_config,
-    resolve_primary_ideation_harness_availability, team_mode_supported_for_context,
-    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override,
-    AGENT_LANES, IDEATION_LANES,
+    build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
+    provider_aware_runtime_probes_for_repo, resolve_lane_harness_config,
+    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
+    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
+    IDEATION_LANES,
 };
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
@@ -286,6 +290,10 @@ mod agent_terminal_tests;
 mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_publish_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_review_publish_handoff_tests;
 #[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]

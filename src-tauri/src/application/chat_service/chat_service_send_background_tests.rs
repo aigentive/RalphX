@@ -9,15 +9,17 @@ use crate::application::interactive_process_registry::{
 };
 use crate::application::AppState;
 use crate::commands::ExecutionState;
+use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus, IdeationSession,
-    IdeationSessionStatus, ProjectId, SessionPurpose, VerificationRoundSnapshot,
+    AgentConversationWorkspaceMode, AgentRun, AgentRunId, AgentRunStatus, ChatAttachment,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
+    IdeationSession, IdeationSessionStatus, ProjectId, SessionPurpose, VerificationRoundSnapshot,
     VerificationRunSnapshot, VerificationStatus,
 };
-use crate::domain::repositories::QueuedMessageRepository;
+use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -807,6 +809,34 @@ fn queue_processing_outcome_falls_back_to_parent_run_without_queued_run() {
 }
 
 #[tokio::test]
+async fn queue_provider_decision_blocks_disabled_slot_provider_without_app_handle() {
+    let repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    repo.upsert(&codex).await.expect("seed codex provider");
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> = repo;
+    let provider_repo = Some(provider_repo);
+
+    let block =
+        super::super::chat_service_queue::queue_provider_decision::<tauri::test::MockRuntime>(
+            None,
+            &provider_repo,
+            AgentHarnessKind::Claude,
+            ChatContextType::Review,
+        )
+        .await
+        .expect_err("disabled Claude must block queued review resume before spawn");
+
+    match block {
+        super::super::chat_service_queue::QueueProviderBlock::Disabled(message) => {
+            assert!(message.contains("claude is not enabled"), "{message}");
+        }
+        other => panic!("expected disabled-provider block, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn queue_processing_leaves_messages_pending_when_execution_paused() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -829,6 +859,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         conversation_id,
         "session-cli",
         &app_state.message_queue,
+        None,
         None,
         &app_state.running_agent_registry,
         &app_state.agent_run_repo,
@@ -907,6 +938,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -1011,6 +1043,7 @@ EOF
             conversation_id,
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -1159,6 +1192,7 @@ EOF
             ChatConversationId::new(),
             "session-cli",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -1351,6 +1385,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             "session-cli",
             &message_queue,
             None,
+            None,
             &running_agent_registry,
             &agent_run_repo,
             &chat_message_repo,
@@ -1429,6 +1464,14 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
 
     let state = AppState::new_test();
     let context_id = IdeationSessionId::new();
+    let mut ideation_session = IdeationSession::new(ProjectId::new());
+    ideation_session.id = context_id.clone();
+    state
+        .ideation_session_repo
+        .create(ideation_session)
+        .await
+        .expect("seed ideation session");
+    let execution_state = Arc::new(ExecutionState::new());
     let conversation = ChatConversation::new_ideation(context_id.clone());
     let conversation_id = conversation.id.clone();
     state
@@ -1457,8 +1500,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         project_repo: Arc::clone(&state.project_repo),
         ideation_session_repo: Arc::clone(&state.ideation_session_repo),
         delegated_session_repo: Arc::clone(&state.delegated_session_repo),
-        execution_settings_repo: None,
-        agent_lane_settings_repo: None,
+        execution_settings_repo: Some(Arc::clone(&state.execution_settings_repo)),
+        agent_lane_settings_repo: Some(Arc::clone(&state.agent_lane_settings_repo)),
+        agent_provider_settings_repo: Some(Arc::clone(&state.agent_provider_settings_repo)),
         ideation_effort_settings_repo: None,
         ideation_model_settings_repo: None,
         agent_conversation_workspace_repo: Some(Arc::clone(
@@ -1508,7 +1552,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
         plugin_dir: Path::new(".").to_path_buf(),
         repos,
-        execution_state: None,
+        execution_state: Some(execution_state),
         question_state: None,
         plan_branch_repo: None,
         app_handle: Some(app_handle),
@@ -1541,6 +1585,147 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
     })
     .await
     .expect("background queue processing should drain queued message");
+}
+
+#[tokio::test]
+async fn background_run_error_passes_runtime_repos_to_error_handler() {
+    use crate::domain::agents::AgentHarnessKind;
+    use crate::domain::entities::ChatMessageAttribution;
+    use tokio::time::{sleep, timeout, Duration};
+
+    let state = AppState::new_test();
+    let conversation = ChatConversation::new_project(ProjectId::new());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+    let agent_run = state
+        .agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed agent run");
+    let agent_run_id = agent_run.id.as_str().to_string();
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let agent_run_lookup_id = AgentRunId::from_string(agent_run_id.clone());
+    let message_queue = Arc::clone(&state.message_queue);
+    message_queue.queue_with_overrides(
+        ChatContextType::Project,
+        conversation_id.as_str(),
+        "resume in place after handled error".to_string(),
+        Some(r#"{"resume_in_place":true}"#.to_string()),
+        None,
+        None,
+    );
+
+    let repos = super::BackgroundRunRepos {
+        chat_message_repo: Arc::clone(&state.chat_message_repo),
+        chat_timeline_repo: Some(Arc::clone(&state.chat_timeline_repo)),
+        chat_attachment_repo: Arc::clone(&state.chat_attachment_repo),
+        artifact_repo: Arc::clone(&state.artifact_repo),
+        conversation_repo: Arc::clone(&state.chat_conversation_repo),
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        task_repo: Arc::clone(&state.task_repo),
+        task_dependency_repo: Arc::clone(&state.task_dependency_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+        delegated_session_repo: Arc::clone(&state.delegated_session_repo),
+        execution_settings_repo: Some(Arc::clone(&state.execution_settings_repo)),
+        agent_lane_settings_repo: Some(Arc::clone(&state.agent_lane_settings_repo)),
+        agent_provider_settings_repo: Some(Arc::clone(&state.agent_provider_settings_repo)),
+        ideation_effort_settings_repo: None,
+        ideation_model_settings_repo: None,
+        agent_conversation_workspace_repo: Some(Arc::clone(
+            &state.agent_conversation_workspace_repo,
+        )),
+        agent_conversation_jira_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_jira_issue_repo,
+        )),
+        agent_conversation_linear_issue_repo: Some(Arc::clone(
+            &state.agent_conversation_linear_issue_repo,
+        )),
+        agent_conversation_granola_note_repo: Some(Arc::clone(
+            &state.agent_conversation_granola_note_repo,
+        )),
+        task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
+        activity_event_repo: Arc::clone(&state.activity_event_repo),
+        memory_event_repo: Arc::clone(&state.memory_event_repo),
+        notification_service: None,
+        message_queue: Arc::clone(&message_queue),
+        running_agent_registry: Arc::clone(&state.running_agent_registry),
+        task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        review_repo: Some(Arc::clone(&state.review_repo)),
+    };
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let child = spawn_claude_jsonl_fixture(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"partial response"}]},"session_id":"sess-bg-error"}"#,
+        r#"{"type":"result","session_id":"sess-bg-error","is_error":true,"errors":["fixture failure"],"result":"failed","cost_usd":0.0}"#,
+    ])
+    .await;
+
+    super::spawn_send_message_background::<tauri::test::MockRuntime>(super::BackgroundRunContext {
+        child,
+        harness: AgentHarnessKind::Claude,
+        context_type: ChatContextType::Project,
+        context_id: conversation_id.as_str().to_string(),
+        runtime_context_id: conversation_id.as_str().to_string(),
+        conversation_id,
+        agent_run_id,
+        stored_session_id: Some("sess-bg-error".to_string()),
+        working_directory: Path::new(".").to_path_buf(),
+        cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
+        plugin_dir: Path::new(".").to_path_buf(),
+        repos,
+        execution_state: None,
+        question_state: None,
+        plan_branch_repo: None,
+        app_handle: Some(app_handle),
+        run_chain_id: None,
+        is_retry_attempt: false,
+        user_message_content: Some("initial prompt".to_string()),
+        turn_metadata: None,
+        conversation: Some(conversation),
+        agent_name: Some("orchestrator".to_string()),
+        team_mode: false,
+        assistant_message_attribution: ChatMessageAttribution::default(),
+        persist_conversation_provider_session_ref: true,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        team_service: None,
+        streaming_state_cache: super::StreamingStateCache::new(),
+        interactive_process_registry: None,
+        verification_child_registry: None,
+    });
+
+    let failed_run = timeout(Duration::from_secs(3), async {
+        loop {
+            let run = agent_run_repo
+                .get_by_id(&agent_run_lookup_id)
+                .await
+                .expect("agent run lookup")
+                .expect("agent run should remain persisted");
+            if run.status == AgentRunStatus::Failed {
+                break run;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background stream error should fail the agent run");
+
+    assert!(
+        failed_run
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("fixture failure"),
+        "persisted run error should include the stream failure"
+    );
 }
 
 /// Verifies that session swap recovery enqueues rehydration at front of queue,

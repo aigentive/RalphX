@@ -125,7 +125,10 @@ pub use chat_timeline::{
 };
 pub use delegated_session::{DelegatedSession, DelegatedSessionId};
 pub use event_type::{EventType, ParseEventTypeError};
-pub use execution_plan::{ExecutionPlan, ExecutionPlanStatus, ParseExecutionPlanStatusError};
+pub use execution_plan::{
+    ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanStatus, ParseExecutionPlanHaltModeError,
+    ParseExecutionPlanStatusError,
+};
 pub use ideation::{
     build_child_session, matching_blocker_followup_session, AcceptanceStatus, BusinessValueFactor,
     ChatMessage, ChatMessageAttribution, ChatMessageUsage, ChildSessionDraftInput, Complexity,

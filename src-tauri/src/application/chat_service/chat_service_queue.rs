@@ -34,8 +34,9 @@ use crate::domain::entities::{
     InternalStatus, MessageRole, ProjectId, SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
-    ChatTimelineRepository, IdeationSessionRepository, QueuedMessageRepository, TaskRepository,
+    ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
+    ArtifactRepository, ChatMessageRepository, ChatTimelineRepository, IdeationSessionRepository,
+    QueuedMessageRepository, TaskRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -81,17 +82,86 @@ async fn durable_queue_len(
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: Option<&AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, String> {
-    let Some(handle) = app_handle else {
-        return Ok(HashMap::new());
-    };
-    let app_state = handle.state::<AppState>();
+    let app_state_provider_repo = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        Some(&app_state.agent_provider_settings_repo),
+        provider_repo.as_ref(),
         harness,
     )
     .await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum QueueProviderDecision {
+    ApplyEnv(HashMap<String, String>),
+    AllowWithoutProviderSettings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum QueueProviderBlock {
+    Disabled(String),
+    Env(String),
+    MissingProviderSettings,
+}
+
+fn queue_missing_provider_settings_message(context_type: ChatContextType) -> String {
+    format!(
+        "Provider settings were unavailable for {} runtime; spawn blocked to avoid bypassing disabled-provider policy.",
+        context_type
+    )
+}
+
+fn queue_provider_block_message(
+    block: &QueueProviderBlock,
+    context_type: ChatContextType,
+) -> String {
+    match block {
+        QueueProviderBlock::Disabled(error) | QueueProviderBlock::Env(error) => error.clone(),
+        QueueProviderBlock::MissingProviderSettings => {
+            queue_missing_provider_settings_message(context_type)
+        }
+    }
+}
+
+pub(super) async fn queue_provider_decision<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    harness: AgentHarnessKind,
+    context_type: ChatContextType,
+) -> Result<QueueProviderDecision, QueueProviderBlock> {
+    let app_state_provider_repo = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
+    let Some(provider_repo) = provider_repo else {
+        return if super::uses_execution_slot(context_type) {
+            Err(QueueProviderBlock::MissingProviderSettings)
+        } else {
+            Ok(QueueProviderDecision::AllowWithoutProviderSettings)
+        };
+    };
+
+    crate::application::ensure_provider_spawn_enabled(&provider_repo, harness, "queue_resume")
+        .await
+        .map_err(QueueProviderBlock::Disabled)?;
+
+    let provider_env =
+        provider_env_for_harness(app_handle, &Some(Arc::clone(&provider_repo)), harness)
+            .await
+            .map_err(QueueProviderBlock::Env)?;
+
+    Ok(QueueProviderDecision::ApplyEnv(provider_env))
 }
 
 async fn queue_count(
@@ -583,6 +653,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     session_id: &str,
     message_queue: &Arc<MessageQueue>,
     queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
@@ -1399,22 +1470,31 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     };
                 }
             };
-            let provider_env = match provider_env_for_harness(app_handle.as_ref(), harness).await {
-                Ok(provider_env) => provider_env,
-                Err(err) => {
+            let provider_env = match queue_provider_decision(
+                app_handle.as_ref(),
+                &agent_provider_settings_repo,
+                harness,
+                context_type,
+            )
+            .await
+            {
+                Ok(QueueProviderDecision::ApplyEnv(provider_env)) => provider_env,
+                Ok(QueueProviderDecision::AllowWithoutProviderSettings) => HashMap::new(),
+                Err(block) => {
+                    let error_string = queue_provider_block_message(&block, context_type);
                     tracing::warn!(
-                        error = %err,
+                        error = %error_string,
                         %context_type,
                         context_id,
                         harness = %harness,
-                        "queue spawn blocked by provider env file"
+                        "queue spawn blocked by provider settings"
                     );
                     fail_queued_agent_run(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
                         &queued_run_id,
-                        &err,
+                        &error_string,
                     )
                     .await;
                     return QueueProcessingOutcome {
@@ -2040,6 +2120,7 @@ mod tests {
             ChatConversationId::new(),
             "claude-session-old",
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,

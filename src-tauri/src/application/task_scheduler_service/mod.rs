@@ -37,7 +37,8 @@ use crate::domain::entities::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
         MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
     },
-    ChatContextType, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory,
+    ChatContextType, ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task,
+    TaskCategory,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
@@ -106,6 +107,8 @@ pub struct TaskSchedulerService {
     /// Phase 82: Optional project ID to scope scheduling to a single project.
     /// When set, only Ready tasks from this project are considered.
     pub(super) active_project_id: RwLock<Option<ProjectId>>,
+    /// Optional execution plan ID to scope scheduling to one implementation attempt.
+    pub(super) active_execution_plan_id: RwLock<Option<ExecutionPlanId>>,
     /// Guard to prevent concurrent scheduling from causing duplicate transitions.
     /// Multiple triggers can fire try_schedule_ready_tasks() simultaneously
     /// (e.g., on_enter(Ready) delayed tokio::spawn + on_exit(agent_state) direct call),
@@ -166,6 +169,7 @@ impl TaskSchedulerService {
             plan_pr_description_drafter: None,
             self_ref: Mutex::new(None),
             active_project_id: RwLock::new(None),
+            active_execution_plan_id: RwLock::new(None),
             scheduling_lock: TokioMutex::new(()),
             contention_retry_pending: Arc::new(AtomicU32::new(0)),
         }
@@ -257,6 +261,12 @@ impl TaskSchedulerService {
         self.active_project_id.read().await.clone()
     }
 
+    /// Set the active execution plan ID for scoped scheduling.
+    /// When set, only Ready tasks from this execution plan will be scheduled.
+    pub async fn set_active_execution_plan(&self, execution_plan_id: Option<ExecutionPlanId>) {
+        *self.active_execution_plan_id.write().await = execution_plan_id;
+    }
+
     /// Find the oldest schedulable task across all projects (or scoped to active project).
     ///
     /// Phase 82: When active_project_id is set, only tasks from that project are considered.
@@ -269,6 +279,7 @@ impl TaskSchedulerService {
     async fn find_oldest_schedulable_task(&self) -> Option<Task> {
         // Phase 82: Get active project filter
         let active_project = self.active_project_id.read().await.clone();
+        let active_execution_plan = self.active_execution_plan_id.read().await.clone();
 
         // Get a batch of oldest Ready tasks to evaluate
         let ready_tasks = match self.task_repo.get_oldest_ready_tasks(50).await {
@@ -280,6 +291,18 @@ impl TaskSchedulerService {
         };
 
         for task in ready_tasks {
+            if let Some(ref active_plan_id) = active_execution_plan {
+                if task.execution_plan_id.as_ref() != Some(active_plan_id) {
+                    tracing::debug!(
+                        task_id = task.id.as_str(),
+                        task_execution_plan = ?task.execution_plan_id.as_ref().map(|id| id.as_str()),
+                        active_execution_plan = active_plan_id.as_str(),
+                        "Skipping task: not in active execution plan"
+                    );
+                    continue;
+                }
+            }
+
             // Phase 82: If active project is set, skip tasks from other projects
             if let Some(ref active_pid) = active_project {
                 if task.project_id != *active_pid {
@@ -326,6 +349,15 @@ impl TaskSchedulerService {
                     task_id = task.id.as_str(),
                     execution_plan_id = ?task.execution_plan_id.as_ref().map(|id| id.as_str()),
                     "Skipping task: execution plan is no longer active"
+                );
+                continue;
+            }
+
+            if self.is_execution_plan_halted(&task).await {
+                tracing::info!(
+                    task_id = task.id.as_str(),
+                    execution_plan_id = ?task.execution_plan_id.as_ref().map(|id| id.as_str()),
+                    "Skipping task: execution plan is paused or stopped"
                 );
                 continue;
             }

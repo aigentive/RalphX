@@ -187,6 +187,39 @@ async fn delete_existing_execution_worktree_or_block(
         })
 }
 
+#[derive(Debug, Clone)]
+struct TaskExecutionWorktree {
+    branch: String,
+    worktree_path: std::path::PathBuf,
+    base_ref: String,
+    base_sha: String,
+}
+
+fn persisted_task_branch_base_or_block(
+    task: &Task,
+    branch: &str,
+    task_id_str: &str,
+) -> AppResult<(String, String)> {
+    let base_ref = task
+        .task_branch_base_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let base_sha = task
+        .task_branch_base_sha
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match (base_ref, base_sha) {
+        (Some(base_ref), Some(base_sha)) => Ok((base_ref.to_string(), base_sha.to_string())),
+        _ => Err(AppError::ExecutionBlocked(format!(
+            "{}: structural: existing task branch '{}' for task {} is missing immutable base metadata; reset/recreate the task branch before execution can continue",
+            GIT_ISOLATION_ERROR_PREFIX, branch, task_id_str
+        ))),
+    }
+}
+
 /// Create a fresh task branch and worktree for a task entering Executing state.
 ///
 /// Resolves the base branch, computes the standard worktree path via
@@ -194,7 +227,7 @@ async fn delete_existing_execution_worktree_or_block(
 /// creates (or checks out an existing) branch into the worktree.
 ///
 /// Does NOT update the database — the caller is responsible for persisting the
-/// returned `(branch_name, worktree_path)` onto the task.
+/// returned branch, worktree path, base ref, and base SHA onto the task.
 ///
 /// # Errors
 /// Returns `AppError::ExecutionBlocked` if the git worktree cannot be created.
@@ -209,7 +242,7 @@ async fn create_fresh_branch_and_worktree(
     pr_creation_guard: &Option<Arc<dashmap::DashMap<PlanBranchId, ()>>>,
     github_service: &Option<Arc<dyn GithubServiceTrait>>,
     plan_pr_description_drafter: &Option<Arc<dyn PlanPrDescriptionDrafter>>,
-) -> AppResult<(String, std::path::PathBuf)> {
+) -> AppResult<TaskExecutionWorktree> {
     let branch = format!("ralphx/{}/task-{}", slugify(&project.name), task_id_str);
     let resolved_base = resolve_task_base_branch(
         task,
@@ -247,13 +280,20 @@ async fn create_fresh_branch_and_worktree(
         if existing_task_worktree_is_reusable(repo_path, &worktree_path_buf, &branch, task_id_str)
             .await
         {
+            let (base_ref, base_sha) =
+                persisted_task_branch_base_or_block(task, &branch, task_id_str)?;
             tracing::info!(
                 task_id = task_id_str,
                 branch = %branch,
                 worktree_path = %worktree_path_buf.display(),
                 "Reusing existing registered task worktree"
             );
-            return Ok((branch, worktree_path_buf));
+            return Ok(TaskExecutionWorktree {
+                branch,
+                worktree_path: worktree_path_buf,
+                base_ref,
+                base_sha,
+            });
         }
         delete_existing_execution_worktree_or_block(
             repo_path,
@@ -270,19 +310,43 @@ async fn create_fresh_branch_and_worktree(
         .unwrap_or(false);
 
     // Create worktree — use existing branch if it exists, create new one otherwise
-    let result = if branch_exists {
+    let result: AppResult<TaskExecutionWorktree> = if branch_exists {
+        let (base_ref, base_sha) =
+            persisted_task_branch_base_or_block(task, &branch, task_id_str)?;
         tracing::info!(
             task_id = task_id_str,
             branch = %branch,
             "Branch already exists, checking out existing branch into worktree"
         );
-        GitService::checkout_existing_branch_worktree(repo_path, &worktree_path_buf, &branch).await
+        GitService::checkout_existing_branch_worktree(repo_path, &worktree_path_buf, &branch)
+            .await
+            .map(|_| TaskExecutionWorktree {
+                branch,
+                worktree_path: worktree_path_buf,
+                base_ref,
+                base_sha,
+            })
     } else {
-        GitService::create_worktree(repo_path, &worktree_path_buf, &branch, base_branch).await
+        let base_sha = GitService::get_branch_sha(repo_path, base_branch)
+            .await
+            .map_err(|e| {
+                AppError::ExecutionBlocked(format!(
+                    "{}: structural: could not resolve base branch '{}' to a commit SHA before creating task branch: {}",
+                    GIT_ISOLATION_ERROR_PREFIX, base_branch, e
+                ))
+            })?;
+        GitService::create_worktree(repo_path, &worktree_path_buf, &branch, base_branch)
+            .await
+            .map(|_| TaskExecutionWorktree {
+                branch,
+                worktree_path: worktree_path_buf,
+                base_ref: base_branch.to_string(),
+                base_sha,
+            })
     };
 
     match result {
-        Ok(_) => Ok((branch, worktree_path_buf)),
+        Ok(worktree) => Ok(worktree),
         Err(e) => Err(AppError::ExecutionBlocked(format!(
             "{}: could not create worktree at '{}': {}",
             GIT_ISOLATION_ERROR_PREFIX, worktree_path_str, e

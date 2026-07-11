@@ -829,6 +829,10 @@ fn task_metadata_bool(task: &Task, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+const GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY: &str =
+    "github_auto_merge_disabled_for_correction";
+const GITHUB_AUTO_MERGE_METHOD_KEY: &str = "github_auto_merge_method";
+
 // ============================================================================
 // TaskTransitionService
 // ============================================================================
@@ -2048,6 +2052,26 @@ impl TaskTransitionService {
         feedback: PrReviewFeedback,
         history_actor: &'a str,
     ) -> impl Future<Output = AppResult<Task>> + 'a {
+        self.route_github_pr_changes_requested_with_auto_merge_marker(
+            task_id,
+            pr_number,
+            feedback,
+            history_actor,
+            false,
+            None,
+        )
+    }
+
+    #[allow(clippy::manual_async_fn)]
+    pub(crate) fn route_github_pr_changes_requested_with_auto_merge_marker<'a>(
+        &'a self,
+        task_id: &'a TaskId,
+        pr_number: i64,
+        feedback: PrReviewFeedback,
+        history_actor: &'a str,
+        auto_merge_disabled_for_correction: bool,
+        auto_merge_method: Option<String>,
+    ) -> impl Future<Output = AppResult<Task>> + 'a {
         async move {
             let mut merge_task = self
                 .task_repo
@@ -2114,15 +2138,43 @@ impl TaskTransitionService {
             self.persist_github_pr_review_note_once(&correction_task, pr_number, &feedback)
                 .await;
 
+            let routed_at = chrono::Utc::now().to_rfc3339();
+            let mut merge_metadata = serde_json::json!({
+                "github_pr_review_id": feedback.review_id,
+                "github_pr_review_author": feedback.author,
+                "github_pr_review_pr_number": pr_number,
+                "github_pr_review_correction_task_id": correction_task.id.as_str(),
+                "github_pr_review_routed_at": routed_at,
+            });
+            if auto_merge_disabled_for_correction {
+                if let Some(object) = merge_metadata.as_object_mut() {
+                    object.insert(
+                        GITHUB_AUTO_MERGE_DISABLED_FOR_CORRECTION_KEY.to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                    object.insert(
+                        "github_auto_merge_pr_number".to_string(),
+                        serde_json::Value::Number(pr_number.into()),
+                    );
+                    object.insert(
+                        "github_auto_merge_disabled_at".to_string(),
+                        serde_json::Value::String(routed_at),
+                    );
+                    object.insert(
+                        "github_auto_merge_disabled_source".to_string(),
+                        serde_json::Value::String("github_review_feedback".to_string()),
+                    );
+                    if let Some(method) = auto_merge_method {
+                        object.insert(
+                            GITHUB_AUTO_MERGE_METHOD_KEY.to_string(),
+                            serde_json::Value::String(method),
+                        );
+                    }
+                }
+            }
             crate::domain::state_machine::transition_handler::merge_metadata_into(
                 &mut merge_task,
-                &serde_json::json!({
-                    "github_pr_review_id": feedback.review_id,
-                    "github_pr_review_author": feedback.author,
-                    "github_pr_review_pr_number": pr_number,
-                    "github_pr_review_correction_task_id": correction_task.id.as_str(),
-                    "github_pr_review_routed_at": chrono::Utc::now().to_rfc3339(),
-                }),
+                &merge_metadata,
             );
             self.task_repo.update(&merge_task).await?;
 
@@ -2162,6 +2214,27 @@ impl TaskTransitionService {
 
             Ok(updated)
         }
+    }
+
+    pub(crate) async fn clear_github_auto_merge_correction_marker_for_terminal_pr(
+        &self,
+        task_id: &TaskId,
+        pr_status: &str,
+    ) -> AppResult<bool> {
+        let mut task = self
+            .task_repo
+            .get_by_id(task_id)
+            .await?
+            .ok_or_else(|| AppError::TaskNotFound(task_id.as_str().to_string()))?;
+
+        let changed = crate::domain::state_machine::transition_handler::clear_github_auto_merge_correction_marker_for_terminal_pr(
+            &mut task,
+            pr_status,
+        );
+        if changed {
+            self.task_repo.update(&task).await?;
+        }
+        Ok(changed)
     }
 
     /// Keep an open PR-mode plan PR branch current with its GitHub base branch.
