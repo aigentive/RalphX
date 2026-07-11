@@ -1129,17 +1129,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       storeKey: runtimeStatusStoreKey,
     },
   );
-  const runtimeStatusItems = runtimeStatusQuery.data?.items;
-  const belowTranscriptLayoutOwnedByVisibleRuntime = useMemo(() => {
-    if (isFocusedChildChat) {
-      return true;
-    }
-    const runtimeItems = runtimeStatusItems ?? [];
-    if (runtimeItems.length === 0) {
-      return true;
-    }
-    return runtimeItems.some((item) => isRuntimeItemOwnedByFocus(item, chatFocus));
-  }, [chatFocus, isFocusedChildChat, runtimeStatusItems]);
   useEffect(() => {
     if (!selectedTaskArtifactId) {
       return;
@@ -2490,9 +2479,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             onUserMessageSent={onAgentUserMessageSent}
             onQuestionAnswered={handleQuestionAnswered}
             onChildSessionNavigate={onFocusIdeationSession}
-            belowTranscriptLayoutOwnedByVisibleRuntime={
-              belowTranscriptLayoutOwnedByVisibleRuntime
-            }
             hideHeaderSessionControls
             hideSessionToolbar
             surfaceBackground="transparent"

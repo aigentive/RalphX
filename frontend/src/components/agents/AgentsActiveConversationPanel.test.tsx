@@ -92,7 +92,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
     agentProcessContextIdOverride,
-    belowTranscriptLayoutOwnedByVisibleRuntime,
     conversationIdOverride,
     headerContent,
     planApprovalAction,
@@ -103,7 +102,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   }: {
     additionalQuestionSessionIds?: string[];
     agentProcessContextIdOverride?: string;
-    belowTranscriptLayoutOwnedByVisibleRuntime?: boolean;
     conversationIdOverride?: string;
     headerContent?: ReactNode;
     planApprovalAction?: {
@@ -131,11 +129,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       data-testid="integrated-chat-panel"
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
       data-agent-process-context-id={agentProcessContextIdOverride ?? ""}
-      data-below-transcript-layout-owned={
-        belowTranscriptLayoutOwnedByVisibleRuntime === undefined
-          ? ""
-          : String(belowTranscriptLayoutOwnedByVisibleRuntime)
-      }
       data-conversation-id={conversationIdOverride ?? ""}
       data-send-codex-fast-mode={
         sendOptions?.codexFastMode === undefined
@@ -1750,12 +1743,6 @@ describe("AgentsActiveConversationPanel", () => {
 
     renderPanel();
 
-    await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
-        "data-below-transcript-layout-owned",
-        "false",
-      ),
-    );
     expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("composer-layout-change"));
@@ -1828,10 +1815,6 @@ describe("AgentsActiveConversationPanel", () => {
       ),
     ).toHaveTextContent("Review task");
     expect(screen.getByText("Viewing")).toBeInTheDocument();
-    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
-      "data-below-transcript-layout-owned",
-      "true",
-    );
   });
 
   it("routes clicks from every Runtimes tab row kind", async () => {

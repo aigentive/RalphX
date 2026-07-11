@@ -9,9 +9,24 @@
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, it, expect, vi } from "vitest";
 import { TextBubble } from "./TextBubble";
 import { openPath } from "@tauri-apps/plugin-opener";
+
+const markdownRenderProbe = vi.hoisted(() => vi.fn());
+
+vi.mock("react-markdown", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-markdown")>();
+
+  return {
+    ...actual,
+    default: function CountedReactMarkdown(props: ComponentProps<typeof actual.default>) {
+      markdownRenderProbe();
+      return <actual.default {...props} />;
+    },
+  };
+});
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn().mockResolvedValue(undefined),
@@ -105,6 +120,57 @@ describe("TextBubble", () => {
     it("renders bold text in assistant messages", async () => {
       render(<TextBubble text="This is **bold** text" isUser={false} />);
       expect(await screen.findByText("bold")).toBeInTheDocument();
+    });
+
+    it("hydrates the markdown renderer only once", async () => {
+      const { rerender } = render(
+        <TextBubble text="# First heading" isUser={false} isStreaming />,
+      );
+
+      const markdown = await screen.findByRole("heading", { level: 1 });
+      rerender(<TextBubble text="# Second heading" isUser={false} isStreaming />);
+
+      expect(screen.getByRole("heading", { level: 1 })).toBe(markdown);
+      expect(screen.queryByText("# Second heading")).not.toBeInTheDocument();
+    });
+
+    it("keeps the markdown subtree mounted across rapid streaming chunks", async () => {
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      const markdown = (await screen.findByText("first")).closest("p");
+      expect(markdown).not.toBeNull();
+
+      rerender(<TextBubble text="**second**" isUser={false} isStreaming />);
+      rerender(<TextBubble text="**third**" isUser={false} isStreaming />);
+
+      expect(screen.getByText("first").closest("p")).toBe(markdown);
+      expect(screen.queryByText("third")).not.toBeInTheDocument();
+    });
+
+    it("does not re-render markdown during rapid updates inside a throttle window", async () => {
+      markdownRenderProbe.mockClear();
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      await screen.findByText("first");
+
+      rerender(<TextBubble text="**second**" isUser={false} isStreaming />);
+      rerender(<TextBubble text="**third**" isUser={false} isStreaming />);
+
+      expect(markdownRenderProbe).toHaveBeenCalledTimes(1);
+    });
+
+    it("flushes the latest throttled streaming text immediately when finalizing", async () => {
+      const { rerender } = render(
+        <TextBubble text="**first**" isUser={false} isStreaming />,
+      );
+      await screen.findByText("first");
+
+      rerender(<TextBubble text="latest streamed text" isUser={false} isStreaming />);
+      rerender(<TextBubble text="latest streamed text" isUser={false} isStreaming={false} />);
+
+      expect(screen.getByText("latest streamed text")).toBeInTheDocument();
     });
 
     it("opens absolute local file links with the system opener instead of navigating the webview", async () => {

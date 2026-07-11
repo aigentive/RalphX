@@ -339,8 +339,6 @@ const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
 const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
 /** Textarea growth ceiling (px) before it scrolls internally. */
 const COMPOSER_MAX_HEIGHT = 220;
-/** Covers the 150ms composer transitions plus a small settle margin. */
-const COMPOSER_LAYOUT_SETTLE_MS = 180;
 const EMPTY_PROJECT_REFERENCES: AgentComposerProjectReference[] = [];
 const EMPTY_INTEGRATION_REFERENCES: AgentComposerIntegrationReference[] = [];
 const EMPTY_ARTIFACT_REFERENCES: AgentComposerArtifactReference[] = [];
@@ -358,7 +356,6 @@ export function AgentComposerSurface({
   value: controlledValue,
   onChange: onChangeProp,
   onFocusChange,
-  onLayoutChange,
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
@@ -810,7 +807,6 @@ export function AgentComposerSurface({
   const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
   const isExpanded = !isCollapsed;
   const compact = isCollapsed;
-  const previousCollapsedRef = useRef(isCollapsed);
 
   // Auto-resize the textarea to its content, floored at a min-height that
   // depends on the collapsed/expanded state and capped before it scrolls.
@@ -825,7 +821,6 @@ export function AgentComposerSurface({
     if (!textarea) {
       return;
     }
-    const previousValue = textareaValueRef.current;
     textareaValueRef.current = value;
 
     textarea.style.height = "auto";
@@ -841,29 +836,7 @@ export function AgentComposerSurface({
       return;
     }
     textareaAppliedHeightRef.current = appliedHeight;
-    if (previousValue !== value) {
-      onLayoutChange?.();
-    }
-  }, [onLayoutChange, value, textareaMinHeight]);
-
-  useEffect(() => {
-    if (!collapsible || !onLayoutChange) {
-      return undefined;
-    }
-    if (previousCollapsedRef.current === isCollapsed) {
-      return undefined;
-    }
-    previousCollapsedRef.current = isCollapsed;
-
-    onLayoutChange();
-    const frameId = window.requestAnimationFrame(onLayoutChange);
-    const settleTimer = window.setTimeout(onLayoutChange, COMPOSER_LAYOUT_SETTLE_MS);
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      window.clearTimeout(settleTimer);
-    };
-  }, [collapsible, isCollapsed, onLayoutChange]);
+  }, [value, textareaMinHeight]);
 
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
