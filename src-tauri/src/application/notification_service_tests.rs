@@ -213,6 +213,47 @@ async fn desktop_gate_matrix_honors_master_focus_category_and_all_severities() {
 }
 
 #[tokio::test]
+async fn desktop_dispatch_skips_muted_project_but_keeps_unmuted_and_global_notifications() {
+    let notifier = Arc::new(RecordingDesktopNotifier::default());
+    let settings = NotificationSettings {
+        muted_project_ids: vec!["project-1".to_string()],
+        ..NotificationSettings::default()
+    };
+    let (service, _, _) = desktop_service(
+        settings,
+        Arc::new(WindowFocusState::default()),
+        notifier.clone(),
+        StdDuration::from_millis(1),
+    )
+    .await;
+
+    service
+        .record_ephemeral(notification_for(
+            NotificationCategory::ReviewNeeded,
+            NotificationSeverity::ActionRequired,
+            None,
+        ))
+        .await;
+    let mut unmuted = notification_for(
+        NotificationCategory::ReviewNeeded,
+        NotificationSeverity::ActionRequired,
+        None,
+    );
+    unmuted.project_id = Some("project-2".to_string());
+    service.record_ephemeral(unmuted).await;
+    let mut global = notification_for(
+        NotificationCategory::ReviewNeeded,
+        NotificationSeverity::ActionRequired,
+        None,
+    );
+    global.project_id = None;
+    service.record_ephemeral(global).await;
+    settle_desktop_dispatch().await;
+
+    assert_eq!(notifier.0.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn desktop_coalescer_sends_one_summary_for_three_items_with_group_counts() {
     let notifier = Arc::new(RecordingDesktopNotifier::default());
     let (service, _, _) = desktop_service(

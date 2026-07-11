@@ -96,6 +96,7 @@ pub struct NotificationSettings {
     pub desktop_automation_approvals_enabled: bool,
     pub desktop_automation_run_completions_enabled: bool,
     pub desktop_git_github_enabled: bool,
+    pub muted_project_ids: Vec<String>,
 }
 
 impl Default for NotificationSettings {
@@ -111,6 +112,7 @@ impl Default for NotificationSettings {
             desktop_automation_approvals_enabled: true,
             desktop_automation_run_completions_enabled: false,
             desktop_git_github_enabled: true,
+            muted_project_ids: Vec::new(),
         }
     }
 }

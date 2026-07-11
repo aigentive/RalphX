@@ -81,6 +81,19 @@ impl TaskPipelineNotificationProducer {
                     format!("“{}” is waiting for your input", context.task.title),
                 )
             }
+            InternalStatus::Blocked
+                if Blocker::is_freshness_blocked_reason(context.task.blocked_reason.as_deref()) =>
+            {
+                (
+                    NotificationCategory::TaskBlocked,
+                    NotificationSeverity::Warning,
+                    "Branch freshness blocked",
+                    format!(
+                        "“{}” needs its branch conflicts resolved before it can continue",
+                        context.task.title
+                    ),
+                )
+            }
             InternalStatus::Failed => (
                 NotificationCategory::TaskFailed,
                 NotificationSeverity::ActionRequired,

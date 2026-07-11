@@ -13,8 +13,26 @@ use crate::domain::entities::{
     ProjectId, SessionOrigin, Task,
 };
 use crate::domain::services::RunningAgentKey;
+use crate::infrastructure::agents::claude::StreamTimeoutsConfig;
 
 // ======= Unit tests for should_auto_recover() =======
+
+#[test]
+fn notification_retention_prune_uses_runtime_config_values() {
+    let config = StreamTimeoutsConfig {
+        notification_retention_read_days: 7,
+        notification_retention_max_rows: 42,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-11T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let (read_before, max_rows) = notification_retention_prune_args(&config, now);
+
+    assert_eq!(read_before, now - chrono::Duration::days(7));
+    assert_eq!(max_rows, 42);
+}
 
 #[test]
 fn test_auto_recover_with_shutdown_flag() {

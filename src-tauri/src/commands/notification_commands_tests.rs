@@ -29,6 +29,7 @@ async fn notification_settings_commands_return_defaults_and_persist_partial_upda
     assert!(defaults.desktop_automation_approvals_enabled);
     assert!(!defaults.desktop_automation_run_completions_enabled);
     assert!(defaults.desktop_git_github_enabled);
+    assert!(defaults.muted_project_ids.is_empty());
 
     let updated = update_notification_settings(
         UpdateNotificationSettingsInput {
@@ -42,6 +43,7 @@ async fn notification_settings_commands_return_defaults_and_persist_partial_upda
             desktop_automation_approvals_enabled: None,
             desktop_automation_run_completions_enabled: Some(true),
             desktop_git_github_enabled: None,
+            muted_project_ids: Some(vec!["project-1".to_string()]),
         },
         app.state::<AppState>(),
     )
@@ -52,6 +54,7 @@ async fn notification_settings_commands_return_defaults_and_persist_partial_upda
     assert!(!updated.focused_toasts_enabled);
     assert!(updated.desktop_automation_run_completions_enabled);
     assert!(updated.desktop_reviews_enabled);
+    assert_eq!(updated.muted_project_ids, ["project-1"]);
 }
 
 #[test]
@@ -62,6 +65,7 @@ fn notification_settings_input_ignores_unknown_json_fields() {
 
     assert_eq!(input.desktop_enabled, Some(false));
     assert_eq!(input.focused_toasts_enabled, None);
+    assert_eq!(input.muted_project_ids, None);
 }
 
 #[test]

@@ -51,6 +51,7 @@ pub struct UpdateNotificationSettingsInput {
     pub desktop_automation_approvals_enabled: Option<bool>,
     pub desktop_automation_run_completions_enabled: Option<bool>,
     pub desktop_git_github_enabled: Option<bool>,
+    pub muted_project_ids: Option<Vec<String>>,
 }
 
 /// Gets the persisted global notification preferences, or product defaults before first save.
@@ -106,6 +107,9 @@ pub async fn update_notification_settings(
     }
     if let Some(value) = input.desktop_git_github_enabled {
         settings.desktop_git_github_enabled = value;
+    }
+    if let Some(value) = input.muted_project_ids {
+        settings.muted_project_ids = value;
     }
 
     state

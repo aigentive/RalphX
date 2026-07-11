@@ -12,6 +12,7 @@ export interface NotificationSettings {
   desktop_automation_approvals_enabled: boolean;
   desktop_automation_run_completions_enabled: boolean;
   desktop_git_github_enabled: boolean;
+  muted_project_ids: string[];
 }
 
 export interface UpdateNotificationSettingsInput {
@@ -25,6 +26,7 @@ export interface UpdateNotificationSettingsInput {
   desktopAutomationApprovalsEnabled?: boolean;
   desktopAutomationRunCompletionsEnabled?: boolean;
   desktopGitGithubEnabled?: boolean;
+  mutedProjectIds?: string[];
 }
 
 export const notificationSettingsKeys = {

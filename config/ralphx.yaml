@@ -89,6 +89,9 @@ timeouts:
     execution_attempt_start_tolerance_secs: 1 # Env: RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS
     # notification_service.rs — batch eligible desktop notifications before delivery
     desktop_notification_coalesce_window_secs: 5 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+    # startup_jobs.rs — durable notification history retention (read rows only)
+    notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
+    notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
 
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded

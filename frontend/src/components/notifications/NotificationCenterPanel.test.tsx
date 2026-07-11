@@ -47,6 +47,12 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
   });
 
+  it("keeps project attention rows visible because mute only gates alert delivery", () => {
+    renderPanel(true);
+    act(() => { vi.runAllTimers(); });
+    expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
+  });
+
   it("keeps content through visual close then unmounts it after paint", () => {
     const view = renderPanel(true);
     act(() => { vi.runAllTimers(); });

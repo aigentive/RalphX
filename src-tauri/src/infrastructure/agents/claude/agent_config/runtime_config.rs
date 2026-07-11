@@ -27,6 +27,8 @@ pub struct AllRuntimeConfig {
 }
 
 pub const DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS: u64 = 5;
+pub const DEFAULT_NOTIFICATION_RETENTION_READ_DAYS: u64 = 30;
+pub const DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS: u64 = 1000;
 
 /// A specialist agent entry in the verification pipeline.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -228,6 +230,10 @@ pub struct StreamTimeoutsConfig {
     pub execution_attempt_start_tolerance_secs: u64,
     #[serde(default = "default_desktop_notification_coalesce_window_secs")]
     pub desktop_notification_coalesce_window_secs: u64,
+    #[serde(default = "default_notification_retention_read_days")]
+    pub notification_retention_read_days: u64,
+    #[serde(default = "default_notification_retention_max_rows")]
+    pub notification_retention_max_rows: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
@@ -246,6 +252,14 @@ fn default_desktop_notification_coalesce_window_secs() -> u64 {
     DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
 }
 
+fn default_notification_retention_read_days() -> u64 {
+    DEFAULT_NOTIFICATION_RETENTION_READ_DAYS
+}
+
+fn default_notification_retention_max_rows() -> u64 {
+    DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
+}
+
 impl Default for StreamTimeoutsConfig {
     fn default() -> Self {
         Self {
@@ -262,6 +276,8 @@ impl Default for StreamTimeoutsConfig {
             execution_attempt_start_tolerance_secs: 1,
             desktop_notification_coalesce_window_secs:
                 DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
+            notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
+            notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
         }
     }
 }
@@ -753,6 +769,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.desktop_notification_coalesce_window_secs,
         "RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS"
+    );
+    env_u64!(
+        cfg.stream.notification_retention_read_days,
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS"
+    );
+    env_u64!(
+        cfg.stream.notification_retention_max_rows,
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
     );
 
     // Reconciliation

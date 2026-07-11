@@ -352,6 +352,13 @@ impl NotificationService {
         if !settings.desktop_category_enabled(notification.category) {
             return;
         }
+        if notification
+            .project_id
+            .as_deref()
+            .is_some_and(|project_id| settings.muted_project_ids.iter().any(|id| id == project_id))
+        {
+            return;
+        }
         if settings.desktop_only_when_unfocused
             && self.focus_state.is_focused()
             && !desktop_category_is_always(notification.category)

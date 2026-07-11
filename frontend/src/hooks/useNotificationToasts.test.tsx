@@ -9,7 +9,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useNotificationToasts } from "./useNotificationToasts";
 
 const { preferences, subscribers, toastWarning } = vi.hoisted(() => ({
-  preferences: { focusedToastsEnabled: true },
+  preferences: { focusedToastsEnabled: true, mutedProjectIds: [] as string[] },
   subscribers: new Map<string, (payload: unknown) => void>(),
   toastWarning: vi.fn(),
 }));
@@ -37,6 +37,7 @@ describe("useNotificationToasts", () => {
     Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     preferences.focusedToastsEnabled = true;
+    preferences.mutedProjectIds = [];
     useUiStore.setState({ notificationsPanelOpen: false });
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
     renderHook(() => useNotificationToasts(), { wrapper });
@@ -51,6 +52,7 @@ describe("useNotificationToasts", () => {
   it.each([
     { focused: true, severity: "action_required", drawerOpen: false, shouldToast: true },
     { focused: false, severity: "action_required", drawerOpen: false, shouldToast: false },
+    { focused: true, severity: "warning", drawerOpen: false, shouldToast: false },
     { focused: true, severity: "info", drawerOpen: false, shouldToast: false },
     { focused: true, severity: "action_required", drawerOpen: true, shouldToast: false },
   ] as const)("gates focused toast ($focused focus, $severity severity, drawer $drawerOpen)", ({ focused, severity, drawerOpen, shouldToast }) => {
@@ -72,6 +74,17 @@ describe("useNotificationToasts", () => {
     renderHook(() => useNotificationToasts(), { wrapper });
     subscribers.get("notification:created")?.(notification);
     expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("suppresses a muted project toast but keeps global notifications eligible", () => {
+    preferences.mutedProjectIds = ["project-1"];
+    renderHook(() => useNotificationToasts(), { wrapper });
+
+    subscribers.get("notification:created")?.(notification);
+    subscribers.get("notification:created")?.({ ...notification, id: "global-1", projectId: undefined });
+
+    expect(toastWarning).toHaveBeenCalledTimes(1);
+    expect(toastWarning).toHaveBeenCalledWith("Permission requested", expect.any(Object));
   });
 
   it("navigates and marks the notification read from the toast action", async () => {

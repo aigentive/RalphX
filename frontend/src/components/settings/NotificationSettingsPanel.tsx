@@ -12,6 +12,7 @@ import {
   useUpdateNotificationSettings,
   type UpdateNotificationSettingsInput,
 } from "@/hooks/useNotificationSettings";
+import { useProjects } from "@/hooks/useProjects";
 
 import { SectionCard, ToggleSettingRow } from "./SettingsView.shared";
 
@@ -26,6 +27,7 @@ const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   desktop_automation_approvals_enabled: true,
   desktop_automation_run_completions_enabled: false,
   desktop_git_github_enabled: true,
+  muted_project_ids: [],
 };
 
 interface DesktopCategoryRow {
@@ -139,6 +141,7 @@ function InlineNotice({
 
 export function NotificationSettingsPanel() {
   const { data } = useNotificationSettings();
+  const { data: projects = [] } = useProjects();
   const { mutate: updateSettings, isPending } = useUpdateNotificationSettings();
   const [permissionDenied, setPermissionDenied] = useState(false);
   const settings = data ?? DEFAULT_NOTIFICATION_SETTINGS;
@@ -159,6 +162,13 @@ export function NotificationSettingsPanel() {
       await requestDesktopPermissionIfNeeded();
     }
     updateSettings({ desktopEnabled: enabled });
+  };
+
+  const updateProjectMuted = (projectId: string, muted: boolean) => {
+    const mutedProjectIds = muted
+      ? [...new Set([...settings.muted_project_ids, projectId])]
+      : settings.muted_project_ids.filter((id) => id !== projectId);
+    updateSettings({ mutedProjectIds });
   };
 
   return (
@@ -207,6 +217,25 @@ export function NotificationSettingsPanel() {
           onChange={(enabled) => updateSettings({ [row.input]: enabled })}
         />
       ))}
+
+      {projects.length > 0 ? (
+        <>
+          <div className="pt-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)]">
+            Muted projects
+          </div>
+          {projects.map((project) => (
+            <ToggleSettingRow
+              key={project.id}
+              id={`notification-muted-project-${project.id}`}
+              label={project.name}
+              description="Suppress desktop alerts and in-app toasts for this project."
+              checked={settings.muted_project_ids.includes(project.id)}
+              disabled={isPending}
+              onChange={(muted) => updateProjectMuted(project.id, muted)}
+            />
+          ))}
+        </>
+      ) : null}
 
       <InlineNotice tone="info">
         The in-app badge and Needs-action list always stay on — these toggles

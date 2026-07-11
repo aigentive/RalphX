@@ -274,6 +274,7 @@ async fn assert_normal_task_notification(
     from: InternalStatus,
     to: InternalStatus,
     category: NotificationCategory,
+    severity: NotificationSeverity,
     blocked_reason: Option<&str>,
 ) {
     let app_state = AppState::new_test();
@@ -299,7 +300,7 @@ async fn assert_normal_task_notification(
     let rows = task_notifications(&app_state).await;
     assert_eq!(rows.len(), 1, "{to:?} should create exactly one row");
     assert_eq!(rows[0].category, category);
-    assert_eq!(rows[0].severity, NotificationSeverity::ActionRequired);
+    assert_eq!(rows[0].severity, severity);
     assert_eq!(rows[0].target.kind, NotificationTargetKind::Task);
     assert_eq!(
         rows[0].target.project_id.as_deref(),
@@ -643,6 +644,7 @@ async fn task_pipeline_qa_failed_normal_transition_records_actionable_row() {
         InternalStatus::QaTesting,
         InternalStatus::QaFailed,
         NotificationCategory::QaFailed,
+        NotificationSeverity::ActionRequired,
         None,
     )
     .await;
@@ -654,6 +656,7 @@ async fn task_pipeline_escalated_normal_transition_records_actionable_row() {
         InternalStatus::Reviewing,
         InternalStatus::Escalated,
         NotificationCategory::ReviewEscalated,
+        NotificationSeverity::ActionRequired,
         None,
     )
     .await;
@@ -665,6 +668,7 @@ async fn task_pipeline_merge_conflict_normal_transition_records_actionable_row()
         InternalStatus::Merging,
         InternalStatus::MergeConflict,
         NotificationCategory::MergeConflict,
+        NotificationSeverity::ActionRequired,
         None,
     )
     .await;
@@ -676,7 +680,20 @@ async fn task_pipeline_human_input_blocked_normal_transition_records_actionable_
         InternalStatus::ReExecuting,
         InternalStatus::Blocked,
         NotificationCategory::TaskBlocked,
+        NotificationSeverity::ActionRequired,
         Some("human: approval is required"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_freshness_blocked_notification_records_warning_row() {
+    assert_normal_task_notification(
+        InternalStatus::ReExecuting,
+        InternalStatus::Blocked,
+        NotificationCategory::TaskBlocked,
+        NotificationSeverity::Warning,
+        Some("FRESHNESS_BLOCKED|3|10|src/lib.rs|Persistent freshness conflicts"),
     )
     .await;
 }
@@ -687,6 +704,7 @@ async fn task_pipeline_failed_normal_transition_records_actionable_row() {
         InternalStatus::Executing,
         InternalStatus::Failed,
         NotificationCategory::TaskFailed,
+        NotificationSeverity::ActionRequired,
         None,
     )
     .await;
