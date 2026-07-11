@@ -9,7 +9,9 @@ use uuid::Uuid;
 use super::*;
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::permission_state::PendingPermissionInfo;
-use crate::application::{NotificationContextResolver, PermissionDecision};
+use crate::application::{
+    NotificationContextResolver, PermissionDecision, PERMISSION_RESOLVED_EVENT,
+};
 
 pub async fn request_permission(
     State(state): State<HttpServerState>,
@@ -181,6 +183,11 @@ pub async fn resolve_permission(
         .await;
 
     if resolved {
+        crate::http_server::emit_http_event(
+            &state,
+            PERMISSION_RESOLVED_EVENT,
+            serde_json::json!({ "request_id": &input.request_id }),
+        );
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND

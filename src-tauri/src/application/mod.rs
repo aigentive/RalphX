@@ -223,7 +223,9 @@ pub use linear_webhook_reconciliation_service::{
 };
 pub use memory_archive_service::MemoryArchiveService;
 pub use notification_service::NotificationService;
-pub use permission_state::{PendingPermissionInfo, PermissionDecision, PermissionState};
+pub use permission_state::{
+    PendingPermissionInfo, PermissionDecision, PermissionState, PERMISSION_RESOLVED_EVENT,
+};
 pub use plan_ranking::{
     compute_activity_score, compute_final_score, compute_final_score_with_breakdown,
     compute_interaction_score, compute_recency_score, ScoreBreakdown,

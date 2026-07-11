@@ -11,6 +11,8 @@ use tracing::{error, info};
 use crate::domain::repositories::PermissionRepository;
 use crate::error::AppResult;
 
+pub const PERMISSION_RESOLVED_EVENT: &str = "permission:resolved";
+
 /// Permission decision made by the user in the UI
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionDecision {

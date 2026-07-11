@@ -6,9 +6,9 @@ use axum::extract::State;
 use axum::Json;
 use chrono::{DateTime, Utc};
 
-use super::{expire_permission_and_emit, request_permission};
+use super::{expire_permission_and_emit, request_permission, resolve_permission};
 use crate::application::app_state::AppState;
-use crate::application::permission_state::PendingPermissionInfo;
+use crate::application::permission_state::{PendingPermissionInfo, PERMISSION_RESOLVED_EVENT};
 use crate::application::{TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::Notification;
@@ -17,7 +17,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{NotificationPage, NotificationRepository};
 use crate::error::{AppError, AppResult};
-use crate::http_server::types::{HttpServerState, PermissionRequestInput};
+use crate::http_server::types::{HttpServerState, PermissionRequestInput, ResolvePermissionInput};
+use ralphx_events::RecordingEventSink;
 
 fn make_info(request_id: &str) -> PendingPermissionInfo {
     PendingPermissionInfo {
@@ -45,6 +46,26 @@ fn make_test_state() -> HttpServerState {
         team_service,
         delegation_service: Default::default(),
     }
+}
+
+fn make_test_state_with_event_sink() -> (HttpServerState, RecordingEventSink) {
+    let event_sink = RecordingEventSink::new();
+    let mut app_state = AppState::new_test();
+    app_state.events = Arc::new(event_sink.clone());
+    let app_state = Arc::new(app_state);
+    let execution_state = Arc::new(ExecutionState::new());
+    let tracker = Arc::new(TeamStateTracker::new());
+    let team_service = Arc::new(TeamService::new_without_events(tracker));
+    (
+        HttpServerState {
+            app_state,
+            execution_state,
+            team_tracker: TeamStateTracker::new(),
+            team_service,
+            delegation_service: Default::default(),
+        },
+        event_sink,
+    )
 }
 
 struct FailingNotificationRepository;
@@ -187,6 +208,35 @@ async fn request_permission_returns_after_notification_repository_failure() {
         .contains_key("permission-failure"));
 }
 
+#[tokio::test]
+async fn resolve_permission_emits_resolved_event_once_with_request_id() {
+    let (state, event_sink) = make_test_state_with_event_sink();
+    state
+        .app_state
+        .permission_state
+        .register(make_info("permission-resolve-1"))
+        .await;
+
+    let status = resolve_permission(
+        State(state),
+        Json(ResolvePermissionInput {
+            request_id: "permission-resolve-1".into(),
+            decision: "allow".into(),
+            message: Some("Approved".into()),
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        event_sink.events(),
+        vec![ralphx_events::RecordedEvent {
+            event: PERMISSION_RESOLVED_EVENT.to_string(),
+            payload: serde_json::json!({ "request_id": "permission-resolve-1" }),
+        }]
+    );
+}
+
 /// Path 1 — pre-check timeout: elapsed >= timeout before first channel poll.
 /// Verifies: state removed, returns REQUEST_TIMEOUT.
 #[tokio::test]
@@ -293,7 +343,7 @@ async fn test_expire_permission_and_emit_unknown_request_id() {
 /// correct payload shape.
 #[tokio::test]
 async fn test_expire_permission_event_payload_shape() {
-    let state = make_test_state();
+    let (state, event_sink) = make_test_state_with_event_sink();
     let request_id = "req-payload-check";
     state
         .app_state
@@ -313,4 +363,14 @@ async fn test_expire_permission_event_payload_shape() {
         .lock()
         .await
         .contains_key(request_id));
+    let events = event_sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "permission:expired");
+    assert_eq!(
+        events[0].payload,
+        serde_json::json!({ "request_id": request_id })
+    );
+    assert!(events
+        .iter()
+        .all(|event| event.event != PERMISSION_RESOLVED_EVENT));
 }
