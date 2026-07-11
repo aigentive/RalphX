@@ -32,6 +32,8 @@ pub struct UiFeatureFlagsConfig {
     pub atlassian_oauth: bool,
     /// Enable or disable the read-only ticketing dashboard UI. Default: false.
     pub ticketing_dashboard: bool,
+    /// Enable or disable agent personas. Default: false.
+    pub agent_personas: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -45,6 +47,7 @@ impl Default for UiFeatureFlagsConfig {
             team_mode: false,
             atlassian_oauth: false,
             ticketing_dashboard: false,
+            agent_personas: false,
         }
     }
 }

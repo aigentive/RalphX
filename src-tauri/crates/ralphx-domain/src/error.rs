@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("PERSONA_FEATURE_DISABLED: {0}")]
+    FeatureDisabled(String),
+
     #[error("Agent error: {0}")]
     Agent(String),
 

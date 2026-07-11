@@ -3421,6 +3421,20 @@ ui:
 }
 
 #[test]
+fn agent_personas_flag_defaults_false_without_config_key() {
+    let yaml = r#"
+ui:
+  feature_flags:
+    ticketing_dashboard: true
+"#;
+    let cfg = parse_config_no_env_overrides(yaml)
+        .expect("should parse yaml without the agent_personas feature flag");
+
+    assert!(cfg.runtime.ui_feature_flags.ticketing_dashboard);
+    assert!(!cfg.runtime.ui_feature_flags.agent_personas);
+}
+
+#[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
     // YAML without ui section: core pages default visible, standalone Ideation stays hidden.
     let yaml = r#"
@@ -3519,6 +3533,7 @@ fn test_env_override_true_value_enables_flag() {
             team_mode: false,
             atlassian_oauth: false,
             ticketing_dashboard: false,
+            agent_personas: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {

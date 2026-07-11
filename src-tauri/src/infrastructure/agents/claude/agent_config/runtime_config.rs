@@ -1169,6 +1169,9 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.ui_feature_flags.ticketing_dashboard =
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
+    if let Some(v) = lookup("RALPHX_UI_AGENT_PERSONAS") {
+        cfg.ui_feature_flags.agent_personas = matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
 }
 
 /// Validate ReconciliationConfig fields and clamp to safe defaults on invalid values (GAP M7).

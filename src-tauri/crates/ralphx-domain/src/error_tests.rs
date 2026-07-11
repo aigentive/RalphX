@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn feature_disabled_error_variant_matches() {
+    let err = AppError::FeatureDisabled("agent personas".to_string());
+
+    assert!(matches!(err, AppError::FeatureDisabled(_)));
+    assert!(err.to_string().starts_with("PERSONA_FEATURE_DISABLED:"));
+}
+
+#[test]
 fn test_database_error_display() {
     let err = AppError::Database("connection failed".to_string());
     assert_eq!(err.to_string(), "Database error: connection failed");

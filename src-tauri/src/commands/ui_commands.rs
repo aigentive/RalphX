@@ -17,6 +17,7 @@ pub struct UiFeatureFlagsResponse {
     pub team_mode: bool,
     pub atlassian_oauth: bool,
     pub ticketing_dashboard: bool,
+    pub agent_personas: bool,
 }
 
 /// Returns the current UI feature flag configuration.
@@ -33,6 +34,7 @@ pub fn get_ui_feature_flags() -> UiFeatureFlagsResponse {
         team_mode: flags.team_mode,
         atlassian_oauth: flags.atlassian_oauth,
         ticketing_dashboard: flags.ticketing_dashboard,
+        agent_personas: flags.agent_personas,
     }
 }
 
