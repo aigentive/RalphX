@@ -24,6 +24,9 @@ pub enum AppError {
     #[error("PERSONA_FEATURE_DISABLED: {0}")]
     FeatureDisabled(String),
 
+    #[error("{0}")]
+    PersonaUnavailable(String),
+
     #[error("Agent error: {0}")]
     Agent(String),
 

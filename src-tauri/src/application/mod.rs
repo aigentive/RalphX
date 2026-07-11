@@ -75,6 +75,7 @@ pub mod notification_service;
 mod notification_service_tests;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
+pub mod personas;
 pub mod permission_state;
 pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
