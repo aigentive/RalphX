@@ -31,7 +31,6 @@ const {
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
   confirmVerificationMock,
-  composerLayoutChangeMock,
   composerQuestionModeRef,
   composerAgentStatusRef,
   eventSubscribers,
@@ -57,7 +56,6 @@ const {
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
-  composerLayoutChangeMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
   composerAgentStatusRef: { current: "idle" },
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
@@ -92,7 +90,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
     agentProcessContextIdOverride,
-    belowTranscriptLayoutOwnedByVisibleRuntime,
     conversationIdOverride,
     headerContent,
     planApprovalAction,
@@ -103,7 +100,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   }: {
     additionalQuestionSessionIds?: string[];
     agentProcessContextIdOverride?: string;
-    belowTranscriptLayoutOwnedByVisibleRuntime?: boolean;
     conversationIdOverride?: string;
     headerContent?: ReactNode;
     planApprovalAction?: {
@@ -131,11 +127,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       data-testid="integrated-chat-panel"
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
       data-agent-process-context-id={agentProcessContextIdOverride ?? ""}
-      data-below-transcript-layout-owned={
-        belowTranscriptLayoutOwnedByVisibleRuntime === undefined
-          ? ""
-          : String(belowTranscriptLayoutOwnedByVisibleRuntime)
-      }
       data-conversation-id={conversationIdOverride ?? ""}
       data-send-codex-fast-mode={
         sendOptions?.codexFastMode === undefined
@@ -286,7 +277,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         agentStatus: composerAgentStatusRef.current,
         isSending: false,
         isReadOnly: false,
-        onLayoutChange: composerLayoutChangeMock,
         autoFocus: false,
         hasQueuedMessages: false,
         onEditLastQueued: vi.fn(),
@@ -563,7 +553,6 @@ vi.mock("./AgentComposerSurface", () => ({
     sendDisabledReason,
     onSend,
     onForkSession,
-    onLayoutChange,
   }: {
     provider: {
       value: string;
@@ -595,7 +584,6 @@ vi.mock("./AgentComposerSurface", () => ({
     sendDisabledReason?: string | null;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
-    onLayoutChange?: () => void;
   }) => (
     <div>
       <div data-testid="workspace-provider-value">{provider.value}</div>
@@ -680,11 +668,6 @@ vi.mock("./AgentComposerSurface", () => ({
         type="button"
         data-testid="composer-fork-action"
         onClick={() => void onForkSession?.()}
-      />
-      <button
-        type="button"
-        data-testid="composer-layout-change"
-        onClick={() => onLayoutChange?.()}
       />
     </div>
   ),
@@ -1750,17 +1733,8 @@ describe("AgentsActiveConversationPanel", () => {
 
     renderPanel();
 
-    await waitFor(() =>
-      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
-        "data-below-transcript-layout-owned",
-        "false",
-      ),
-    );
     expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("composer-layout-change"));
-    expect(composerLayoutChangeMock).toHaveBeenCalledTimes(1);
-    expect(composerLayoutChangeMock).toHaveBeenCalledWith();
   });
 
   it("shows focused task runtime rows in the Runtimes tab", async () => {
@@ -1828,10 +1802,6 @@ describe("AgentsActiveConversationPanel", () => {
       ),
     ).toHaveTextContent("Review task");
     expect(screen.getByText("Viewing")).toBeInTheDocument();
-    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
-      "data-below-transcript-layout-owned",
-      "true",
-    );
   });
 
   it("routes clicks from every Runtimes tab row kind", async () => {
