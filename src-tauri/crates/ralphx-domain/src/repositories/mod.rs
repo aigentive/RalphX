@@ -43,6 +43,7 @@ pub mod notification_settings_repository;
 pub mod plan_artifact_approval_repository;
 pub mod plan_branch_repository;
 pub mod plan_selection_stats_repository;
+pub mod persona_repository;
 pub mod process_repo;
 pub mod project_repository;
 pub mod proposal_dependency_repository;
@@ -117,6 +118,7 @@ pub use plan_artifact_approval_repository::{
 };
 pub use plan_branch_repository::PlanBranchRepository;
 pub use plan_selection_stats_repository::PlanSelectionStatsRepository;
+pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_repository::ProjectRepository;
 pub use proposal_dependency_repository::ProposalDependencyRepository;

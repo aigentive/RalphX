@@ -105,6 +105,7 @@ pub fn start_teammate_stream<R: Runtime>(
                     upstream_provider: None,
                     provider_profile: None,
                     agent_mode: None,
+                    persona_id: None,
                     coordination_mode: CoordinationMode::Solo,
                     automation_id: None,
                     automation_run_id: None,

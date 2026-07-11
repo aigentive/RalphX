@@ -27,6 +27,9 @@ pub mod memory_chat_attachment_repo;
 pub mod memory_chat_conversation_repo;
 pub mod memory_chat_message_repo;
 pub mod memory_chat_timeline_repo;
+pub mod memory_persona_repo;
+#[cfg(test)]
+mod memory_persona_repo_tests;
 pub mod memory_clickup_integration_settings_repo;
 pub mod memory_delegated_session_repo;
 pub mod memory_execution_plan_repo;
@@ -99,6 +102,7 @@ pub use memory_chat_attachment_repo::MemoryChatAttachmentRepository;
 pub use memory_chat_conversation_repo::MemoryChatConversationRepository;
 pub use memory_chat_message_repo::MemoryChatMessageRepository;
 pub use memory_chat_timeline_repo::MemoryChatTimelineRepository;
+pub use memory_persona_repo::MemoryPersonaRepository;
 pub use memory_clickup_integration_settings_repo::MemoryClickUpIntegrationSettingsRepository;
 pub use memory_delegated_session_repo::MemoryDelegatedSessionRepository;
 pub use memory_execution_plan_repo::MemoryExecutionPlanRepository;

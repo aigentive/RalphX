@@ -117,6 +117,13 @@ pub trait ChatConversationRepository: Send + Sync {
         mode: Option<AgentConversationWorkspaceMode>,
     ) -> AppResult<()>;
 
+    /// Set or clear the persona bound to a conversation.
+    async fn update_persona_binding(
+        &self,
+        id: &ChatConversationId,
+        persona_id: Option<&str>,
+    ) -> AppResult<()>;
+
     /// Update the conversation-level team coordination mode.
     async fn update_coordination_mode(
         &self,

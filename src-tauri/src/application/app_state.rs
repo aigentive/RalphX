@@ -64,9 +64,10 @@ use crate::domain::repositories::{
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
     NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
-    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
+    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
@@ -97,7 +98,7 @@ use crate::infrastructure::memory::{
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryNotificationRepository, MemoryNotificationSettingsRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
@@ -132,7 +133,7 @@ use crate::infrastructure::sqlite::{
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteNotificationRepository, SqliteNotificationSettingsRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
     SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
     SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
     SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
@@ -253,6 +254,8 @@ pub struct AppState {
     pub chat_timeline_repo: Arc<dyn ChatTimelineRepository>,
     /// Chat conversation repository (for context-aware chat)
     pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    /// Persona repository for persisted agent personas.
+    pub persona_repo: Arc<dyn PersonaRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     /// Conversation-owned primary Jira assignment/cache repository
@@ -1352,6 +1355,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(SqliteChatConversationRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            persona_repo: Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1597,6 +1603,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -1764,6 +1771,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -1942,6 +1950,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2101,6 +2110,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
