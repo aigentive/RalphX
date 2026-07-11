@@ -163,7 +163,7 @@ pub use notification::{
 };
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
-pub use persona::{Persona, PersonaId, PersonaStatus};
+pub use persona::{Persona, PersonaDirective, PersonaId, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,

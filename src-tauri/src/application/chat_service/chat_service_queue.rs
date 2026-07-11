@@ -394,6 +394,8 @@ fn provider_switch_send_options_for_queued_message(
         metadata: queued_msg.metadata_override.clone(),
         created_at: queued_persisted_created_at(queued_msg),
         harness_override: queued_msg.harness_override,
+        agent_name_override: queued_msg.agent_name_override.clone(),
+        persona_directive: queued_msg.persona_directive.clone(),
         model_override: queued_msg.model_override.clone(),
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
@@ -1951,6 +1953,8 @@ mod tests {
         message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
         message.created_at_override = Some("2026-06-12T12:00:00Z".to_string());
         message.harness_override = Some(AgentHarnessKind::Codex);
+        message.agent_name_override = Some("ralphx-queued-agent".to_string());
+        message.persona_directive = crate::domain::entities::PersonaDirective::Suppress;
         message.model_override = Some("gpt-5.5".to_string());
         message.logical_effort_override = Some(LogicalEffort::High);
         message.composer_project_references = vec![ComposerProjectReference {
@@ -1993,6 +1997,14 @@ mod tests {
             Some("2026-06-12T12:00:00+00:00")
         );
         assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(
+            options.agent_name_override.as_deref(),
+            Some("ralphx-queued-agent")
+        );
+        assert_eq!(
+            options.persona_directive,
+            crate::domain::entities::PersonaDirective::Suppress
+        );
         assert_eq!(options.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(options.conversation_id_override, Some(conversation_id));
         assert_eq!(options.logical_effort_override, Some(LogicalEffort::High));
@@ -2102,6 +2114,8 @@ mod tests {
             None,
             None,
             Some(AgentHarnessKind::Codex),
+            None,
+            crate::domain::entities::PersonaDirective::Inherit,
             Some("gpt-5.5".to_string()),
             Some(crate::domain::agents::LogicalEffort::High),
             Some("fast".to_string()),

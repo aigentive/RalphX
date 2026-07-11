@@ -61,7 +61,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
-    CoordinationMode, InternalStatus, MessageRole, ProjectId, TaskId, TeamIntent,
+    CoordinationMode, InternalStatus, MessageRole, PersonaDirective, ProjectId, TaskId, TeamIntent,
     TeamMessageTarget,
 };
 use crate::domain::repositories::{
@@ -835,6 +835,8 @@ pub struct SendMessageOptions {
     pub harness_override: Option<AgentHarnessKind>,
     /// Optional explicit canonical agent override for this send.
     pub agent_name_override: Option<String>,
+    /// Persona intent for this send.
+    pub persona_directive: PersonaDirective,
     /// Optional explicit model override for this send.
     pub model_override: Option<String>,
     /// Optional conversation override for surfaces that own explicit session selection.
@@ -1416,6 +1418,8 @@ impl<R: Runtime> AppChatService<R> {
                 options.metadata.clone(),
                 options.created_at.map(|ts| ts.to_rfc3339()),
                 options.harness_override,
+                options.agent_name_override.clone(),
+                options.persona_directive.clone(),
                 options.model_override.clone(),
                 options.logical_effort_override,
                 options.service_tier_override.clone(),
@@ -5832,6 +5836,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             metadata: queued_msg.metadata_override.clone(),
             created_at,
             harness_override: queued_msg.harness_override,
+            agent_name_override: queued_msg.agent_name_override.clone(),
+            persona_directive: queued_msg.persona_directive.clone(),
             model_override: queued_msg.model_override.clone(),
             logical_effort_override: queued_msg.logical_effort_override,
             service_tier_override: queued_msg.service_tier_override.clone(),

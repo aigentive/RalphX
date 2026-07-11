@@ -46,6 +46,15 @@ impl From<&str> for PersonaId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonaDirective {
+    #[default]
+    Inherit,
+    Suppress,
+    Explicit(PersonaId),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersonaStatus {
@@ -100,3 +109,7 @@ impl Persona {
         matches!(self.status, PersonaStatus::Active)
     }
 }
+
+#[cfg(test)]
+#[path = "persona_tests.rs"]
+mod tests;

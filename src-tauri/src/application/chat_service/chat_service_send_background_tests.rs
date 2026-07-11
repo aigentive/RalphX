@@ -1243,6 +1243,7 @@ EOF
 async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
     use crate::application::chat_service::{ChatService, MockChatService};
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+    use crate::domain::entities::PersonaDirective;
     use crate::domain::services::{ComposerArtifactReference, MessageQueue};
 
     let message_queue = Arc::new(MessageQueue::new());
@@ -1263,6 +1264,8 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         Some(r#"{"source":"queue-now"}"#.to_string()),
         None,
         Some(AgentHarnessKind::Codex),
+        Some("ralphx-queued-agent".to_string()),
+        PersonaDirective::Suppress,
         Some("gpt-5.5".to_string()),
         Some(LogicalEffort::High),
         Some("fast".to_string()),
@@ -1301,6 +1304,14 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         Some(AgentHarnessKind::Codex)
     );
     assert_eq!(sent_options[0].model_override.as_deref(), Some("gpt-5.5"));
+    assert_eq!(
+        sent_options[0].agent_name_override.as_deref(),
+        Some("ralphx-queued-agent")
+    );
+    assert_eq!(
+        sent_options[0].persona_directive,
+        PersonaDirective::Suppress
+    );
     assert_eq!(
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
