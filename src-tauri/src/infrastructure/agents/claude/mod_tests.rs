@@ -1051,15 +1051,66 @@ Report only unless workspace intervention is explicit.
     let args = spawnable.get_args_for_test();
     let prompt_index = args
         .iter()
-        .position(|arg| arg == "--append-system-prompt")
-        .expect("expected inline system prompt with internal skill context");
+        .position(|arg| arg == "--append-system-prompt-file")
+        .expect("expected system prompt file with internal skill context");
+    let generated_prompt = read_test_file(Path::new(&args[prompt_index + 1]));
     assert!(
-        args[prompt_index + 1].contains("Report only unless workspace intervention is explicit."),
-        "expected internal skill body in Claude system prompt"
+        generated_prompt.contains("Report only unless workspace intervention is explicit."),
+        "expected internal skill body in Claude system prompt file"
     );
     assert!(
+        !args.contains(&"--append-system-prompt".to_string()),
+        "Claude must not use an inline prompt when internal skill context is selected"
+    );
+}
+
+#[test]
+fn append_system_prompt_args_falls_back_to_inline_on_write_error() {
+    let mut cmd = tokio::process::Command::new("/fake/claude");
+    let prompt = "Full generated system prompt";
+
+    append_system_prompt_args(&mut cmd, "ralphx-test", prompt, true, |_| {
+        Err("simulated prompt write failure".to_string())
+    });
+
+    let args: Vec<String> = cmd
+        .as_std()
+        .get_args()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("write failure should fall back to inline system prompt");
+    assert_eq!(args[prompt_index + 1], prompt);
+    assert!(
         !args.contains(&"--append-system-prompt-file".to_string()),
-        "Claude must use inline prompt when internal skill context is selected"
+        "write failure must not leave a system prompt file argument"
+    );
+}
+
+#[test]
+fn append_system_prompt_args_inline_when_file_delivery_disabled() {
+    let mut cmd = tokio::process::Command::new("/fake/claude");
+    let prompt = "Full generated system prompt";
+
+    append_system_prompt_args(&mut cmd, "ralphx-test", prompt, false, |_| {
+        panic!("disabled file delivery must not invoke the prompt writer")
+    });
+
+    let args: Vec<String> = cmd
+        .as_std()
+        .get_args()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("disabled file delivery should use inline system prompt");
+    assert_eq!(args[prompt_index + 1], prompt);
+    assert!(
+        !args.contains(&"--append-system-prompt-file".to_string()),
+        "disabled file delivery must not add a system prompt file argument"
     );
 }
 

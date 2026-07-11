@@ -1269,6 +1269,52 @@ fn write_agent_system_prompt_temp(system_prompt: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
+fn append_system_prompt_args<F>(
+    cmd: &mut Command,
+    agent_name: &str,
+    system_prompt: &str,
+    use_file: bool,
+    write_system_prompt_temp: F,
+)
+where
+    F: FnOnce(&str) -> Result<PathBuf, String>,
+{
+    if use_file {
+        match write_system_prompt_temp(system_prompt) {
+            Ok(prompt_file) => {
+                if let Some(path_str) = prompt_file.to_str() {
+                    cmd.args(["--append-system-prompt-file", path_str]);
+                    tracing::debug!(
+                        agent = agent_name,
+                        path = path_str,
+                        "Injected generated agent prompt via --append-system-prompt-file"
+                    );
+                } else {
+                    cmd.args(["--append-system-prompt", system_prompt]);
+                    tracing::debug!(
+                        agent = agent_name,
+                        "Injected generated agent prompt via --append-system-prompt"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    agent = agent_name,
+                    error = %error,
+                    "Failed to write generated agent prompt file; falling back to --append-system-prompt"
+                );
+                cmd.args(["--append-system-prompt", system_prompt]);
+            }
+        }
+    } else {
+        cmd.args(["--append-system-prompt", system_prompt]);
+        tracing::debug!(
+            agent = agent_name,
+            "Injected agent prompt via --append-system-prompt"
+        );
+    }
+}
+
 /// A ready-to-spawn CLI command that handles stdin piping automatically.
 ///
 /// **CLI bug workaround (2.1.38):** `--agent` + `-p "text"` causes the CLI to
@@ -1555,46 +1601,19 @@ fn add_prompt_args(
                 prompt_with_internal_skills.as_ref()
             {
                 if !injected_skill_names.is_empty() {
-                    cmd.args(["--append-system-prompt", system_prompt]);
                     tracing::debug!(
                         agent = agent_name,
                         skills = ?injected_skill_names,
-                        "Injected agent prompt with internal skills via --append-system-prompt"
-                    );
-                } else if runtime.use_append_system_prompt_file {
-                    match write_agent_system_prompt_temp(system_prompt) {
-                        Ok(prompt_file) => {
-                            if let Some(path_str) = prompt_file.to_str() {
-                                cmd.args(["--append-system-prompt-file", path_str]);
-                                tracing::debug!(
-                                    agent = agent_name,
-                                    path = path_str,
-                                    "Injected generated agent prompt via --append-system-prompt-file"
-                                );
-                            } else {
-                                cmd.args(["--append-system-prompt", system_prompt]);
-                                tracing::debug!(
-                                    agent = agent_name,
-                                    "Injected generated agent prompt via --append-system-prompt"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                agent = agent_name,
-                                error = %error,
-                                "Failed to write generated agent prompt file; falling back to --append-system-prompt"
-                            );
-                            cmd.args(["--append-system-prompt", system_prompt]);
-                        }
-                    }
-                } else {
-                    cmd.args(["--append-system-prompt", system_prompt]);
-                    tracing::debug!(
-                        agent = agent_name,
-                        "Injected agent prompt via --append-system-prompt"
+                        "Injected agent prompt with internal skills"
                     );
                 }
+                append_system_prompt_args(
+                    cmd,
+                    agent_name,
+                    system_prompt,
+                    runtime.use_append_system_prompt_file,
+                    write_agent_system_prompt_temp,
+                );
             } else if runtime.use_append_system_prompt_file {
                 if let Some(path_str) = prompt_path.to_str() {
                     cmd.args(["--append-system-prompt-file", path_str]);
