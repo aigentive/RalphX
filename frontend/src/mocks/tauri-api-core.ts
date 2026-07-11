@@ -13,6 +13,7 @@ import {
   mockGetGitDefaultBranch,
 } from "@/api-mock/projects";
 import { mockTasksApi } from "@/api-mock/tasks";
+import { getStore } from "@/api-mock/store";
 import { mockTaskGraphApi } from "@/api-mock/task-graph";
 import {
   mockCreateConversation,
@@ -48,6 +49,8 @@ import type {
   ChatTimelineItemResponse,
 } from "@/api/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
+import type { NotificationCategory } from "@/types/notifications";
+import type { InternalStatus, Task } from "@/types/task";
 
 const mockReviewSettings = {
   require_human_review: false,
@@ -939,6 +942,69 @@ const mockTicketingAssociations = {
   specs: [],
   fetchedAt: "2026-06-19T22:00:00.000Z",
 };
+
+const mockNotificationSettings = {
+  desktop_enabled: true,
+  desktop_only_when_unfocused: true,
+  focused_toasts_enabled: true,
+  desktop_agent_requests_enabled: true,
+  desktop_agent_waiting_enabled: true,
+  desktop_reviews_enabled: true,
+  desktop_task_failures_enabled: true,
+  desktop_automation_approvals_enabled: true,
+  desktop_automation_run_completions_enabled: false,
+  desktop_git_github_enabled: true,
+  muted_project_ids: [],
+};
+
+const TASK_ATTENTION_CATEGORIES: Partial<Record<InternalStatus, NotificationCategory>> = {
+  review_passed: "review_needed",
+  escalated: "review_escalated",
+  qa_failed: "qa_failed",
+  merge_conflict: "merge_conflict",
+  merge_incomplete: "merge_incomplete",
+  failed: "task_failed",
+};
+
+function taskAttentionCategory(task: Task): NotificationCategory | undefined {
+  if (task.internalStatus === "blocked") {
+    return task.blockedReason?.startsWith("human:") ? "task_blocked" : undefined;
+  }
+  return TASK_ATTENTION_CATEGORIES[task.internalStatus];
+}
+
+function mockAttentionItems() {
+  return Array.from(getStore().tasks.values()).flatMap((task) => {
+    const category = taskAttentionCategory(task);
+    return category === undefined ? [] : [{
+      id: `task:${task.id}:${category}`,
+      category,
+      title: task.title,
+      detail: task.description,
+      projectId: task.projectId,
+      createdAt: task.updatedAt,
+      target: { kind: "task" as const, projectId: task.projectId, taskId: task.id },
+    }];
+  });
+}
+
+function mockNotificationPage(args: Record<string, unknown>) {
+  const projectId = args.projectId as string | undefined;
+  const offset = typeof args.cursor === "string" ? Number.parseInt(args.cursor, 10) : 0;
+  const limit = typeof args.limit === "number" ? args.limit : 50;
+  const notifications = Array.from(getStore().notifications.values())
+    .filter((notification) => projectId === undefined || notification.projectId === projectId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const start = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+  const page = notifications.slice(start, start + limit);
+  const nextOffset = start + page.length;
+
+  return {
+    notifications: page,
+    cursor: nextOffset < notifications.length ? String(nextOffset) : null,
+    hasMore: nextOffset < notifications.length,
+  };
+}
 
 /**
  * Command handlers map - routes Tauri commands to mock implementations
@@ -1920,6 +1986,41 @@ const commandHandlers: Record<
   get_active_execution_plan: async (args) =>
     // In web-mode mocks, execution-plan filtering reuses the active plan id as the stable filter key.
     mockPlanApi.getActivePlan(args.projectId as string),
+
+  // Notification commands
+  list_attention_items: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    return mockAttentionItems().filter(
+      (item) => projectId === undefined || item.projectId === projectId,
+    );
+  },
+  get_unread_notification_count: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    return Array.from(getStore().notifications.values()).filter(
+      (notification) => notification.readAt === null && (projectId === undefined || notification.projectId === projectId),
+    ).length;
+  },
+  list_notifications: async (args) => mockNotificationPage(args),
+  mark_notification_read: async (args) => {
+    const notification = getStore().notifications.get(args.id as string);
+    if (notification) {
+      getStore().notifications.set(notification.id, { ...notification, readAt: new Date().toISOString() });
+    }
+    return null;
+  },
+  mark_all_notifications_read: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    const store = getStore();
+    Array.from(store.notifications.values()).forEach((notification) => {
+      if (notification.readAt === null && (projectId === undefined || notification.projectId === projectId)) {
+        store.notifications.set(notification.id, { ...notification, readAt: new Date().toISOString() });
+      }
+    });
+    return null;
+  },
+  set_dock_badge_count: async () => null,
+  get_notification_settings: async () => mockNotificationSettings,
+  update_notification_settings: async () => mockNotificationSettings,
 
   // Task commands
   list_tasks: async (args) => {

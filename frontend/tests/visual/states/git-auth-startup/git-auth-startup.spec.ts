@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { seedMockNotificationHistory } from "../../../fixtures/setup.fixtures";
 
 async function openAppWithGitAuthIssue(page: import("@playwright/test").Page) {
   await page.addInitScript(() => {
@@ -21,36 +22,29 @@ async function openAppWithGitAuthIssue(page: import("@playwright/test").Page) {
   await page.waitForSelector('[data-testid="app-header"]', { timeout: 10000 });
 }
 
-test.describe("Git Auth Startup Warning", () => {
-  test("warns before GitHub-dependent startup work", async ({ page }) => {
+test.describe("Git Auth Startup Notification", () => {
+  test("shows the durable Git authentication alert in notification history", async ({ page }) => {
     await openAppWithGitAuthIssue(page);
+    await seedMockNotificationHistory(page, [{
+      id: "notification-mock-git-auth-preflight",
+      createdAt: new Date().toISOString(),
+      projectId: null,
+      category: "git_auth_preflight",
+      severity: "warning",
+      title: "Git authentication needs attention",
+      body: "1 project blocked by Git or GitHub authentication",
+      target: { kind: "none" },
+      dedupeKey: "git-auth-preflight",
+      readAt: null,
+    }]);
 
-    const toastContent = page.getByTestId("git-auth-startup-toast");
-    await expect(toastContent).toBeVisible({ timeout: 6000 });
+    await page.getByTestId("reviews-toggle").click();
+    await expect(page.getByTestId("notifications-panel")).toBeVisible();
+    await page.getByRole("tab", { name: "History" }).click();
 
-    const toast = page.locator("[data-sonner-toast]").filter({ has: toastContent });
-    await expect(toast).toHaveScreenshot("git-auth-startup-toast.png");
-
-    await toast.getByRole("button", { name: "Open Settings" }).click();
-    await expect(page.getByTestId("settings-dialog")).toBeVisible();
-    const repairPanel = page.getByTestId("git-auth-repair-panel");
-    await expect(repairPanel).toBeVisible();
-    await expect(page.getByTestId("git-auth-switch-ssh")).toBeVisible();
-    await expect(page.getByTestId("git-auth-copy-gh-login")).toBeVisible();
-    await expect(repairPanel).toHaveScreenshot("git-auth-startup-settings-repair-panel.png", {
-      maxDiffPixelRatio: 0.01,
-    });
-
-    await page.getByTestId("git-auth-switch-ssh").click();
-    const confirmation = page.getByRole("alertdialog");
-    await expect(confirmation).toBeVisible();
-    await expect(confirmation).toHaveScreenshot("git-auth-startup-switch-ssh-confirmation.png", {
-      maxDiffPixelRatio: 0.01,
-    });
-
-    await confirmation.getByRole("button", { name: "Use SSH" }).click();
-    await expect(page.getByTestId("git-auth-switch-ssh")).toBeHidden({ timeout: 6000 });
-    await expect(page.getByTestId("git-auth-copy-gh-login")).toBeHidden();
-    await expect(repairPanel).toBeVisible();
+    const notification = page.getByTestId("notification-history-row-notification-mock-git-auth-preflight");
+    await expect(notification).toBeVisible();
+    await expect(notification).toContainText("Git authentication needs attention");
+    await expect(notification).toHaveScreenshot("git-auth-startup-notification-row.png");
   });
 });

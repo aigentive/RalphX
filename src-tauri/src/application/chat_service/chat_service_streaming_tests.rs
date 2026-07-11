@@ -1,10 +1,10 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
     completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
-    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
-    persist_assistant_message_snapshot, persist_message_text_timeline_item,
-    persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
-    process_stream_background, provider_session_ref_for_harness,
+    is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
+    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
+    persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
     resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
     upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
@@ -62,6 +62,48 @@ fn completion_tool_result_rejects_error_payloads() {
     assert!(!completion_tool_result_accepted(Some(
         &serde_json::json!({ "status": "failed" })
     )));
+}
+
+#[test]
+fn agent_waiting_suppresses_automation_run_conversations() {
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Ideation,
+        true,
+        false,
+    ));
+}
+
+#[test]
+fn agent_waiting_suppresses_child_and_background_contexts() {
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Ideation,
+        false,
+        true,
+    ));
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Delegation,
+        false,
+        false,
+    ));
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::TaskExecution,
+        false,
+        false,
+    ));
+}
+
+#[test]
+fn agent_waiting_allows_user_attended_interactive_conversations() {
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Ideation,
+        false,
+        false,
+    ));
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Project,
+        false,
+        false,
+    ));
 }
 
 #[async_trait::async_trait]

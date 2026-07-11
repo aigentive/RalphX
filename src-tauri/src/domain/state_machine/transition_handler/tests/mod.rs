@@ -15,11 +15,11 @@ mod merge_helpers_workflow;
 mod merge_validation_tests;
 
 // Tests extracted from tests.rs (integration tests with mock services)
+mod execution_recovery_fallback_tests;
 mod execution_state;
 mod integration_branch_discovery;
 mod merge_retry;
 mod merge_workflow;
-mod execution_recovery_fallback_tests;
 mod metadata_skip_guard;
 mod structural_git_error_tests;
 mod transitions_agents;

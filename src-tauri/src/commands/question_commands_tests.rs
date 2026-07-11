@@ -29,6 +29,7 @@ fn pending_question(metadata: serde_json::Value) -> PendingQuestionInfo {
         batch_index: None,
         batch_total: None,
         metadata: Some(metadata),
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 

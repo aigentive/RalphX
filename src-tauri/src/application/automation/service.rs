@@ -20,6 +20,7 @@ use crate::application::automation::transition::{
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_disable_failure_summary, AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
+use crate::application::NotificationService;
 use crate::domain::entities::{
     is_open_automation_run, AgentConversationWorkspace, Artifact, ArtifactBucketId,
     ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, Automation, AutomationId,
@@ -200,11 +201,13 @@ impl AutomationService {
         run_repo: Arc<dyn AutomationRunRepository>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
+        notification_service: Arc<NotificationService>,
     ) -> Self {
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             Arc::clone(&event_emitter),
+            notification_service,
         );
         Self {
             automation_repo,

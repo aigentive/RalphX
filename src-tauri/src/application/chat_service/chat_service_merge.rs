@@ -20,6 +20,7 @@ use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::AppState;
@@ -34,10 +35,11 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::resolve_merge_branches;
-use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::services::{Notifier, TaskScheduler};
 use crate::domain::state_machine::transition_handler::{
-    complete_merge_internal_with_pr_sync, is_pr_branch_publication_conflict_routed_error,
-    task_has_pr_branch_publication_conflict, PlanBranchPrSyncServices,
+    complete_merge_internal_with_pr_sync_and_notifier,
+    is_pr_branch_publication_conflict_routed_error, task_has_pr_branch_publication_conflict,
+    PlanBranchPrSyncServices,
 };
 use crate::domain::state_machine::transition_handler::{
     format_validation_error_metadata, merge_metadata_into, parse_metadata, run_validation_commands,
@@ -191,14 +193,12 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
 
     async fn retry_pending_merge(&self, reason: &str) {
         let transition_service = self.build_transition_service();
-        match Box::pin(
-            transition_service.transition_task_corrective_with_exit(
-                &self.task_id,
-                InternalStatus::PendingMerge,
-                None,
-                "merge_auto_complete",
-            ),
-        )
+        match Box::pin(transition_service.transition_task_corrective_with_exit(
+            &self.task_id,
+            InternalStatus::PendingMerge,
+            None,
+            "merge_auto_complete",
+        ))
         .await
         {
             Ok(updated) => {
@@ -1101,9 +1101,7 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
     let app_state = ctx
         .app_handle
         .and_then(|handle| handle.try_state::<AppState>());
-    let event_sink = app_state
-        .as_deref()
-        .map(|state| Arc::clone(&state.events));
+    let event_sink = app_state.as_deref().map(|state| Arc::clone(&state.events));
     let pr_sync_services = build_pr_sync_services_for_auto_complete(
         ctx.task_repo,
         ctx.plan_branch_repo,
@@ -1111,8 +1109,13 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         ctx.artifact_repo,
         app_state.as_deref(),
     );
+    let notifier: Option<Arc<dyn Notifier>> = app_state.as_deref().map(|state| {
+        Arc::new(TaskPipelineNotificationProducer::new(
+            state.notification_service(),
+        )) as Arc<dyn Notifier>
+    });
 
-    if let Err(e) = complete_merge_internal_with_pr_sync(
+    if let Err(e) = complete_merge_internal_with_pr_sync_and_notifier(
         task,
         project,
         commit_sha,
@@ -1124,6 +1127,7 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         event_sink.as_deref(),
         None,
         Some(pr_sync_services),
+        notifier.as_ref(),
     )
     .await
     {

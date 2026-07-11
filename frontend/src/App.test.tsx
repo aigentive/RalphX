@@ -22,6 +22,7 @@ import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { attentionKeys } from "@/hooks/useAttentionItems";
 import { toast } from "sonner";
 import type { Project } from "@/types/project";
 
@@ -408,7 +409,7 @@ function resetStores() {
 
   useUiStore.setState({
     sidebarOpen: true,
-    reviewsPanelOpen: false,
+    notificationsPanelOpen: false,
     currentView: "agents",
     activeModal: null,
     modalContext: undefined,
@@ -1179,23 +1180,37 @@ describe("App", () => {
     );
   });
 
-  it("uses the v27 panel surface for the right reviews sidebar", () => {
-    useUiStore.setState({ reviewsPanelOpen: true });
+  it("uses the v27 panel surface for the notification center", () => {
+    useUiStore.setState({ notificationsPanelOpen: true });
 
     render(<App />);
 
-    expect(screen.getByTestId("reviews-panel-shell").getAttribute("style")).toContain(
-      "background-color: var(--app-sidebar-bg)"
+    expect(screen.getByTestId("notifications-panel-shell").getAttribute("style")).toContain(
+      "background-color: var(--bg-surface)"
     );
-    expect(screen.getByTestId("reviews-panel-shell").getAttribute("style")).toContain(
-      "border-left-color: var(--app-sidebar-border)"
+    expect(screen.getByTestId("notifications-panel-shell").getAttribute("style")).toContain(
+      "border-left-color: var(--border-subtle)"
     );
-    expect(screen.getByTestId("reviews-panel-frame").getAttribute("style")).toContain(
-      "background-color: var(--app-sidebar-bg)"
+    expect(screen.getByTestId("notifications-panel-frame").getAttribute("style")).toContain(
+      "background-color: var(--bg-surface)"
     );
-    expect(screen.getByTestId("reviews-panel-frame").getAttribute("style")).toContain(
+    expect(screen.getByTestId("notifications-panel-frame").getAttribute("style")).toContain(
       "box-shadow: none"
     );
+  });
+
+  it("keeps the notification badge global when a different project is active", () => {
+    getQueryClient().setQueryData(attentionKeys.list(), [{
+      id: "task:project-2:failed",
+      category: "task_failed",
+      title: "Task failed in another project",
+      projectId: "project-2",
+      target: { kind: "task", taskId: "task-2" },
+    }]);
+
+    render(<App />);
+
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("1");
   });
 
   it("should render Agents view by default", () => {

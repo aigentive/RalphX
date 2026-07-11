@@ -1,4 +1,6 @@
 use super::*;
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::NotificationContextResolver;
 
 // ============================================================================
 // POST /api/team/plan/request — Phase 1: validate + store + emit (non-blocking)
@@ -142,6 +144,8 @@ pub async fn request_team_plan_register(
             }
         }
     } else {
+        record_team_plan_requested_notification(&state, &plan_id, &req).await;
+
         // Manual flow: emit team:plan_requested for frontend approval dialog
         crate::http_server::emit_http_event(
             &state,
@@ -167,6 +171,37 @@ pub async fn request_team_plan_register(
         }))
     }
 }
+
+async fn record_team_plan_requested_notification(
+    state: &HttpServerState,
+    plan_id: &str,
+    request: &RequestTeamPlanRequest,
+) {
+    let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
+    match notification_context
+        .resolve_context_target(&request.context_type, &request.context_id)
+        .await
+    {
+        Ok(resolved) => {
+            state
+                .app_state
+                .notification_service()
+                .record(InteractiveNotificationProducer::team_plan_approval(
+                    plan_id,
+                    &request.process,
+                    resolved,
+                ))
+                .await;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, plan_id, "Failed to resolve team plan notification context");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "plan_tests.rs"]
+mod tests;
 
 // ============================================================================
 // GET /api/team/plan/await/:plan_id — Phase 2: long-poll until decision (840s)

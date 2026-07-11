@@ -20,9 +20,7 @@ impl<'a> TransitionHandler<'a> {
                         .metadata
                         .as_deref()
                         .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                        .and_then(|v| {
-                            v.get("auto_retry_count_executing").and_then(|c| c.as_u64())
-                        })
+                        .and_then(|v| v.get("auto_retry_count_executing").and_then(|c| c.as_u64()))
                         .unwrap_or(0) as u32;
 
                     let merged_metadata: String = if MetadataUpdate::key_exists_in(
@@ -128,7 +126,10 @@ impl<'a> TransitionHandler<'a> {
             let task_id_typed = TaskId::from_string(task_id.to_string());
             match step_repo.get_by_task(&task_id_typed).await {
                 Ok(steps) => {
-                    for step in steps.iter().filter(|s| s.status == TaskStepStatus::InProgress) {
+                    for step in steps
+                        .iter()
+                        .filter(|s| s.status == TaskStepStatus::InProgress)
+                    {
                         let mut failed_step = step.clone();
                         failed_step.status = TaskStepStatus::Failed;
                         failed_step.completion_note = Some("Task execution failed".to_string());
@@ -186,7 +187,9 @@ impl<'a> TransitionHandler<'a> {
             if let Ok(Some(task)) = task_repo.get_by_id(&task_id).await {
                 if task.category != TaskCategory::PlanMerge {
                     if let Ok(Some(project)) = project_repo
-                        .get_by_id(&ProjectId::from_string(self.machine.context.project_id.clone()))
+                        .get_by_id(&ProjectId::from_string(
+                            self.machine.context.project_id.clone(),
+                        ))
                         .await
                     {
                         let pr_sync_services =
@@ -228,7 +231,11 @@ impl<'a> TransitionHandler<'a> {
                         // Acquire per-session lock — clone Arc before awaiting to avoid
                         // holding a DashMap shard lock across an await point.
                         let lock_arc = {
-                            let entry = self.machine.context.services.session_merge_locks
+                            let entry = self
+                                .machine
+                                .context
+                                .services
+                                .session_merge_locks
                                 .entry(session_id_str.to_string())
                                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())));
                             Arc::clone(&*entry)

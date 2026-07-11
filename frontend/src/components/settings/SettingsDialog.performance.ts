@@ -28,6 +28,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   accessibility: () => import("./AccessibilitySection"),
+  notifications: () => import("./NotificationSettingsPanel"),
 };
 
 export function scheduleAfterPaint(callback: () => void): ScheduledJob {

@@ -45,7 +45,6 @@ declare global {
         selectSession(session: Record<string, unknown>): void;
       };
     };
-    __openReviewDetailModal?: (taskId: string) => void;
   }
 }
 

@@ -230,8 +230,8 @@ export interface ConfirmationConfig {
 interface UiState {
   /** Whether the sidebar is open */
   sidebarOpen: boolean;
-  /** Whether the reviews panel is open */
-  reviewsPanelOpen: boolean;
+  /** Whether the notification center is open */
+  notificationsPanelOpen: boolean;
   /** Current main view (kanban, ideation, etc.) */
   currentView: ViewType;
   /** Currently active modal type, or null if none */
@@ -325,10 +325,10 @@ interface UiActions {
   toggleSidebar: () => void;
   /** Set sidebar visibility directly */
   setSidebarOpen: (open: boolean) => void;
-  /** Toggle reviews panel visibility */
-  toggleReviewsPanel: () => void;
-  /** Set reviews panel visibility directly */
-  setReviewsPanelOpen: (open: boolean) => void;
+  /** Toggle notification center visibility */
+  toggleNotificationsPanel: () => void;
+  /** Set notification center visibility directly */
+  setNotificationsPanelOpen: (open: boolean) => void;
   /** Set the current main view */
   setCurrentView: (view: ViewType) => void;
   /** Open a modal with optional context */
@@ -475,7 +475,7 @@ export const useUiStore = create<UiState & UiActions>()(
   immer((set, get) => ({
     // Initial state
     sidebarOpen: true,
-    reviewsPanelOpen: false,
+    notificationsPanelOpen: false,
     currentView: DEFAULT_PROJECT_VIEW,
     activeModal: null,
     modalContext: undefined,
@@ -543,14 +543,14 @@ export const useUiStore = create<UiState & UiActions>()(
         state.sidebarOpen = open;
       }),
 
-    toggleReviewsPanel: () =>
+    toggleNotificationsPanel: () =>
       set((state) => {
-        state.reviewsPanelOpen = !state.reviewsPanelOpen;
+        state.notificationsPanelOpen = !state.notificationsPanelOpen;
       }),
 
-    setReviewsPanelOpen: (open) =>
+    setNotificationsPanelOpen: (open) =>
       set((state) => {
-        state.reviewsPanelOpen = open;
+        state.notificationsPanelOpen = open;
       }),
 
     setCurrentView: (view) =>

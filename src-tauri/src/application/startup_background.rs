@@ -490,6 +490,7 @@ pub fn spawn_automation_scheduler(
         plan_verification_starter,
         event_emitter,
         Arc::clone(&state.artifact_repo),
+        state.notification_service(),
         registry,
         AutomationSchedulerConfig::default(),
     );

@@ -5,14 +5,25 @@ use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTrans
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::application::NotificationService;
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
-    judge_is_transition_allowed, plan_judge_is_transition_allowed, AutomationId,
-    AutomationJudgeState, AutomationPlanJudgeState, AutomationRunId, AutomationRunStatus,
-    AutomationStatus, ProjectId,
+    judge_is_transition_allowed, plan_judge_is_transition_allowed, Automation, AutomationId,
+    AutomationJudgeState, AutomationPlanJudgeState, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, NewNotification, NotificationCategory,
+    NotificationSeverity, NotificationTarget, NotificationTargetKind, ProjectId,
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
 use crate::error::{AppError, AppResult};
+
+const ACTIONABLE_PAUSED_REASON_CODES: [&str; 6] = [
+    "judge_failed",
+    "plan_judge_failed",
+    "plan_revision_exhausted",
+    "workspace_review_blocked",
+    "max_runs_exhausted",
+    "max_consecutive_failures",
+];
 
 pub const AUTOMATION_UPDATED_EVENT: &str = "automation:updated";
 pub const AUTOMATION_RUN_UPDATED_EVENT: &str = "automation:run:updated";
@@ -140,6 +151,7 @@ pub struct AutomationTransitionService {
     automation_repo: Arc<dyn AutomationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     event_emitter: Arc<dyn AutomationEventEmitter>,
+    notification_service: Arc<NotificationService>,
 }
 
 impl AutomationTransitionService {
@@ -147,20 +159,14 @@ impl AutomationTransitionService {
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
+        notification_service: Arc<NotificationService>,
     ) -> Self {
         Self {
             automation_repo,
             run_repo,
             event_emitter,
+            notification_service,
         }
-    }
-
-    async fn automation_id_for_run(&self, id: &AutomationRunId) -> AppResult<Option<AutomationId>> {
-        Ok(self
-            .run_repo
-            .get_by_id(id)
-            .await?
-            .map(|run| run.automation_id))
     }
 
     fn emit_run_updated(&self, automation_id: Option<AutomationId>, run_id: &AutomationRunId) {
@@ -170,6 +176,85 @@ impl AutomationTransitionService {
                     automation_id,
                     run_id: run_id.clone(),
                 });
+        }
+    }
+
+    async fn record_automation_status_notification(&self, id: &AutomationId, to: AutomationStatus) {
+        if to != AutomationStatus::Paused {
+            return;
+        }
+        let automation = match self.automation_repo.get_by_id(id).await {
+            Ok(Some(automation)) => automation,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(automation_id = %id, error = %error, "Failed to load paused automation for notification");
+                return;
+            }
+        };
+        let Some(reason) = automation.paused_reason_code.as_deref() else {
+            return;
+        };
+        if !ACTIONABLE_PAUSED_REASON_CODES.contains(&reason) {
+            return;
+        }
+        self.notification_service
+            .record(NewNotification {
+                project_id: Some(automation.project_id.to_string()),
+                category: NotificationCategory::AutomationPaused,
+                severity: NotificationSeverity::Warning,
+                title: "Automation paused".to_string(),
+                body: Some(format!(
+                    "“{}” paused: {}",
+                    automation.name,
+                    paused_reason_label(reason)
+                )),
+                target: automation_target(&automation, None),
+                dedupe_key: Some(format!(
+                    "automation:{}:paused:{}:{}",
+                    automation.id,
+                    reason,
+                    automation.updated_at.to_rfc3339()
+                )),
+            })
+            .await;
+    }
+
+    async fn post_run_status_changed(
+        &self,
+        id: &AutomationRunId,
+        to: AutomationRunStatus,
+        error_code: Option<&str>,
+    ) {
+        let run = match self.run_repo.get_by_id(id).await {
+            Ok(Some(run)) => run,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(run_id = %id, error = %error, "Failed to load automation run after transition");
+                return;
+            }
+        };
+        self.emit_run_updated(Some(run.automation_id.clone()), id);
+        let automation = match self.automation_repo.get_by_id(&run.automation_id).await {
+            Ok(Some(automation)) => automation,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(automation_id = %run.automation_id, error = %error, "Failed to load automation for run notification");
+                return;
+            }
+        };
+        let notification = run_status_notification(&automation, &run, to, error_code);
+        if let Some(notification) = notification {
+            self.notification_service.record(notification).await;
+        }
+    }
+
+    async fn emit_run_updated_after_run_change(&self, id: &AutomationRunId) {
+        match self.run_repo.get_by_id(id).await {
+            Ok(Some(run)) => self.emit_run_updated(Some(run.automation_id), id),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(run_id = %id, error = %error, "Failed to load automation run for update event")
+            }
         }
     }
 
@@ -196,6 +281,7 @@ impl AutomationTransitionService {
             self.event_emitter.emit(AutomationEvent::AutomationUpdated {
                 automation_id: id.clone(),
             });
+            self.record_automation_status_notification(id, to).await;
         }
         Ok(changed)
     }
@@ -215,13 +301,12 @@ impl AutomationTransitionService {
             });
         }
 
-        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status(id, from, to, error_code, error_detail)
             .await?;
         if changed {
-            self.emit_run_updated(automation_id, id);
+            self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
     }
@@ -241,7 +326,6 @@ impl AutomationTransitionService {
             });
         }
 
-        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status_with_merge_metadata(
@@ -253,7 +337,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.emit_run_updated(automation_id, id);
+            self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
     }
@@ -274,7 +358,6 @@ impl AutomationTransitionService {
             });
         }
 
-        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status_with_agent_phase_started_at(
@@ -287,7 +370,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.emit_run_updated(automation_id, id);
+            self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
     }
@@ -307,7 +390,6 @@ impl AutomationTransitionService {
             });
         }
 
-        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_status_clearing_plan_pending_instructions(
@@ -319,7 +401,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.emit_run_updated(automation_id, id);
+            self.post_run_status_changed(id, to, None).await;
         }
         Ok(changed)
     }
@@ -360,7 +442,6 @@ impl AutomationTransitionService {
             }
         }
 
-        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_judge_state(
@@ -375,7 +456,7 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.emit_run_updated(automation_id, id);
+            self.emit_run_updated_after_run_change(id).await;
         }
         Ok(changed)
     }
@@ -395,7 +476,6 @@ impl AutomationTransitionService {
             });
         }
 
-        let automation_id = self.automation_id_for_run(id).await?;
         let changed = self
             .run_repo
             .compare_and_swap_plan_judge_state(
@@ -407,8 +487,114 @@ impl AutomationTransitionService {
             )
             .await?;
         if changed {
-            self.emit_run_updated(automation_id, id);
+            self.emit_run_updated_after_run_change(id).await;
         }
         Ok(changed)
     }
+}
+
+fn automation_target(automation: &Automation, run: Option<&AutomationRun>) -> NotificationTarget {
+    NotificationTarget {
+        kind: NotificationTargetKind::AutomationRun,
+        project_id: Some(automation.project_id.to_string()),
+        task_id: None,
+        conversation_id: run
+            .and_then(|run| run.conversation_id.as_ref())
+            .map(ToString::to_string),
+        setup_conversation_id: automation
+            .setup_conversation_id
+            .as_ref()
+            .map(ToString::to_string),
+        automation_id: Some(automation.id.to_string()),
+        run_id: run.map(|run| run.id.to_string()),
+    }
+}
+
+fn paused_reason_label(reason: &str) -> &'static str {
+    match reason {
+        "judge_failed" => "judge failed",
+        "plan_judge_failed" => "plan judge failed",
+        "plan_revision_exhausted" => "plan revision limit reached",
+        "workspace_review_blocked" => "workspace review blocked",
+        "max_runs_exhausted" => "maximum run count reached",
+        "max_consecutive_failures" => "too many consecutive failures",
+        _ => "automation needs attention",
+    }
+}
+
+fn run_error_label(error_code: Option<&str>) -> &'static str {
+    match error_code {
+        Some("no_changes") => "no changes to publish",
+        Some("publish_failed") => "publish failed",
+        Some("timeout") => "run timed out",
+        Some("agent_failed") => "agent run failed",
+        Some("plan_not_submitted") => "plan not submitted",
+        Some("plan_reminder_failed") => "plan reminder failed",
+        Some("plan_resume_failed") => "plan resume failed",
+        _ => "run failed",
+    }
+}
+
+fn run_status_notification(
+    automation: &Automation,
+    run: &AutomationRun,
+    status: AutomationRunStatus,
+    error_code: Option<&str>,
+) -> Option<NewNotification> {
+    let (category, severity, title, body, dedupe_key) = match status {
+        AutomationRunStatus::AwaitingPlanApproval => (
+            NotificationCategory::AutomationPlanApproval,
+            NotificationSeverity::ActionRequired,
+            "Plan approval needed",
+            format!(
+                "Run #{} of “{}” is waiting on plan approval",
+                run.run_index, automation.name
+            ),
+            format!("run:{}:plan_approval", run.id),
+        ),
+        AutomationRunStatus::AgentFailed => {
+            let error_code = error_code
+                .or(run.error_code.as_deref())
+                .unwrap_or("unknown");
+            (
+                NotificationCategory::AutomationRunFailed,
+                NotificationSeverity::ActionRequired,
+                "Automation run failed",
+                format!(
+                    "Run #{} of “{}”: {}",
+                    run.run_index,
+                    automation.name,
+                    run_error_label(Some(error_code))
+                ),
+                format!("run:{}:failed:{}", run.id, error_code),
+            )
+        }
+        AutomationRunStatus::Merged | AutomationRunStatus::Completed => (
+            NotificationCategory::AutomationRunCompleted,
+            NotificationSeverity::Info,
+            "Automation run completed",
+            format!("Run #{} of “{}” completed", run.run_index, automation.name),
+            format!("run:{}:completed", run.id),
+        ),
+        AutomationRunStatus::PrClosed => (
+            NotificationCategory::AutomationRunCompleted,
+            NotificationSeverity::Warning,
+            "Automation run closed",
+            format!(
+                "Run #{} of “{}” had its pull request closed",
+                run.run_index, automation.name
+            ),
+            format!("run:{}:pr_closed", run.id),
+        ),
+        _ => return None,
+    };
+    Some(NewNotification {
+        project_id: Some(automation.project_id.to_string()),
+        category,
+        severity,
+        title: title.to_string(),
+        body: Some(body),
+        target: automation_target(automation, Some(run)),
+        dedupe_key: Some(dedupe_key),
+    })
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+use crate::application::notification_service::WindowFocusState;
 use crate::infrastructure::ExternalMcpHandle;
 use crate::AppState;
 
@@ -19,6 +20,7 @@ const TRAFFIC_LIGHT_TITLEBAR_INSET_Y_PT: f64 = 20.0;
 
 pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
     app: &M,
+    focus_state: Arc<WindowFocusState>,
 ) -> tauri::Result<()> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -47,6 +49,8 @@ pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
 
     let webview_window = builder.build()?;
 
+    install_window_focus_tracking(&webview_window, focus_state);
+
     let _ = webview_window.show();
 
     #[cfg(target_os = "macos")]
@@ -56,6 +60,17 @@ pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
     let _ = webview_window.set_focus();
 
     Ok(())
+}
+
+fn install_window_focus_tracking<R: tauri::Runtime + 'static>(
+    window: &tauri::WebviewWindow<R>,
+    focus_state: Arc<WindowFocusState>,
+) {
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(focused) = event {
+            focus_state.set_focused(*focused);
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -189,6 +204,8 @@ pub fn build_http_app_state(
     let shared_events = Arc::clone(&app_state.events);
     let shared_internal_event_bus = app_state.internal_event_bus.clone();
     let shared_app_paths = app_state.app_paths.clone();
+    let shared_window_focus_state = Arc::clone(&app_state.window_focus_state);
+    let shared_notification_service_cache = Arc::clone(&app_state.notification_service_cache);
     let mut http_app_state_inner = AppState::new_production_shared_with_paths_and_events(
         app_handle,
         shared_db_conn,
@@ -207,6 +224,11 @@ pub fn build_http_app_state(
     http_app_state_inner.streaming_state_cache = app_state.streaming_state_cache.clone();
     http_app_state_inner.webhook_publisher = app_state.webhook_publisher.clone();
     http_app_state_inner.session_merge_locks = Arc::clone(&app_state.session_merge_locks);
+    // INVARIANT: both AppStates share native focus transitions and notification coalescing.
+    http_app_state_inner.window_focus_state = shared_window_focus_state;
+    http_app_state_inner.notification_service_cache = shared_notification_service_cache;
+    // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
+    // connection; a per-connection refactor would silently split notification storage.
     Ok(Arc::new(http_app_state_inner))
 }
 
@@ -221,6 +243,7 @@ pub fn register_managed_state(
     let throttled_emitter =
         crate::application::ThrottledEmitter::new(Arc::clone(&app_state.events));
     app.manage(throttled_emitter);
+    app.manage(Arc::clone(&app_state.window_focus_state));
     app.manage(app_state);
 
     let team_service = Arc::new(crate::application::TeamService::new_with_repos(

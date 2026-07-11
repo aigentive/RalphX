@@ -17,6 +17,7 @@ fn sample_info() -> PendingPermissionInfo {
         task_id: None,
         context_type: None,
         context_id: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 
@@ -30,6 +31,7 @@ fn sample_info_with_identity() -> PendingPermissionInfo {
         task_id: Some("task-abc123".to_string()),
         context_type: Some("task_execution".to_string()),
         context_id: Some("task-abc123".to_string()),
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 
@@ -107,6 +109,7 @@ async fn test_expire_all_pending() {
             task_id: None,
             context_type: None,
             context_id: None,
+            created_at: "2026-07-10T00:00:00+00:00".to_string(),
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -157,6 +160,7 @@ async fn test_expire_all_pending_via_permission_state() {
             task_id: None,
             context_type: None,
             context_id: None,
+            created_at: "2026-07-10T00:00:00+00:00".to_string(),
         };
         repo.create_pending(&info).await.unwrap();
     }
@@ -191,6 +195,7 @@ async fn test_empty_tool_input_round_trip() {
         task_id: None,
         context_type: None,
         context_id: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
     repo.create_pending(&info).await.unwrap();
 
@@ -202,7 +207,9 @@ async fn test_empty_tool_input_round_trip() {
 #[tokio::test]
 async fn test_create_and_get_pending_with_identity() {
     let (_db, repo) = setup();
-    repo.create_pending(&sample_info_with_identity()).await.unwrap();
+    repo.create_pending(&sample_info_with_identity())
+        .await
+        .unwrap();
 
     let pending = repo.get_pending().await.unwrap();
     assert_eq!(pending.len(), 1);
@@ -218,7 +225,9 @@ async fn test_create_and_get_pending_with_identity() {
 #[tokio::test]
 async fn test_get_by_request_id_with_identity() {
     let (_db, repo) = setup();
-    repo.create_pending(&sample_info_with_identity()).await.unwrap();
+    repo.create_pending(&sample_info_with_identity())
+        .await
+        .unwrap();
 
     let found = repo.get_by_request_id("perm-identity").await.unwrap();
     assert!(found.is_some());
@@ -254,11 +263,19 @@ async fn test_partial_identity_fields_round_trip() {
         task_id: None,
         context_type: None,
         context_id: Some("task-review-99".to_string()),
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     };
     repo.create_pending(&info).await.unwrap();
 
-    let found = repo.get_by_request_id("perm-partial").await.unwrap().unwrap();
-    assert_eq!(found.agent_type, Some("ralphx-execution-reviewer".to_string()));
+    let found = repo
+        .get_by_request_id("perm-partial")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        found.agent_type,
+        Some("ralphx-execution-reviewer".to_string())
+    );
     assert!(found.task_id.is_none());
     assert!(found.context_type.is_none());
     assert_eq!(found.context_id, Some("task-review-99".to_string()));

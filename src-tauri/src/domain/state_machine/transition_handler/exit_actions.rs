@@ -244,12 +244,22 @@ pub(crate) async fn auto_commit_on_execution_done(ctx: &ExitContext) {
             task.metadata.as_deref(),
         )
     {
-        let last_event_is_failure = recovery.events.last().map(|e| {
-            matches!(e.kind, crate::domain::entities::ExecutionRecoveryEventKind::Failed)
-        }).unwrap_or(false);
+        let last_event_is_failure = recovery
+            .events
+            .last()
+            .map(|e| {
+                matches!(
+                    e.kind,
+                    crate::domain::entities::ExecutionRecoveryEventKind::Failed
+                )
+            })
+            .unwrap_or(false);
         // Also skip if stop_retrying=true — the E7/wall-clock pre-write sets last_state=Failed
         // intentionally; overwriting it with Succeeded would make the task look retryable.
-        if !last_event_is_failure && !recovery.stop_retrying && recovery.last_state != crate::domain::entities::ExecutionRecoveryState::Succeeded {
+        if !last_event_is_failure
+            && !recovery.stop_retrying
+            && recovery.last_state != crate::domain::entities::ExecutionRecoveryState::Succeeded
+        {
             recovery.last_state = crate::domain::entities::ExecutionRecoveryState::Succeeded;
             match recovery.update_task_metadata(task.metadata.as_deref()) {
                 Ok(new_metadata) => {

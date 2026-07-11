@@ -56,6 +56,7 @@ use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
 };
 use crate::application::AppState;
+use crate::application::NotificationService;
 use crate::domain::agents::{
     plan_judge_model_for_provider, AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS,
 };
@@ -1397,6 +1398,7 @@ impl AutomationScheduler {
         plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
+        notification_service: Arc<NotificationService>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {
@@ -1405,11 +1407,13 @@ impl AutomationScheduler {
             Arc::clone(&run_repo),
             event_emitter.clone(),
             Arc::clone(&artifact_repo),
+            notification_service.clone(),
         );
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             event_emitter.clone(),
+            notification_service.clone(),
         );
         let provisioner = AutomationRunProvisioner::new(
             automation_repo,
@@ -1419,6 +1423,7 @@ impl AutomationScheduler {
             starter,
             event_emitter,
             Arc::clone(&artifact_repo),
+            notification_service,
         );
         Self {
             service,

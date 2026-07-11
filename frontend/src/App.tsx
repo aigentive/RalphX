@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { getQueryClient } from "@/lib/queryClient";
 import { EventProvider } from "@/providers/EventProvider";
 import { TaskBoard } from "@/components/tasks/TaskBoard";
-import { ReviewsPanel } from "@/components/reviews/ReviewsPanel";
+import { NotificationCenterPanel } from "@/components/notifications/NotificationCenterPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
 import {
   resolveExecutionTaskAgentWorkspace,
@@ -56,8 +56,8 @@ import type { ApplyProposalsInput } from "@/api/ideation.types";
 import type { UpdateProposalInput } from "@/api/ideation";
 import { toTaskProposal, ideationApi } from "@/api/ideation";
 import type { CreateProject } from "@/types/project";
-import { useTasksAwaitingReview } from "@/hooks/useReviews";
-import { useReviewMutations } from "@/hooks/useReviewMutations";
+import { useAttentionItems } from "@/hooks/useAttentionItems";
+import { useUnreadNotificationCount } from "@/hooks/useNotificationHistory";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useRunningProcesses } from "@/hooks/useRunningProcesses";
@@ -78,6 +78,7 @@ import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { useAutomationEvents, useCreateAutomationDraft } from "@/hooks/useAutomations";
 import { extractErrorMessage } from "@/lib/errors";
+import { cn } from "@/lib/utils";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
@@ -219,9 +220,9 @@ function AppContent() {
   // Check for test page first (must happen before any hooks for ESLint compliance)
   const testPage = useMemo(() => getTestPage(), []);
 
-  const reviewsPanelOpen = useUiStore((s) => s.reviewsPanelOpen);
-  const toggleReviewsPanel = useUiStore((s) => s.toggleReviewsPanel);
-  const setReviewsPanelOpen = useUiStore((s) => s.setReviewsPanelOpen);
+  const notificationsPanelOpen = useUiStore((s) => s.notificationsPanelOpen);
+  const toggleNotificationsPanel = useUiStore((s) => s.toggleNotificationsPanel);
+  const setNotificationsPanelOpen = useUiStore((s) => s.setNotificationsPanelOpen);
   const executionStatus = useUiStore((s) => s.executionStatus);
   const setExecutionStatus = useUiStore((s) => s.setExecutionStatus);
   const currentView = useUiStore((s) => s.currentView);
@@ -414,7 +415,20 @@ function AppContent() {
     readFreshPostUpdatePreparingMarker() !== null,
   );
 
-  const { totalCount: pendingReviewCount } = useTasksAwaitingReview(currentProjectId);
+  const attentionItems = useAttentionItems();
+  const attentionCount = attentionItems.data?.length ?? 0;
+  const unreadNotificationCount = useUnreadNotificationCount();
+  const hasUnreadNotificationHistory = (unreadNotificationCount.data ?? 0) > 0;
+  const [notificationPanelWasOpened, setNotificationPanelWasOpened] =
+    useState(false);
+  const shouldRenderNotificationPanel =
+    notificationPanelWasOpened || notificationsPanelOpen;
+
+  useEffect(() => {
+    if (notificationsPanelOpen) {
+      setNotificationPanelWasOpened(true);
+    }
+  }, [notificationsPanelOpen]);
 
   // Real-time execution status updates via Tauri events
   useExecutionEvents(executionProjectParam);
@@ -428,7 +442,6 @@ function AppContent() {
     refetchOnWindowFocus: shouldPollExecutionStatus,
     staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
   });
-  const { isApproving, isRequestingChanges } = useReviewMutations();
 
   // Merge pipeline data
   const { data: mergePipelineData } = useMergePipeline(executionProjectParam, {
@@ -1199,7 +1212,7 @@ function AppContent() {
   useAppKeyboardShortcuts({
     currentView,
     setCurrentView: handleViewChange,
-    toggleReviewsPanel,
+    toggleNotificationsPanel,
     toggleGraphRightPanel: handleToggleGraphRightPanel,
     openProjectWizard: handleOpenProjectWizard,
     hasProjects: !hasNoProjects,
@@ -1300,9 +1313,11 @@ function AppContent() {
         <>
           <AppTopBar
             currentView={currentView}
-            pendingReviewCount={pendingReviewCount}
-            reviewsPanelOpen={reviewsPanelOpen}
-            onToggleReviewsPanel={toggleReviewsPanel}
+            attentionCount={attentionCount}
+            hasUnreadNotificationHistory={hasUnreadNotificationHistory}
+            attentionCountStale={attentionItems.isError}
+            notificationsPanelOpen={notificationsPanelOpen}
+            onToggleNotificationsPanel={toggleNotificationsPanel}
             onNewProject={handleOpenProjectWizard}
             onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
@@ -1460,35 +1475,39 @@ function AppContent() {
             </div>
         </div>
 
-          {/* ReviewsPanel - right sidebar surface.
+          {/* Notification center keeps a hidden light frame after first open.
               bottomOffset 76 when ExecutionControlBar is visible below this
               panel, 0 elsewhere so the panel fills
               the viewport instead of leaving a ~84px void. */}
-          {reviewsPanelOpen && (
+          {shouldRenderNotificationPanel && (
             <div
-              className="fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l"
-              data-testid="reviews-panel-shell"
+              className={cn(
+                "fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l",
+                !notificationsPanelOpen && "pointer-events-none",
+              )}
+              data-testid="notifications-panel-shell"
+              aria-hidden={!notificationsPanelOpen}
               style={{
                 bottom: showsExecutionFooter ? "76px" : "0px",
-                backgroundColor: "var(--app-sidebar-bg)",
-                borderLeftColor: "var(--app-sidebar-border)",
+                backgroundColor: "var(--bg-surface)",
+                borderLeftColor: "var(--border-subtle)",
                 borderLeftStyle: "solid",
                 borderLeftWidth: "1px",
               }}
             >
               <div
                 className="flex flex-1 flex-col overflow-hidden"
-                data-testid="reviews-panel-frame"
+                data-testid="notifications-panel-frame"
                 style={{
-                  backgroundColor: "var(--app-sidebar-bg)",
+                  backgroundColor: "var(--bg-surface)",
                   boxShadow: "none",
                 }}
               >
-                <ReviewsPanel
-                  projectId={currentProjectId}
-                  onClose={() => setReviewsPanelOpen(false)}
-                  isApproving={isApproving}
-                  isRequestingChanges={isRequestingChanges}
+                <NotificationCenterPanel
+                  isOpen={notificationsPanelOpen}
+                  onClose={() => setNotificationsPanelOpen(false)}
+                  onOpenAutomationDetail={handleOpenAutomationDetail}
+                  hasUnreadHistory={hasUnreadNotificationHistory}
                 />
               </div>
             </div>

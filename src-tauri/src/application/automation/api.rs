@@ -136,6 +136,7 @@ pub fn automation_service_for_state(state: &AppState) -> AutomationService {
         state.automation_run_repo.clone(),
         event_emitter,
         state.artifact_repo.clone(),
+        state.notification_service(),
     )
     .with_pr_auto_merge_controls(
         state.agent_conversation_workspace_repo.clone(),
@@ -148,6 +149,7 @@ pub fn automation_transition_service_for_state(state: &AppState) -> AutomationTr
         state.automation_repo.clone(),
         state.automation_run_repo.clone(),
         automation_event_emitter_for_state(state),
+        state.notification_service(),
     )
 }
 

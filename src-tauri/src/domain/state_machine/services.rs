@@ -3,7 +3,7 @@
 // during state transitions. Actual implementations are provided in Phase 4+.
 
 use async_trait::async_trait;
-use ralphx_domain::entities::EventType;
+use ralphx_domain::entities::{EventType, InternalStatus, ProjectId, Task};
 
 /// Trait for spawning and managing AI agents.
 ///
@@ -78,30 +78,33 @@ pub trait EventEmitter: Send + Sync {
     }
 }
 
-/// Trait for sending notifications to users.
+/// Context captured by the transition owner after its status history row commits.
 ///
-/// Used for important events that require user attention, such as:
-/// - Task failures that need manual intervention
-/// - QA failures that might need review
-/// - Tasks blocked waiting for human input
-///
-/// Implementations are provided in Phase 9 (Review & Supervision).
+/// The history entry id is deliberately passed through the seam: notification producers must
+/// never query the latest history entry, because a revision loop can make that lookup stale.
+#[derive(Debug, Clone)]
+pub struct NotificationContext {
+    pub task: Task,
+    pub history_entry_id: String,
+    pub project_id: ProjectId,
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskNotification {
+    StateEntered(InternalStatus),
+    ReviewError {
+        message: String,
+    },
+    /// An entry action failed after its status transition committed.
+    TaskStuck {
+        message: String,
+    },
+}
+
+/// Domain seam for best-effort task-pipeline notification effects.
 #[async_trait]
 pub trait Notifier: Send + Sync {
-    /// Sends a notification to the user.
-    ///
-    /// # Arguments
-    /// * `notification_type` - The type of notification (e.g., "task_failed", "qa_failed", "needs_input")
-    /// * `task_id` - The ID of the task that triggered the notification
-    async fn notify(&self, notification_type: &str, task_id: &str);
-
-    /// Sends a notification with a custom message.
-    ///
-    /// # Arguments
-    /// * `notification_type` - The type of notification
-    /// * `task_id` - The ID of the task
-    /// * `message` - The notification message
-    async fn notify_with_message(&self, notification_type: &str, task_id: &str, message: &str);
+    async fn notify(&self, context: NotificationContext, notification: TaskNotification);
 }
 
 /// Trait for managing dependent tasks.
@@ -211,12 +214,7 @@ pub trait TaskScheduler: Send + Sync {
 #[async_trait]
 pub trait WebhookPublisher: Send + Sync {
     /// Publish an event to all registered webhook endpoints for the given project.
-    async fn publish(
-        &self,
-        event_type: EventType,
-        project_id: &str,
-        payload: serde_json::Value,
-    );
+    async fn publish(&self, event_type: EventType, project_id: &str, payload: serde_json::Value);
 
     /// Evict a project's webhooks from the publisher cache after a registration mutation.
     ///

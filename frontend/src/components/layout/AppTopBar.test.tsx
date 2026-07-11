@@ -4,8 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 import { AppTopBar } from "./AppTopBar";
+import { notificationsApi } from "@/api/notifications";
 import { useProjectStore } from "@/stores/projectStore";
 import type { Project } from "@/types/project";
+
+vi.mock("@/api/notifications", () => ({
+  notificationsApi: { setDockBadgeCount: vi.fn().mockResolvedValue(undefined) },
+}));
 
 // ProjectSelector and ThemeSelector are heavy children; stub them so the test
 // focuses on AppTopBar's breadcrumb + project-selector gating logic.
@@ -41,9 +46,9 @@ function renderTopBar(overrides: Partial<Parameters<typeof AppTopBar>[0]> = {}) 
     <QueryClientProvider client={queryClient}>
       <AppTopBar
         currentView="ticketing"
-        pendingReviewCount={0}
-        reviewsPanelOpen={false}
-        onToggleReviewsPanel={vi.fn()}
+        attentionCount={0}
+        notificationsPanelOpen={false}
+        onToggleNotificationsPanel={vi.fn()}
         {...overrides}
       />
     </QueryClientProvider>,
@@ -98,6 +103,57 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(breadcrumb).toHaveTextContent("Project");
     expect(breadcrumb).toHaveTextContent("Ticketing");
+  });
+
+  it("uses the notification attention count with the existing badge testid", () => {
+    renderTopBar({ attentionCount: 12 });
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
+    expect(screen.getByRole("button", { name: /notifications.*12/i })).toBeInTheDocument();
+    expect(document.getElementById("notifications-toggle")).toBe(screen.getByTestId("reviews-toggle"));
+  });
+
+  it("syncs dock badge changes including zero without waiting for the invoke", () => {
+    vi.mocked(notificationsApi.setDockBadgeCount).mockReturnValue(new Promise<null>(() => {}));
+    const { rerender } = renderTopBar({ attentionCount: 17 });
+
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledWith(17);
+
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AppTopBar
+          currentView="ticketing"
+          attentionCount={17}
+          notificationsPanelOpen={false}
+          onToggleNotificationsPanel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AppTopBar
+          currentView="ticketing"
+          attentionCount={0}
+          notificationsPanelOpen={false}
+          onToggleNotificationsPanel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenLastCalledWith(0);
+  });
+
+  it("shows the unread-history dot only when the attention count is zero", () => {
+    const { rerender } = renderTopBar({ hasUnreadNotificationHistory: true });
+    expect(screen.getByTestId("notifications-unread-dot")).toBeInTheDocument();
+
+    rerender(<QueryClientProvider client={new QueryClient()}><AppTopBar currentView="ticketing" attentionCount={0} hasUnreadNotificationHistory={false} notificationsPanelOpen={false} onToggleNotificationsPanel={vi.fn()} /></QueryClientProvider>);
+    expect(screen.queryByTestId("notifications-unread-dot")).not.toBeInTheDocument();
+
+    rerender(<QueryClientProvider client={new QueryClient()}><AppTopBar currentView="ticketing" attentionCount={1} hasUnreadNotificationHistory notificationsPanelOpen={false} onToggleNotificationsPanel={vi.fn()} /></QueryClientProvider>);
+    expect(screen.queryByTestId("notifications-unread-dot")).not.toBeInTheDocument();
+    expect(screen.getByTestId("reviews-badge")).toBeInTheDocument();
   });
 
   it("shows the project selector on the ticketing view when enabled", () => {

@@ -226,7 +226,10 @@ async fn test_has_conflict_markers_detects_real_merge_conflict() {
     run(&["add", "shared.txt"]);
     run(&["commit", "-m", "change on main"]);
     let merge_out = run(&["merge", "other", "--no-edit"]);
-    assert!(!merge_out.status.success(), "Merge should fail with conflict");
+    assert!(
+        !merge_out.status.success(),
+        "Merge should fail with conflict"
+    );
 
     let has_markers = crate::application::git_service::GitService::has_conflict_markers(repo_path)
         .await

@@ -37,17 +37,29 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentRunRepository, AppStateRepository, ChatConversationRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
+    ExecutionSettingsRepository, IdeationSessionRepository, NotificationRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
+    ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppResult;
 
 use super::TaskTransitionService;
+use crate::infrastructure::agents::claude::{stream_timeouts, StreamTimeoutsConfig};
 
 /// Environment variable that disables startup recovery mechanisms when present.
 pub const RALPHX_DISABLE_STARTUP_RECOVERY_ENV: &str = "RALPHX_DISABLE_STARTUP_RECOVERY";
+
+fn notification_retention_prune_args(
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (chrono::DateTime<chrono::Utc>, u32) {
+    (
+        now - chrono::Duration::days(config.notification_retention_read_days as i64),
+        u32::try_from(config.notification_retention_max_rows).unwrap_or(u32::MAX),
+    )
+}
 
 #[doc(hidden)]
 pub fn is_startup_recovery_disabled_var(value: Option<&std::ffi::OsStr>) -> bool {
@@ -175,6 +187,7 @@ pub struct StartupJobRunner {
     /// Projects whose startup Git/GitHub preflight failed. Startup recovery for
     /// these projects is deferred so recovery does not immediately hit known-bad auth.
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
+    notification_repo: Option<Arc<dyn NotificationRepository>>,
 }
 
 struct StartupSafetyNet {
@@ -306,6 +319,7 @@ impl StartupJobRunner {
             chat_service: None,
             ideation_session_repo,
             git_startup_blocked_project_ids: Arc::new(HashSet::new()),
+            notification_repo: None,
         }
     }
 
@@ -586,6 +600,14 @@ impl StartupJobRunner {
         self
     }
 
+    pub fn with_notification_repo(
+        mut self,
+        notification_repo: Arc<dyn NotificationRepository>,
+    ) -> Self {
+        self.notification_repo = Some(notification_repo);
+        self
+    }
+
     pub fn spawn_post_ready_safety_net(&self, delay: Duration) {
         let runner = self.clone_for_safety_net();
         tauri::async_runtime::spawn(async move {
@@ -617,6 +639,16 @@ impl StartupJobRunner {
     /// respawn the appropriate agent.
     pub async fn run(&self) -> HashSet<String> {
         debug!("StartupJobRunner::run() called");
+
+        if let Some(notification_repo) = &self.notification_repo {
+            let step_started_at = startup_job_step_started("notification_retention_prune");
+            let (read_before, max_rows) =
+                notification_retention_prune_args(stream_timeouts(), chrono::Utc::now());
+            if let Err(error) = notification_repo.prune(read_before, max_rows).await {
+                tracing::warn!(error = %error, "Failed to prune durable notifications at startup");
+            }
+            startup_job_step_completed("notification_retention_prune", step_started_at);
+        }
 
         if is_startup_recovery_disabled() {
             info!(

@@ -42,6 +42,8 @@ pub mod memory_linear_integration_settings_repo;
 pub mod memory_memory_archive_job_repo;
 pub mod memory_memory_entry_repo;
 pub mod memory_memory_event_repo;
+pub mod memory_notification_repo;
+pub mod memory_notification_settings_repo;
 pub mod memory_methodology_repo;
 pub mod memory_orphan_worktree_cleanup_marker_repo;
 pub mod memory_permission_repo;
@@ -114,6 +116,8 @@ pub use memory_linear_integration_settings_repo::MemoryLinearIntegrationSettings
 pub use memory_memory_archive_job_repo::InMemoryMemoryArchiveJobRepository;
 pub use memory_memory_entry_repo::InMemoryMemoryEntryRepository;
 pub use memory_memory_event_repo::InMemoryMemoryEventRepository;
+pub use memory_notification_repo::MemoryNotificationRepository;
+pub use memory_notification_settings_repo::MemoryNotificationSettingsRepository;
 pub use memory_methodology_repo::MemoryMethodologyRepository;
 pub use memory_orphan_worktree_cleanup_marker_repo::MemoryOrphanWorktreeCleanupMarkerRepository;
 pub use memory_permission_repo::MemoryPermissionRepository;

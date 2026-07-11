@@ -62,8 +62,8 @@ async fn run_cascade(
     merge_task_id: &TaskId,
     plan_branch: &PlanBranch,
 ) {
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(task_repo) as Arc<dyn TaskRepository>);
     let context = create_context_with_services(merge_task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
@@ -243,16 +243,14 @@ async fn cascade_stop_uses_execution_plan_id_when_set() {
     task_repo.create(merge_task).await.unwrap();
 
     // Sibling WITH same execution_plan_id — should be stopped
-    let mut sibling_same_ep =
-        make_task_with_session(Some("art-1"), None, Some("sess-1"));
+    let mut sibling_same_ep = make_task_with_session(Some("art-1"), None, Some("sess-1"));
     sibling_same_ep.internal_status = InternalStatus::Ready;
     sibling_same_ep.execution_plan_id = Some(ExecutionPlanId::from_string("ep-1"));
     let same_ep_id = sibling_same_ep.id.clone();
     task_repo.create(sibling_same_ep).await.unwrap();
 
     // Sibling with DIFFERENT execution_plan_id — should NOT be stopped
-    let mut sibling_diff_ep =
-        make_task_with_session(Some("art-1"), None, Some("sess-1"));
+    let mut sibling_diff_ep = make_task_with_session(Some("art-1"), None, Some("sess-1"));
     sibling_diff_ep.internal_status = InternalStatus::Ready;
     sibling_diff_ep.execution_plan_id = Some(ExecutionPlanId::from_string("ep-2"));
     let diff_ep_id = sibling_diff_ep.id.clone();
@@ -300,7 +298,8 @@ async fn resolve_task_base_branch_returns_fallback_for_merged_branch() {
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
     let task_repo: Option<Arc<dyn TaskRepository>> = None;
-    let result = resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None, &None).await;
+    let result =
+        resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None, &None).await;
 
     assert_eq!(
         result, "main",
@@ -325,7 +324,8 @@ async fn resolve_task_base_branch_uses_project_base_for_merged() {
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
     let task_repo: Option<Arc<dyn TaskRepository>> = None;
-    let result = resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None, &None).await;
+    let result =
+        resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None, &None).await;
 
     assert_eq!(
         result, "develop",

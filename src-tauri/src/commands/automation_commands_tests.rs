@@ -468,7 +468,9 @@ async fn automation_run_response_falls_back_to_parked_plan_artifact_without_conv
     run.conversation_id = None;
     run.plan_last_parked_artifact_id = Some("plan-artifact-parked".to_string());
 
-    let response = automation_run_response_for_state(run, &state).await.unwrap();
+    let response = automation_run_response_for_state(run, &state)
+        .await
+        .unwrap();
 
     assert!(!response.plan_phase);
     assert_eq!(

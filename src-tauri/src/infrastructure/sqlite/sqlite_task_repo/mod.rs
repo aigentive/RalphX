@@ -383,7 +383,7 @@ impl TaskRepository for SqliteTaskRepository {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<String> {
         let id = id.clone();
         let trigger = trigger.to_string();
         self.db

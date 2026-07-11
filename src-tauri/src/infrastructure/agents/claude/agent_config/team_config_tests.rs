@@ -54,7 +54,10 @@ team: ralphx-execution-team-lead
 "#;
     let slot: ProcessSlot = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(slot.default, "ralphx-execution-worker");
-    assert_eq!(slot.variants.get("team").unwrap(), "ralphx-execution-team-lead");
+    assert_eq!(
+        slot.variants.get("team").unwrap(),
+        "ralphx-execution-team-lead"
+    );
 }
 
 #[test]
@@ -87,7 +90,10 @@ merge:
         mapping.slots["ideation"].variants.get("team").unwrap(),
         "ralphx-ideation-team-lead"
     );
-    assert_eq!(mapping.slots["execution"].default, "ralphx-execution-worker");
+    assert_eq!(
+        mapping.slots["execution"].default,
+        "ralphx-execution-worker"
+    );
     assert_eq!(mapping.slots["merge"].default, "ralphx-execution-merger");
 }
 
@@ -102,11 +108,17 @@ fn test_canonical_process_mapping_contains_live_process_slots() {
     let mapping = canonical_process_mapping();
     assert_eq!(mapping.slots["ideation"].default, "ralphx-ideation");
     assert_eq!(
-        mapping.slots["ideation"].variants.get("team").map(String::as_str),
+        mapping.slots["ideation"]
+            .variants
+            .get("team")
+            .map(String::as_str),
         Some("ralphx-ideation-team-lead")
     );
     assert_eq!(
-        mapping.slots["review"].variants.get("history").map(String::as_str),
+        mapping.slots["review"]
+            .variants
+            .get("history")
+            .map(String::as_str),
         Some("ralphx-review-history")
     );
     assert_eq!(mapping.slots["chat_project"].default, "ralphx-chat-project");
@@ -125,16 +137,19 @@ fn test_resolve_canonical_process_mapping_preserves_unknown_yaml_slots() {
 
     let resolved = resolve_canonical_process_mapping(&raw);
     assert_eq!(
-        resolved.slots["custom_process"].default,
-        "custom-agent",
+        resolved.slots["custom_process"].default, "custom-agent",
         "unknown YAML-only process slots should be preserved"
     );
-    assert_eq!(resolved.slots["execution"].default, "ralphx-execution-worker");
+    assert_eq!(
+        resolved.slots["execution"].default,
+        "ralphx-execution-worker"
+    );
 }
 
 #[test]
 fn test_embedded_config_omits_process_mapping_and_still_resolves_canonical_registry() {
-    let parsed = parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let parsed =
+        parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
 
     assert_eq!(
         parsed.process_mapping,
@@ -179,7 +194,8 @@ fn test_resolve_canonical_team_constraints_preserves_unknown_yaml_processes() {
 
 #[test]
 fn test_embedded_config_omits_team_constraints_and_still_resolves_canonical_registry() {
-    let parsed = parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let parsed =
+        parse_config_no_env_overrides(EMBEDDED_CONFIG).expect("embedded config should parse");
 
     assert_eq!(
         parsed.team_constraints,
@@ -196,8 +212,8 @@ fn test_processes_config_file_process_mapping_matches_canonical_registry() {
         process_mapping: ProcessMapping,
     }
 
-    let yaml_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../config/processes.yaml");
+    let yaml_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/processes.yaml");
     let contents = std::fs::read_to_string(&yaml_path).expect("should read config/processes.yaml");
     let parsed: ProcessesConfigMirror =
         serde_yaml::from_str(&contents).expect("should parse config/processes.yaml");
@@ -217,8 +233,8 @@ fn test_processes_config_file_team_constraints_match_canonical_registry() {
         team_constraints: TeamConstraintsConfig,
     }
 
-    let yaml_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../config/processes.yaml");
+    let yaml_path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/processes.yaml");
     let contents = std::fs::read_to_string(&yaml_path).expect("should read config/processes.yaml");
     let parsed: ProcessesConfigMirror =
         serde_yaml::from_str(&contents).expect("should parse config/processes.yaml");
@@ -263,7 +279,10 @@ budget_limit: 10.50
     assert_eq!(tc.allowed_mcp_tools, vec!["get_task_context"]);
     assert_eq!(tc.model_cap, "opus");
     assert_eq!(tc.mode, TeamMode::Constrained);
-    assert_eq!(tc.presets, vec!["ralphx-execution-coder", "ralphx-execution-reviewer"]);
+    assert_eq!(
+        tc.presets,
+        vec!["ralphx-execution-coder", "ralphx-execution-reviewer"]
+    );
     assert_eq!(tc.timeout_minutes, 45);
     assert_eq!(tc.budget_limit, Some(10.50));
 }
@@ -588,7 +607,10 @@ fn test_validate_team_plan_constrained_valid_preset() {
     let constraints = TeamConstraints {
         max_teammates: 3,
         mode: TeamMode::Constrained,
-        presets: vec!["ralphx-execution-coder".to_string(), "ralphx-execution-reviewer".to_string()],
+        presets: vec![
+            "ralphx-execution-coder".to_string(),
+            "ralphx-execution-reviewer".to_string(),
+        ],
         ..TeamConstraints::default()
     };
     let teammates = vec![TeammateSpawnRequest {
@@ -873,7 +895,10 @@ fn test_validate_child_team_config_intersects_allowed_mcp_tools() {
 #[test]
 fn test_validate_child_team_config_intersects_presets() {
     let resolved = TeamConstraints {
-        presets: vec!["ralphx-execution-coder".to_string(), "ralphx-execution-reviewer".to_string()],
+        presets: vec![
+            "ralphx-execution-coder".to_string(),
+            "ralphx-execution-reviewer".to_string(),
+        ],
         ..TeamConstraints::default()
     };
     let ceiling = TeamConstraints {
@@ -994,7 +1019,10 @@ fn test_validate_child_team_config_all_fields_capped() {
         allowed_mcp_tools: vec!["get_task_context".to_string(), "start_step".to_string()],
         model_cap: "opus".to_string(),
         mode: TeamMode::Dynamic,
-        presets: vec!["ralphx-execution-coder".to_string(), "ralphx-execution-reviewer".to_string()],
+        presets: vec![
+            "ralphx-execution-coder".to_string(),
+            "ralphx-execution-reviewer".to_string(),
+        ],
         timeout_minutes: 60,
         budget_limit: Some(100.0),
         auto_approve: Some(true),
@@ -1095,7 +1123,10 @@ team_constraints:
     assert_eq!(config.process_mapping.slots.len(), 3);
     let ideation = &config.process_mapping.slots["ideation"];
     assert_eq!(ideation.default, "ralphx-ideation");
-    assert_eq!(ideation.variants.get("team").unwrap(), "ralphx-ideation-team-lead");
+    assert_eq!(
+        ideation.variants.get("team").unwrap(),
+        "ralphx-ideation-team-lead"
+    );
     assert_eq!(
         ideation.variants.get("readonly").unwrap(),
         "ralphx-ideation-readonly"

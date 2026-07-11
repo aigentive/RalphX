@@ -1,7 +1,8 @@
 use super::*;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, process::Command};
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tauri::Manager;
@@ -16,7 +17,8 @@ use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
     ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
-    IdeationSessionId, InternalStatus, Project, ProjectId, Task, VerificationStatus,
+    IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
+    NotificationTargetKind, Project, ProjectId, Task, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -189,6 +191,7 @@ async fn handle_stream_error<R: Runtime + 'static>(
         review_repo,
         task_step_repo,
         verification_child_registry,
+        &None,
     )
     .await
 }
@@ -197,6 +200,11 @@ async fn handle_stream_error<R: Runtime + 'static>(
 struct StubTaskRepo {
     task: Option<Task>,
     status_entered_at: Option<DateTime<Utc>>,
+}
+
+fn forced_transition_failures() -> &'static Mutex<HashSet<String>> {
+    static FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[tokio::test]
@@ -837,7 +845,16 @@ impl TaskRepository for StubTaskRepo {
     async fn update(&self, _: &Task) -> AppResult<()> {
         Ok(())
     }
-    async fn update_with_expected_status(&self, _: &Task, _: InternalStatus) -> AppResult<bool> {
+    async fn update_with_expected_status(&self, task: &Task, _: InternalStatus) -> AppResult<bool> {
+        if forced_transition_failures()
+            .lock()
+            .unwrap()
+            .contains(task.id.as_str())
+        {
+            return Err(crate::error::AppError::Database(
+                "injected transition failure".to_string(),
+            ));
+        }
         Ok(true)
     }
     async fn update_metadata(&self, _: &TaskId, _: Option<String>) -> AppResult<()> {
@@ -855,8 +872,8 @@ impl TaskRepository for StubTaskRepo {
         _: InternalStatus,
         _: InternalStatus,
         _: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
     async fn get_status_history(&self, _: &TaskId) -> AppResult<Vec<StatusTransition>> {
         Ok(vec![])
@@ -1606,6 +1623,54 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
     assert_eq!(reviewing_after.internal_status, InternalStatus::Paused);
     assert_eq!(merging_after.internal_status, InternalStatus::Paused);
     assert_eq!(ready_after.internal_status, InternalStatus::Ready);
+
+    let notifications = state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("global provider-pause notification should be readable")
+        .notifications;
+    assert_eq!(notifications.len(), 1, "one global pause creates one row");
+    assert_eq!(
+        notifications[0].category,
+        NotificationCategory::ProviderPaused
+    );
+    assert_eq!(notifications[0].title, "Agents paused");
+    assert_eq!(
+        notifications[0].body.as_deref(),
+        Some("Rate limit reached — queue paused, auto-resumes")
+    );
+    assert!(
+        notifications[0]
+            .dedupe_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("provider:rate_limit:paused:")),
+        "global pause dedupe must use the persisted pause instance"
+    );
+
+    assert!(
+        apply_system_wide_provider_pause::<MockRuntime>(
+            &Some(handle.clone()),
+            &ProviderErrorCategory::RateLimit,
+            "You've hit your limit · resets 11pm (Europe/Bucharest)",
+            &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
+            ChatContextType::TaskExecution,
+            executing.id.as_str(),
+        )
+        .await,
+        "duplicate provider delivery remains a handled global pause"
+    );
+    assert_eq!(
+        state
+            .notification_repo
+            .list(None, None, 50)
+            .await
+            .expect("duplicate provider-pause notification query should succeed")
+            .notifications
+            .len(),
+        1,
+        "duplicate provider delivery must not duplicate the global row"
+    );
 }
 
 #[tokio::test]
@@ -3108,6 +3173,7 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
         &None,
+        &None,
     )
     .await;
 
@@ -4233,6 +4299,14 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
 
+    let app = mock_builder()
+        .manage(state)
+        .manage(Arc::clone(&exec))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+
     handle_stream_success::<MockRuntime>(
         "run-id-shutdown-success",
         ChatContextType::TaskExecution,
@@ -4257,7 +4331,7 @@ async fn test_task_execution_shutdown_success_persists_startup_recovery_metadata
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &Some(handle.clone()),
         &None,
         &None,
         &None,
@@ -4916,6 +4990,146 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
     assert!(
         metadata.get("pause_reason").is_some(),
         "provider pause metadata should include the unified pause reason"
+    );
+
+    assert!(
+        state
+            .notification_repo
+            .list(None, None, 50)
+            .await
+            .expect("provider pause notification query should succeed")
+            .notifications
+            .is_empty(),
+        "per-task stream finalization must not bypass the global pause producer"
+    );
+}
+
+#[tokio::test]
+async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
+    let app_state = AppState::new_test();
+    let notification_service = app_state.notification_service();
+    let notification_repo = notification_service.repository();
+    let execution_state = Arc::new(ExecutionState::new());
+    let mut task = Task::new(ProjectId::new(), "Recovery-failed task".to_string());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(StubTaskRepo {
+        task: Some(task),
+        status_entered_at: None,
+    });
+    forced_transition_failures()
+        .lock()
+        .unwrap()
+        .insert(task_id.to_string());
+
+    let app = mock_builder()
+        .manage(app_state)
+        .manage(Arc::clone(&execution_state))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let stream_error = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: "worker crashed".to_string(),
+    };
+
+    let recovery_spawned = super::handle_stream_error::<MockRuntime>(
+        "worker crashed",
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-recovery-failed",
+        "message-id-recovery-failed",
+        &event_ctx,
+        None,
+        AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &Some(Arc::clone(&execution_state)),
+        &None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(handle.clone()),
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+        &Some(Arc::clone(&notification_service)),
+    )
+    .await;
+
+    forced_transition_failures()
+        .lock()
+        .unwrap()
+        .remove(task_id.as_str());
+
+    assert!(
+        !recovery_spawned,
+        "the fallback-transition failure must not spawn a stale-session recovery"
+    );
+    let notifications = notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("recovery-failed notification should be readable")
+        .notifications;
+    let task_stuck: Vec<_> = notifications
+        .iter()
+        .filter(|notification| notification.category == NotificationCategory::TaskStuck)
+        .collect();
+    assert_eq!(
+        task_stuck.len(),
+        1,
+        "both failed fallback attempts describe one recovery-failed instance"
+    );
+    assert_eq!(task_stuck[0].severity, NotificationSeverity::Warning);
+    let body = task_stuck[0]
+        .body
+        .as_deref()
+        .expect("recovery failure needs notification copy");
+    assert!(body.starts_with("Recovery failed on “Recovery-failed task” — task may be stuck."));
+    assert!(body.contains("The automatic recovery transition failed:"));
+    assert_eq!(task_stuck[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(
+        task_stuck[0].target.task_id.as_deref(),
+        Some(task_id.as_str())
+    );
+    let expected_dedupe_key = format!("task:{task_id}:stuck:run-id-recovery-failed");
+    assert_eq!(
+        task_stuck[0].dedupe_key.as_deref(),
+        Some(expected_dedupe_key.as_str())
     );
 }
 

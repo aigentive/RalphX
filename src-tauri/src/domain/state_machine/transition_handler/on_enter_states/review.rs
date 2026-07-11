@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::state_machine::services::ReviewStartResult;
+use crate::domain::state_machine::services::TaskNotification;
 use crate::domain::state_machine::TransitionHandler;
 
 impl<'a> TransitionHandler<'a> {
@@ -41,12 +42,19 @@ impl<'a> TransitionHandler<'a> {
                     .await;
             }
             ReviewStartResult::Error(msg) => {
-                self.machine
-                    .context
-                    .services
-                    .notifier
-                    .notify_with_message("review_error", &self.machine.context.task_id, msg)
-                    .await;
+                if let Some(context) = self.machine.context.services.notification_context.clone() {
+                    self.machine
+                        .context
+                        .services
+                        .notifier
+                        .notify(
+                            context,
+                            TaskNotification::ReviewError {
+                                message: msg.clone(),
+                            },
+                        )
+                        .await;
+                }
             }
         }
 
@@ -373,17 +381,6 @@ impl<'a> TransitionHandler<'a> {
             .emit("review:ai_approved", &self.machine.context.task_id)
             .await;
 
-        self.machine
-            .context
-            .services
-            .notifier
-            .notify_with_message(
-                "review:ai_approved",
-                &self.machine.context.task_id,
-                "AI review passed. Please review and approve.",
-            )
-            .await;
-
         {
             let payload = serde_json::json!({
                 "task_id": self.machine.context.task_id,
@@ -417,17 +414,6 @@ impl<'a> TransitionHandler<'a> {
             .services
             .event_emitter
             .emit("review:escalated", &self.machine.context.task_id)
-            .await;
-
-        self.machine
-            .context
-            .services
-            .notifier
-            .notify_with_message(
-                "review:escalated",
-                &self.machine.context.task_id,
-                "AI review escalated. Please review and decide.",
-            )
             .await;
 
         {

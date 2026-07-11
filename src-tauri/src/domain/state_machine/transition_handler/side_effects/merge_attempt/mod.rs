@@ -1,13 +1,13 @@
 use super::*;
+use crate::domain::entities::task_metadata::{
+    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    MergeRecoverySource, MergeRecoveryState,
+};
 use crate::domain::state_machine::transition_handler::{
     cleanup_helpers, merge_coordination, merge_helpers,
     merge_outcome_handler::{MergeContext, MergeHandlerOptions},
     merge_strategies::MergeOutcome,
     BranchPair, ProjectCtx, TaskCore,
-};
-use crate::domain::entities::task_metadata::{
-    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
-    MergeRecoverySource, MergeRecoveryState,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
 
@@ -31,8 +31,7 @@ fn append_source_update_failure_recovery_event(
         .filter(|event| {
             matches!(
                 event.kind,
-                MergeRecoveryEventKind::AutoRetryTriggered
-                    | MergeRecoveryEventKind::AttemptFailed
+                MergeRecoveryEventKind::AutoRetryTriggered | MergeRecoveryEventKind::AttemptFailed
             )
         })
         .count() as u32
@@ -1024,10 +1023,8 @@ mod tests {
             Some("task/source")
         );
         assert_eq!(recovery.events[1].target_branch.as_deref(), Some("main"));
-        assert!(
-            recovery.events[1]
-                .message
-                .contains("Source branch update failed")
-        );
+        assert!(recovery.events[1]
+            .message
+            .contains("Source branch update failed"));
     }
 }

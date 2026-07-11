@@ -251,12 +251,12 @@ html[data-theme="high-contrast"] main {
   border-right-color: #555555 !important;
 }
 
-[data-theme="high-contrast"] [data-testid="reviews-panel-shell"] {
+[data-theme="high-contrast"] [data-testid="notifications-panel-shell"] {
   background-color: #0A0A0A !important;
   border-left-color: #555555 !important;
 }
 
-[data-theme="high-contrast"] [data-testid="reviews-panel-frame"] {
+[data-theme="high-contrast"] [data-testid="notifications-panel-frame"] {
   background-color: #0A0A0A !important;
 }
 

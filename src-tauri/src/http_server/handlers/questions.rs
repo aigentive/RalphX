@@ -7,13 +7,17 @@ use uuid::Uuid;
 
 use super::*;
 use crate::application::harness_runtime_registry::default_external_mcp_human_wait_timeout_secs;
-use crate::application::{QuestionAnswer, QuestionOption};
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::{NotificationContextResolver, QuestionAnswer, QuestionOption};
+use crate::domain::entities::ChatConversationId;
 
 pub async fn request_question(
     State(state): State<HttpServerState>,
     Json(input): Json<QuestionRequestInput>,
 ) -> Json<QuestionRequestResponse> {
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = input
+        .request_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     // Convert input options to domain QuestionOption
     let options: Vec<QuestionOption> = input
@@ -43,6 +47,27 @@ pub async fn request_question(
             input.metadata.clone(),
         )
         .await;
+
+    let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
+    match notification_context
+        .resolve_conversation_target(&ChatConversationId::from_string(input.session_id.clone()))
+        .await
+    {
+        Ok(resolved) => {
+            state
+                .app_state
+                .notification_service()
+                .record(InteractiveNotificationProducer::agent_question(
+                    &request_id,
+                    &input.question,
+                    resolved,
+                ))
+                .await;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, request_id = %request_id, "Failed to resolve question notification context");
+        }
+    }
 
     crate::http_server::emit_http_event(
         &state,
@@ -203,3 +228,7 @@ pub async fn resolve_question(
         StatusCode::NOT_FOUND
     }
 }
+
+#[cfg(test)]
+#[path = "questions_tests.rs"]
+mod tests;

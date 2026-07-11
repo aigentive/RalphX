@@ -35,7 +35,7 @@ describe("uiStore", () => {
     // Reset store to initial state before each test
     useUiStore.setState({
       sidebarOpen: true,
-      reviewsPanelOpen: false,
+      notificationsPanelOpen: false,
       currentView: "agents",
       activeModal: null,
       modalContext: undefined,

@@ -25,14 +25,28 @@ pub(super) async fn validate_branches(
     target_branch: &str,
     task_id: &str,
 ) -> Option<MergeOutcome> {
-    if !GitService::branch_exists(repo_path, source_branch).await.unwrap_or(false) {
-        tracing::error!(task_id = task_id, "Source branch '{}' does not exist", source_branch);
+    if !GitService::branch_exists(repo_path, source_branch)
+        .await
+        .unwrap_or(false)
+    {
+        tracing::error!(
+            task_id = task_id,
+            "Source branch '{}' does not exist",
+            source_branch
+        );
         return Some(MergeOutcome::BranchNotFound {
             branch: source_branch.to_string(),
         });
     }
-    if !GitService::branch_exists(repo_path, target_branch).await.unwrap_or(false) {
-        tracing::error!(task_id = task_id, "Target branch '{}' does not exist", target_branch);
+    if !GitService::branch_exists(repo_path, target_branch)
+        .await
+        .unwrap_or(false)
+    {
+        tracing::error!(
+            task_id = task_id,
+            "Target branch '{}' does not exist",
+            target_branch
+        );
         return Some(MergeOutcome::BranchNotFound {
             branch: target_branch.to_string(),
         });
@@ -108,11 +122,13 @@ pub(super) async fn checkout_free_merge(
         "Target branch is checked out, using checkout-free merge"
     );
 
-    if let Some(outcome) = validate_branches(repo_path, source_branch, target_branch, task_id).await {
+    if let Some(outcome) = validate_branches(repo_path, source_branch, target_branch, task_id).await
+    {
         return outcome;
     }
 
-    let result = checkout_free::try_merge_checkout_free(repo_path, source_branch, target_branch).await;
+    let result =
+        checkout_free::try_merge_checkout_free(repo_path, source_branch, target_branch).await;
     handle_checkout_free_result(repo_path, result, task_id, "merge").await
 }
 
@@ -129,11 +145,14 @@ pub(super) async fn checkout_free_fast_forward(
         "Target branch is checked out, using checkout-free rebase"
     );
 
-    if let Some(outcome) = validate_branches(repo_path, source_branch, target_branch, task_id).await {
+    if let Some(outcome) = validate_branches(repo_path, source_branch, target_branch, task_id).await
+    {
         return outcome;
     }
 
-    let result = checkout_free::try_fast_forward_checkout_free(repo_path, source_branch, target_branch).await;
+    let result =
+        checkout_free::try_fast_forward_checkout_free(repo_path, source_branch, target_branch)
+            .await;
     handle_checkout_free_result(repo_path, result, task_id, "fast-forward").await
 }
 
@@ -151,7 +170,8 @@ pub(super) async fn checkout_free_squash_merge(
         "Target checked out, using checkout-free squash"
     );
 
-    if let Some(outcome) = validate_branches(repo_path, source_branch, target_branch, task_id).await {
+    if let Some(outcome) = validate_branches(repo_path, source_branch, target_branch, task_id).await
+    {
         return outcome;
     }
 
@@ -160,7 +180,8 @@ pub(super) async fn checkout_free_squash_merge(
         source_branch,
         target_branch,
         squash_commit_msg,
-    ).await;
+    )
+    .await;
     handle_checkout_free_result(repo_path, result, task_id, "squash").await
 }
 

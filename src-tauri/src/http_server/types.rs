@@ -1044,6 +1044,8 @@ pub struct RequestTaskChangesRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct PermissionRequestInput {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub tool_name: String,
     #[serde(default)]
     pub tool_input: serde_json::Value,
@@ -1400,6 +1402,8 @@ pub struct QuestionOptionInput {
 
 #[derive(Debug, Deserialize)]
 pub struct QuestionRequestInput {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub session_id: String,
     pub question: String,
     pub header: Option<String>,

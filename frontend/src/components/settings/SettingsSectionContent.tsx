@@ -92,6 +92,11 @@ const LazyAccessibilitySection = lazy(() =>
     default: module.AccessibilitySection,
   })),
 );
+const LazyNotificationSettingsPanel = lazy(() =>
+  import("./NotificationSettingsPanel").then((module) => ({
+    default: module.NotificationSettingsPanel,
+  })),
+);
 
 function SettingsSectionLoading() {
   return (
@@ -160,6 +165,7 @@ export function SettingsSectionContent({
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "accessibility" && <LazyAccessibilitySection />}
+      {section === "notifications" && <LazyNotificationSettingsPanel />}
     </Suspense>
   );
 }

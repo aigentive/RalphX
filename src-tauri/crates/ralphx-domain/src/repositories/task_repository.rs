@@ -146,7 +146,7 @@ pub trait TaskRepository: Send + Sync {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()>;
+    ) -> AppResult<String>;
 
     /// Get status history for audit
     async fn get_status_history(&self, id: &TaskId) -> AppResult<Vec<StatusTransition>>;

@@ -1059,7 +1059,7 @@ impl TaskRepository for FailingTaskRepository {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<String> {
         self.inner
             .persist_status_change(id, from, to, trigger)
             .await

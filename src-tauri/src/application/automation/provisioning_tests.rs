@@ -12,6 +12,7 @@ use super::provisioning::{
     AutomationRunStarter, AUTOMATION_PLAN_PHASE_CONTRACT_BLOCK,
 };
 use super::transition::{AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter};
+use crate::application::{AppState, NotificationService};
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
@@ -32,6 +33,10 @@ use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryArtifactRepository,
     MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
+
+fn notification_service() -> Arc<NotificationService> {
+    AppState::new_test().notification_service()
+}
 
 fn automation(id: &str) -> Automation {
     let now = Utc::now();
@@ -505,6 +510,7 @@ async fn provision_first_run_marks_current_goal_item_in_progress_and_emits_autom
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -578,6 +584,7 @@ async fn provision_pending_successor_run_marks_current_goal_item_in_progress() {
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -636,6 +643,7 @@ async fn provision_pending_run_does_not_rewrite_already_in_progress_goal_item() 
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -685,6 +693,7 @@ async fn provision_goal_item_sync_self_reverts_when_run_closed_after_mark() {
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     provisioner
@@ -740,6 +749,7 @@ async fn provision_goal_item_sync_self_reverts_when_judge_failed_loses_goal_auth
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     provisioner
@@ -791,6 +801,7 @@ async fn provision_goal_item_sync_keeps_completed_judge_settled_goal_authority()
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     provisioner
@@ -843,6 +854,7 @@ async fn provision_first_run_does_not_rewrite_when_all_goal_items_are_terminal()
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -892,6 +904,7 @@ async fn provision_first_run_skips_malformed_goal_items_json_but_starts_and_warn
         Arc::new(starter),
         event_emitter.clone(),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -948,6 +961,7 @@ async fn provision_first_run_noops_or_rejects_when_not_ready() {
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     assert!(provisioner
@@ -991,6 +1005,7 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -1083,6 +1098,7 @@ async fn provision_first_run_phase_basis_never_postdates_agent_spawn() {
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let started = provisioner
@@ -1124,6 +1140,7 @@ async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_stat
         Arc::new(starter),
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let mut running = run(automation.id.clone());
@@ -1166,6 +1183,7 @@ async fn provision_pending_run_marks_agent_failed_when_starter_errors() {
         Arc::new(FailingStarter),
         Arc::new(NoopAutomationEventEmitter),
         Arc::new(MemoryArtifactRepository::new()),
+        notification_service(),
     );
 
     let error = provisioner

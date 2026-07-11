@@ -48,6 +48,7 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use crate::application::question_state::QuestionState;
+use crate::application::notification_service::NotificationService;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
@@ -1064,6 +1065,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    notification_service: Option<Arc<NotificationService>>,
     app_handle: Option<AppHandle<R>>,
     execution_state: Option<Arc<crate::commands::ExecutionState>>,
     question_state: Option<Arc<QuestionState>>,
@@ -1154,6 +1156,7 @@ impl<R: Runtime> AppChatService<R> {
             queued_message_repo: None,
             running_agent_registry,
             memory_event_repo,
+            notification_service: None,
             app_handle: None,
             execution_state: None,
             question_state: None,
@@ -1180,6 +1183,11 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_execution_state(mut self, state: Arc<crate::commands::ExecutionState>) -> Self {
         self.execution_state = Some(state);
+        self
+    }
+
+    pub fn with_notification_service(mut self, service: Arc<NotificationService>) -> Self {
+        self.notification_service = Some(service);
         self
     }
 
@@ -5511,6 +5519,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .clone(),
                 activity_event_repo: Arc::clone(&self.activity_event_repo),
                 memory_event_repo: Arc::clone(&self.memory_event_repo),
+                notification_service: self.notification_service.clone(),
                 message_queue: Arc::clone(&self.message_queue),
                 running_agent_registry: Arc::clone(&self.running_agent_registry),
                 task_proposal_repo: self.task_proposal_repo.clone(),

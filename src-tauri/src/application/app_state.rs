@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
@@ -11,6 +11,10 @@ use tokio::sync::Mutex;
 use super::services::PrPollerRegistry;
 use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
+use crate::application::notification_service::{
+    NoopDesktopNotifier, NoopNotificationEventEmitter, NotificationEventEmitter,
+    NotificationService, TauriDesktopNotifier, TauriNotificationEventEmitter, WindowFocusState,
+};
 use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
@@ -59,10 +63,10 @@ use crate::domain::repositories::{
     ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
-    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
-    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
+    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
+    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
@@ -91,6 +95,7 @@ use crate::infrastructure::memory::{
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
+    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
@@ -125,6 +130,7 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
+    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
     SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
     SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
@@ -269,6 +275,15 @@ pub struct AppState {
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     /// Activity event repository (for activity stream persistence)
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
+    /// Durable notification history repository.
+    pub notification_repo: Arc<dyn NotificationRepository>,
+    /// Global desktop and focused-toast notification preferences.
+    pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
+    /// Shared native window-focus signal used by desktop notification delivery.
+    pub window_focus_state: Arc<WindowFocusState>,
+    /// Shared lazily initialized desktop dispatch service for paired AppStates.
+    /// Pre-AppHandle calls intentionally do not populate this cache, so later calls can use Tauri.
+    pub(crate) notification_service_cache: Arc<OnceLock<Arc<NotificationService>>>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories
@@ -359,6 +374,61 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Returns this AppState's shared notification service when an AppHandle is available.
+    /// A pre-AppHandle call returns a transient Noop-backed service and is never cached.
+    pub fn notification_service(&self) -> Arc<NotificationService> {
+        if let Some(service) = self.notification_service_cache.get() {
+            return Arc::clone(service);
+        }
+
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return Arc::new(self.build_notification_service(None));
+        };
+
+        Arc::clone(
+            self.notification_service_cache.get_or_init(|| {
+                Arc::new(self.build_notification_service(Some(app_handle.clone())))
+            }),
+        )
+    }
+
+    fn build_notification_service(&self, app_handle: Option<AppHandle>) -> NotificationService {
+        let emitter: Arc<dyn NotificationEventEmitter> = match app_handle.as_ref() {
+            Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
+            None => Arc::new(NoopNotificationEventEmitter),
+        };
+        let desktop_notifier: Arc<dyn crate::application::notification_service::DesktopNotifier> =
+            match app_handle {
+                Some(app_handle) => Arc::new(TauriDesktopNotifier::new(app_handle)),
+                None => Arc::new(NoopDesktopNotifier),
+            };
+        NotificationService::new_with_desktop_dispatch(
+            Arc::clone(&self.notification_repo),
+            emitter,
+            Arc::clone(&self.notification_settings_repo),
+            Arc::clone(&self.window_focus_state),
+            desktop_notifier,
+            std::time::Duration::from_secs(
+                crate::infrastructure::agents::claude::stream_timeouts()
+                    .desktop_notification_coalesce_window_secs,
+            ),
+            Some(Arc::clone(&self.project_repo)),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_notification_service_for_test(&self, service: Arc<NotificationService>) {
+        assert!(
+            self.notification_service_cache.set(service).is_ok(),
+            "test notification service cache must be empty"
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_cached_notification_service_for_test(&self) -> bool {
+        self.notification_service_cache.get().is_some()
+    }
+
     fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
         (Arc::new(NullEventSink), InternalEventBus::new())
     }
@@ -762,7 +832,12 @@ impl AppState {
 
         let started_at = Instant::now();
         let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps)
-            .with_event_sink(Arc::clone(&self.events));
+            .with_event_sink(Arc::clone(&self.events))
+            .with_notifier(Arc::new(
+                crate::application::task_notification_producer::TaskPipelineNotificationProducer::new(
+                    self.notification_service(),
+                ),
+            ));
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service built"
@@ -1204,6 +1279,11 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            notification_settings_repo: Arc::new(
+                SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1301,6 +1381,9 @@ impl AppState {
                 &shared_conn,
             ))),
             activity_event_repo: Arc::new(SqliteActivityEventRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            notification_repo: Arc::new(SqliteNotificationRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
@@ -1469,6 +1552,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1534,6 +1620,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
             artifact_repo: Arc::new(SqliteArtifactRepository::from_shared(Arc::clone(
@@ -1632,6 +1719,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1697,6 +1787,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
             artifact_repo: Arc::new(SqliteArtifactRepository::from_shared(Arc::clone(
@@ -1804,6 +1895,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -1875,6 +1969,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1973,6 +2068,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
             validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
@@ -2026,6 +2124,7 @@ impl AppState {
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             // Extensibility repositories
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),

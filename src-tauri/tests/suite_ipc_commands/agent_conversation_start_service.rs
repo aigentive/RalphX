@@ -18,8 +18,8 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, Artifact, ArtifactType,
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
-    ChatContextType, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionFlow, Project, ProjectId,
+    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionFlow, Project, ProjectId,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -287,6 +287,7 @@ async fn ipc_contract_start_service_plan_mode_links_planning_session_for_automat
         starter,
         Arc::new(NoopAutomationEventEmitter),
         Arc::clone(&app_state.artifact_repo),
+        app_state.notification_service(),
     );
 
     let started = provisioner
@@ -324,10 +325,7 @@ async fn ipc_contract_start_service_plan_mode_links_planning_session_for_automat
         .await
         .expect("conversation query should succeed")
         .expect("conversation should still exist");
-    assert_eq!(
-        conversation.automation_run_id,
-        Some(started.id.clone())
-    );
+    assert_eq!(conversation.automation_run_id, Some(started.id.clone()));
     assert_eq!(
         conversation.agent_mode,
         Some(AgentConversationWorkspaceMode::Plan)

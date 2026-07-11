@@ -17,7 +17,10 @@ import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import { seedAgentArtifactTab } from "@/components/agents/agentArtifactState";
-import { getAutomationConversationTabPolicy } from "./automationConversationTabPolicy";
+import {
+  getAutomationConversationTabPolicy,
+  type AutomationConversationTabId,
+} from "./automationConversationTabPolicy";
 
 export interface AutomationRunOpenTarget {
   projectId: string;
@@ -36,6 +39,7 @@ export interface AutomationRunOpenTarget {
 export interface RequestAutomationRunOpenOptions {
   fallback?: "detail" | "clear-selection";
   onOpenAutomationDetail?: (automationId: string) => void;
+  tabHint?: AutomationConversationTabId;
 }
 
 interface ResolvedAutomationRunOpenTarget {
@@ -154,6 +158,7 @@ function fetchAutomationDetail(
 
 function defaultTabForResolvedTarget(
   target: ResolvedAutomationRunOpenTarget,
+  options: RequestAutomationRunOpenOptions,
 ): AgentArtifactTab {
   return getAutomationConversationTabPolicy({
     surface: "run",
@@ -164,12 +169,16 @@ function defaultTabForResolvedTarget(
       hasPlanArtifact: target.hasPlanArtifact,
       hasPullRequest: target.hasPullRequest,
     },
+    ...(options.tabHint !== undefined && { tabHint: options.tabHint }),
   }).defaultTab as AgentArtifactTab;
 }
 
-function applyResolvedRunFocus(target: ResolvedAutomationRunOpenTarget) {
+function applyResolvedRunFocus(
+  target: ResolvedAutomationRunOpenTarget,
+  options: RequestAutomationRunOpenOptions,
+) {
   const agentSession = useAgentSessionStore.getState();
-  const seededTab = defaultTabForResolvedTarget(target);
+  const seededTab = defaultTabForResolvedTarget(target, options);
 
   agentSession.selectConversation(target.projectId, target.setupConversationId);
   agentSession.requestAutomationRunFocus(target.setupConversationId, {
@@ -241,6 +250,6 @@ export async function requestAutomationRunOpen(
     return { applied: false, reason: "stale" };
   }
 
-  applyResolvedRunFocus(resolved);
+  applyResolvedRunFocus(resolved, options);
   return { applied: true };
 }

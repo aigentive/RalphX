@@ -15,6 +15,7 @@ use crate::application::automation::service::{AutomationService, CreateAutomatio
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
+use crate::application::NotificationService;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, Automation, AutomationId, AutomationPromptAuthor,
@@ -189,17 +190,20 @@ impl AutomationRunProvisioner {
         starter: Arc<dyn AutomationRunStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
+        notification_service: Arc<NotificationService>,
     ) -> Self {
         let service = AutomationService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             Arc::clone(&event_emitter),
             artifact_repo,
+            notification_service.clone(),
         );
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             Arc::clone(&event_emitter),
+            notification_service,
         );
         Self {
             automation_repo,

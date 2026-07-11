@@ -409,8 +409,12 @@ mod v20260708130511_workspace_review_autofix_setting;
 mod v20260708131548_chat_conversation_coordination_mode;
 mod v20260710000000_task_branch_base;
 mod v20260710003315_execution_plan_halt_mode;
+mod v20260710134609_notifications_table;
+mod v20260710201548_notification_settings;
 #[cfg(test)]
-mod v20260706113000_agent_conversation_issue_identity_tests;
+mod v20260710134609_notifications_table_tests;
+#[cfg(test)]
+mod v20260710201548_notification_settings_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -474,6 +478,8 @@ mod v63_auto_verify_generation_tests;
 #[cfg(test)]
 mod v20260704193000_automations_p1_tests;
 #[cfg(test)]
+mod v20260706113000_agent_conversation_issue_identity_tests;
+#[cfg(test)]
 mod v20260707113000_automation_agent_completed_signal_tests;
 #[cfg(test)]
 mod v20260707120000_automations_spec_artifact_id_tests;
@@ -517,7 +523,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260710003315;
+pub const SCHEMA_VERSION: i64 = 20260710201548;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1436,6 +1442,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260710003315,
         name: "execution_plan_halt_mode",
         migrate: v20260710003315_execution_plan_halt_mode::migrate,
+    },
+    Migration {
+        version: 20260710134609,
+        name: "notifications_table",
+        migrate: v20260710134609_notifications_table::migrate,
+    },
+    Migration {
+        version: 20260710201548,
+        name: "notification_settings",
+        migrate: v20260710201548_notification_settings::migrate,
     },
 ];
 

@@ -12,7 +12,7 @@
 use super::helpers::*;
 use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
 use crate::domain::state_machine::context::{TaskContext, TaskServices};
-use crate::domain::state_machine::{State, TransitionHandler, TaskStateMachine};
+use crate::domain::state_machine::{State, TaskStateMachine, TransitionHandler};
 use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -34,7 +34,10 @@ async fn setup_reviewing_task(
 
     let project_id = ProjectId::from_string("proj-1".to_string());
 
-    let mut task = Task::new(project_id.clone(), "Reviewer spawn failure test".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "Reviewer spawn failure test".to_string(),
+    );
     task.internal_status = InternalStatus::Reviewing;
     task.worktree_path = worktree_path.map(|s| s.to_string());
     let task_id = task.id.clone();
@@ -59,9 +62,11 @@ fn build_machine_with_working_chat(
     project_repo: &Arc<MemoryProjectRepository>,
 ) -> TaskStateMachine {
     let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>)
+        .with_task_repo(
+            Arc::clone(task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>
+        )
         .with_project_repo(
-            Arc::clone(project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+            Arc::clone(project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
         );
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     TaskStateMachine::new(context)
@@ -89,7 +94,7 @@ async fn build_machine_with_failing_chat(
     )
     .with_task_repo(Arc::clone(task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>)
     .with_project_repo(
-        Arc::clone(project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
     );
 
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
@@ -200,11 +205,9 @@ async fn on_enter_reviewing_spawn_failure_records_metadata() {
     let temp_dir = std::env::temp_dir();
     let temp_dir_str = temp_dir.to_string_lossy().to_string();
 
-    let (task_id, task_repo, project_repo) =
-        setup_reviewing_task(Some(&temp_dir_str)).await;
+    let (task_id, task_repo, project_repo) = setup_reviewing_task(Some(&temp_dir_str)).await;
 
-    let mut machine =
-        build_machine_with_failing_chat(&task_id, &task_repo, &project_repo).await;
+    let mut machine = build_machine_with_failing_chat(&task_id, &task_repo, &project_repo).await;
     let handler = TransitionHandler::new(&mut machine);
 
     let _ = handler.on_enter(&State::Reviewing).await;

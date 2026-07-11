@@ -74,7 +74,16 @@ impl<'a> super::TransitionHandler<'a> {
         let worktree_timeout_secs = git_runtime_config().cleanup_worktree_timeout_secs;
         let outer_deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(worktree_timeout_secs * 2 + 10);
-        cleanup_stale_worktrees(task_id_str, task, project, repo_path, task_repo, event_sink, outer_deadline).await;
+        cleanup_stale_worktrees(
+            task_id_str,
+            task,
+            project,
+            repo_path,
+            task_repo,
+            event_sink,
+            outer_deadline,
+        )
+        .await;
 
         tracing::info!(
             task_id = task_id_str,

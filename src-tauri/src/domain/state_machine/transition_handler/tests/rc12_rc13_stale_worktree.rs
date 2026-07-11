@@ -289,7 +289,10 @@ async fn test_stale_worktree_entry_with_deleted_path_can_be_recreated() {
 
     // Simulate external deletion of the directory (stale entry scenario)
     fs::remove_dir_all(&wt_path).unwrap();
-    assert!(!wt_path.exists(), "Path should be gone after manual deletion");
+    assert!(
+        !wt_path.exists(),
+        "Path should be gone after manual deletion"
+    );
 
     // The wt_path.exists() check now detects the stale entry
     // Prune + delete_worktree should clean the stale metadata

@@ -85,8 +85,7 @@ impl IdeationSessionRepository for MockSessionRepository {
         plan_artifact_id: Option<String>,
     ) -> AppResult<()> {
         if let Some(session) = self.sessions.lock().unwrap().get_mut(&id.to_string()) {
-            session.plan_artifact_id =
-                plan_artifact_id.map(entities::ArtifactId::from_string);
+            session.plan_artifact_id = plan_artifact_id.map(entities::ArtifactId::from_string);
         }
         Ok(())
     }
@@ -148,10 +147,7 @@ impl IdeationSessionRepository for MockSessionRepository {
             .unwrap()
             .values()
             .filter(|s| {
-                s.inherited_plan_artifact_id
-                    .as_ref()
-                    .map(|id| id.as_str())
-                    == Some(artifact_id)
+                s.inherited_plan_artifact_id.as_ref().map(|id| id.as_str()) == Some(artifact_id)
             })
             .cloned()
             .collect())
@@ -392,11 +388,7 @@ impl IdeationSessionRepository for MockSessionRepository {
         Ok(())
     }
 
-    async fn update_last_effective_model(
-        &self,
-        _session_id: &str,
-        _model: &str,
-    ) -> AppResult<()> {
+    async fn update_last_effective_model(&self, _session_id: &str, _model: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -471,10 +463,7 @@ impl IdeationSessionRepository for MockSessionRepository {
         Ok(vec![])
     }
 
-    async fn count_active_proposals(
-        &self,
-        _session_id: &IdeationSessionId,
-    ) -> AppResult<usize> {
+    async fn count_active_proposals(&self, _session_id: &IdeationSessionId) -> AppResult<usize> {
         Ok(0)
     }
 
@@ -901,8 +890,8 @@ impl TaskRepository for MockTaskRepository {
         _from: InternalStatus,
         _to: InternalStatus,
         _trigger: &str,
-    ) -> AppResult<()> {
-        Ok(())
+    ) -> AppResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
 
     async fn get_status_history(
@@ -1129,10 +1118,7 @@ impl TaskStepRepository for MockTaskStepRepository {
         Ok(step)
     }
 
-    async fn get_by_id(
-        &self,
-        id: &entities::TaskStepId,
-    ) -> AppResult<Option<TaskStep>> {
+    async fn get_by_id(&self, id: &entities::TaskStepId) -> AppResult<Option<TaskStep>> {
         Ok(self.steps.lock().unwrap().get(&id.to_string()).cloned())
     }
 
@@ -1588,7 +1574,6 @@ async fn test_apply_proposals_preserves_dependencies() {
     assert_eq!(result.dependencies_created, 1);
 }
 
-
 #[tokio::test]
 async fn test_apply_proposals_fails_for_archived_session() {
     let project_id = ProjectId::new();
@@ -1816,7 +1801,11 @@ async fn test_apply_proposals_imports_steps_from_proposal() {
     let task_id = &result.created_tasks[0].id;
 
     // Verify steps were created
-    let steps = service.task_step_repo_for_test().get_by_task(task_id).await.unwrap();
+    let steps = service
+        .task_step_repo_for_test()
+        .get_by_task(task_id)
+        .await
+        .unwrap();
     assert_eq!(steps.len(), 3);
     assert_eq!(steps[0].title, "Step 1");
     assert_eq!(steps[1].title, "Step 2");
@@ -1853,7 +1842,11 @@ async fn test_apply_proposals_handles_empty_steps() {
     let task_id = &result.created_tasks[0].id;
 
     // No steps should be created
-    let steps = service.task_step_repo_for_test().get_by_task(task_id).await.unwrap();
+    let steps = service
+        .task_step_repo_for_test()
+        .get_by_task(task_id)
+        .await
+        .unwrap();
     assert_eq!(steps.len(), 0);
 }
 
@@ -1883,7 +1876,11 @@ async fn test_apply_proposals_handles_no_steps() {
     let task_id = &result.created_tasks[0].id;
 
     // No steps should be created
-    let steps = service.task_step_repo_for_test().get_by_task(task_id).await.unwrap();
+    let steps = service
+        .task_step_repo_for_test()
+        .get_by_task(task_id)
+        .await
+        .unwrap();
     assert_eq!(steps.len(), 0);
 }
 
@@ -1913,6 +1910,10 @@ async fn test_apply_proposals_handles_invalid_json_steps() {
     let task_id = &result.created_tasks[0].id;
 
     // No steps should be created due to JSON parse error
-    let steps = service.task_step_repo_for_test().get_by_task(task_id).await.unwrap();
+    let steps = service
+        .task_step_repo_for_test()
+        .get_by_task(task_id)
+        .await
+        .unwrap();
     assert_eq!(steps.len(), 0);
 }

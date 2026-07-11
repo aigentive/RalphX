@@ -218,12 +218,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
     let phase_started_at = startup_phase_started("git_auth_preflight");
     let startup_git_preflight =
-        crate::application::startup_git_auth_preflight::run_startup_git_auth_preflight(
+        crate::application::startup_git_auth_preflight::run_startup_git_auth_preflight_with_notifications(
             Arc::clone(&project_repo),
             Arc::clone(&app_state_repo),
             Some(Arc::clone(&plan_branch_repo)),
             Some(Arc::clone(&agent_conversation_workspace_repo)),
             &app_handle,
+            Some(app_state.notification_service()),
         )
         .await;
     startup_phase_completed("git_auth_preflight", phase_started_at);
@@ -285,6 +286,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         external_events_repo: Arc::clone(&external_events_repo),
         webhook_publisher: webhook_publisher.clone(),
         session_merge_locks: Arc::clone(&session_merge_locks),
+        notification_service: app_state.notification_service(),
     };
     startup_phase_completed("startup_transition_factory_build", phase_started_at);
 
@@ -556,7 +558,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .with_review_repo(Arc::clone(&review_repo))
         .with_chat_service(Arc::clone(&recovery_chat_service))
         .with_previous_session_cutoff(previous_session_cutoff)
-        .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids)),
+        .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids))
+        .with_notification_repo(Arc::clone(&app_state.notification_repo)),
     );
 
     let phase_started_at = startup_phase_started("startup_job_runner");
@@ -694,6 +697,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             pr_poller_registry: Arc::clone(&pr_poller_registry),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             review_repo: Arc::clone(&review_repo),
+            notification_service: app_state.notification_service(),
             app_handle: app_handle.clone(),
         },
     ));

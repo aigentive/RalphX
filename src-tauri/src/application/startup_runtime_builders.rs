@@ -5,7 +5,7 @@ use crate::application::runtime_factory::{
 };
 use crate::application::{
     AgentClientBundle, AppState, ChatResumptionRunner, ChatService, InteractiveProcessRegistry,
-    PrPollerRegistry, ReconciliationRunner, TaskSchedulerService,
+    NotificationService, PrPollerRegistry, ReconciliationRunner, TaskSchedulerService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
@@ -158,6 +158,7 @@ pub(crate) struct StartupReconciliationDeps {
     pub pr_poller_registry: Arc<PrPollerRegistry>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub review_repo: Arc<dyn ReviewRepository>,
+    pub notification_service: Arc<NotificationService>,
     pub app_handle: tauri::AppHandle,
 }
 
@@ -182,6 +183,7 @@ pub(crate) fn build_startup_reconciliation_runner(
         deps.execution_state,
         Some(deps.app_handle),
     )
+    .with_notification_service(deps.notification_service)
     .with_execution_settings_repo(deps.execution_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
     .with_pr_poller_registry(deps.pr_poller_registry)

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
-import { Check, ChevronDown, GitPullRequest, Search } from "lucide-react";
+import { Check, ChevronDown, Inbox, Search } from "lucide-react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { notificationsApi } from "@/api/notifications";
 import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { ProjectSelector } from "@/components/projects/ProjectSelector";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -20,9 +21,11 @@ import { ThemeSelector } from "./ThemeSelector";
 
 interface AppTopBarProps {
   currentView: ViewType;
-  pendingReviewCount: number;
-  reviewsPanelOpen: boolean;
-  onToggleReviewsPanel: () => void;
+  attentionCount: number;
+  hasUnreadNotificationHistory?: boolean;
+  attentionCountStale?: boolean;
+  notificationsPanelOpen: boolean;
+  onToggleNotificationsPanel: () => void;
   onNewProject?: () => void;
   onProjectSwitchIntent?: (() => void) | undefined;
   showProjectSelector?: boolean;
@@ -47,6 +50,8 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "lg", label: "110%" },
   { value: "xl", label: "125%" },
 ];
+
+let lastDockBadgeCount: number | undefined;
 
 const PROJECT_SELECTOR_VIEWS = new Set<ViewType>([
   "ideation",
@@ -441,9 +446,11 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
 
 export function AppTopBar({
   currentView,
-  pendingReviewCount,
-  reviewsPanelOpen,
-  onToggleReviewsPanel,
+  attentionCount,
+  hasUnreadNotificationHistory = false,
+  attentionCountStale = false,
+  notificationsPanelOpen,
+  onToggleNotificationsPanel,
   onNewProject,
   onProjectSwitchIntent,
   showProjectSelector = false,
@@ -477,10 +484,16 @@ export function AppTopBar({
     activeProject?.name ?? null,
     agentConversationTitle,
   );
-  const reviewsLabel =
-    pendingReviewCount > 0
-      ? `Reviews · ${pendingReviewCount} pending`
-      : "Reviews";
+  const notificationsLabel =
+    attentionCount > 0 ? `Notifications · ${attentionCount} need attention` : "Notifications";
+
+  useEffect(() => {
+    if (lastDockBadgeCount === attentionCount) return;
+
+    lastDockBadgeCount = attentionCount;
+    void notificationsApi.setDockBadgeCount(attentionCount).catch(() => undefined);
+  }, [attentionCount]);
+
   const shouldShowProjectSelector =
     showProjectSelector && PROJECT_SELECTOR_VIEWS.has(currentView) && Boolean(onNewProject);
 
@@ -584,31 +597,41 @@ export function AppTopBar({
               className="relative grid h-8 w-8 place-items-center rounded-[6px] border transition-colors duration-150 outline-none hover:border-[var(--border-default)] hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
               style={{
                 borderColor: "transparent",
-                color: reviewsPanelOpen ? "var(--text-primary)" : "var(--text-muted)",
+                color: notificationsPanelOpen ? "var(--text-primary)" : "var(--text-muted)",
               }}
-              aria-label={reviewsLabel}
-              aria-pressed={reviewsPanelOpen}
+              aria-label={notificationsLabel}
+              aria-pressed={notificationsPanelOpen}
+              id="notifications-toggle"
               data-testid="reviews-toggle"
-              onClick={onToggleReviewsPanel}
+              data-notification-testid="notifications-toggle"
+              onClick={onToggleNotificationsPanel}
             >
-              <GitPullRequest className="h-[15px] w-[15px]" />
-              {pendingReviewCount > 0 && (
+              <Inbox className="h-[15px] w-[15px]" />
+              {attentionCount > 0 && (
                 <span
-                  className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[0.5938rem] font-bold leading-none"
+                  className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[10px] font-bold leading-none"
                   style={{
-                    background: "var(--accent-primary)",
+                    backgroundColor: "var(--accent-primary)",
                     color: "var(--text-on-accent)",
                     boxShadow: "0 0 0 2px var(--app-navbar-bg)",
                   }}
                   data-testid="reviews-badge"
                 >
-                  {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
+                  {attentionCount > 9 ? "9+" : attentionCount}
                 </span>
+              )}
+              {attentionCount === 0 && hasUnreadNotificationHistory && (
+                <span
+                  aria-label="Unread notification history"
+                  className="absolute right-1 top-1 h-1 w-1 rounded-full"
+                  style={{ backgroundColor: "var(--accent-primary)" }}
+                  data-testid="notifications-unread-dot"
+                />
               )}
             </button>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-xs">
-            Toggle reviews <kbd className="ml-1 opacity-70">⌘⇧R</kbd>
+            {attentionCountStale ? "⚠ Last known notification count" : "Notifications"} <kbd className="ml-1 opacity-70">⌘⇧R</kbd>
           </TooltipContent>
         </Tooltip>
 

@@ -164,8 +164,9 @@ fn test_merge_into_removes_optional_fields_when_none() {
     fm.merge_into(&mut metadata);
 
     // Optional fields with None values should be removed
-    assert!(metadata.get("freshness_origin_state").is_none() ||
-        metadata["freshness_origin_state"].is_null(),
+    assert!(
+        metadata.get("freshness_origin_state").is_none()
+            || metadata["freshness_origin_state"].is_null(),
         "None optional field should be removed from metadata"
     );
 }
@@ -273,7 +274,10 @@ fn test_serde_round_trip_full_struct() {
     original.merge_into(&mut metadata);
 
     let recovered = FreshnessMetadata::from_task_metadata(&metadata);
-    assert_eq!(recovered, original, "Round-trip must produce identical struct");
+    assert_eq!(
+        recovered, original,
+        "Round-trip must produce identical struct"
+    );
 }
 
 #[test]
@@ -284,7 +288,10 @@ fn test_serde_round_trip_defaults() {
     original.merge_into(&mut metadata);
 
     let recovered = FreshnessMetadata::from_task_metadata(&metadata);
-    assert_eq!(recovered, original, "Default struct must round-trip correctly");
+    assert_eq!(
+        recovered, original,
+        "Default struct must round-trip correctly"
+    );
 }
 
 #[test]

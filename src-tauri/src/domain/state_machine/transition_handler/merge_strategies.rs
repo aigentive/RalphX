@@ -100,7 +100,11 @@ impl<'a> super::TransitionHandler<'a> {
                 // If the inner function early-returned (e.g. branches_have_same_content guard),
                 // no worktree was created. Fall back to repo_path for validation — branches are
                 // identical so no code changed and the repo root is equivalent to a worktree.
-                let actual_path = if merge_wt.exists() { merge_wt } else { repo_path.to_path_buf() };
+                let actual_path = if merge_wt.exists() {
+                    merge_wt
+                } else {
+                    repo_path.to_path_buf()
+                };
                 tracing::info!(
                     task_id = task_id_str,
                     commit_sha = %commit_sha,
@@ -204,7 +208,11 @@ impl<'a> super::TransitionHandler<'a> {
                 // If the inner function early-returned (e.g. branches_have_same_content guard),
                 // no merge worktree was created. Fall back to repo_path — branches are identical
                 // so no code changed and the repo root is equivalent to a worktree.
-                let actual_path = if merge_wt.exists() { merge_wt } else { repo_path.to_path_buf() };
+                let actual_path = if merge_wt.exists() {
+                    merge_wt
+                } else {
+                    repo_path.to_path_buf()
+                };
                 tracing::info!(
                     task_id = task_id_str,
                     commit_sha = %commit_sha,

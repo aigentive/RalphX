@@ -51,8 +51,8 @@ use crate::domain::services::{
     MessageQueue, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
 };
 use crate::domain::state_machine::services::{
-    AgentSpawner, DependencyManager, EventEmitter, Notifier, ReviewStartResult, ReviewStarter,
-    TaskScheduler, WebhookPublisher,
+    AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier,
+    ReviewStartResult, ReviewStarter, TaskNotification, TaskScheduler, WebhookPublisher,
 };
 use crate::domain::state_machine::transition_handler::metadata_builder::{
     build_stop_metadata, build_trigger_origin_metadata, MetadataUpdate,
@@ -449,27 +449,12 @@ impl EventEmitter for EnrichedEventEmitter {
     }
 }
 
-/// LoggingNotifier - logs notifications for debugging
-pub struct LoggingNotifier;
+/// Default for direct/unit construction that does not wire application notification storage.
+pub struct NoopNotifier;
 
 #[async_trait]
-impl Notifier for LoggingNotifier {
-    async fn notify(&self, notification_type: &str, task_id: &str) {
-        tracing::info!(
-            task_id = task_id,
-            notification_type = notification_type,
-            "Notification"
-        );
-    }
-
-    async fn notify_with_message(&self, notification_type: &str, task_id: &str, message: &str) {
-        tracing::info!(
-            task_id = task_id,
-            notification_type = notification_type,
-            message = message,
-            "Notification with message"
-        );
-    }
+impl Notifier for NoopNotifier {
+    async fn notify(&self, _context: NotificationContext, _notification: TaskNotification) {}
 }
 
 /// Repository-backed DependencyManager for automatic task blocking/unblocking
@@ -971,6 +956,27 @@ pub struct TaskTransitionService {
 }
 
 impl TaskTransitionService {
+    /// Record a task-state notification after the caller committed its matching history row.
+    ///
+    /// Direct merge/recovery repair paths use this instead of re-querying "latest" history.
+    pub(crate) async fn notify_state_entered(
+        &self,
+        task: &Task,
+        history_entry_id: String,
+        status: InternalStatus,
+    ) {
+        self.notifier
+            .notify(
+                NotificationContext {
+                    task: task.clone(),
+                    history_entry_id,
+                    project_id: task.project_id.clone(),
+                },
+                TaskNotification::StateEntered(status),
+            )
+            .await;
+    }
+
     fn log_build_step(step: &'static str, started_at: Instant) {
         tracing::info!(
             step,
@@ -1257,7 +1263,7 @@ impl TaskTransitionService {
         }
         let event_emitter: Arc<dyn EventEmitter> = Arc::new(emitter);
         Self::log_build_step("event_emitter", started_at);
-        let notifier: Arc<dyn Notifier> = Arc::new(LoggingNotifier);
+        let notifier: Arc<dyn Notifier> = Arc::new(NoopNotifier);
         // Use real dependency manager for automatic blocking/unblocking based on dependency graph
         let started_at = Instant::now();
         let dependency_manager: Arc<dyn DependencyManager> =
@@ -1342,6 +1348,17 @@ impl TaskTransitionService {
     /// can trigger scheduling when tasks exit agent-active states or enter Ready state.
     pub fn with_task_scheduler(mut self, scheduler: Arc<dyn TaskScheduler>) -> Self {
         self.task_scheduler = Some(scheduler);
+        self
+    }
+
+    /// Wire the application implementation of the domain notification seam.
+    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    pub fn with_review_starter(mut self, review_starter: Arc<dyn ReviewStarter>) -> Self {
+        self.review_starter = review_starter;
         self
     }
 
@@ -1826,13 +1843,17 @@ impl TaskTransitionService {
         }
 
         // 4.1 Record state transition history for time-travel feature
-        if let Err(e) = self
+        let history_entry_id = match self
             .task_repo
             .persist_status_change(task_id, old_status, new_status, "system")
             .await
         {
-            tracing::warn!(error = %e, "Failed to record state history (non-fatal)");
-        }
+            Ok(history_entry_id) => Some(history_entry_id),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to record state history (non-fatal)");
+                None
+            }
+        };
         tracing::debug!("Task status persisted to database");
 
         // Log every confirmed state change at INFO level so the full state history is
@@ -1874,7 +1895,13 @@ impl TaskTransitionService {
             new_status = new_status.as_str(),
             "Executing entry actions for new status"
         );
-        self.execute_entry_actions(task_id, &task, new_status).await;
+        self.execute_entry_actions_with_notification_context(
+            task_id,
+            &task,
+            new_status,
+            history_entry_id,
+        )
+        .await;
 
         tracing::debug!("Task transition complete");
 
@@ -2994,7 +3021,7 @@ impl TaskTransitionService {
     /// async post-actions (e.g., spawning a merger agent).
     ///
     /// # Returns
-    /// - `Some(CorrectionResult)` on success (lock acquired, DB updated, history persisted).
+    /// - `Some(CorrectionResult)` on success (lock acquired and DB updated; history is best-effort).
     /// - `None` when the optimistic lock fails (another caller already transitioned the
     ///   task) or the task is not found; logs an appropriate message in each case.
     async fn apply_corrective_transition(
@@ -3041,10 +3068,23 @@ impl TaskTransitionService {
                 None
             }
             Ok(true) => {
-                let _ = self
+                match self
                     .task_repo
                     .persist_status_change(task_id, from_status, target_status, history_actor)
-                    .await;
+                    .await
+                {
+                    Ok(history_entry_id) => {
+                        self.notify_state_entered(&task, history_entry_id, target_status)
+                            .await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task_id.as_str(),
+                            error = %error,
+                            "Failed to persist corrective status history; skipping notification effect"
+                        );
+                    }
+                }
                 Some(CorrectionResult { task, from_status })
             }
         }
@@ -3140,6 +3180,17 @@ impl TaskTransitionService {
         task: &Task,
         status: InternalStatus,
     ) {
+        self.execute_entry_actions_with_notification_context(task_id, task, status, None)
+            .await;
+    }
+
+    async fn execute_entry_actions_with_notification_context(
+        &self,
+        task_id: &TaskId,
+        task: &Task,
+        status: InternalStatus,
+        history_entry_id: Option<String>,
+    ) {
         use crate::domain::state_machine::{
             context::TaskContext, machine::TaskStateMachine, transition_handler::TransitionHandler,
         };
@@ -3177,6 +3228,13 @@ impl TaskTransitionService {
 
         // Build common TaskServices, then add entry-specific fields.
         let mut services = self.build_task_services_common();
+        if let Some(history_entry_id) = history_entry_id {
+            services = services.with_notification_context(NotificationContext {
+                task: task.clone(),
+                history_entry_id,
+                project_id: task.project_id.clone(),
+            });
+        }
 
         // Pass shared merge lock for TOCTOU-safe concurrent merge guard
         services = services.with_merge_lock(Arc::clone(&self.merge_lock));
@@ -3196,7 +3254,7 @@ impl TaskTransitionService {
 
         // Create state machine and handler
         let mut machine = TaskStateMachine::new(context);
-        let handler = TransitionHandler::new(&mut machine);
+        let mut handler = TransitionHandler::new(&mut machine);
 
         // Execute entry action via TransitionHandler
         tracing::debug!(?state, "Calling TransitionHandler::on_enter");
@@ -3223,6 +3281,7 @@ impl TaskTransitionService {
         let on_enter_result = handler.on_enter(&state).await;
 
         if let Err(e) = on_enter_result {
+            handler.emit_on_enter_error(&state, &e).await;
             debug_assert!(
                 !guard_execution_entry
                     || self
@@ -3397,7 +3456,9 @@ impl TaskTransitionService {
             // Execute on_exit for the intermediate state
             handler.on_exit(&current_state, &auto_state).await;
 
-            // Persist the auto-transition to the database
+            // Persist the auto-transition to the database. Entry notifications must be
+            // attributed to this transition's history authority, never the initial transition.
+            let mut auto_notification_context = None;
             if let Ok(Some(mut updated_task)) = self.task_repo.get_by_id(task_id).await {
                 let from_status = updated_task.internal_status;
                 updated_task.internal_status = auto_status;
@@ -3410,18 +3471,31 @@ impl TaskTransitionService {
                 }
 
                 updated_task.touch();
-                if let Err(e) = self.task_repo.update(&updated_task).await {
-                    tracing::error!(error = %e, "Failed to persist auto-transition");
-                }
-                // Record auto-transition in history
-                if let Err(e) = self
-                    .task_repo
-                    .persist_status_change(task_id, from_status, auto_status, "auto")
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to record auto-transition history (non-fatal)");
+                match self.task_repo.update(&updated_task).await {
+                    Ok(()) => match self
+                        .task_repo
+                        .persist_status_change(task_id, from_status, auto_status, "auto")
+                        .await
+                    {
+                        Ok(history_entry_id) => {
+                            auto_notification_context = Some(NotificationContext {
+                                task: updated_task,
+                                history_entry_id,
+                                project_id: task.project_id.clone(),
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to record auto-transition history (non-fatal)");
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to persist auto-transition");
+                    }
                 }
             }
+            // Failed auto persistence deliberately clears the prior context: an entry action
+            // may still run under legacy loop semantics, but it cannot emit a stale alert.
+            handler.replace_notification_context(auto_notification_context);
 
             // Emit task:event for auto-transition so UI updates in real time
             self.emit_task_event(serde_json::json!({

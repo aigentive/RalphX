@@ -224,12 +224,12 @@ html[data-theme="dark"] main {
   border-right-color: #2E2E36 !important;
 }
 
-[data-theme="dark"] [data-testid="reviews-panel-shell"] {
+[data-theme="dark"] [data-testid="notifications-panel-shell"] {
   background-color: #1E1E23 !important;
   border-left-color: #2E2E36 !important;
 }
 
-[data-theme="dark"] [data-testid="reviews-panel-frame"] {
+[data-theme="dark"] [data-testid="notifications-panel-frame"] {
   background-color: #1E1E23 !important;
 }
 

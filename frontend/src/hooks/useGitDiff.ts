@@ -3,7 +3,7 @@
  *
  * Provides file changes, commit history, and diff data for a task.
  * Connects to Tauri backend to fetch real diff data from agent activity events.
- * Used primarily in the ReviewsPanel with integrated DiffViewer.
+ * Used primarily in task-review detail surfaces with integrated DiffViewer.
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";

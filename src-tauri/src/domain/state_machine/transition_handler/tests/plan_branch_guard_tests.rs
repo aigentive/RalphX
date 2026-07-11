@@ -87,13 +87,20 @@ async fn test_on_enter_executing_blocks_merged_branch() {
 
 #[tokio::test]
 async fn test_on_enter_executing_blocks_abandoned_branch() {
-    let (mut machine, _, _) =
-        setup_guard_test("task-aband", Some("ep-a"), Some(PlanBranchStatus::Abandoned)).await;
+    let (mut machine, _, _) = setup_guard_test(
+        "task-aband",
+        Some("ep-a"),
+        Some(PlanBranchStatus::Abandoned),
+    )
+    .await;
 
     let handler = TransitionHandler::new(&mut machine);
     let result = handler.on_enter(&State::Executing).await;
 
-    assert!(result.is_err(), "Should block execution on abandoned branch");
+    assert!(
+        result.is_err(),
+        "Should block execution on abandoned branch"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(err, AppError::ExecutionBlocked(_)),
@@ -158,8 +165,12 @@ async fn test_on_enter_reexecuting_blocks_merged_branch() {
 
 #[tokio::test]
 async fn test_on_enter_reexecuting_allows_active_branch() {
-    let (mut machine, _, _) =
-        setup_guard_test("task-re-ok", Some("ep-reok"), Some(PlanBranchStatus::Active)).await;
+    let (mut machine, _, _) = setup_guard_test(
+        "task-re-ok",
+        Some("ep-reok"),
+        Some(PlanBranchStatus::Active),
+    )
+    .await;
 
     let handler = TransitionHandler::new(&mut machine);
     let result = handler.on_enter(&State::ReExecuting).await;

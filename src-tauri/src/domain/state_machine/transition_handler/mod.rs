@@ -51,7 +51,7 @@ mod tests;
 
 // -- Public re-exports --
 pub use merge_completion::complete_merge_internal;
-pub(crate) use merge_completion::complete_merge_internal_with_pr_sync;
+pub(crate) use merge_completion::complete_merge_internal_with_pr_sync_and_notifier;
 pub use merge_completion::{
     clear_pending_cleanup_metadata, deferred_merge_cleanup, has_no_code_changes_metadata,
     has_pending_cleanup_metadata, set_no_code_changes_metadata, set_pending_cleanup_metadata,
@@ -80,8 +80,8 @@ pub(crate) use merge_helpers::{
     restore_task_worktree, set_conflict_metadata, set_source_conflict_resolved,
     sync_plan_branch_pr_after_regular_task_merge, sync_plan_branch_pr_if_needed,
     task_has_commit_hook_merge_failure, task_has_pr_branch_publication_conflict,
-    task_has_pr_branch_publication_failure, CommitHookFailureKind, PlanBranchPrSyncServices,
-    PlanBranchPrSyncOutcome,
+    task_has_pr_branch_publication_failure, CommitHookFailureKind, PlanBranchPrSyncOutcome,
+    PlanBranchPrSyncServices,
 };
 #[doc(hidden)]
 pub use merge_helpers::{parse_metadata, set_trigger_origin};
@@ -127,6 +127,14 @@ pub struct TransitionHandler<'a> {
 impl<'a> TransitionHandler<'a> {
     pub fn new(machine: &'a mut TaskStateMachine) -> Self {
         Self { machine }
+    }
+
+    /// Replace the notification authority carried into subsequent entry actions.
+    pub fn replace_notification_context(
+        &mut self,
+        context: Option<crate::domain::state_machine::services::NotificationContext>,
+    ) {
+        self.machine.context.services.notification_context = context;
     }
 
     /// Build an ExitContext snapshot from the current machine context.
@@ -290,7 +298,7 @@ impl<'a> TransitionHandler<'a> {
     }
 
     /// Emit a task:on_enter_error event for UI visibility.
-    async fn emit_on_enter_error(&self, state: &State, error: &crate::error::AppError) {
+    pub(crate) async fn emit_on_enter_error(&self, state: &State, error: &crate::error::AppError) {
         self.machine
             .context
             .services
@@ -301,6 +309,20 @@ impl<'a> TransitionHandler<'a> {
                 &format!(r#"{{"state":"{:?}","error":"{}"}}"#, state, error),
             )
             .await;
+
+        if let Some(context) = self.machine.context.services.notification_context.clone() {
+            self.machine
+                .context
+                .services
+                .notifier
+                .notify(
+                    context,
+                    crate::domain::state_machine::services::TaskNotification::TaskStuck {
+                        message: format!("Could not enter {state:?}: {error}"),
+                    },
+                )
+                .await;
+        }
     }
 
     /// Execute on-exit action for a state.

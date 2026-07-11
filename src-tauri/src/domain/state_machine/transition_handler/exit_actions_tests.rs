@@ -57,7 +57,11 @@ fn make_retrying_recovery_with_auto_retry() -> ExecutionRecoveryMetadata {
 async fn auto_commit_skipped_for_transient_timeout() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_transient_recovery(ExecutionFailureSource::TransientTimeout);
     let mut task = Task::new(project.id.clone(), "Timing out task".into());
@@ -68,7 +72,12 @@ async fn auto_commit_skipped_for_transient_timeout() {
     auto_commit_on_execution_done(&ctx).await;
 
     // H11 must NOT fire: last_state stays Retrying (not updated to Succeeded)
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
         .unwrap()
         .unwrap();
@@ -84,7 +93,11 @@ async fn auto_commit_skipped_for_transient_timeout() {
 async fn auto_commit_skipped_for_parse_stall() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_transient_recovery(ExecutionFailureSource::ParseStall);
     let mut task = Task::new(project.id.clone(), "Stalling task".into());
@@ -94,7 +107,12 @@ async fn auto_commit_skipped_for_parse_stall() {
     let ctx = make_exit_ctx(&app_state, task.id.as_str(), project.id.as_str());
     auto_commit_on_execution_done(&ctx).await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
         .unwrap()
         .unwrap();
@@ -110,7 +128,11 @@ async fn auto_commit_skipped_for_parse_stall() {
 async fn auto_commit_skipped_for_agent_crash() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let recovery = make_transient_recovery(ExecutionFailureSource::AgentCrash);
     let mut task = Task::new(project.id.clone(), "Crashing task".into());
@@ -120,7 +142,12 @@ async fn auto_commit_skipped_for_agent_crash() {
     let ctx = make_exit_ctx(&app_state, task.id.as_str(), project.id.as_str());
     auto_commit_on_execution_done(&ctx).await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
         .unwrap()
         .unwrap();
@@ -137,7 +164,11 @@ async fn auto_commit_skipped_for_agent_crash() {
 async fn auto_commit_not_skipped_for_non_transient_failure() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Unknown failure source → not transient → guard does not fire
     // But last event IS a Failed event → H11 guard prevents update to Succeeded
@@ -150,7 +181,12 @@ async fn auto_commit_not_skipped_for_non_transient_failure() {
     // Should not panic and should not update to Succeeded (last event is Failed kind)
     auto_commit_on_execution_done(&ctx).await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
         .unwrap()
         .unwrap();
@@ -170,7 +206,11 @@ async fn auto_commit_not_skipped_for_non_transient_failure() {
 async fn success_state_updated_to_succeeded_after_successful_retry() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Recovery in Retrying state, last event = AutoRetryTriggered (not Failed)
     let recovery = make_retrying_recovery_with_auto_retry();
@@ -182,7 +222,12 @@ async fn success_state_updated_to_succeeded_after_successful_retry() {
     auto_commit_on_execution_done(&ctx).await;
 
     // H11: last_state must now be Succeeded
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
         .unwrap()
         .unwrap();
@@ -199,7 +244,11 @@ async fn success_state_updated_to_succeeded_after_successful_retry() {
 async fn success_state_no_op_when_no_metadata() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     // Task has no metadata at all
     let task = Task::new(project.id.clone(), "Task without recovery metadata".into());
@@ -210,9 +259,13 @@ async fn success_state_no_op_when_no_metadata() {
     auto_commit_on_execution_done(&ctx).await;
 
     // No execution_recovery metadata should have been added
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
-    let meta =
-        ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref()).unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref()).unwrap();
     assert!(
         meta.is_none(),
         "H11 backward compat: no recovery metadata should be added when none existed"
@@ -224,7 +277,11 @@ async fn success_state_no_op_when_no_metadata() {
 async fn success_state_no_op_when_already_succeeded() {
     let app_state = AppState::new_test();
     let project = Project::new("Test Project".into(), "/tmp".into());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut recovery = make_retrying_recovery_with_auto_retry();
     recovery.last_state = ExecutionRecoveryState::Succeeded;
@@ -235,7 +292,12 @@ async fn success_state_no_op_when_already_succeeded() {
     let ctx = make_exit_ctx(&app_state, task.id.as_str(), project.id.as_str());
     auto_commit_on_execution_done(&ctx).await;
 
-    let updated = app_state.task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
     let meta = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
         .unwrap()
         .unwrap();

@@ -205,14 +205,23 @@ pub(crate) async fn freshness_return_route(
             fresh_task.internal_status = InternalStatus::MergeIncomplete;
             fresh_task.touch();
             task_repo.update(&fresh_task).await?;
-            let _ = task_repo
+            if let Ok(history_entry_id) = task_repo
                 .persist_status_change(
                     &task.id,
                     InternalStatus::Merging,
                     InternalStatus::MergeIncomplete,
                     "pr_branch_publication_failed",
                 )
-                .await;
+                .await
+            {
+                transition_service
+                    .notify_state_entered(
+                        &fresh_task,
+                        history_entry_id,
+                        InternalStatus::MergeIncomplete,
+                    )
+                    .await;
+            }
             return Err(error);
         }
     } else if origin_state_name == "pr_branch_publication" {
@@ -266,14 +275,23 @@ pub(crate) async fn freshness_return_route(
             fresh_task.internal_status = InternalStatus::MergeIncomplete;
             fresh_task.touch();
             task_repo.update(&fresh_task).await?;
-            let _ = task_repo
+            if let Ok(history_entry_id) = task_repo
                 .persist_status_change(
                     &task.id,
                     InternalStatus::Merging,
                     InternalStatus::MergeIncomplete,
                     "pr_branch_publication_failed",
                 )
-                .await;
+                .await
+            {
+                transition_service
+                    .notify_state_entered(
+                        &fresh_task,
+                        history_entry_id,
+                        InternalStatus::MergeIncomplete,
+                    )
+                    .await;
+            }
             return Err(error);
         }
 

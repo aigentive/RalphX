@@ -6,14 +6,19 @@ use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTrans
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
+use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
     AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
 };
-use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::domain::repositories::{
+    AutomationRepository, AutomationRunRepository, NotificationRepository,
+};
 use crate::error::AppError;
-use crate::infrastructure::memory::{MemoryAutomationRepository, MemoryAutomationRunRepository};
+use crate::infrastructure::memory::{
+    MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryNotificationRepository,
+};
 
 #[derive(Default)]
 struct RecordingEmitter {
@@ -30,6 +35,23 @@ impl AutomationEventEmitter for RecordingEmitter {
     fn emit(&self, event: AutomationEvent) {
         self.events.lock().unwrap().push(event);
     }
+}
+
+fn notification_service() -> Arc<NotificationService> {
+    Arc::new(NotificationService::new(
+        Arc::new(MemoryNotificationRepository::new()) as Arc<dyn NotificationRepository>,
+        Arc::new(NoopNotificationEventEmitter),
+    ))
+}
+
+fn notification_service_with_repo() -> (Arc<NotificationService>, Arc<MemoryNotificationRepository>)
+{
+    let repo = Arc::new(MemoryNotificationRepository::new());
+    let service = Arc::new(NotificationService::new(
+        repo.clone() as Arc<dyn NotificationRepository>,
+        Arc::new(NoopNotificationEventEmitter),
+    ));
+    (service, repo)
 }
 
 fn automation(id: &str, status: AutomationStatus) -> Automation {
@@ -210,8 +232,12 @@ async fn transition_service_emits_after_successful_automation_status_cas() {
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo.clone(), run_repo, emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo,
+        emitter.clone(),
+        notification_service(),
+    );
     let automation = automation("automation-1", AutomationStatus::Draft);
     automation_repo.create(automation.clone()).await.unwrap();
 
@@ -250,7 +276,12 @@ async fn transition_service_rejects_invalid_automation_transition_without_emit()
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service = AutomationTransitionService::new(automation_repo, run_repo, emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo,
+        emitter.clone(),
+        notification_service(),
+    );
 
     let error = service
         .transition_automation_status(
@@ -273,8 +304,12 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
     let run = run(
         "run-1",
         AutomationRunStatus::Pending,
@@ -314,14 +349,222 @@ async fn transition_service_emits_only_when_run_status_cas_wins() {
 }
 
 #[tokio::test]
+async fn transition_service_records_automation_run_notifications_only_after_winning_cas() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let (notification_service, notification_repo) = notification_service_with_repo();
+    let service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        Arc::new(RecordingEmitter::default()),
+        notification_service,
+    );
+    let mut awaiting = run(
+        "awaiting",
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    let mut failed = run(
+        "failed",
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    let mut completed = run(
+        "completed",
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    completed.id = AutomationRunId::from_string("completed");
+    let mut merged = run(
+        "merged",
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    let mut closed = run(
+        "closed",
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    for (automation_id, run) in [
+        ("automation-awaiting", &mut awaiting),
+        ("automation-failed", &mut failed),
+        ("automation-completed", &mut completed),
+        ("automation-merged", &mut merged),
+        ("automation-closed", &mut closed),
+    ] {
+        run.automation_id = AutomationId::from_string(automation_id);
+        automation_repo
+            .create(automation(automation_id, AutomationStatus::Active))
+            .await
+            .unwrap();
+        run_repo.create_run(run.clone()).await.unwrap();
+    }
+
+    assert!(service
+        .transition_run_status(
+            &awaiting.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::AwaitingPlanApproval,
+            None,
+            None
+        )
+        .await
+        .unwrap());
+    assert!(service
+        .transition_run_status(
+            &failed.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::AgentFailed,
+            Some("timeout".to_string()),
+            None
+        )
+        .await
+        .unwrap());
+    assert!(service
+        .transition_run_status(
+            &completed.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::Completed,
+            None,
+            None
+        )
+        .await
+        .unwrap());
+    assert!(service
+        .transition_run_status_with_merge_metadata(
+            &merged.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            Some("sha".to_string()),
+            Some(Utc::now())
+        )
+        .await
+        .unwrap());
+    assert!(service
+        .transition_run_status(
+            &closed.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::PrClosed,
+            None,
+            None
+        )
+        .await
+        .unwrap());
+    assert!(!service
+        .transition_run_status(
+            &awaiting.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::AwaitingPlanApproval,
+            None,
+            None
+        )
+        .await
+        .unwrap());
+
+    let rows = notification_repo
+        .list(None, None, 20)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(rows.len(), 5);
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("run:awaiting:plan_approval")));
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("run:failed:failed:timeout")));
+    assert!(rows.iter().any(|row| {
+        row.body.as_deref() == Some("Run #1 of “Automation automation-failed”: run timed out")
+    }));
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("run:completed:completed")));
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("run:merged:completed")));
+    assert!(rows
+        .iter()
+        .any(|row| row.dedupe_key.as_deref() == Some("run:closed:pr_closed")));
+}
+
+#[tokio::test]
+async fn transition_service_records_only_actionable_automation_pauses() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let (notification_service, notification_repo) = notification_service_with_repo();
+    let service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo,
+        Arc::new(RecordingEmitter::default()),
+        notification_service,
+    );
+    let automation = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(automation.clone()).await.unwrap();
+
+    assert!(service
+        .transition_automation_status(
+            &automation.id,
+            AutomationStatus::Active,
+            AutomationStatus::Paused,
+            Some("user".to_string()),
+            None
+        )
+        .await
+        .unwrap());
+    assert!(notification_repo
+        .list(None, None, 10)
+        .await
+        .unwrap()
+        .notifications
+        .is_empty());
+    assert!(service
+        .transition_automation_status(
+            &automation.id,
+            AutomationStatus::Paused,
+            AutomationStatus::Active,
+            None,
+            None
+        )
+        .await
+        .unwrap());
+    assert!(service
+        .transition_automation_status(
+            &automation.id,
+            AutomationStatus::Active,
+            AutomationStatus::Paused,
+            Some("plan_judge_failed".to_string()),
+            None
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        notification_repo
+            .list(None, None, 10)
+            .await
+            .unwrap()
+            .notifications
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn transition_service_emits_after_successful_merge_metadata_cas() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new(
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
     let run = run(
         "run-1",
         AutomationRunStatus::Published,
@@ -376,8 +619,12 @@ async fn transition_service_records_explicit_agent_phase_start_time() {
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
     let run = run(
         "run-1",
         AutomationRunStatus::Provisioning,
@@ -417,8 +664,12 @@ async fn transition_service_clears_plan_pending_instructions_on_retry_start() {
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
     let mut run = run(
         "run-1",
         AutomationRunStatus::Pending,
@@ -457,8 +708,12 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
     let run = run(
         "run-1",
         AutomationRunStatus::Merged,
@@ -525,8 +780,12 @@ async fn transition_service_emits_after_successful_plan_judge_state_cas() {
         automation_repo.shared_state(),
     ));
     let emitter = Arc::new(RecordingEmitter::default());
-    let service =
-        AutomationTransitionService::new(automation_repo, run_repo.clone(), emitter.clone());
+    let service = AutomationTransitionService::new(
+        automation_repo,
+        run_repo.clone(),
+        emitter.clone(),
+        notification_service(),
+    );
     let run = run(
         "run-1",
         AutomationRunStatus::AwaitingPlanApproval,

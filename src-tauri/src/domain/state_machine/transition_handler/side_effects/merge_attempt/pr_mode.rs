@@ -1,3 +1,4 @@
+use super::super::super::merge_helpers::restore_github_auto_merge_after_pr_correction;
 use super::*;
 use crate::application::publish_resilience::push_publish_branch;
 use crate::domain::entities::plan_branch::PrPushStatus;
@@ -7,8 +8,6 @@ use crate::domain::state_machine::transition_handler::{
     resolve_plan_branch_pr_base, TaskCore,
 };
 use crate::domain::state_machine::{State, TransitionHandler};
-
-use super::super::super::merge_helpers::restore_github_auto_merge_after_pr_correction;
 
 impl<'a> TransitionHandler<'a> {
     /// PR-mode PendingMerge path (AD17).
