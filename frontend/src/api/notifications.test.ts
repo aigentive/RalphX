@@ -29,4 +29,12 @@ describe("notificationsApi", () => {
     expect(invoke).toHaveBeenNthCalledWith(2, "mark_all_notifications_read", { projectId: "project-1" });
     expect(invoke).toHaveBeenNthCalledWith(3, "get_unread_notification_count", { projectId: "project-1" });
   });
+
+  it("binds the raw attention count to the dock badge command", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+
+    await expect(notificationsApi.setDockBadgeCount(10)).resolves.toBeNull();
+
+    expect(invoke).toHaveBeenCalledWith("set_dock_badge_count", { count: 10 });
+  });
 });

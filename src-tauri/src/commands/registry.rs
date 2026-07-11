@@ -7,6 +7,7 @@ macro_rules! register_tauri_commands {
             greet,
             commands::health::health_check,
             commands::notification_commands::list_attention_items,
+            commands::notification_commands::set_dock_badge_count,
             commands::notification_commands::get_notification_settings,
             commands::notification_commands::update_notification_settings,
             commands::notification_commands::list_notifications,

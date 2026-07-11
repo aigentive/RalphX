@@ -1,7 +1,8 @@
 use tauri::Manager;
 
 use super::notification_commands::{
-    get_notification_settings, update_notification_settings, UpdateNotificationSettingsInput,
+    dock_badge_label, get_notification_settings, update_notification_settings,
+    UpdateNotificationSettingsInput,
 };
 use crate::application::AppState;
 
@@ -61,4 +62,11 @@ fn notification_settings_input_ignores_unknown_json_fields() {
 
     assert_eq!(input.desktop_enabled, Some(false));
     assert_eq!(input.focused_toasts_enabled, None);
+}
+
+#[test]
+fn dock_badge_label_uses_the_full_attention_count_and_clears_at_zero() {
+    assert_eq!(dock_badge_label(7), Some("7".to_owned()));
+    assert_eq!(dock_badge_label(10), Some("10".to_owned()));
+    assert_eq!(dock_badge_label(0), None);
 }

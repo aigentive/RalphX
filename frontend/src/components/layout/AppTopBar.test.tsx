@@ -4,8 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 import { AppTopBar } from "./AppTopBar";
+import { notificationsApi } from "@/api/notifications";
 import { useProjectStore } from "@/stores/projectStore";
 import type { Project } from "@/types/project";
+
+vi.mock("@/api/notifications", () => ({
+  notificationsApi: { setDockBadgeCount: vi.fn().mockResolvedValue(undefined) },
+}));
 
 // ProjectSelector and ThemeSelector are heavy children; stub them so the test
 // focuses on AppTopBar's breadcrumb + project-selector gating logic.
@@ -104,6 +109,38 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     renderTopBar({ attentionCount: 12 });
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
     expect(screen.getByRole("button", { name: /notifications.*12/i })).toBeInTheDocument();
+  });
+
+  it("syncs dock badge changes including zero without waiting for the invoke", () => {
+    vi.mocked(notificationsApi.setDockBadgeCount).mockReturnValue(new Promise<null>(() => {}));
+    const { rerender } = renderTopBar({ attentionCount: 17 });
+
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledWith(17);
+
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AppTopBar
+          currentView="ticketing"
+          attentionCount={17}
+          notificationsPanelOpen={false}
+          onToggleNotificationsPanel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AppTopBar
+          currentView="ticketing"
+          attentionCount={0}
+          notificationsPanelOpen={false}
+          onToggleNotificationsPanel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenLastCalledWith(0);
   });
 
   it("shows the unread-history dot only when the attention count is zero", () => {

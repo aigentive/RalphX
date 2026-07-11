@@ -6,6 +6,38 @@ use crate::domain::entities::NotificationSettings;
 use crate::domain::repositories::NotificationPage;
 use crate::AppState;
 
+pub(crate) fn dock_badge_label(count: u32) -> Option<String> {
+    (count > 0).then(|| count.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_badge(label: Option<String>) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSString;
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let app = NSApplication::sharedApplication(mtm);
+    let dock_tile = app.dockTile();
+    let label = label.as_deref().map(NSString::from_str);
+    dock_tile.setBadgeLabel(label.as_deref());
+}
+
+/// Mirrors the frontend-owned attention count to the macOS Dock badge.
+#[tauri::command]
+pub fn set_dock_badge_count(count: u32, app: tauri::AppHandle) -> Result<(), String> {
+    let label = dock_badge_label(count);
+
+    #[cfg(target_os = "macos")]
+    app.run_on_main_thread(move || set_macos_dock_badge(label))
+        .map_err(|error| error.to_string())?;
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, label);
+
+    Ok(())
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNotificationSettingsInput {

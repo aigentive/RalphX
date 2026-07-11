@@ -1,4 +1,4 @@
-import { typedInvoke } from "@/lib/tauri";
+import { TauriVoidSchema, typedInvoke } from "@/lib/tauri";
 import { z } from "zod";
 import {
   AttentionItemListSchema,
@@ -8,6 +8,8 @@ import {
 } from "@/types/notifications";
 
 export const notificationsApi = {
+  setDockBadgeCount: (count: number): Promise<null> =>
+    typedInvoke("set_dock_badge_count", { count }, TauriVoidSchema),
   listAttentionItems: (projectId?: string): Promise<AttentionItem[]> =>
     typedInvoke(
       "list_attention_items",

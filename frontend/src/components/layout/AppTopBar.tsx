@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { notificationsApi } from "@/api/notifications";
 import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { ProjectSelector } from "@/components/projects/ProjectSelector";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -49,6 +50,8 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "lg", label: "110%" },
   { value: "xl", label: "125%" },
 ];
+
+let lastDockBadgeCount: number | undefined;
 
 const PROJECT_SELECTOR_VIEWS = new Set<ViewType>([
   "ideation",
@@ -483,6 +486,14 @@ export function AppTopBar({
   );
   const notificationsLabel =
     attentionCount > 0 ? `Notifications · ${attentionCount} need attention` : "Notifications";
+
+  useEffect(() => {
+    if (lastDockBadgeCount === attentionCount) return;
+
+    lastDockBadgeCount = attentionCount;
+    void notificationsApi.setDockBadgeCount(attentionCount).catch(() => undefined);
+  }, [attentionCount]);
+
   const shouldShowProjectSelector =
     showProjectSelector && PROJECT_SELECTOR_VIEWS.has(currentView) && Boolean(onNewProject);
 
