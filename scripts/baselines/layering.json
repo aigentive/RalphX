@@ -1088,12 +1088,12 @@
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
         "target": "crate::application",
-        "text": "crate::application::TaskTransitionService::new("
+        "text": ") -> crate::application::TaskTransitionService {"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
         "target": "crate::application",
-        "text": "fn build_transition_service(app_state: &AppState) -> crate::application::TaskTransitionService {"
+        "text": "crate::application::TaskTransitionService::new("
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",
