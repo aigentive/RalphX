@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Ellipsis, RefreshCw, TriangleAlert, X } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 
 import { TaskReviewCard } from "@/components/reviews/TaskReviewCard";
 import { ReviewDetailModal } from "@/components/reviews/ReviewDetailModal";
@@ -16,6 +16,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
 import { useNotificationReadActions } from "@/hooks/useNotificationHistory";
+import { useTasksAwaitingReview } from "@/hooks/useReviews";
+import { taskKeys } from "@/hooks/useTasks";
+import { api } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { useProjectStore } from "@/stores/projectStore";
 import { useTaskStore } from "@/stores/taskStore";
@@ -171,7 +174,21 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
   const { markAllRead } = useNotificationReadActions();
   const openModal = useUiStore((state) => state.openModal);
   const projects = useProjectStore((state) => state.projects);
+  const activeProjectId = useProjectStore((state) => state.activeProjectId);
   const tasks = useTaskStore((state) => state.tasks);
+  const { allTasks: awaitingReviewTasks } = useTasksAwaitingReview(activeProjectId ?? "", { enabled: contentMounted });
+  const reviewTaskIds = useMemo(() => [...new Set(items.flatMap((item) => (
+    (item.category === "review_needed" || item.category === "review_escalated") && item.target.taskId
+      ? [item.target.taskId]
+      : []
+  )))], [items]);
+  const reviewTaskQueries = useQueries({
+    queries: reviewTaskIds.map((taskId) => ({
+      queryKey: taskKeys.detail(taskId),
+      queryFn: () => api.tasks.get(taskId),
+      enabled: contentMounted,
+    })),
+  });
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -188,6 +205,8 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
   }, [isOpen]);
 
   const groups = useMemo(() => GROUP_ORDER.map((group) => ({ group, items: items.filter((item) => ATTENTION_CATEGORY_MAPPING[item.category].group === group) })).filter(({ items: groupedItems }) => groupedItems.length > 0), [items]);
+  const awaitingReviewTasksById = useMemo(() => Object.fromEntries(awaitingReviewTasks.map((task) => [task.id, task])), [awaitingReviewTasks]);
+  const reviewTasksById = useMemo(() => Object.fromEntries(reviewTaskQueries.flatMap((query) => query.data ? [[query.data.id, query.data]] : [])), [reviewTaskQueries]);
 
   const openItem = useCallback((item: AttentionItem) => {
     void navigateNotification(item, queryClient, {
@@ -229,7 +248,9 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
       <ScrollArea className="min-h-0 flex-1">
         {activeTab === "history" ? <NotificationHistoryTab active={contentMounted} now={now} onOpen={openHistoryNotification} /> : !contentMounted || isLoading ? <SkeletonRows /> : isError && items.length === 0 ? <AttentionLoadError onRetry={() => void refetch()} /> : <>{isError && <p className="px-4 pt-3 text-xs" data-testid="attention-stale-indicator" style={{ color: "var(--text-muted)" }}>Showing saved notifications</p>}{groups.length === 0 ? <EmptyActionState /> : <div className="space-y-4 p-4">{groups.map(({ group, items: groupedItems }) => <div key={group} className="space-y-2"><p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "color-mix(in srgb, var(--text-secondary) 60%, transparent)" }}>{group} · {groupedItems.length}</p><div className="space-y-2">{groupedItems.map((item) => {
           const taskId = item.target.taskId;
-          const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId ? tasks[taskId] : undefined;
+          const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId
+            ? reviewTasksById[taskId] ?? awaitingReviewTasksById[taskId] ?? tasks[taskId]
+            : undefined;
           return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} /> : <AttentionItemRow key={item.id} item={item} now={now} onOpen={openItem} projectName={item.projectId ? projects[item.projectId]?.name : undefined} />;
         })}</div></div>)}</div>}</>}
       </ScrollArea>

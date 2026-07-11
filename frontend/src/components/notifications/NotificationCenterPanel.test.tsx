@@ -6,6 +6,8 @@ import { NotificationCenterPanel } from "./NotificationCenterPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
 import { useNotificationReadActions } from "@/hooks/useNotificationHistory";
+import { useTasksAwaitingReview } from "@/hooks/useReviews";
+import { api } from "@/lib/tauri";
 import { useTaskStore } from "@/stores/taskStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -15,6 +17,8 @@ import type { Project } from "@/types/project";
 
 vi.mock("@/hooks/useAttentionItems", () => ({ useAttentionItems: vi.fn() }));
 vi.mock("@/hooks/useNotificationHistory", () => ({ useNotificationReadActions: vi.fn() }));
+vi.mock("@/hooks/useReviews", () => ({ useTasksAwaitingReview: vi.fn() }));
+vi.mock("@/lib/tauri", () => ({ api: { tasks: { get: vi.fn() } } }));
 vi.mock("@/components/reviews/ReviewDetailModal", async () => {
   const React = await import("react");
   return {
@@ -37,9 +41,32 @@ const item: AttentionItem = {
   target: { kind: "task", taskId: "task-1" },
 };
 
+function awaitingReviewTasks(allTasks: Task[] = []): ReturnType<typeof useTasksAwaitingReview> {
+  return {
+    allTasks,
+    aiTasks: [],
+    humanTasks: [],
+    isLoading: false,
+    error: null,
+    isEmpty: allTasks.length === 0,
+    aiCount: 0,
+    humanCount: 0,
+    totalCount: allTasks.length,
+    refetch: vi.fn(),
+  };
+}
+
 function renderPanel(isOpen: boolean, onClose = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={queryClient}><TooltipProvider><NotificationCenterPanel isOpen={isOpen} onClose={onClose} /></TooltipProvider></QueryClientProvider>);
+}
+
+async function revealDeferredContent() {
+  await act(async () => {
+    vi.advanceTimersByTime(1);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 describe("NotificationCenterPanel first-paint behavior", () => {
@@ -51,15 +78,20 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
     vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
     vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markReadBatch: vi.fn(), markAllRead });
+    vi.mocked(useTasksAwaitingReview).mockReturnValue(awaitingReviewTasks());
+    vi.mocked(api.tasks.get).mockRejectedValue(new Error("Task not found"));
+    useTaskStore.setState({ tasks: {} });
+    useProjectStore.setState({ activeProjectId: "project-1" });
   });
 
-  afterEach(() => { useProjectStore.getState().setProjects([]); useUiStore.getState().closeModal(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  afterEach(() => { useProjectStore.getState().setProjects([]); useProjectStore.setState({ activeProjectId: null }); useTaskStore.setState({ tasks: {} }); useUiStore.getState().closeModal(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("renders the 400px shell and tab chrome synchronously on first open", () => {
     renderPanel(true);
     expect(screen.getByRole("complementary", { name: "Notifications" })).toBeVisible();
     expect(screen.getByRole("tab", { name: /needs action/i })).toBeVisible();
     expect(screen.getByTestId("notification-skeletons")).toBeVisible();
+    expect(useTasksAwaitingReview).toHaveBeenCalledWith("project-1", { enabled: false });
   });
 
   it("defers attention rows until after a frame and macrotask", () => {
@@ -67,6 +99,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     expect(screen.queryByTestId(`attention-item-${item.id}`)).not.toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(1); });
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
+    expect(useTasksAwaitingReview).toHaveBeenLastCalledWith("project-1", { enabled: true });
   });
 
   it("keeps project attention rows visible because mute only gates alert delivery", () => {
@@ -246,6 +279,94 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     act(() => { vi.advanceTimersByTime(1); });
     fireEvent.click(screen.getByTestId("review-button-task-review"));
     expect(screen.getByTestId("review-detail-modal")).toHaveTextContent("task-review");
+  });
+
+  it("renders a review card from awaiting-review query when the task store is empty", () => {
+    const reviewItem: AttentionItem = { ...item, id: "task:task-review:review", category: "review_needed", target: { kind: "task", taskId: "task-review" } };
+    const reviewTask: Task = {
+      id: "task-review", projectId: "project-1", category: "feature", title: "Review this", description: null,
+      priority: 1, internalStatus: "review_passed", needsReviewPoint: false, createdAt: "2026-07-10T10:00:00Z", updatedAt: "2026-07-10T10:00:00Z",
+      startedAt: null, completedAt: null, archivedAt: null, blockedReason: null, taskBranch: null, worktreePath: null, mergeCommitSha: null, metadata: null,
+    };
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+    vi.mocked(useTasksAwaitingReview).mockReturnValue(awaitingReviewTasks([reviewTask]));
+
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    expect(screen.getByTestId("task-review-card-task-review")).toBeVisible();
+    expect(screen.queryByTestId(`attention-item-${reviewItem.id}`)).not.toBeInTheDocument();
+  });
+
+  it("resolves a cross-project review card by task id when neither local fallback has the task", async () => {
+    const reviewItem: AttentionItem = {
+      ...item,
+      id: "task:task-other-project:review",
+      category: "review_needed",
+      projectId: "project-2",
+      target: { kind: "task", taskId: "task-other-project" },
+    };
+    const reviewTask: Task = {
+      id: "task-other-project", projectId: "project-2", category: "feature", title: "Review another project", description: null,
+      priority: 1, internalStatus: "review_passed", needsReviewPoint: false, createdAt: "2026-07-10T10:00:00Z", updatedAt: "2026-07-10T10:00:00Z",
+      startedAt: null, completedAt: null, archivedAt: null, blockedReason: null, taskBranch: null, worktreePath: null, mergeCommitSha: null, metadata: null,
+    };
+    let resolveTask: ((task: Task) => void) | undefined;
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+    vi.mocked(api.tasks.get).mockImplementation(() => new Promise<Task>((resolve) => { resolveTask = resolve; }));
+
+    renderPanel(true);
+    await revealDeferredContent();
+
+    expect(api.tasks.get).toHaveBeenCalledWith("task-other-project");
+    await act(async () => {
+      resolveTask?.(reviewTask);
+      await Promise.resolve();
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("task-review-card-task-other-project")).toBeVisible();
+    expect(screen.queryByTestId(`attention-item-${reviewItem.id}`)).not.toBeInTheDocument();
+  });
+
+  it("keeps a generic row when the review task id fetch fails and no fallback can resolve it", async () => {
+    const reviewItem: AttentionItem = { ...item, id: "task:missing-review:review", category: "review_needed", target: { kind: "task", taskId: "missing-review" } };
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+
+    renderPanel(true);
+    await revealDeferredContent();
+
+    expect(api.tasks.get).toHaveBeenCalledWith("missing-review");
+    expect(screen.getByTestId(`attention-item-${reviewItem.id}`)).toBeVisible();
+    expect(screen.queryByTestId("task-review-card-missing-review")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the generic attention row when no review task is available", () => {
+    const reviewItem: AttentionItem = { ...item, id: "task:task-review:review", category: "review_needed", target: { kind: "task", taskId: "task-review" } };
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    expect(screen.getByTestId(`attention-item-${reviewItem.id}`)).toBeVisible();
+    expect(screen.queryByTestId("task-review-card-task-review")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the task store when the awaiting-review query is empty", () => {
+    const reviewItem: AttentionItem = { ...item, id: "task:task-review:review", category: "review_needed", target: { kind: "task", taskId: "task-review" } };
+    const reviewTask: Task = {
+      id: "task-review", projectId: "project-1", category: "feature", title: "Review this", description: null,
+      priority: 1, internalStatus: "review_passed", needsReviewPoint: false, createdAt: "2026-07-10T10:00:00Z", updatedAt: "2026-07-10T10:00:00Z",
+      startedAt: null, completedAt: null, archivedAt: null, blockedReason: null, taskBranch: null, worktreePath: null, mergeCommitSha: null, metadata: null,
+    };
+    useTaskStore.setState({ tasks: { [reviewTask.id]: reviewTask } });
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    expect(screen.getByTestId("task-review-card-task-review")).toBeVisible();
+    expect(screen.queryByTestId(`attention-item-${reviewItem.id}`)).not.toBeInTheDocument();
   });
 
   it("re-raises the existing permission dialog with the backend request id", () => {

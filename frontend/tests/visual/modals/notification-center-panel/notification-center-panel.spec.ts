@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { NotificationCenterPanelPage } from "../../../pages/modals/notification-center-panel.page";
-import { setupApp } from "../../../fixtures/setup.fixtures";
+import { seedReviewAttentionTask, setupApp } from "../../../fixtures/setup.fixtures";
 
 /**
  * Visual regression tests for the notification center.
@@ -39,13 +39,7 @@ test.describe("NotificationCenterPanel", () => {
 
   test("displays the needs-action empty state when no notifications are pending", async () => {
     await reviewsPanel.openPanel();
-
-    // Check for either empty state or review cards in mock mode.
-    const hasEmptyState = await reviewsPanel.emptyState.isVisible().catch(() => false);
-    const hasTaskCards = (await reviewsPanel.getTaskCardCount()) > 0;
-
-    // One of these should be true
-    expect(hasEmptyState || hasTaskCards).toBe(true);
+    await expect(reviewsPanel.emptyState).toBeVisible();
   });
 
   test("allows switching between Needs action and History tabs", async () => {
@@ -63,6 +57,7 @@ test.describe("NotificationCenterPanel", () => {
   });
 
   test("matches snapshot", async ({ page }) => {
+    await seedReviewAttentionTask(page);
     await reviewsPanel.openPanel();
 
     // Wait for animations to complete

@@ -1,5 +1,7 @@
 import { Page } from "@playwright/test";
 import type { FeatureFlags } from "@/types/feature-flags";
+import type { MockNotification } from "@/api-mock/store";
+import type { Task } from "@/types/task";
 
 const STANDALONE_IDEATION_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
@@ -148,6 +150,44 @@ export async function setupNotificationsPanel(page: Page) {
   await page.click('[data-testid="reviews-toggle"]');
   // Wait for notification center to load
   await page.waitForSelector('[data-testid="notifications-panel"]', { timeout: 10000 });
+}
+
+/** Seeds a human-review task through the same mock store that attention queries read. */
+export async function seedReviewAttentionTask(page: Page, taskId = "task-mock-6") {
+  await page.evaluate(async (reviewTaskId) => {
+    const { useTaskStore } = await import("/src/stores/taskStore");
+    const testWindow = window as Window & {
+      __mockStore?: { tasks: Map<string, Task> };
+      __queryClient?: { invalidateQueries(filters?: { queryKey: readonly string[] }): Promise<unknown> };
+    };
+    const task = testWindow.__mockStore?.tasks.get(reviewTaskId);
+    if (!task) {
+      throw new Error(`Mock review task ${reviewTaskId} is unavailable`);
+    }
+
+    const reviewTask = { ...task, internalStatus: "review_passed" as const, updatedAt: new Date().toISOString() };
+    testWindow.__mockStore?.tasks.set(reviewTaskId, reviewTask);
+    useTaskStore.getState().addTask(reviewTask);
+    await testWindow.__queryClient?.invalidateQueries({ queryKey: ["attention"] });
+  }, taskId);
+}
+
+/** Seeds durable notification rows for a visual state and invalidates their history queries. */
+export async function seedMockNotificationHistory(page: Page, notifications: readonly MockNotification[]) {
+  await page.evaluate(async (notificationRows) => {
+    const mockStore = window.__mockStore;
+    if (!mockStore) {
+      throw new Error(
+        "Mock store is unavailable; interact with the app first so a mock API handler initializes it before seeding notification history.",
+      );
+    }
+
+    mockStore.notifications.clear();
+    notificationRows.forEach((notification) => {
+      mockStore.notifications.set(notification.id, notification);
+    });
+    await window.__queryClient?.invalidateQueries({ queryKey: ["notifications"] });
+  }, notifications);
 }
 
 export async function setupEmptyKanban(page: Page) {

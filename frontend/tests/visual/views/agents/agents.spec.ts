@@ -1224,7 +1224,7 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("commit publish pane shows git auth repair actions", async ({ page }) => {
+  test("commit publish pane retains its direct git auth repair actions", async ({ page }) => {
     await setupAgentsView(page);
     await seedGitAuthRepairIssue(page);
     await seedAgentsScenario(page);
@@ -1236,6 +1236,7 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("git-auth-repair-panel")).toBeVisible();
     await expect(page.getByTestId("git-auth-switch-ssh")).toBeVisible();
     await expect(page.getByTestId("git-auth-setup-gh")).toBeVisible();
+    await expect(page.getByTestId("git-auth-startup-toast")).toHaveCount(0);
 
     await expect(page).toHaveScreenshot("agents-publish-git-auth-repair.png", {
       fullPage: false,

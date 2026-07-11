@@ -50,7 +50,8 @@ export { mockPlanBranchApi } from "./plan-branch";
 export { mockPlanApi } from "./plan";
 export { mockAgentIssueReportApi } from "./agent-issue-report";
 export { mockAutomationsApi } from "./automations";
-export { getStore, resetStore } from "./store";
+export { clearMockNotifications, getStore, resetStore, seedMockNotifications } from "./store";
+export type { MockNotification } from "./store";
 
 /**
  * Aggregate mock API object matching the structure of the real API

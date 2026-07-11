@@ -13,6 +13,7 @@ import {
   mockGetGitDefaultBranch,
 } from "@/api-mock/projects";
 import { mockTasksApi } from "@/api-mock/tasks";
+import { getStore } from "@/api-mock/store";
 import { mockTaskGraphApi } from "@/api-mock/task-graph";
 import {
   mockCreateConversation,
@@ -48,6 +49,8 @@ import type {
   ChatTimelineItemResponse,
 } from "@/api/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
+import type { NotificationCategory } from "@/types/notifications";
+import type { InternalStatus, Task } from "@/types/task";
 
 const mockReviewSettings = {
   require_human_review: false,
@@ -954,106 +957,52 @@ const mockNotificationSettings = {
   muted_project_ids: [],
 };
 
-const MOCK_NOTIFICATION_PROJECT_ID = "project-mock-1";
+const TASK_ATTENTION_CATEGORIES: Partial<Record<InternalStatus, NotificationCategory>> = {
+  review_passed: "review_needed",
+  escalated: "review_escalated",
+  qa_failed: "qa_failed",
+  merge_conflict: "merge_conflict",
+  merge_incomplete: "merge_incomplete",
+  failed: "task_failed",
+};
 
-/** Keep relative-time labels stable in visual snapshots without stale fixed dates. */
-function mockNotificationTimestamp(now: number, minutesAgo: number): string {
-  return new Date(now - minutesAgo * 60_000).toISOString();
+function taskAttentionCategory(task: Task): NotificationCategory | undefined {
+  if (task.internalStatus === "blocked") {
+    return task.blockedReason?.startsWith("human:") ? "task_blocked" : undefined;
+  }
+  return TASK_ATTENTION_CATEGORIES[task.internalStatus];
 }
 
 function mockAttentionItems() {
-  const now = Date.now();
-  return [
-    {
-      id: "permission:mock-tool-access",
-      category: "permission_request",
-      title: "Permission needed: Read repository status",
-      detail: "The implementation agent needs to inspect the current working tree.",
-      projectId: MOCK_NOTIFICATION_PROJECT_ID,
-      createdAt: mockNotificationTimestamp(now, 1),
-      target: { kind: "none" },
-    },
-    {
-      id: "review:task-mock-6",
-      category: "review_needed",
-      title: "Review Passed Task is ready for review",
-      detail: "The automated review passed and is ready for human approval.",
-      projectId: MOCK_NOTIFICATION_PROJECT_ID,
-      createdAt: mockNotificationTimestamp(now, 120),
-      target: {
-        kind: "task",
-        projectId: MOCK_NOTIFICATION_PROJECT_ID,
-        taskId: "task-mock-6",
-      },
-    },
-    {
-      id: "automation-plan:mock-1",
-      category: "automation_plan_approval",
-      title: "Nightly quality sweep plan needs approval",
-      detail: null,
-      projectId: MOCK_NOTIFICATION_PROJECT_ID,
-      createdAt: mockNotificationTimestamp(now, 180),
-      target: {
-        kind: "automation_run",
-        projectId: MOCK_NOTIFICATION_PROJECT_ID,
-        automationId: "automation-mock-1",
-        runId: "automation-run-mock-1",
-      },
-    },
-  ];
+  return Array.from(getStore().tasks.values()).flatMap((task) => {
+    const category = taskAttentionCategory(task);
+    return category === undefined ? [] : [{
+      id: `task:${task.id}:${category}`,
+      category,
+      title: task.title,
+      detail: task.description,
+      projectId: task.projectId,
+      createdAt: task.updatedAt,
+      target: { kind: "task" as const, projectId: task.projectId, taskId: task.id },
+    }];
+  });
 }
 
-function mockNotificationPage(projectId: string | undefined) {
-  const now = Date.now();
-  const notifications = [
-    {
-      id: "notification-mock-review-ready",
-      createdAt: mockNotificationTimestamp(now, 180),
-      projectId: MOCK_NOTIFICATION_PROJECT_ID,
-      category: "review_needed",
-      severity: "action_required",
-      title: "Review Passed Task is ready for review",
-      body: "The automated review passed and is ready for human approval.",
-      target: {
-        kind: "task",
-        projectId: MOCK_NOTIFICATION_PROJECT_ID,
-        taskId: "task-mock-6",
-      },
-      dedupeKey: "review:task-mock-6",
-      readAt: null,
-    },
-    {
-      id: "notification-mock-permission",
-      createdAt: mockNotificationTimestamp(now, 1_620),
-      projectId: MOCK_NOTIFICATION_PROJECT_ID,
-      category: "permission_request",
-      severity: "warning",
-      title: "Permission request resolved",
-      body: null,
-      target: { kind: "none" },
-      dedupeKey: null,
-      readAt: mockNotificationTimestamp(now, 1_500),
-    },
-    {
-      id: "notification-mock-automation",
-      createdAt: mockNotificationTimestamp(now, 3_060),
-      projectId: null,
-      category: "automation_run_completed",
-      severity: "info",
-      title: "Automation run completed",
-      body: null,
-      target: { kind: "none" },
-      dedupeKey: null,
-      readAt: null,
-    },
-  ];
+function mockNotificationPage(args: Record<string, unknown>) {
+  const projectId = args.projectId as string | undefined;
+  const offset = typeof args.cursor === "string" ? Number.parseInt(args.cursor, 10) : 0;
+  const limit = typeof args.limit === "number" ? args.limit : 50;
+  const notifications = Array.from(getStore().notifications.values())
+    .filter((notification) => projectId === undefined || notification.projectId === projectId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const start = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+  const page = notifications.slice(start, start + limit);
+  const nextOffset = start + page.length;
 
   return {
-    notifications: projectId === undefined
-      ? notifications
-      : notifications.filter((notification) => notification.projectId === projectId),
-    cursor: null,
-    hasMore: false,
+    notifications: page,
+    cursor: nextOffset < notifications.length ? String(nextOffset) : null,
+    hasMore: nextOffset < notifications.length,
   };
 }
 
@@ -2045,11 +1994,30 @@ const commandHandlers: Record<
       (item) => projectId === undefined || item.projectId === projectId,
     );
   },
-  get_unread_notification_count: async () => 2,
-  list_notifications: async (args) =>
-    mockNotificationPage(args.projectId as string | undefined),
-  mark_notification_read: async () => null,
-  mark_all_notifications_read: async () => null,
+  get_unread_notification_count: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    return Array.from(getStore().notifications.values()).filter(
+      (notification) => notification.readAt === null && (projectId === undefined || notification.projectId === projectId),
+    ).length;
+  },
+  list_notifications: async (args) => mockNotificationPage(args),
+  mark_notification_read: async (args) => {
+    const notification = getStore().notifications.get(args.id as string);
+    if (notification) {
+      getStore().notifications.set(notification.id, { ...notification, readAt: new Date().toISOString() });
+    }
+    return null;
+  },
+  mark_all_notifications_read: async (args) => {
+    const projectId = args.projectId as string | undefined;
+    const store = getStore();
+    Array.from(store.notifications.values()).forEach((notification) => {
+      if (notification.readAt === null && (projectId === undefined || notification.projectId === projectId)) {
+        store.notifications.set(notification.id, { ...notification, readAt: new Date().toISOString() });
+      }
+    });
+    return null;
+  },
   set_dock_badge_count: async () => null,
   get_notification_settings: async () => mockNotificationSettings,
   update_notification_settings: async () => mockNotificationSettings,

@@ -1,5 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
+import { getStore, resetStore, seedMockNotifications } from "@/api-mock/store";
+
 import { invoke } from "./tauri-api-core";
 
 const notificationSettings = {
@@ -21,13 +23,30 @@ describe("notification command mocks", () => {
 
   afterEach(() => {
     warn.mockClear();
+    resetStore();
   });
 
   afterAll(() => {
     warn.mockRestore();
   });
 
-  it("returns the seeded review attention item and respects project filtering", async () => {
+  it("derives attention items from actionable seeded tasks and respects project filtering", async () => {
+    const store = getStore();
+    const seededStates = [
+      ["task-mock-1", "review_passed", null, "review_needed"],
+      ["task-mock-2", "escalated", null, "review_escalated"],
+      ["task-mock-3", "qa_failed", null, "qa_failed"],
+      ["task-mock-4", "merge_conflict", null, "merge_conflict"],
+      ["task-mock-5", "merge_incomplete", null, "merge_incomplete"],
+      ["task-mock-6", "failed", null, "task_failed"],
+      ["task-mock-7", "blocked", "human:Need approval", "task_blocked"],
+    ] as const;
+    seededStates.forEach(([id, internalStatus, blockedReason]) => {
+      const task = store.tasks.get(id);
+      if (!task) throw new Error(`Expected ${id} to exist`);
+      store.tasks.set(id, { ...task, internalStatus, blockedReason });
+    });
+
     const allItems = await invoke<Array<{ id: string; projectId: string | null; target: { taskId?: string } }>>(
       "list_attention_items",
       {},
@@ -41,20 +60,73 @@ describe("notification command mocks", () => {
       { projectId: "project-other" },
     );
 
-    expect(allItems).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: "review_needed",
-        target: { kind: "task", projectId: "project-mock-1", taskId: "task-mock-6" },
-      }),
-      expect.objectContaining({ category: "permission_request" }),
-      expect.objectContaining({ category: "automation_plan_approval" }),
-    ]));
-    expect(projectItems).toHaveLength(3);
+    expect(allItems).toEqual(seededStates.map(([taskId, , , category]) => expect.objectContaining({
+      id: `task:${taskId}:${category}`,
+      category,
+      target: { kind: "task", projectId: "project-mock-1", taskId },
+    })));
+    expect(projectItems).toHaveLength(seededStates.length);
     expect(otherProjectItems).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("handles notification history, read, badge, and settings commands", async () => {
+  it("maps only review_passed, not approved, to review-needed attention", async () => {
+    const store = getStore();
+    const approvedTask = store.tasks.get("task-mock-6");
+    const reviewPassedTask = store.tasks.get("task-mock-7");
+    if (!approvedTask || !reviewPassedTask) throw new Error("Expected review attention fixtures");
+
+    store.tasks.set(approvedTask.id, { ...approvedTask, internalStatus: "approved" });
+    store.tasks.set(reviewPassedTask.id, { ...reviewPassedTask, internalStatus: "review_passed" });
+
+    const items = await invoke<Array<{ category: string; target: { taskId?: string } }>>(
+      "list_attention_items",
+      {},
+    );
+
+    expect(items).not.toContainEqual(expect.objectContaining({ target: expect.objectContaining({ taskId: approvedTask.id }) }));
+    expect(items).toContainEqual(expect.objectContaining({
+      category: "review_needed",
+      target: expect.objectContaining({ taskId: reviewPassedTask.id }),
+    }));
+  });
+
+  it("defaults notification history and unread counts to empty", async () => {
+    await expect(invoke("list_attention_items", {})).resolves.toEqual([]);
+    await expect(invoke("list_notifications", {})).resolves.toEqual({
+      notifications: [], cursor: null, hasMore: false,
+    });
+    await expect(invoke("get_unread_notification_count", {})).resolves.toBe(0);
+  });
+
+  it("reads seeded notification history, tracks unread rows, and respects project filtering", async () => {
+    seedMockNotifications([
+      {
+        id: "notification-mock-git-auth",
+        createdAt: "2026-07-11T10:00:00.000Z",
+        projectId: null,
+        category: "git_auth_preflight",
+        severity: "warning",
+        title: "Git authentication needs attention",
+        body: "1 project blocked by Git or GitHub authentication",
+        target: { kind: "none" },
+        dedupeKey: "git-auth-preflight",
+        readAt: null,
+      },
+      {
+        id: "notification-mock-read",
+        createdAt: "2026-07-11T09:00:00.000Z",
+        projectId: "project-mock-1",
+        category: "info",
+        severity: "info",
+        title: "Mock notification",
+        body: null,
+        target: { kind: "none" },
+        dedupeKey: null,
+        readAt: "2026-07-11T09:05:00.000Z",
+      },
+    ]);
+
     const page = await invoke<{ notifications: Array<{ id: string; readAt: string | null }>; cursor: string | null; hasMore: boolean }>(
       "list_notifications",
       {},
@@ -62,17 +134,18 @@ describe("notification command mocks", () => {
     const unreadCount = await invoke<number>("get_unread_notification_count", {});
     const settings = await invoke<typeof notificationSettings>("get_notification_settings", {});
 
-    await expect(invoke("mark_notification_read", { id: page.notifications[0]?.id })).resolves.toBeNull();
+    await expect(invoke("mark_notification_read", { id: "notification-mock-git-auth" })).resolves.toBeNull();
     await expect(invoke("mark_all_notifications_read", { projectId: "project-mock-1" })).resolves.toBeNull();
     await expect(invoke("set_dock_badge_count", { count: unreadCount })).resolves.toBeNull();
     await expect(invoke("update_notification_settings", { input: { focusedToastsEnabled: false } })).resolves.toEqual(notificationSettings);
 
     expect(page).toMatchObject({ cursor: null, hasMore: false });
     expect(page.notifications).toEqual(expect.arrayContaining([
-      expect.objectContaining({ readAt: null }),
-      expect.objectContaining({ readAt: expect.any(String) }),
+      expect.objectContaining({ id: "notification-mock-git-auth", readAt: null }),
+      expect.objectContaining({ id: "notification-mock-read", readAt: expect.any(String) }),
     ]));
-    expect(unreadCount).toBe(2);
+    expect(unreadCount).toBe(1);
+    await expect(invoke("get_unread_notification_count", {})).resolves.toBe(0);
     expect(settings).toEqual(notificationSettings);
     expect(warn).not.toHaveBeenCalled();
   });
