@@ -818,15 +818,20 @@ describe("ChatMessageList controller integration", () => {
     expect(scrollBy).toHaveBeenCalledExactlyOnceWith({ left: 4, top: 30, behavior: "auto" });
   });
 
-  it("ends a cancelled pointer session before an internal bottom clamp scroll", () => {
+  it("keeps following growth after a cancelled pointer session and internal bottom clamp scroll", () => {
     renderList();
     const scroller = primeAtBottom();
+    const totalListHeightChanged = callback<(height: number) => void>("totalListHeightChanged");
 
     fireEvent.pointerDown(scroller);
     fireEvent.pointerCancel(scroller);
     setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 900, scrollTop: 400 });
     fireEvent.scroll(scroller);
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_100, scrollTop: 400 });
+    act(() => totalListHeightChanged(1_100));
+    flushAnimationFrames();
 
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 600 }));
     expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
   });
 

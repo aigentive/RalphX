@@ -230,7 +230,6 @@ interface IntegratedChatPanelProps {
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
-  /** Whether ResizeObserver-driven below-transcript chrome changes belong to the visible runtime. */
   renderComposer?: (
     props: IntegratedChatComposerRenderProps,
   ) => React.ReactNode;

@@ -296,6 +296,24 @@ describe("ChatScrollController", () => {
     expect(harness.controller.getState()).toBe("pinned");
   });
 
+  it("resumes a returning descent after prepend settlement cancels its queued pin", () => {
+    const harness = createHarness(createElement({ scrollTop: 0 }));
+    attach(harness);
+    harness.controller.notifyWheel(-1, false);
+    harness.element.setGeometry({ scrollTop: 0 });
+    harness.controller.notifyScroll();
+    harness.scrollCalls.length = 0;
+
+    harness.controller.scrollToBottomClicked();
+    harness.controller.notifyPrepend();
+    expect(harness.pendingFrames()).toBe(1);
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toEqual([{ index: 9, align: "end", behavior: "auto" }]);
+    expect(harness.element.scrollTop).toBe(500);
+    expect(harness.controller.getState()).toBe("pinned");
+  });
+
   it("closes an oscillating prepend epoch at the frame cap so growth can pin again", () => {
     const harness = createHarness();
     attach(harness);
@@ -693,13 +711,13 @@ describe("ChatScrollController", () => {
     expect(harness.scrollCalls).toHaveLength(0);
   });
 
-  it("clears prepend state on detach so a replacement scroller receives its attach pin", () => {
+  it("ignores stale post-detach prepends so a replacement scroller receives its attach pin", () => {
     const harness = createHarness();
     attach(harness);
     harness.scrollCalls.length = 0;
 
-    harness.controller.notifyPrepend();
     harness.controller.detach();
+    harness.controller.notifyPrepend();
     harness.controller.attach(harness.element);
     harness.flushFrames();
 

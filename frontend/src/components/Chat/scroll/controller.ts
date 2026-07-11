@@ -126,7 +126,12 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     jumpSettleScrollTop = null;
     jumpSettleFrameCount = 0;
     suppressFreeBottomReentry = false;
-    if (activeIntent && typeof activeIntent.target === "object" && "offset" in activeIntent.target) {
+    if (
+      activeIntent
+      && typeof activeIntent.target === "object"
+      && "offset" in activeIntent.target
+      && !("anchor" in activeIntent.target)
+    ) {
       activeIntent = null;
     }
   };
@@ -238,6 +243,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       if (state !== "free") beginBottomIntent();
       debug("prepend-settled");
       updateVisualBottom();
+      if (state === "returning") schedulePin("prepend-settled-returning", "auto");
     });
   };
 
@@ -279,6 +285,10 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   return {
     attach(el) {
       detached = false;
+      cancelFrame(prependFrame);
+      prependFrame = null;
+      prependEpoch = false;
+      prependSettleFrameCount = 0;
       attachedElement = el;
       previousScrollTop = el.scrollTop;
       zeroSizeEpoch = el.clientHeight === 0;
@@ -411,6 +421,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     },
 
     notifyPrepend() {
+      if (detached) return;
       prependEpoch = true;
       prependSettleFrameCount = 0;
       cancelPendingPin();
