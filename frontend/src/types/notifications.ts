@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const OptionalStringSchema = z.string().nullish().transform((value) => value ?? undefined);
+
 export const NotificationCategorySchema = z.enum([
   "review_needed", "review_escalated", "qa_failed", "merge_conflict",
   "merge_incomplete", "task_failed", "task_blocked", "task_stuck",
@@ -30,32 +32,38 @@ export const AttentionItemSchema = z.object({
   id: z.string(),
   category: AttentionCategorySchema,
   title: z.string(),
-  detail: z.string().optional(),
-  projectId: z.string().optional(),
-  createdAt: z.string().optional(),
+  detail: OptionalStringSchema,
+  projectId: OptionalStringSchema,
+  createdAt: OptionalStringSchema,
   target: NotificationTargetSchema,
 });
 
 export const AttentionItemListSchema = z.array(AttentionItemSchema);
 
-export const NotificationSeveritySchema = z.enum(["action_required", "warning", "info"]);
+const NotificationSeverityValueSchema = z.enum(["action_required", "warning", "info"]);
+
+/** New backend severities degrade to a neutral row until this UI gains a mapping. */
+export const NotificationSeveritySchema = z.string().transform((value): z.infer<typeof NotificationSeverityValueSchema> =>
+  NotificationSeverityValueSchema.safeParse(value).data ?? "info",
+);
 
 /** Durable history row emitted by the notification service. */
 export const NotificationSchema = z.object({
   id: z.string(),
   createdAt: z.string(),
-  projectId: z.string().optional(),
+  projectId: OptionalStringSchema,
   category: AttentionCategorySchema,
   severity: NotificationSeveritySchema,
   title: z.string(),
-  body: z.string().optional(),
+  body: OptionalStringSchema,
   target: NotificationTargetSchema,
-  readAt: z.string().optional(),
+  dedupeKey: OptionalStringSchema,
+  readAt: OptionalStringSchema,
 });
 
 export const NotificationPageSchema = z.object({
   notifications: z.array(NotificationSchema),
-  cursor: z.string().optional(),
+  cursor: OptionalStringSchema,
   hasMore: z.boolean(),
 });
 
