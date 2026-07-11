@@ -205,6 +205,7 @@ pub fn build_http_app_state(
     let shared_internal_event_bus = app_state.internal_event_bus.clone();
     let shared_app_paths = app_state.app_paths.clone();
     let shared_window_focus_state = Arc::clone(&app_state.window_focus_state);
+    let shared_notification_service_cache = Arc::clone(&app_state.notification_service_cache);
     let mut http_app_state_inner = AppState::new_production_shared_with_paths_and_events(
         app_handle,
         shared_db_conn,
@@ -223,8 +224,9 @@ pub fn build_http_app_state(
     http_app_state_inner.streaming_state_cache = app_state.streaming_state_cache.clone();
     http_app_state_inner.webhook_publisher = app_state.webhook_publisher.clone();
     http_app_state_inner.session_merge_locks = Arc::clone(&app_state.session_merge_locks);
-    // INVARIANT: both AppStates must observe the same native focus transitions.
+    // INVARIANT: both AppStates share native focus transitions and notification coalescing.
     http_app_state_inner.window_focus_state = shared_window_focus_state;
+    http_app_state_inner.notification_service_cache = shared_notification_service_cache;
     // INVARIANT: notification_repo and notification_settings_repo must stay on this shared
     // connection; a per-connection refactor would silently split notification storage.
     Ok(Arc::new(http_app_state_inner))

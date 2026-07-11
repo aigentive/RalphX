@@ -401,6 +401,49 @@ async fn app_state_notification_service_coalesces_records_across_separate_caller
 }
 
 #[tokio::test]
+async fn notification_service_cache_is_shared_across_tauri_and_http_app_states() {
+    let tauri_state = AppState::new_test();
+    let mut http_state = AppState::new_test();
+    http_state.notification_service_cache = Arc::clone(&tauri_state.notification_service_cache);
+
+    let notifier = Arc::new(RecordingDesktopNotifier::default());
+    let (service, _, _) = desktop_service(
+        NotificationSettings::default(),
+        Arc::clone(&tauri_state.window_focus_state),
+        notifier.clone(),
+        StdDuration::from_millis(10),
+    )
+    .await;
+    tauri_state.install_notification_service_for_test(Arc::new(service));
+
+    let tauri_service = tauri_state.notification_service();
+    let http_service = http_state.notification_service();
+    assert!(Arc::ptr_eq(&tauri_service, &http_service));
+
+    for (index, service) in [&tauri_service, &http_service, &tauri_service]
+        .into_iter()
+        .enumerate()
+    {
+        service
+            .record_ephemeral(notification_for(
+                [
+                    NotificationCategory::ReviewNeeded,
+                    NotificationCategory::PermissionRequest,
+                    NotificationCategory::MergeConflict,
+                ][index],
+                NotificationSeverity::ActionRequired,
+                None,
+            ))
+            .await;
+    }
+    settle_desktop_dispatch().await;
+
+    let sent = notifier.0.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "3 items need your attention");
+}
+
+#[tokio::test]
 async fn app_state_pre_handle_notification_service_does_not_block_later_dispatch_installation() {
     let state = AppState::new_test();
     let early_service = state.notification_service();

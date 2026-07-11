@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
 use tracing::{error, info};
 
+use crate::application::permission_state::is_within_permission_request_ttl;
 use crate::domain::repositories::QuestionRepository;
 
 /// Answer provided by the user in the UI
@@ -134,7 +135,12 @@ impl QuestionState {
         &self,
     ) -> crate::error::AppResult<Vec<PendingQuestionInfo>> {
         if let Some(repo) = &self.repo {
-            let mut pending = repo.get_pending().await?;
+            let mut pending: Vec<_> = repo
+                .get_pending()
+                .await?
+                .into_iter()
+                .filter(|question| is_within_permission_request_ttl(&question.created_at))
+                .collect();
             let durable_request_ids: HashSet<_> = pending
                 .iter()
                 .map(|question| question.request_id.clone())
@@ -143,7 +149,10 @@ impl QuestionState {
             pending.extend(
                 live_pending
                     .values()
-                    .filter(|question| !durable_request_ids.contains(&question.info.request_id))
+                    .filter(|question| {
+                        is_within_permission_request_ttl(&question.info.created_at)
+                            && !durable_request_ids.contains(&question.info.request_id)
+                    })
                     .map(|question| question.info.clone()),
             );
             return Ok(pending);
@@ -153,6 +162,7 @@ impl QuestionState {
             .lock()
             .await
             .values()
+            .filter(|question| is_within_permission_request_ttl(&question.info.created_at))
             .map(|question| question.info.clone())
             .collect())
     }

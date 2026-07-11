@@ -326,6 +326,7 @@ mod with_repo {
     use super::*;
     use crate::domain::repositories::QuestionRepository;
     use crate::infrastructure::memory::MemoryQuestionRepository;
+    use chrono::{Duration, Utc};
     use std::sync::Arc;
 
     fn make_state_with_repo() -> (QuestionState, Arc<MemoryQuestionRepository>) {
@@ -972,7 +973,7 @@ mod with_repo {
             batch_index: None,
             batch_total: None,
             metadata: None,
-            created_at: "2026-07-11T00:00:00Z".to_string(),
+            created_at: Utc::now().to_rfc3339(),
         };
         repo.create_pending(&durable).await.unwrap();
         let state = QuestionState::with_repo(repo);
@@ -1008,6 +1009,52 @@ mod with_repo {
             std::collections::HashSet::from(["durable-question", "live-question"])
         );
         assert_eq!(pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn strict_pending_read_excludes_expired_questions_and_keeps_fresh_entries() {
+        let repo = Arc::new(MemoryQuestionRepository::new());
+        let expired = PendingQuestionInfo {
+            request_id: "expired-question".to_string(),
+            session_id: "session-expired".to_string(),
+            question: "Expired question?".to_string(),
+            header: None,
+            options: vec![],
+            multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: None,
+            created_at: (Utc::now() - Duration::minutes(6)).to_rfc3339(),
+        };
+        let fresh = PendingQuestionInfo {
+            request_id: "fresh-question".to_string(),
+            session_id: "session-fresh".to_string(),
+            question: "Fresh question?".to_string(),
+            header: None,
+            options: vec![],
+            multi_select: false,
+            allow_skip: true,
+            batch_index: None,
+            batch_total: None,
+            metadata: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        repo.create_pending(&expired).await.unwrap();
+        repo.create_pending(&fresh).await.unwrap();
+
+        let request_ids: std::collections::HashSet<_> = QuestionState::with_repo(repo)
+            .get_pending_info_strict()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|question| question.request_id)
+            .collect();
+
+        assert_eq!(
+            request_ids,
+            std::collections::HashSet::from([fresh.request_id])
+        );
     }
 
     #[tokio::test]

@@ -281,9 +281,9 @@ pub struct AppState {
     pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
     /// Shared native window-focus signal used by desktop notification delivery.
     pub window_focus_state: Arc<WindowFocusState>,
-    /// Lazily initialized desktop dispatch service for this AppState.
+    /// Shared lazily initialized desktop dispatch service for paired AppStates.
     /// Pre-AppHandle calls intentionally do not populate this cache, so later calls can use Tauri.
-    notification_service_cache: Arc<OnceLock<Arc<NotificationService>>>,
+    pub(crate) notification_service_cache: Arc<OnceLock<Arc<NotificationService>>>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories

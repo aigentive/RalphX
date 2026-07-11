@@ -1,7 +1,7 @@
 // Permission state for handling UI-based permission approvals
 // Used by the permission bridge system to coordinate between MCP tools and frontend
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -40,6 +40,14 @@ pub struct PendingPermissionInfo {
 
 fn default_created_at() -> String {
     Utc::now().to_rfc3339()
+}
+
+pub(crate) fn is_within_permission_request_ttl(created_at: &str) -> bool {
+    let Ok(created_at) = DateTime::parse_from_rfc3339(created_at) else {
+        return false;
+    };
+    let ttl = chrono::Duration::seconds(PERMISSION_REQUEST_TTL.as_secs() as i64);
+    created_at.with_timezone(&Utc) + ttl > Utc::now()
 }
 
 /// A pending permission request with its signaling channel
@@ -87,21 +95,45 @@ impl PermissionState {
     /// Load pending requests for a derived, fail-closed read.
     pub async fn get_pending_info_strict(&self) -> AppResult<Vec<PendingPermissionInfo>> {
         if let Some(repo) = &self.repo {
-            let mut pending = repo.get_pending().await?;
+            let mut pending: Vec<_> = repo
+                .get_pending()
+                .await?
+                .into_iter()
+                .filter(|permission| is_within_permission_request_ttl(&permission.created_at))
+                .collect();
+            let live_pending = self.pending.lock().await;
+            let resolved_live_request_ids: HashSet<_> = live_pending
+                .iter()
+                .filter(|(_, permission)| permission.sender.borrow().is_some())
+                .map(|(request_id, _)| request_id.clone())
+                .collect();
+            pending
+                .retain(|permission| !resolved_live_request_ids.contains(&permission.request_id));
             let durable_request_ids: HashSet<_> = pending
                 .iter()
                 .map(|permission| permission.request_id.clone())
                 .collect();
-            let live_pending = self.pending.lock().await;
             pending.extend(
                 live_pending
                     .values()
-                    .filter(|permission| !durable_request_ids.contains(&permission.info.request_id))
+                    .filter(|permission| {
+                        is_within_permission_request_ttl(&permission.info.created_at)
+                            && permission.sender.borrow().is_none()
+                            && !durable_request_ids.contains(&permission.info.request_id)
+                    })
                     .map(|permission| permission.info.clone()),
             );
             return Ok(pending);
         }
-        Ok(self.get_pending_info().await)
+        let live_pending = self.pending.lock().await;
+        Ok(live_pending
+            .values()
+            .filter(|permission| {
+                is_within_permission_request_ttl(&permission.info.created_at)
+                    && permission.sender.borrow().is_none()
+            })
+            .map(|permission| permission.info.clone())
+            .collect())
     }
 
     /// Log a repo operation error without blocking the channel signaling path.

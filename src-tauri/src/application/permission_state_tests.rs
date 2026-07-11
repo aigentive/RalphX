@@ -1,3 +1,5 @@
+use chrono::Utc;
+
 use super::*;
 
 fn make_info(request_id: &str, tool_name: &str) -> PendingPermissionInfo {
@@ -10,7 +12,7 @@ fn make_info(request_id: &str, tool_name: &str) -> PendingPermissionInfo {
         task_id: None,
         context_type: None,
         context_id: None,
-        created_at: "2026-07-10T00:00:00+00:00".to_string(),
+        created_at: Utc::now().to_rfc3339(),
     }
 }
 
@@ -314,6 +316,7 @@ mod with_repo {
     use super::*;
     use crate::domain::repositories::PermissionRepository;
     use crate::infrastructure::memory::MemoryPermissionRepository;
+    use chrono::Duration;
     use std::sync::Arc;
 
     fn make_state_with_repo() -> (PermissionState, Arc<MemoryPermissionRepository>) {
@@ -450,9 +453,9 @@ mod with_repo {
     #[tokio::test]
     async fn strict_pending_read_merges_durable_and_live_permissions_without_duplicates() {
         let repo = Arc::new(MemoryPermissionRepository::new());
-        repo.create_pending(&make_info("durable-permission", "Bash"))
-            .await
-            .unwrap();
+        let mut durable = make_info("durable-permission", "Bash");
+        durable.created_at = Utc::now().to_rfc3339();
+        repo.create_pending(&durable).await.unwrap();
         let state = PermissionState::with_repo(repo);
         state.register(make_info("live-permission", "Edit")).await;
         state
@@ -470,6 +473,71 @@ mod with_repo {
             std::collections::HashSet::from(["durable-permission", "live-permission"])
         );
         assert_eq!(pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn strict_pending_read_excludes_expired_permissions_and_keeps_fresh_entries() {
+        let repo = Arc::new(MemoryPermissionRepository::new());
+        let mut expired_durable = make_info("expired-durable", "Bash");
+        expired_durable.created_at = (Utc::now() - Duration::minutes(6)).to_rfc3339();
+        repo.create_pending(&expired_durable).await.unwrap();
+
+        let mut fresh_durable = make_info("fresh-durable", "Edit");
+        fresh_durable.created_at = Utc::now().to_rfc3339();
+        repo.create_pending(&fresh_durable).await.unwrap();
+
+        let state = PermissionState::with_repo(repo);
+        let mut expired_live = make_info("expired-live", "Read");
+        expired_live.created_at = (Utc::now() - Duration::minutes(6)).to_rfc3339();
+        state.register(expired_live).await;
+
+        let mut fresh_live = make_info("fresh-live", "Write");
+        fresh_live.created_at = Utc::now().to_rfc3339();
+        state.register(fresh_live).await;
+
+        let request_ids: std::collections::HashSet<_> = state
+            .get_pending_info_strict()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|permission| permission.request_id)
+            .collect();
+
+        assert_eq!(
+            request_ids,
+            std::collections::HashSet::from([
+                "fresh-durable".to_string(),
+                "fresh-live".to_string(),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_pending_read_excludes_resolved_but_undrained_live_permissions() {
+        let state = PermissionState::new();
+        state.register(make_info("resolved-live", "Bash")).await;
+        let _receiver = state
+            .pending
+            .lock()
+            .await
+            .get("resolved-live")
+            .expect("registered permission remains live until long-poll drain")
+            .sender
+            .subscribe();
+        assert!(
+            state
+                .resolve(
+                    "resolved-live",
+                    PermissionDecision {
+                        decision: "allow".to_string(),
+                        message: None,
+                    },
+                )
+                .await
+        );
+        assert!(state.pending.lock().await.contains_key("resolved-live"));
+
+        assert!(state.get_pending_info_strict().await.unwrap().is_empty());
     }
 
     #[tokio::test]

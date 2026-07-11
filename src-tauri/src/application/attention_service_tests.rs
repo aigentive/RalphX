@@ -485,7 +485,7 @@ async fn attention_items_resolve_permission_and_question_projects_and_keep_unkno
             task_id: Some(task.id.to_string()),
             context_type: None,
             context_id: None,
-            created_at: "2026-07-10T12:00:00Z".to_string(),
+            created_at: Utc::now().to_rfc3339(),
         })
         .await;
     state
@@ -499,7 +499,7 @@ async fn attention_items_resolve_permission_and_question_projects_and_keep_unkno
             task_id: None,
             context_type: None,
             context_id: Some(ChatConversationId::new().to_string()),
-            created_at: "2026-07-10T13:00:00Z".to_string(),
+            created_at: Utc::now().to_rfc3339(),
         })
         .await;
     state
