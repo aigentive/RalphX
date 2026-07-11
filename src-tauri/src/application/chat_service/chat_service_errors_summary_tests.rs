@@ -1,4 +1,17 @@
 use super::StreamError;
+use crate::application::chat_service::ChatServiceError;
+use crate::application::persona_resolver::PersonaError;
+use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
+
+#[test]
+fn persona_unavailable_error_string_starts_with_named_constant() {
+    let error: ChatServiceError = PersonaError::Unavailable {
+        persona_id: "persona-1".to_string(),
+    }
+    .into();
+
+    assert!(error.to_string().starts_with(PERSONA_UNAVAILABLE_PREFIX));
+}
 
 fn agent_exit_message(stderr: impl Into<String>) -> String {
     StreamError::AgentExit {
