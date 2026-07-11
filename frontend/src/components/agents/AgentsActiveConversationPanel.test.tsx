@@ -31,7 +31,6 @@ const {
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
   confirmVerificationMock,
-  composerLayoutChangeMock,
   composerQuestionModeRef,
   composerAgentStatusRef,
   eventSubscribers,
@@ -57,7 +56,6 @@ const {
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
-  composerLayoutChangeMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
   composerAgentStatusRef: { current: "idle" },
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
@@ -279,7 +277,6 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         agentStatus: composerAgentStatusRef.current,
         isSending: false,
         isReadOnly: false,
-        onLayoutChange: composerLayoutChangeMock,
         autoFocus: false,
         hasQueuedMessages: false,
         onEditLastQueued: vi.fn(),
@@ -556,7 +553,6 @@ vi.mock("./AgentComposerSurface", () => ({
     sendDisabledReason,
     onSend,
     onForkSession,
-    onLayoutChange,
   }: {
     provider: {
       value: string;
@@ -588,7 +584,6 @@ vi.mock("./AgentComposerSurface", () => ({
     sendDisabledReason?: string | null;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
-    onLayoutChange?: () => void;
   }) => (
     <div>
       <div data-testid="workspace-provider-value">{provider.value}</div>
@@ -673,11 +668,6 @@ vi.mock("./AgentComposerSurface", () => ({
         type="button"
         data-testid="composer-fork-action"
         onClick={() => void onForkSession?.()}
-      />
-      <button
-        type="button"
-        data-testid="composer-layout-change"
-        onClick={() => onLayoutChange?.()}
       />
     </div>
   ),
@@ -1745,9 +1735,6 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("composer-layout-change"));
-    expect(composerLayoutChangeMock).toHaveBeenCalledTimes(1);
-    expect(composerLayoutChangeMock).toHaveBeenCalledWith();
   });
 
   it("shows focused task runtime rows in the Runtimes tab", async () => {

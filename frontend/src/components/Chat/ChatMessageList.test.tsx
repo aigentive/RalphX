@@ -518,6 +518,77 @@ describe("ChatMessageList controller integration", () => {
     expect(scroller.scrollTop).toBe(480);
   });
 
+  it("does not repeat a timestamp jump when messages receive a new array identity", () => {
+    const timestamp = defaultProps.messages[1]?.createdAt;
+    expect(timestamp).toBeDefined();
+    const { rerender } = renderList({ scrollToTimestamp: timestamp });
+
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 1, align: "start" }),
+    );
+    primeAtBottom();
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[...defaultProps.messages]}
+        scrollToTimestamp={timestamp}
+      />,
+    );
+    flushAnimationFrames();
+
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reader pinned after returning to bottom when timestamp messages finalize", () => {
+    const timestamp = defaultProps.messages[1]?.createdAt;
+    expect(timestamp).toBeDefined();
+    const { rerender } = renderList({ scrollToTimestamp: timestamp });
+    const scroller = getScroller();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 480 });
+    flushAnimationFrames();
+
+    fireEvent.click(screen.getByTestId("chat-scroll-to-bottom-button"));
+    flushAnimationFrames();
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+    scrollWrites.mockClear();
+    harness.scrollToIndex.mockClear();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[...defaultProps.messages]}
+        scrollToTimestamp={timestamp}
+      />,
+    );
+    flushAnimationFrames();
+
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("jumps again when history requests a different timestamp", () => {
+    const firstTimestamp = defaultProps.messages[1]?.createdAt;
+    const secondTimestamp = defaultProps.messages[2]?.createdAt;
+    expect(firstTimestamp).toBeDefined();
+    expect(secondTimestamp).toBeDefined();
+    const { rerender } = renderList({ scrollToTimestamp: firstTimestamp });
+    primeAtBottom();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[...defaultProps.messages]}
+        scrollToTimestamp={secondTimestamp}
+      />,
+    );
+    flushAnimationFrames();
+
+    expect(harness.scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 2, align: "start" }),
+    );
+  });
+
   it("keeps Virtuoso components stable across streaming rerenders", () => {
     const { rerender } = renderList({ isAgentRunning: true });
     const initialComponents = harness.componentsHistory.at(-1);
@@ -731,6 +802,32 @@ describe("ChatMessageList controller integration", () => {
       expect.objectContaining({ left: 4, top: 250, behavior: "auto" }),
     );
     expect(scroller.scrollTop).toBe(250);
+  });
+
+  it("forwards wheel movement from the bottom control through scrollBy when available", () => {
+    renderList();
+    const scroller = primeAtBottom();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 220 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    const scrollBy = vi.fn();
+    Object.defineProperty(scroller, "scrollBy", { configurable: true, value: scrollBy });
+
+    fireEvent.wheel(screen.getByTestId("chat-scroll-to-bottom-button"), { deltaY: 30, deltaX: 4 });
+
+    expect(scrollBy).toHaveBeenCalledExactlyOnceWith({ left: 4, top: 30, behavior: "auto" });
+  });
+
+  it("ends a cancelled pointer session before an internal bottom clamp scroll", () => {
+    renderList();
+    const scroller = primeAtBottom();
+
+    fireEvent.pointerDown(scroller);
+    fireEvent.pointerCancel(scroller);
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 900, scrollTop: 400 });
+    fireEvent.scroll(scroller);
+
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
   });
 
   it("does not treat wheel-up inside a nested scrollable block as an away intent", () => {

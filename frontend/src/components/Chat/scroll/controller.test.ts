@@ -269,6 +269,7 @@ describe("ChatScrollController", () => {
     attach(harness);
     harness.scrollCalls.length = 0;
 
+    harness.element.setGeometry({ scrollHeight: 1_100, scrollTop: 500 });
     harness.controller.notifyPrepend();
     harness.element.setGeometry({ scrollTop: 700, scrollHeight: 1400 });
     harness.controller.notifyScroll();
@@ -281,6 +282,37 @@ describe("ChatScrollController", () => {
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
     expect(harness.scrollCalls).toHaveLength(1);
+  });
+
+  it("keeps pinned through a post-prepend Virtuoso clamp at the new true bottom", () => {
+    const harness = createHarness();
+    attach(harness);
+
+    harness.controller.notifyPrepend();
+    harness.flushNextFrame();
+    harness.element.setGeometry({ scrollHeight: 900, scrollTop: 400 });
+    harness.controller.notifyScroll();
+
+    expect(harness.controller.getState()).toBe("pinned");
+  });
+
+  it("closes an oscillating prepend epoch at the frame cap so growth can pin again", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.element.setGeometry({ scrollHeight: 1_100, scrollTop: 500 });
+    harness.controller.notifyPrepend();
+    for (let frame = 0; frame < 30; frame += 1) {
+      harness.element.setGeometry({ scrollTop: 501 + frame });
+      harness.flushNextFrame();
+    }
+    harness.element.setGeometry({ scrollHeight: 1_600 });
+    harness.controller.notifyContentGrowth();
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(1_100);
   });
 
   it("ignores zero-size resize epochs and re-pins only a previously pinned controller", () => {
@@ -340,6 +372,21 @@ describe("ChatScrollController", () => {
 
     harness.element.setGeometry({ scrollTop: 400 });
     harness.controller.notifyScroll();
+    harness.element.setGeometry({ scrollTop: 500 });
+    harness.controller.notifyScroll();
+
+    expect(harness.controller.getState()).toBe("pinned");
+  });
+
+  it("releases jump suppression at the frame cap so bottom re-entry works", () => {
+    const harness = createHarness();
+    attach(harness);
+
+    harness.controller.jumpToIndex(42);
+    for (let frame = 0; frame < 30; frame += 1) {
+      harness.element.setGeometry({ scrollTop: 100 + frame });
+      harness.flushNextFrame();
+    }
     harness.element.setGeometry({ scrollTop: 500 });
     harness.controller.notifyScroll();
 
@@ -450,6 +497,26 @@ describe("ChatScrollController", () => {
     expect(harness.element.scrollTop).toBe(500);
   });
 
+  it("does not pin during reset while its attached scroller has zero height", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+    const writesBeforeReset = harness.element.directWrites;
+    harness.element.setGeometry({ clientHeight: 0 });
+
+    harness.controller.reset();
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toHaveLength(0);
+    expect(harness.element.directWrites).toBe(writesBeforeReset);
+
+    harness.element.setGeometry({ clientHeight: 400, scrollHeight: 1_200, scrollTop: 0 });
+    harness.controller.notifyContainerResize();
+
+    expect(harness.scrollCalls).toHaveLength(1);
+    expect(harness.element.scrollTop).toBe(800);
+  });
+
   it("uses frame scheduling without creating timers", () => {
     vi.useFakeTimers();
     const harness = createHarness();
@@ -501,16 +568,16 @@ describe("ChatScrollController", () => {
     harness.scrollCalls.length = 0;
 
     harness.controller.notifyPrepend();
-    harness.element.setGeometry({ scrollTop: 600 });
+    harness.element.setGeometry({ scrollHeight: 1_400, scrollTop: 600 });
     harness.flushNextFrame();
-    harness.element.setGeometry({ scrollTop: 700 });
+    harness.element.setGeometry({ scrollHeight: 1_400, scrollTop: 700 });
     harness.flushNextFrame();
     harness.flushNextFrame();
     harness.controller.notifyContentGrowth();
     harness.flushFrames();
 
     expect(harness.scrollCalls).toHaveLength(1);
-    expect(harness.element.scrollTop).toBe(500);
+    expect(harness.element.scrollTop).toBe(900);
   });
 
   it("pins its timeline target safely when the scroll element disappears", () => {
@@ -624,5 +691,19 @@ describe("ChatScrollController", () => {
 
     expect(harness.element.directWrites).toBe(writesAfterDetach);
     expect(harness.scrollCalls).toHaveLength(0);
+  });
+
+  it("clears prepend state on detach so a replacement scroller receives its attach pin", () => {
+    const harness = createHarness();
+    attach(harness);
+    harness.scrollCalls.length = 0;
+
+    harness.controller.notifyPrepend();
+    harness.controller.detach();
+    harness.controller.attach(harness.element);
+    harness.flushFrames();
+
+    expect(harness.scrollCalls).toEqual([{ index: 9, align: "end", behavior: "auto" }]);
+    expect(harness.element.scrollTop).toBe(500);
   });
 });

@@ -164,10 +164,6 @@ function automationProposalApplyOptionIndex(
 // Main Component
 // ============================================================================
 
-interface TranscriptLayoutChangeOptions {
-  ownedByVisibleRuntime?: boolean;
-}
-
 interface IntegratedChatPanelProps {
   /** Project ID for context */
   projectId: string;
@@ -280,8 +276,6 @@ export interface IntegratedChatComposerRenderProps {
   effectiveModel?: { id: string; label: string } | undefined;
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
-  /** Notify the transcript that composer chrome is resizing outside ResizeObserver timing. */
-  onLayoutChange: (options?: TranscriptLayoutChangeOptions) => void;
 }
 
 export function IntegratedChatPanel({
@@ -1050,11 +1044,6 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const notifyInputLayoutChanged = useCallback(
-    (_options?: TranscriptLayoutChangeOptions) => {},
-    [],
-  );
-
   // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
   const effectiveConversationId = isTeammateTab
     ? teammateConversationId
@@ -1946,7 +1935,6 @@ export function IntegratedChatPanel({
                           activeConversationMeta?.providerHarness ??
                           fallbackProviderHarness ??
                           null,
-                        onLayoutChange: notifyInputLayoutChanged,
                         ...(activeQuestion
                           ? {
                               value: questionInputValue,

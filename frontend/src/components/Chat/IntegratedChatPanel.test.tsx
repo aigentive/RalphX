@@ -1355,16 +1355,14 @@ describe("IntegratedChatPanel", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("renders a custom composer when provided", async () => {
+    it("renders a custom composer with its attachment contract", () => {
       mockChatPanelContext.activeConversationId = "conv-1";
-      const renderComposer = vi.fn(({ enableAttachments, onLayoutChange }) => (
+      const renderComposer = vi.fn(({ enableAttachments }) => (
         <button
           type="button"
           data-testid="custom-composer"
-          onClick={onLayoutChange}
         >
           {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
-          {typeof onLayoutChange === "function" ? "-layout-callback" : ""}
         </button>
       ));
 
@@ -1378,16 +1376,9 @@ describe("IntegratedChatPanel", () => {
       );
 
       expect(screen.getByTestId("custom-composer")).toHaveTextContent(
-        "attachments-enabled-layout-callback",
+        "attachments-enabled",
       );
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
-
-      const renderCount = renderComposer.mock.calls.length;
-      fireEvent.click(screen.getByTestId("custom-composer"));
-
-      await waitFor(() =>
-        expect(renderComposer).toHaveBeenCalledTimes(renderCount + 1),
-      );
     });
 
     it("mounts the scrollable transcript instead of blocking on placeholder hydration", async () => {

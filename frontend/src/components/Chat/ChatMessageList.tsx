@@ -865,6 +865,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
     const previousTotalListHeightRef = useRef<number>(-1);
     const previousFirstItemIndexRef = useRef({ conversationId, index: firstItemIndex });
+    const timestampJumpKeyRef = useRef<string | null>(null);
     const lastItemIndexRef = useRef(firstItemIndex);
     const isTestEnv = import.meta.env.VITEST;
     const [isVisuallyAtBottom, setIsVisuallyAtBottomState] = useState(true);
@@ -1372,6 +1373,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         previous.removeEventListener("wheel", handleScrollerWheel);
         previous.removeEventListener("pointerdown", handleScrollerPointerDown);
         previous.removeEventListener("pointerup", handleScrollerPointerUp);
+        previous.removeEventListener("pointercancel", handleScrollerPointerUp);
         previous.removeEventListener("keydown", handleScrollerKeyDown);
         disconnectScrollerResizeObserver();
         scrollController?.detach();
@@ -1394,6 +1396,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       el.addEventListener("wheel", handleScrollerWheel, { passive: true });
       el.addEventListener("pointerdown", handleScrollerPointerDown, { passive: true });
       el.addEventListener("pointerup", handleScrollerPointerUp, { passive: true });
+      el.addEventListener("pointercancel", handleScrollerPointerUp, { passive: true });
       el.addEventListener("keydown", handleScrollerKeyDown);
       scrollController?.attach(el);
       if (typeof ResizeObserver !== "undefined") {
@@ -1425,6 +1428,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     useEffect(() => {
       previousTotalListHeightRef.current = -1;
       previousLastItemIndexRef.current = null;
+      timestampJumpKeyRef.current = null;
       setHasScrollableOverflow(false);
       scrollController?.reset();
     }, [conversationId, scrollController]);
@@ -1457,7 +1461,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // Scroll to specific timestamp for history mode (time-travel feature)
     // Finds the first message at or after the given timestamp and scrolls to it
     useEffect(() => {
-      if (!scrollToTimestamp || messages.length === 0) return;
+      if (!scrollToTimestamp) {
+        timestampJumpKeyRef.current = null;
+        return;
+      }
+      if (messages.length === 0) return;
+
+      const timestampJumpKey = `${conversationId}:${scrollToTimestamp}`;
+      if (timestampJumpKeyRef.current === timestampJumpKey) return;
 
       const targetTime = new Date(scrollToTimestamp).getTime();
       const targetIndex = messages.findIndex(
@@ -1465,10 +1476,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       );
 
       if (targetIndex >= 0) {
+        timestampJumpKeyRef.current = timestampJumpKey;
         scrollController?.jumpToIndex(firstItemIndex + targetIndex);
       }
       return undefined;
-    }, [scrollController, scrollToTimestamp, messages, firstItemIndex]);
+    }, [conversationId, scrollController, scrollToTimestamp, messages, firstItemIndex]);
 
     // When filter clears (streaming/finalizing ends), keep sticky users pinned
     // through the finalized assistant reveal without pulling manual-away users.

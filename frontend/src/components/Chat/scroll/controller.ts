@@ -58,6 +58,7 @@ interface CapturedAnchor {
 }
 
 const ANCHOR_SELECTOR = '[data-chat-scroll-anchor], [data-testid="tool-call-group-toggle"]';
+const MAX_SETTLE_FRAMES = 30;
 
 export function createChatScrollController(deps: ChatScrollControllerDeps): ChatScrollController {
   let state: ChatScrollState = "pinned";
@@ -68,7 +69,9 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
   let settleFrame: number | null = null;
   let jumpSettleFrame: number | null = null;
   let jumpSettleScrollTop: number | null = null;
+  let jumpSettleFrameCount = 0;
   let prependFrame: number | null = null;
+  let prependSettleFrameCount = 0;
   let prependEpoch = false;
   let zeroSizeEpoch = false;
   let pointerSession = false;
@@ -121,8 +124,11 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
     cancelFrame(jumpSettleFrame);
     jumpSettleFrame = null;
     jumpSettleScrollTop = null;
+    jumpSettleFrameCount = 0;
     suppressFreeBottomReentry = false;
-    activeIntent = null;
+    if (activeIntent && typeof activeIntent.target === "object" && "offset" in activeIntent.target) {
+      activeIntent = null;
+    }
   };
 
   const beginBottomIntent = (): void => {
@@ -221,12 +227,15 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       if (!prependEpoch) return;
       const element = getElement();
       const current = element?.scrollTop ?? null;
-      if (current !== previousScrollTop) {
+      if (current !== previousScrollTop && prependSettleFrameCount + 1 < MAX_SETTLE_FRAMES) {
         previousScrollTop = current;
+        prependSettleFrameCount += 1;
         schedulePrependSettle();
         return;
       }
       prependEpoch = false;
+      prependSettleFrameCount = 0;
+      if (state !== "free") beginBottomIntent();
       debug("prepend-settled");
       updateVisualBottom();
     });
@@ -238,13 +247,17 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       jumpSettleFrame = null;
       if (!suppressFreeBottomReentry) return;
       const current = getElement()?.scrollTop ?? null;
-      if (current !== jumpSettleScrollTop) {
+      if (current !== jumpSettleScrollTop && jumpSettleFrameCount + 1 < MAX_SETTLE_FRAMES) {
         jumpSettleScrollTop = current;
+        jumpSettleFrameCount += 1;
         scheduleJumpSettle();
         return;
       }
       jumpSettleScrollTop = null;
-      activeIntent = null;
+      jumpSettleFrameCount = 0;
+      if (activeIntent && typeof activeIntent.target === "object" && "offset" in activeIntent.target) {
+        activeIntent = null;
+      }
       suppressFreeBottomReentry = false;
       debug("jump-settled");
     });
@@ -283,7 +296,10 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       pinReasons = [];
       prependFrame = null;
       prependEpoch = false;
+      prependSettleFrameCount = 0;
+      zeroSizeEpoch = false;
       pointerSession = false;
+      capturedAnchor = null;
       attachedElement = null;
       activeIntent = null;
       previousScrollTop = null;
@@ -298,13 +314,15 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
       pinReasons = [];
       prependFrame = null;
       prependEpoch = false;
-      zeroSizeEpoch = false;
+      prependSettleFrameCount = 0;
+      const element = getElement();
+      zeroSizeEpoch = element ? element.clientHeight === 0 : false;
       pointerSession = false;
       capturedAnchor = null;
       setState("pinned");
       beginBottomIntent();
-      previousScrollTop = getElement()?.scrollTop ?? null;
-      if (attachedElement) schedulePin("reset", "auto");
+      previousScrollTop = element?.scrollTop ?? null;
+      if (attachedElement && !zeroSizeEpoch) schedulePin("reset", "auto");
     },
 
     notifyWheel(deltaY, isNestedScrollableTarget) {
@@ -394,6 +412,7 @@ export function createChatScrollController(deps: ChatScrollControllerDeps): Chat
 
     notifyPrepend() {
       prependEpoch = true;
+      prependSettleFrameCount = 0;
       cancelPendingPin();
       cancelSettle();
       cancelJumpSettle();

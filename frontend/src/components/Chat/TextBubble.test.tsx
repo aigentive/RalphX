@@ -165,7 +165,8 @@ describe("TextBubble", () => {
       const { rerender } = render(
         <TextBubble text="**first**" isUser={false} isStreaming />,
       );
-      await screen.findByText("first");
+      const markdown = (await screen.findByText("first")).closest("p");
+      expect(markdown).not.toBeNull();
       vi.useFakeTimers();
 
       rerender(<TextBubble text="**intermediate**" isUser={false} isStreaming />);
@@ -179,6 +180,7 @@ describe("TextBubble", () => {
 
       expect(screen.getByText("latest")).toBeInTheDocument();
       expect(screen.queryByText("intermediate")).not.toBeInTheDocument();
+      expect(screen.getByText("latest").closest("p")).toBe(markdown);
       vi.useRealTimers();
     });
 

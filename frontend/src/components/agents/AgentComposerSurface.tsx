@@ -290,7 +290,6 @@ export interface AgentComposerSurfaceProps {
   value?: string;
   onChange?: (value: string) => void;
   onFocusChange?: (focused: boolean) => void;
-  onLayoutChange?: () => void;
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
