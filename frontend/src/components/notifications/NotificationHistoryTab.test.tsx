@@ -30,8 +30,8 @@ const notification = {
   severity: "action_required" as const, title: "Task failed", target: { kind: "none" as const },
 };
 
-function renderHistory(active = true) {
-  return render(<TooltipProvider><NotificationHistoryTab active={active} onOpen={vi.fn()} /></TooltipProvider>);
+function renderHistory(active = true, now = new Date("2026-07-10T10:00:00Z").getTime()) {
+  return render(<TooltipProvider><NotificationHistoryTab active={active} now={now} onOpen={vi.fn()} /></TooltipProvider>);
 }
 
 function intersectLatestObserver() {
@@ -53,7 +53,7 @@ describe("NotificationHistoryTab", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
     vi.mocked(useNotificationHistory).mockReturnValue({
       data: { pages: [{ notifications: [notification] }] }, isLoading: false, hasNextPage: false,
-      isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn(),
+      isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn(), isError: false,
     } as ReturnType<typeof useNotificationHistory>);
     vi.mocked(useNotificationReadActions).mockReturnValue({ markRead, markReadBatch, markAllRead });
   });
@@ -104,11 +104,48 @@ describe("NotificationHistoryTab", () => {
 
   it("navigates and marks an unread history row read when clicked", () => {
     const onOpen = vi.fn();
-    render(<TooltipProvider><NotificationHistoryTab active onOpen={onOpen} /></TooltipProvider>);
+    render(<TooltipProvider><NotificationHistoryTab active now={new Date("2026-07-10T10:00:00Z").getTime()} onOpen={onOpen} /></TooltipProvider>);
     act(() => { vi.runAllTimers(); });
 
     fireEvent.click(screen.getByTestId("notification-history-row-notification-1"));
     expect(onOpen).toHaveBeenCalledWith(notification);
     expect(markRead).toHaveBeenCalledWith("notification-1");
+  });
+
+  it("renders a retryable history load error instead of its empty state", () => {
+    const refetch = vi.fn();
+    vi.mocked(useNotificationHistory).mockReturnValue({
+      data: undefined, isLoading: false, isError: true, hasNextPage: false,
+      isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch,
+    } as ReturnType<typeof useNotificationHistory>);
+    renderHistory();
+    act(() => { vi.runAllTimers(); });
+
+    expect(screen.getByTestId("notification-history-load-error")).toHaveTextContent("Couldn't load notifications");
+    expect(screen.queryByTestId("notification-history-empty-state")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("refresh-notification-history")).toBeVisible();
+  });
+
+  it("keeps stale history rows visible when a refresh fails", () => {
+    vi.mocked(useNotificationHistory).mockReturnValue({
+      data: { pages: [{ notifications: [notification] }] }, isLoading: false, isError: true, hasNextPage: false,
+      isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn(),
+    } as ReturnType<typeof useNotificationHistory>);
+    renderHistory();
+    act(() => { vi.runAllTimers(); });
+
+    expect(screen.getByTestId("notification-history-row-notification-1")).toBeVisible();
+    expect(screen.getByTestId("notification-history-stale-indicator")).toBeVisible();
+  });
+
+  it("updates memoized row relative time from the shared drawer clock", () => {
+    const view = renderHistory(true, new Date("2026-07-10T10:00:00Z").getTime());
+    act(() => { vi.runAllTimers(); });
+    expect(screen.getByTestId("notification-history-row-notification-1")).toHaveTextContent("now");
+
+    view.rerender(<TooltipProvider><NotificationHistoryTab active now={new Date("2026-07-10T10:01:00Z").getTime()} onOpen={vi.fn()} /></TooltipProvider>);
+    expect(screen.getByTestId("notification-history-row-notification-1")).toHaveTextContent("1m");
   });
 });

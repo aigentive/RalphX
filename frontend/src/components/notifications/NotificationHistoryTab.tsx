@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, Inbox, RefreshCw } from "lucide-react";
+import { ChevronDown, Inbox, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -67,12 +67,30 @@ function HistoryEmptyState() {
   </div>;
 }
 
+function HistoryLoadError({ onRetry }: { onRetry: () => void }) {
+  return <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center" data-testid="notification-history-load-error">
+    <TriangleAlert className="h-7 w-7" style={{ color: "var(--status-warning)" }} />
+    <p className="font-medium" style={{ color: "var(--text-primary)" }}>Couldn&apos;t load notifications</p>
+    <button type="button" onClick={onRetry} className="rounded px-3 py-1.5 text-sm font-medium hover:bg-[var(--bg-hover)]" style={{ color: "var(--accent-primary)" }}>Retry</button>
+  </div>;
+}
+
+function HistoryActions({ markAllRead, refetch, showMarkAllRead }: { markAllRead: () => void; refetch: () => void; showMarkAllRead: boolean }) {
+  return <div className="flex justify-end gap-1 px-3 py-2">
+    {showMarkAllRead && <button type="button" onClick={markAllRead} className="rounded px-2 py-1 text-xs font-medium hover:bg-[var(--bg-hover)]" style={{ color: "var(--accent-primary)" }}>
+      Mark all read
+    </button>}
+    <Tooltip><TooltipTrigger asChild><button type="button" aria-label="Refresh notification history" data-testid="refresh-notification-history" onClick={refetch} className="grid h-7 w-7 place-items-center rounded hover:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /></button></TooltipTrigger><TooltipContent>Refresh notification history</TooltipContent></Tooltip>
+  </div>;
+}
+
 interface NotificationHistoryTabProps {
   active: boolean;
+  now: number;
   onOpen: (notification: Notification) => void;
 }
 
-export function NotificationHistoryTab({ active, onOpen }: NotificationHistoryTabProps) {
+export function NotificationHistoryTab({ active, now, onOpen }: NotificationHistoryTabProps) {
   const contentMounted = useDeferredHistoryContent(active);
   const history = useNotificationHistory(undefined, { enabled: contentMounted });
   const { markRead, markReadBatch, markAllRead } = useNotificationReadActions();
@@ -86,18 +104,15 @@ export function NotificationHistoryTab({ active, onOpen }: NotificationHistoryTa
   }, [markRead, onOpen]);
 
   if (!contentMounted || history.isLoading) return <HistorySkeleton />;
+  if (history.isError && notifications.length === 0) return <><HistoryActions markAllRead={() => void markAllRead()} refetch={() => void history.refetch()} showMarkAllRead={false} /><HistoryLoadError onRetry={() => void history.refetch()} /></>;
   if (notifications.length === 0) return <HistoryEmptyState />;
 
   return <div className="pb-4" data-testid="notification-history-content">
-    <div className="flex justify-end gap-1 px-3 py-2">
-      <button type="button" onClick={() => void markAllRead()} className="rounded px-2 py-1 text-xs font-medium hover:bg-[var(--bg-hover)]" style={{ color: "var(--accent-primary)" }}>
-        Mark all read
-      </button>
-      <Tooltip><TooltipTrigger asChild><button type="button" aria-label="Refresh notification history" data-testid="refresh-notification-history" onClick={() => void history.refetch()} className="grid h-7 w-7 place-items-center rounded hover:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /></button></TooltipTrigger><TooltipContent>Refresh notification history</TooltipContent></Tooltip>
-    </div>
+    <HistoryActions markAllRead={() => void markAllRead()} refetch={() => void history.refetch()} showMarkAllRead />
+    {history.isError && <p className="px-3 text-xs" data-testid="notification-history-stale-indicator" style={{ color: "var(--text-muted)" }}>Showing saved notifications</p>}
     {groups.map((group) => <section key={group.label} className="pt-2">
       <p className="px-3 pb-1 text-[11px] font-semibold tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>{group.label}</p>
-      {group.notifications.map((notification) => <NotificationHistoryRow key={notification.id} notification={notification} onOpen={openNotification} observe={observe} />)}
+      {group.notifications.map((notification) => <NotificationHistoryRow key={notification.id} notification={notification} now={now} onOpen={openNotification} observe={observe} />)}
     </section>)}
     {history.hasNextPage && <button type="button" data-testid="load-older-notifications" onClick={() => void history.fetchNextPage()} disabled={history.isFetchingNextPage} className="mx-auto mt-3 flex items-center gap-1 rounded px-3 py-2 text-sm hover:bg-[var(--bg-hover)] disabled:opacity-60" style={{ color: "var(--text-secondary)" }}>
       {history.isFetchingNextPage ? "Loading…" : "Load older"}<ChevronDown className="h-4 w-4" aria-hidden="true" />

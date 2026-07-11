@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { tasksApi } from "@/api/tasks";
 import { navigateToIdeationSession } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -9,10 +10,14 @@ import type { NotificationCategory, NotificationTarget } from "@/types/notificat
 
 import { navigateNotification } from "./notificationNavigation";
 
+const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
+
 vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
+vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({ navigateToIdeationSession: vi.fn() }));
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 const target = {
   kind: "automation_run" as const,
@@ -27,11 +32,14 @@ describe("navigateNotification", () => {
   const navigateToTask = vi.fn();
   const setCurrentView = vi.fn();
   const selectProject = vi.fn();
+  const setState = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.spyOn(useUiStore, "getState").mockReturnValue({ navigateToTask, setCurrentView } as ReturnType<typeof useUiStore.getState>);
-    vi.spyOn(useProjectStore, "getState").mockReturnValue({ selectProject } as ReturnType<typeof useProjectStore.getState>);
+    vi.mocked(tasksApi.get).mockResolvedValue({ id: "task-1" } as never);
+    vi.spyOn(useUiStore, "getState").mockReturnValue({ navigateToTask, setCurrentView, viewByProject: {}, selectedTaskByProject: {} } as ReturnType<typeof useUiStore.getState>);
+    vi.spyOn(useUiStore, "setState").mockImplementation(setState);
+    vi.spyOn(useProjectStore, "getState").mockReturnValue({ activeProjectId: "project-1", selectProject } as ReturnType<typeof useProjectStore.getState>);
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -70,22 +78,52 @@ describe("navigateNotification", () => {
     window.removeEventListener("ralphx:open-permission-dialog", listener);
   });
 
-  it("routes a task target when it has an id and still closes incomplete task targets", () => {
+  it("keeps same-project task routing on the fast path", async () => {
     const onClose = vi.fn();
-    navigateNotification(
-      { id: "task-1", category: "task_failed", target: { kind: "task", taskId: "task-1" } },
-      {} as QueryClient,
-      { onClose },
-    );
-    navigateNotification(
-      { id: "task-missing", category: "task_failed", target: { kind: "task" } },
+    await navigateNotification(
+      { id: "task-1", category: "task_failed", target: { kind: "task", taskId: "task-1", projectId: "project-1" } },
       {} as QueryClient,
       { onClose },
     );
 
-    expect(navigateToTask).toHaveBeenCalledTimes(1);
+    expect(tasksApi.get).toHaveBeenCalledWith("task-1");
     expect(navigateToTask).toHaveBeenCalledWith("task-1");
-    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(selectProject).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("switches projects before restoring a cross-project task target", async () => {
+    const onClose = vi.fn();
+    await navigateNotification(
+      { id: "task-2", category: "task_failed", target: { kind: "task", taskId: "task-2", projectId: "project-2" } },
+      {} as QueryClient,
+      { onClose },
+    );
+
+    expect(tasksApi.get).toHaveBeenCalledWith("task-2");
+    expect(setState).toHaveBeenCalledWith(expect.objectContaining({
+      viewByProject: { "project-2": "kanban" },
+      selectedTaskByProject: { "project-2": "task-2" },
+    }));
+    expect(selectProject).toHaveBeenCalledWith("project-2");
+    expect(navigateToTask).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the drawer open when a task target no longer exists", async () => {
+    const onClose = vi.fn();
+    vi.mocked(tasksApi.get).mockRejectedValueOnce(new Error("not found"));
+
+    await navigateNotification(
+      { id: "task-missing", category: "task_failed", target: { kind: "task", taskId: "task-missing", projectId: "project-2" } },
+      {} as QueryClient,
+      { onClose },
+    );
+
+    expect(toastError).toHaveBeenCalledWith("This task no longer exists.");
+    expect(selectProject).not.toHaveBeenCalled();
+    expect(navigateToTask).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("opens either agent conversation target and ignores a target with neither conversation id", () => {

@@ -1,17 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 import { navigateNotification } from "@/components/notifications/notificationNavigation";
 import { notificationsApi } from "@/api/notifications";
 import { useUiStore } from "@/stores/uiStore";
-import { useNotificationToasts } from "./useNotificationToasts";
+import { resetNotificationToastStateForTests, useNotificationToasts } from "./useNotificationToasts";
 
-const { preferences, subscribers, toastWarning } = vi.hoisted(() => ({
+const { preferences, subscribers, toastWarning, toastDismiss } = vi.hoisted(() => ({
   preferences: { ready: true, focusedToastsEnabled: true, mutedProjectIds: [] as string[] },
   subscribers: new Map<string, (payload: unknown) => void>(),
   toastWarning: vi.fn(),
+  toastDismiss: vi.fn(),
 }));
 
 vi.mock("@/providers/EventProvider", () => ({
@@ -19,7 +20,7 @@ vi.mock("@/providers/EventProvider", () => ({
 }));
 vi.mock("@/components/notifications/notificationNavigation", () => ({ navigateNotification: vi.fn() }));
 vi.mock("@/api/notifications", () => ({ notificationsApi: { markRead: vi.fn() } }));
-vi.mock("sonner", () => ({ toast: { warning: toastWarning } }));
+vi.mock("sonner", () => ({ toast: { warning: toastWarning, dismiss: toastDismiss } }));
 vi.mock("./useNotificationPreferences", () => ({ useNotificationPreferences: () => preferences }));
 
 const notification = {
@@ -46,6 +47,7 @@ describe("useNotificationToasts", () => {
 
   afterEach(() => {
     subscribers.clear();
+    resetNotificationToastStateForTests();
     vi.clearAllMocks();
     vi.restoreAllMocks();
   });
@@ -106,5 +108,14 @@ describe("useNotificationToasts", () => {
     await Promise.resolve();
     expect(navigateNotification).toHaveBeenCalledWith(notification, expect.any(QueryClient));
     expect(notificationsApi.markRead).toHaveBeenCalledWith("notification-1");
+  });
+
+  it("dismisses active notification toasts when the drawer opens", () => {
+    subscribers.get("notification:created")?.(notification);
+    expect(toastWarning).toHaveBeenCalledWith("Permission requested", expect.objectContaining({ id: "notification-1" }));
+
+    act(() => { useUiStore.setState({ notificationsPanelOpen: true }); });
+
+    expect(toastDismiss).toHaveBeenCalledWith("notification-1");
   });
 });

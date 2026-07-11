@@ -1,6 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { tasksApi } from "@/api/tasks";
 import { navigateToIdeationSession } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -28,7 +30,7 @@ export interface NotificationNavigationOptions {
 }
 
 /** The one target dispatcher used by attention rows, history rows, and toast actions. */
-export function navigateNotification(
+export async function navigateNotification(
   item: NotificationNavigationItem,
   queryClient: QueryClient,
   options: NotificationNavigationOptions = {},
@@ -43,7 +45,26 @@ export function navigateNotification(
 
   const { target } = item;
   if (target.kind === "task" && target.taskId) {
-    useUiStore.getState().navigateToTask(target.taskId);
+    try {
+      await tasksApi.get(target.taskId);
+    } catch {
+      toast.error("This task no longer exists.");
+      return;
+    }
+
+    const projectState = useProjectStore.getState();
+    if (target.projectId && projectState.activeProjectId !== target.projectId) {
+      const uiState = useUiStore.getState();
+      useUiStore.setState({
+        viewByProject: { ...uiState.viewByProject, [target.projectId]: "kanban" },
+        selectedTaskByProject: { ...uiState.selectedTaskByProject, [target.projectId]: target.taskId },
+      });
+      projectState.selectProject(target.projectId);
+    } else {
+      useUiStore.getState().navigateToTask(target.taskId);
+    }
+    options.onClose?.();
+    return;
   }
   if (target.kind === "agent_conversation") {
     const conversationId = target.conversationId ?? target.setupConversationId;

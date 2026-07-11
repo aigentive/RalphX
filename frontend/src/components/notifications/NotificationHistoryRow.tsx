@@ -5,8 +5,8 @@ import type { Notification } from "@/types/notifications";
 
 import { ATTENTION_CATEGORY_MAPPING } from "./categoryMapping";
 
-function relativeTime(createdAt: string): string {
-  const milliseconds = Date.now() - new Date(createdAt).getTime();
+function relativeTime(createdAt: string, now: number): string {
+  const milliseconds = now - new Date(createdAt).getTime();
   if (!Number.isFinite(milliseconds)) return "";
   const minutes = Math.max(0, Math.floor(milliseconds / 60_000));
   if (minutes < 1) return "now";
@@ -17,12 +17,14 @@ function relativeTime(createdAt: string): string {
 
 interface NotificationHistoryRowProps {
   notification: Notification;
+  now: number;
   onOpen: (notification: Notification) => void;
   observe: (id: string, readAt: string | undefined) => (element: HTMLButtonElement | null) => void;
 }
 
 export const NotificationHistoryRow = memo(function NotificationHistoryRow({
   notification,
+  now,
   onOpen,
   observe,
 }: NotificationHistoryRowProps) {
@@ -50,7 +52,7 @@ export const NotificationHistoryRow = memo(function NotificationHistoryRow({
         {notification.title}
       </span>
       <span className="shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
-        {relativeTime(notification.createdAt)}
+        {relativeTime(notification.createdAt, now)}
       </span>
     </button>
   );

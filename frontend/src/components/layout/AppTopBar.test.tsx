@@ -109,6 +109,7 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     renderTopBar({ attentionCount: 12 });
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
     expect(screen.getByRole("button", { name: /notifications.*12/i })).toBeInTheDocument();
+    expect(document.getElementById("notifications-toggle")).toBe(screen.getByTestId("reviews-toggle"));
   });
 
   it("syncs dock badge changes including zero without waiting for the invoke", () => {

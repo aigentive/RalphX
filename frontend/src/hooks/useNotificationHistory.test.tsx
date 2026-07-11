@@ -12,9 +12,12 @@ import {
   useUnreadNotificationCount,
 } from "./useNotificationHistory";
 
+const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
+
 vi.mock("@/api/notifications", () => ({
   notificationsApi: { list: vi.fn(), markRead: vi.fn(), markAllRead: vi.fn(), getUnreadCount: vi.fn() },
 }));
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 describe("useNotificationHistory", () => {
   it("appends the older cursor page when Load older requests the next page", async () => {
@@ -117,7 +120,7 @@ describe("notification read queries", () => {
     expect(queryClient.getQueryData(notificationKeys.history())).toBeUndefined();
   });
 
-  it("marks all unread cached rows only after the authoritative all-read action succeeds", async () => {
+  it("marks all unread cached rows and does not toast after the authoritative all-read action succeeds", async () => {
     vi.mocked(notificationsApi.markAllRead).mockResolvedValue(null);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(notificationKeys.history(), {
@@ -134,9 +137,10 @@ describe("notification read queries", () => {
     }>(notificationKeys.history());
     expect(cached?.pages[0]?.notifications[0]?.readAt).toEqual(expect.any(String));
     expect(cached?.pages[0]?.notifications[1]?.readAt).toBe("2026-07-09T10:00:00Z");
+    expect(toastError).not.toHaveBeenCalled();
   });
 
-  it("preserves cached unread rows when mark-all fails", async () => {
+  it("reports and restores mark-all-read after failure", async () => {
     vi.mocked(notificationsApi.markAllRead).mockRejectedValueOnce(new Error("mark all failed"));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(notificationKeys.history(), {
@@ -145,11 +149,12 @@ describe("notification read queries", () => {
     });
     const { result } = renderHook(() => useNotificationReadActions(), { wrapper: createWrapper(queryClient) });
 
-    await expect(result.current.markAllRead()).rejects.toThrow("mark all failed");
+    await act(async () => { await result.current.markAllRead(); });
 
     const cached = queryClient.getQueryData<{
       pages: Array<{ notifications: Array<{ readAt?: string }> }>;
     }>(notificationKeys.history());
     expect(cached?.pages[0]?.notifications[0]?.readAt).toBeUndefined();
+    expect(toastError).toHaveBeenCalledWith("mark all failed");
   });
 });

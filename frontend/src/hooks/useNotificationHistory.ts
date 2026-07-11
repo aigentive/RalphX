@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { notificationsApi } from "@/api/notifications";
 import type { NotificationPage } from "@/types/notifications";
@@ -80,9 +81,10 @@ export function useNotificationReadActions(projectId?: string) {
   }, [projectId, queryClient]);
 
   const markAllRead = useCallback(async () => {
-    await notificationsApi.markAllRead(projectId);
+    const queryKey = notificationKeys.history(projectId);
+    const previous = queryClient.getQueryData<InfiniteData<NotificationPage>>(queryKey);
     queryClient.setQueryData<InfiniteData<NotificationPage>>(
-      notificationKeys.history(projectId),
+      queryKey,
       (current) => current && {
         ...current,
         pages: current.pages.map((page) => ({
@@ -93,7 +95,17 @@ export function useNotificationReadActions(projectId?: string) {
         })),
       },
     );
-    await queryClient.invalidateQueries({ queryKey: notificationKeys.unreadCount(projectId) });
+    try {
+      await notificationsApi.markAllRead(projectId);
+      await queryClient.invalidateQueries({ queryKey: notificationKeys.unreadCount(projectId) });
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({ queryKey: notificationKeys.unreadCount(projectId) }),
+      ]);
+      toast.error(error instanceof Error ? error.message : "Failed to mark notifications as read");
+    }
   }, [projectId, queryClient]);
 
   return { markRead, markReadBatch, markAllRead };

@@ -14,6 +14,11 @@ import { useNotificationPreferences } from "./useNotificationPreferences";
 
 const DEFAULT_TOAST_DURATION_MS = 8_000;
 const PERMISSION_WINDOW_MS = 5 * 60_000;
+const activeNotificationToastIds = new Set<string>();
+
+export function resetNotificationToastStateForTests() {
+  activeNotificationToastIds.clear();
+}
 
 function isFocusedWindow() {
   return document.visibilityState !== "hidden" && document.hasFocus();
@@ -29,6 +34,13 @@ export function useNotificationToasts() {
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const { ready, focusedToastsEnabled, mutedProjectIds } = useNotificationPreferences();
+  const notificationsPanelOpen = useUiStore((state) => state.notificationsPanelOpen);
+
+  useEffect(() => {
+    if (!notificationsPanelOpen) return;
+    for (const id of activeNotificationToastIds) toast.dismiss(id);
+    activeNotificationToastIds.clear();
+  }, [notificationsPanelOpen]);
 
   useEffect(() => bus.subscribe<unknown>("notification:created", (payload) => {
     const parsed = NotificationSchema.safeParse(payload);
@@ -44,13 +56,17 @@ export function useNotificationToasts() {
     ) return;
 
     const presentation = ATTENTION_CATEGORY_MAPPING[notification.category];
+    activeNotificationToastIds.add(notification.id);
     toast.warning(notification.title, {
+      id: notification.id,
       ...(notification.body !== undefined && { description: notification.body }),
       duration: toastDuration(notification),
+      onDismiss: () => activeNotificationToastIds.delete(notification.id),
+      onAutoClose: () => activeNotificationToastIds.delete(notification.id),
       action: {
         label: presentation.action ?? "Open",
         onClick: () => {
-          navigateNotification(notification, queryClient);
+          void navigateNotification(notification, queryClient);
           void notificationsApi.markRead(notification.id).finally(() => {
             void queryClient.invalidateQueries({ queryKey: notificationKeys.unreadCount(notification.projectId) });
           });

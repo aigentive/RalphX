@@ -15,7 +15,19 @@ import type { Project } from "@/types/project";
 
 vi.mock("@/hooks/useAttentionItems", () => ({ useAttentionItems: vi.fn() }));
 vi.mock("@/hooks/useNotificationHistory", () => ({ useNotificationReadActions: vi.fn() }));
-vi.mock("@/components/reviews/ReviewDetailModal", () => ({ ReviewDetailModal: ({ taskId }: { taskId: string }) => <div data-testid="review-detail-modal">{taskId}</div> }));
+vi.mock("@/components/reviews/ReviewDetailModal", async () => {
+  const React = await import("react");
+  return {
+    ReviewDetailModal: ({ taskId, onClose }: { taskId: string; onClose: () => void }) => {
+      React.useEffect(() => {
+        const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+      }, [onClose]);
+      return <div data-testid="review-detail-modal">{taskId}</div>;
+    },
+  };
+});
 
 const markAllRead = vi.fn();
 
@@ -34,13 +46,14 @@ describe("NotificationCenterPanel first-paint behavior", () => {
   beforeEach(() => {
     markAllRead.mockReset();
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-10T10:00:00Z"));
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0) as unknown as number);
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
-    vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false } as ReturnType<typeof useAttentionItems>);
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
     vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markReadBatch: vi.fn(), markAllRead });
   });
 
-  afterEach(() => { useUiStore.getState().closeModal(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  afterEach(() => { useProjectStore.getState().setProjects([]); useUiStore.getState().closeModal(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("renders the 400px shell and tab chrome synchronously on first open", () => {
     renderPanel(true);
@@ -58,7 +71,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
 
   it("keeps project attention rows visible because mute only gates alert delivery", () => {
     renderPanel(true);
-    act(() => { vi.runAllTimers(); });
+    act(() => { vi.advanceTimersByTime(1); });
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
   });
 
@@ -76,7 +89,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     } as ReturnType<typeof useAttentionItems>);
 
     renderPanel(true);
-    act(() => { vi.runAllTimers(); });
+    act(() => { vi.advanceTimersByTime(1); });
 
     expect(useAttentionItems).toHaveBeenCalledWith(undefined, expect.objectContaining({ enabled: true }));
     expect(screen.getByTestId(`attention-item-${item.id}`)).toHaveTextContent("Other project");
@@ -123,9 +136,9 @@ describe("NotificationCenterPanel first-paint behavior", () => {
   });
 
   it("shows an empty action state once a loaded global attention query has no supported groups", () => {
-    vi.mocked(useAttentionItems).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof useAttentionItems>);
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
     renderPanel(true);
-    act(() => { vi.runAllTimers(); });
+    act(() => { vi.advanceTimersByTime(1); });
 
     expect(screen.getByTestId("attention-empty-state")).toHaveTextContent("Nothing needs your attention.");
   });
@@ -140,13 +153,83 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
+  it("renders a retryable attention load error instead of all clear", () => {
+    const refetch = vi.fn();
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [], isLoading: false, isError: true, refetch } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    expect(screen.getByTestId("attention-load-error")).toHaveTextContent("Couldn't load notifications");
+    expect(screen.queryByTestId("attention-empty-state")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps stale attention rows visible when a refresh fails", () => {
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false, isError: true, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    expect(screen.getByTestId(`attention-item-${item.id}`)).toBeVisible();
+    expect(screen.getByTestId("attention-stale-indicator")).toBeVisible();
+  });
+
+  it("refreshes relative labels on the shared drawer clock", () => {
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(screen.getByTestId(`attention-item-${item.id}`)).toHaveTextContent("now");
+
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(screen.getByTestId(`attention-item-${item.id}`)).toHaveTextContent("1m");
+  });
+
+  it("lets the review modal own Escape while the drawer stays open", () => {
+    const onClose = vi.fn();
+    const reviewItem: AttentionItem = { ...item, id: "task:task-review:review", category: "review_needed", target: { kind: "task", taskId: "task-review" } };
+    const reviewTask: Task = {
+      id: "task-review", projectId: "project-1", category: "feature", title: "Review this", description: null,
+      priority: 1, internalStatus: "review_passed", needsReviewPoint: false, createdAt: "2026-07-10T10:00:00Z", updatedAt: "2026-07-10T10:00:00Z",
+      startedAt: null, completedAt: null, archivedAt: null, blockedReason: null, taskBranch: null, worktreePath: null, mergeCommitSha: null, metadata: null,
+    };
+    useTaskStore.setState({ tasks: { [reviewTask.id]: reviewTask } });
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true, onClose);
+    act(() => { vi.advanceTimersByTime(1); });
+    fireEvent.click(screen.getByTestId("review-button-task-review"));
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("review-detail-modal")).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Notifications" })).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("omits unresolved project identifiers", () => {
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [{ ...item, projectId: "project-unknown-uuid" }], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    expect(screen.getByTestId(`attention-item-${item.id}`)).not.toHaveTextContent("project-unknown-uuid");
+  });
+
+  it("moves focus into the drawer and returns it to the topbar trigger on close", () => {
+    const trigger = document.createElement("button");
+    trigger.id = "notifications-toggle";
+    document.body.append(trigger);
+    const view = renderPanel(true);
+    expect(screen.getByTestId("notifications-panel-close")).toHaveFocus();
+
+    view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider><NotificationCenterPanel isOpen={false} onClose={vi.fn()} /></TooltipProvider></QueryClientProvider>);
+    expect(trigger).toHaveFocus();
+    trigger.remove();
+  });
+
   it("keeps content through visual close then unmounts it after paint", () => {
     const view = renderPanel(true);
-    act(() => { vi.runAllTimers(); });
+    act(() => { vi.advanceTimersByTime(1); });
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
     view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider><NotificationCenterPanel isOpen={false} onClose={vi.fn()} /></TooltipProvider></QueryClientProvider>);
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
-    act(() => { vi.runAllTimers(); });
+    act(() => { vi.advanceTimersByTime(1); });
     expect(screen.queryByTestId(`attention-item-${item.id}`)).not.toBeInTheDocument();
   });
 
@@ -160,7 +243,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     useTaskStore.setState({ tasks: { [reviewTask.id]: reviewTask } });
     vi.mocked(useAttentionItems).mockReturnValue({ data: [reviewItem], isLoading: false } as ReturnType<typeof useAttentionItems>);
     renderPanel(true);
-    act(() => { vi.runAllTimers(); });
+    act(() => { vi.advanceTimersByTime(1); });
     fireEvent.click(screen.getByTestId("review-button-task-review"));
     expect(screen.getByTestId("review-detail-modal")).toHaveTextContent("task-review");
   });
@@ -176,6 +259,23 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     fireEvent.click(screen.getByTestId(`attention-item-${permissionItem.id}`));
     expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ detail: { requestId: "request-1" } }));
     expect(onClose).toHaveBeenCalledOnce();
+    window.removeEventListener("ralphx:open-permission-dialog", reopen);
+  });
+
+  it("disables expired permission actions without reopening the dialog", () => {
+    const permissionItem: AttentionItem = { ...item, id: "permission:request-1", category: "permission_request", createdAt: "2026-07-10T09:55:30Z", target: { kind: "none" } };
+    const onClose = vi.fn();
+    const reopen = vi.fn();
+    window.addEventListener("ralphx:open-permission-dialog", reopen);
+    vi.mocked(useAttentionItems).mockReturnValue({ data: [permissionItem], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true, onClose);
+    act(() => { vi.advanceTimersByTime(1); vi.advanceTimersByTime(30_000); });
+
+    expect(screen.getByRole("button", { name: "Expired" })).toBeDisabled();
+    fireEvent.click(screen.getByTestId(`attention-item-${permissionItem.id}`));
+    fireEvent.click(screen.getByRole("button", { name: "Expired" }));
+    expect(reopen).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
     window.removeEventListener("ralphx:open-permission-dialog", reopen);
   });
 });

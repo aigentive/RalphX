@@ -601,6 +601,7 @@ export function AppTopBar({
               }}
               aria-label={notificationsLabel}
               aria-pressed={notificationsPanelOpen}
+              id="notifications-toggle"
               data-testid="reviews-toggle"
               data-notification-testid="notifications-toggle"
               onClick={onToggleNotificationsPanel}
