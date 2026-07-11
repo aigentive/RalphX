@@ -278,6 +278,8 @@ async fn attempt_session_recovery_blocks_review_without_provider_settings_before
         None,
         None,
         None,
+        false,
+        false,
         "old-session",
         None,
     )
@@ -326,6 +328,8 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
         None,
         None,
         None,
+        false,
+        false,
         "old-session",
         None,
     )

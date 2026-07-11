@@ -16,21 +16,98 @@
 // the pattern used by interactive_mode_integration.rs and team_nudge_running_count_tests.rs.
 
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 
+use ralphx_lib::application::chat_service::{ChatService, SendMessageOptions};
 use ralphx_lib::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
+use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
-use ralphx_lib::domain::entities::{ChatContextType, ChatConversation, TaskId};
+use ralphx_lib::domain::entities::{ChatContextType, ChatConversation, ProjectId, TaskId};
 use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::domain::services::running_agent_registry::{
     MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
 };
 use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
 
+use crate::support::erroring_persona_repository::ErroringPersonaRepository;
+
 // ============================================================================
 // Test 1: Gate 1 HIT — IPR has entry, writes to stdin, reuses existing conversation
 // ============================================================================
+
+#[tokio::test]
+async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-fail-closed";
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some("persona-gate1-error".to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist bound Gate-1 conversation");
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let stdin = child.stdin.take().expect("cat stdin");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register(interactive_key.clone(), stdin)
+        .await;
+
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::new(ErroringPersonaRepository))
+        .with_persona_feature_enabled(true);
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not reach stdin",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect_err("Gate-1 persona resolution failure must block the stdin write");
+
+    assert!(
+        error.to_string().contains("persona repository exploded"),
+        "Gate-1 must return the typed persona failure: {error}"
+    );
+    assert!(
+        state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "fail-closed resolution must leave the live IPR entry intact before any write"
+    );
+
+    // PR-13 completes the compare against IPR persona metadata.
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed_stdin = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("cat stdout")
+        .read_to_end(&mut observed_stdin)
+        .await
+        .expect("read stdin observer output");
+    let _ = child.wait().await;
+    assert!(
+        observed_stdin.is_empty(),
+        "persona failure must happen before Gate-1 writes the stream-json payload"
+    );
+}
 
 /// When IPR has a registered interactive process for a TaskExecution context,
 /// the Gate 1 fast-path should:
@@ -81,7 +158,11 @@ async fn test_gate1_hit_writes_stdin_and_reuses_existing_conversation() {
     let slot_key = format!("{}/{}", context_type_str, context_id);
     execution_state.increment_running();
     execution_state.decrement_and_mark_idle(&slot_key);
-    assert_eq!(execution_state.running_count(), 0, "Precondition: lead is idle");
+    assert_eq!(
+        execution_state.running_count(),
+        0,
+        "Precondition: lead is idle"
+    );
 
     // --- Simulate Gate 1 logic (mirrors mod.rs lines 574-695) ---
 
@@ -276,7 +357,10 @@ async fn test_gate1_write_failure_removes_ipr_entry_and_falls_through() {
     // This leaves the IPR empty for this key, so write_message will fail
     let (stdin, _child) = create_test_stdin().await;
     ipr.register(ipr_key.clone(), stdin).await;
-    assert!(ipr.has_process(&ipr_key).await, "Precondition: entry exists");
+    assert!(
+        ipr.has_process(&ipr_key).await,
+        "Precondition: entry exists"
+    );
 
     // Remove the entry (simulating what happens when IPR discovers a dead process)
     ipr.remove(&ipr_key).await;
@@ -307,7 +391,9 @@ async fn test_gate1_write_failure_removes_ipr_entry_and_falls_through() {
     // Simulate write failure by removing entry right before write (race-like scenario)
     // In production, this is the broken pipe case
     ipr.remove(&broken_key).await;
-    let write_result = ipr.write_message(&broken_key, "message after removal").await;
+    let write_result = ipr
+        .write_message(&broken_key, "message after removal")
+        .await;
     assert!(write_result.is_err(), "Write must fail after entry removed");
 
     // Post-failure cleanup: remove (idempotent — already removed)
@@ -446,7 +532,11 @@ async fn test_gate1_full_lifecycle_spawn_idle_hit_complete_exit() {
     let (stdin, _child) = create_test_stdin().await;
     ipr.register(ipr_key.clone(), stdin).await;
     execution_state.increment_running();
-    assert_eq!(execution_state.running_count(), 1, "Phase 1: process running");
+    assert_eq!(
+        execution_state.running_count(),
+        1,
+        "Phase 1: process running"
+    );
 
     // === Phase 2: TurnComplete → idle ===
     execution_state.decrement_and_mark_idle(&slot_key);
@@ -462,7 +552,11 @@ async fn test_gate1_full_lifecycle_spawn_idle_hit_complete_exit() {
     // Claim slot + increment
     assert!(execution_state.claim_interactive_slot(&slot_key));
     execution_state.increment_running();
-    assert_eq!(execution_state.running_count(), 1, "Phase 3: process active again");
+    assert_eq!(
+        execution_state.running_count(),
+        1,
+        "Phase 3: process active again"
+    );
 
     // Reuse existing conversation
     let reused_conv = conversation_repo
@@ -482,7 +576,10 @@ async fn test_gate1_full_lifecycle_spawn_idle_hit_complete_exit() {
 
     // === Phase 5: Process exits → cleanup ===
     ipr.remove(&ipr_key).await;
-    assert!(!ipr.has_process(&ipr_key).await, "Phase 5: IPR entry removed");
+    assert!(
+        !ipr.has_process(&ipr_key).await,
+        "Phase 5: IPR entry removed"
+    );
     execution_state.remove_interactive_slot(&slot_key);
     assert!(
         !execution_state.is_interactive_idle(&slot_key),

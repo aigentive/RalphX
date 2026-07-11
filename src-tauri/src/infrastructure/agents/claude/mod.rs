@@ -1577,9 +1577,7 @@ fn add_prompt_args(
     // `--append-system-prompt` loaded from our codebase agent markdown.
     // Set RALPHX_USE_NATIVE_AGENT_FLAG=1 to force native --agent mode.
     //
-    let use_native_agent_flag = std::env::var("RALPHX_USE_NATIVE_AGENT_FLAG")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let use_native_agent_flag = native_agent_flag_enabled();
 
     // Default to stdin mode for agent runs due to CLI instability with
     // `--agent` + `-p "<text>"` on some Claude Code versions.
@@ -1694,6 +1692,19 @@ fn add_prompt_args(
         tracing::debug!("Claude prompt mode: arg");
         None
     }
+}
+
+pub(crate) fn native_agent_flag_enabled() -> bool {
+    std::env::var("RALPHX_USE_NATIVE_AGENT_FLAG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+pub(crate) fn persona_injection_skipped_reason(
+    use_native_agent_flag: bool,
+    resolved: bool,
+) -> Option<&'static str> {
+    (use_native_agent_flag && resolved).then_some("native_agent_flag")
 }
 
 /// Configure command for spawning (working dir, stdout/stderr capture)

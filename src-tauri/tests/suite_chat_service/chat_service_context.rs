@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 use ralphx_lib::application::chat_service::{
-    build_command, build_initial_prompt, build_resume_command, build_resume_command_for_harness,
-    build_resume_initial_prompt, create_assistant_message, finalize_assistant_message_for_test,
-    finalize_structured_assistant_message_for_test, format_attachments_for_agent,
-    format_session_history, get_entity_status_for_resume, is_text_file,
+    build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
+    build_resume_command_for_harness, build_resume_initial_prompt, create_assistant_message,
+    finalize_assistant_message_for_test, finalize_structured_assistant_message_for_test,
+    format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
+    is_text_file, persona_builder_requires_live_draft_session,
     provider_resume_mode_for_session_under, resolve_working_directory, ProviderResumeMode,
 };
+use ralphx_lib::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use ralphx_lib::application::AppState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{self, *};
@@ -76,6 +78,283 @@ fn spawnable_prompt(
         .get_stdin_prompt_for_test()
         .map(str::to_string)
         .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"))
+}
+
+fn final_spawnable_command(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> String {
+    let args = spawnable.get_args_for_test();
+    let mut rendered = args.join("\n");
+    for window in args.windows(2) {
+        if window[0] == "--append-system-prompt-file" {
+            rendered.push('\n');
+            rendered
+                .push_str(&fs::read_to_string(&window[1]).expect("read appended system prompt"));
+        }
+    }
+    rendered
+}
+
+#[test]
+fn persona_builder_send_without_live_draft_session_resolves_zero_read_roots_and_fails_closed() {
+    assert!(
+        persona_builder_requires_live_draft_session(Some("persona_builder"), false),
+        "PersonaBuilder sends without a live draft session must fail closed before root reads"
+    );
+    assert!(
+        !persona_builder_requires_live_draft_session(Some("persona_builder"), true),
+        "a live draft session satisfies the PersonaBuilder read-root guard"
+    );
+    assert!(
+        !persona_builder_requires_live_draft_session(Some("chat"), false),
+        "existing modes must remain inert until PersonaBuilder is introduced"
+    );
+}
+
+fn repo_plugin_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository root")
+        .join("plugins/app")
+}
+
+/// The fresh-spawn build path resolves the chat harness CLI and requires the
+/// path to exist on disk, so persona shape tests need a real stub file.
+fn stub_claude_cli(dir: &Path) -> std::path::PathBuf {
+    let cli_path = dir.join("claude");
+    write_file(&cli_path, "#!/bin/sh\nexit 0\n");
+    cli_path
+}
+
+async fn bound_project_persona() -> (
+    ChatConversation,
+    ralphx_lib::application::persona_prompt::ResolvedPersona,
+) {
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let now = chrono::Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("persona-bound-project"),
+        slug: "bound-project".to_string(),
+        name: "Bound Project".to_string(),
+        description: "test persona".to_string(),
+        content: "Use the bound project voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "bound-project-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(persona.clone())
+        .await
+        .expect("seed active persona");
+
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("persona-project".to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    let resolved = resolve_persona_for_send(
+        &conversation,
+        &PersonaDirective::Inherit,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+        repo,
+    )
+    .await
+    .expect("bound persona resolution")
+    .expect("bound persona is injected");
+    (conversation, resolved)
+}
+
+#[tokio::test]
+async fn fresh_spawn_prompt_includes_bound_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "fresh persona send",
+            Some(persona),
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("fresh command should build");
+
+    assert!(
+        final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final fresh-spawn command must include the bound persona block"
+    );
+}
+
+#[tokio::test]
+async fn resume_command_prompt_includes_bound_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_resume_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            ChatContextType::Project,
+            conversation.context_id.as_str(),
+            "resume persona send",
+            Some(persona),
+            None,
+            None,
+            working_dir.path(),
+            "persona-resume-session",
+            Some(conversation.context_id.as_str()),
+            &[],
+            Some(conversation.id.to_string()),
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MockIdeationRepo::empty()),
+            empty_delegated_session_repo(),
+            Arc::new(MockTaskRepo),
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("resume command should build");
+
+    assert!(
+        final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final resume command must include the bound persona block"
+    );
+}
+
+#[tokio::test]
+async fn recovery_command_prompt_includes_bound_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "recovery persona bootstrap",
+            Some(persona),
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("recovery command should build");
+
+    assert!(
+        final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final recovery command must include the bound persona block"
+    );
+}
+
+#[tokio::test]
+async fn fresh_spawn_with_agent_name_override_has_no_persona_block() {
+    let (conversation, _) = bound_project_persona().await;
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let resolved = resolve_persona_for_send(
+        &conversation,
+        &PersonaDirective::Inherit,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: true,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+        repo,
+    )
+    .await
+    .expect("agent override suppresses before a repository read");
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "override persona send",
+            resolved,
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("override command should build");
+
+    assert!(
+        !final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final override command must not include a persona block"
+    );
 }
 
 fn empty_delegated_session_repo() -> Arc<dyn DelegatedSessionRepository> {
@@ -1541,6 +1820,7 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
             "continue",
             None,
             None,
+            None,
             &working_dir,
             "missing-session",
             None,
@@ -1608,6 +1888,7 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             ChatContextType::Project,
             "project-1",
             "continue",
+            None,
             None,
             None,
             &working_dir,
@@ -1685,6 +1966,7 @@ async fn codex_verifier_command_disables_shell_tool() {
             ChatContextType::Ideation,
             child_id.as_str(),
             "continue",
+            None,
             None,
             None,
             &working_dir,

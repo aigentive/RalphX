@@ -171,7 +171,10 @@ fn preview_string_leaf(value: &str, path: &str) -> Option<StructuredToolResultPr
         .and_then(|preview| {
             let text = serde_json::to_string(&preview.value).ok()?;
             let value = JsonValue::String(text);
-            Some(StructuredToolResultPreview { value, paths: preview.paths })
+            Some(StructuredToolResultPreview {
+                value,
+                paths: preview.paths,
+            })
         })
         .or_else(|| {
             let preview = truncate_preview_text(value)?;
@@ -838,7 +841,10 @@ pub(crate) fn build_live_tool_argument_preview(
     detail_ref: Option<JsonValue>,
 ) -> Option<ToolArgumentPreviewPayload> {
     let mut object = JsonMap::new();
-    object.insert("name".to_string(), JsonValue::String(tool_call.name.clone()));
+    object.insert(
+        "name".to_string(),
+        JsonValue::String(tool_call.name.clone()),
+    );
     object.insert("arguments".to_string(), tool_call.arguments.clone());
     if let Some(diff_context) = diff_context {
         object.insert("diff_context".to_string(), diff_context.clone());

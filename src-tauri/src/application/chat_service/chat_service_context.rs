@@ -2751,12 +2751,13 @@ async fn build_launch_plan_from_resolved_cli(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn build_launch_plan_for_harness(
+pub(crate) async fn build_launch_plan_for_harness_with_persona(
     harness: AgentHarnessKind,
     cli_path: &Path,
     plugin_dir: &Path,
     conversation: &ChatConversation,
     user_message: &str,
+    persona: Option<ResolvedPersona>,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
     context_type: ChatContextType,
@@ -2787,6 +2788,7 @@ pub(crate) async fn build_launch_plan_for_harness(
         plugin_dir,
         conversation,
         user_message,
+        persona,
         agent_name_override,
         agent_profile,
         context_type,
@@ -2854,6 +2856,7 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
         plugin_dir,
         conversation,
         user_message,
+        None,
         agent_name_override,
         agent_profile,
         context_type,
@@ -2889,6 +2892,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
     plugin_dir: &Path,
     conversation: &ChatConversation,
     user_message: &str,
+    persona: Option<ResolvedPersona>,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
     context_type: ChatContextType,
@@ -2921,7 +2925,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             plugin_dir,
             conversation,
             user_message,
-            persona: None,
+            persona,
             agent_name_override,
             agent_profile,
             context_type,
@@ -2958,6 +2962,7 @@ pub async fn build_command_for_harness(
     plugin_dir: &Path,
     conversation: &ChatConversation,
     user_message: &str,
+    persona: Option<ResolvedPersona>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2982,7 +2987,7 @@ pub async fn build_command_for_harness(
             plugin_dir,
             conversation,
             user_message,
-            persona: None,
+            persona,
             working_directory,
             entity_status,
             project_id,
@@ -3639,6 +3644,7 @@ pub async fn build_resume_command_for_harness(
     context_type: ChatContextType,
     context_id: &str,
     message: &str,
+    persona: Option<ResolvedPersona>,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
     working_directory: &Path,
@@ -3670,7 +3676,7 @@ pub async fn build_resume_command_for_harness(
             context_type,
             context_id,
             message,
-            persona: None,
+            persona,
             agent_name_override,
             agent_profile,
             working_directory,
@@ -5377,6 +5383,7 @@ exit 0
                 "continue with the selected file",
                 None,
                 None,
+                None,
                 temp.path(),
                 session_id,
                 Some(project_id.as_str()),
@@ -5478,6 +5485,7 @@ exit 0
                 ChatContextType::Project,
                 project_id.as_str(),
                 "continue the accepted plan",
+                None,
                 Some(agent_names::AGENT_ORCHESTRATOR_IDEATION),
                 Some("plan"),
                 temp.path(),
@@ -5676,7 +5684,7 @@ exit 0
             )
             .await;
 
-        let launch_plan = build_launch_plan_for_harness(
+        let launch_plan = build_launch_plan_for_harness_for_test(
             AgentHarnessKind::Codex,
             &cli_path,
             &plugin_dir,
@@ -5753,6 +5761,7 @@ exit 0
             ChatContextType::Project,
             conversation_id,
             "continue from a queued Codex project message",
+            None,
             Some(agent_names::AGENT_GENERAL_WORKER),
             None,
             temp.path(),
@@ -5822,6 +5831,7 @@ exit 0
             ChatContextType::Project,
             project_id.as_str(),
             "continue from an old Codex CLI",
+            None,
             Some(agent_names::AGENT_GENERAL_WORKER),
             None,
             temp.path(),

@@ -13,13 +13,19 @@ use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRun, AgentRunId, AgentRunStatus, ChatAttachment,
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus,
-    IdeationSession, IdeationSessionStatus, ProjectId, SessionPurpose, VerificationRoundSnapshot,
-    VerificationRunSnapshot, VerificationStatus,
+    IdeationSession, IdeationSessionStatus, Persona, PersonaId, PersonaStatus, ProjectId,
+    SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
 };
-use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
+use crate::domain::repositories::{
+    AgentProviderSettingsRepository, PersonaRepository,
+    QueuedMessageRepository,
+};
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
-use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+use crate::infrastructure::memory::{
+    MemoryAgentProviderSettingsRepository, MemoryPersonaRepository,
+};
+use chrono::Utc;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -858,6 +864,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         "session-paused",
         conversation_id,
         "session-cli",
+        false,
         &app_state.message_queue,
         None,
         None,
@@ -937,6 +944,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             "session-spawn-fails",
             conversation_id,
             "session-cli",
+            false,
             &message_queue,
             None,
             None,
@@ -1042,6 +1050,7 @@ EOF
             "session-success",
             conversation_id,
             "session-cli",
+            false,
             &message_queue,
             None,
             None,
@@ -1191,6 +1200,7 @@ EOF
             child_id.as_str(),
             ChatConversationId::new(),
             "session-cli",
+            false,
             &message_queue,
             None,
             None,
@@ -1239,8 +1249,132 @@ EOF
     assert!(!snapshot.in_progress);
 }
 
+#[cfg(unix)]
+async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -> bool {
+    let mut state = AppState::new_test();
+    let persona_repo = Arc::new(MemoryPersonaRepository::new());
+    let persona = Persona {
+        id: PersonaId::from("queued-resume-persona"),
+        slug: "queued-resume-persona".to_string(),
+        name: "Queued Resume Persona".to_string(),
+        description: "queue resume fixture".to_string(),
+        content: "Use the queued persona voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "queued-resume-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed queued resume persona");
+    state.persona_repo = persona_repo;
+    let project_id = ProjectId::from_string("queued-resume-project".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.persona_id = Some(persona.id.to_string());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed queued resume conversation");
+    let message_queue = Arc::clone(&state.message_queue);
+    let running_agent_registry = Arc::clone(&state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let chat_message_repo = Arc::clone(&state.chat_message_repo);
+    let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let activity_event_repo = Arc::clone(&state.activity_event_repo);
+    let task_repo = Arc::clone(&state.task_repo);
+    let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let temp = tempfile::tempdir().expect("temporary queued resume runtime");
+    let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository root")
+        .join("plugins/app");
+    let persona_marker = temp.path().join("persona-was-injected");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  [ -f \"$arg\" ] && grep -q '<ralphx_agent_persona>' \"$arg\" && touch '{}'\ndone\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"queue-resume-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
+            persona_marker.display()
+        ),
+    )
+    .expect("write fake queued resume cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake queued resume cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions)
+        .expect("mark fake queued resume cli executable");
+    let mut queued = crate::domain::services::QueuedMessage::new("queued follow-up".to_string());
+    queued.agent_name_override = agent_name_override.map(str::to_string);
+    message_queue.queue_front_existing(ChatContextType::Project, project_id.as_str(), queued);
+
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Project,
+            AgentHarnessKind::Claude,
+            project_id.as_str(),
+            project_id.as_str(),
+            conversation_id,
+            "queue-resume-session",
+            true,
+            &message_queue,
+            None,
+            None,
+            &running_agent_registry,
+            &agent_run_repo,
+            &chat_message_repo,
+            None,
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            &cli_path,
+            &plugin_dir,
+            temp.path(),
+            None,
+            None,
+            Some(app.handle().clone()),
+            Some(project_id.as_str()),
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            super::StreamingStateCache::new(),
+        )
+        .await;
+
+    assert_eq!(outcome.total_processed, 1);
+    persona_marker.exists()
+}
+
+#[cfg(unix)]
 #[tokio::test]
-async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
+async fn queued_resume_resolves_inherit_persona_unless_agent_override_is_set() {
+    assert!(
+        process_queue_resume_persona_block(None).await,
+        "bound Project persona must reach the real queued resume command"
+    );
+    assert!(
+        !process_queue_resume_persona_block(Some("ralphx-queued-agent")).await,
+        "queued agent override must suppress the inherited persona block"
+    );
+}
+
+#[tokio::test]
+async fn send_queued_message_now_preserves_suppress_directive_and_agent_override() {
     use crate::application::chat_service::{ChatService, MockChatService};
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
     use crate::domain::entities::PersonaDirective;
@@ -1394,6 +1528,7 @@ async fn queue_processing_links_selected_attachments_before_spawn_failure() {
             "session-queued-attachments",
             conversation_id,
             "session-cli",
+            false,
             &message_queue,
             None,
             None,
@@ -1569,6 +1704,8 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         app_handle: Some(app_handle),
         run_chain_id: None,
         is_retry_attempt: false,
+        persona_feature_enabled: false,
+        agent_name_override_set: false,
         user_message_content: Some("initial prompt".to_string()),
         turn_metadata: None,
         conversation: Some(conversation),
@@ -1699,6 +1836,8 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         app_handle: Some(app_handle),
         run_chain_id: None,
         is_retry_attempt: false,
+        persona_feature_enabled: false,
+        agent_name_override_set: false,
         user_message_content: Some("initial prompt".to_string()),
         turn_metadata: None,
         conversation: Some(conversation),

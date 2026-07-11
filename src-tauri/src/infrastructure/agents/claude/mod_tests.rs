@@ -940,6 +940,82 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
 }
 
 #[test]
+fn all_inherit_families_resolve_through_add_prompt_args_seam() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: test-agent\nrole: test\n",
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+
+    let working_directory = tempfile::tempdir().expect("working directory");
+    let persona = "<ralphx_agent_persona>Inherited voice</ralphx_agent_persona>";
+    let commands = [
+        build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
+            std::path::Path::new("/fake/claude"),
+            &plugin_dir,
+            "continue",
+            Some("test-agent"),
+            None,
+            Some(persona),
+            Some("resume-session"),
+            working_directory.path(),
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("noninteractive inherit command"),
+        build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
+            std::path::Path::new("/fake/claude"),
+            &plugin_dir,
+            "continue",
+            Some("test-agent"),
+            None,
+            Some(persona),
+            Some("resume-session"),
+            working_directory.path(),
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("interactive inherit command"),
+    ];
+
+    for command in commands {
+        let args = command.get_args_for_test().into_iter().collect::<Vec<_>>();
+        let prompt = args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt-file")
+            .map(|index| read_test_file(&args[index + 1]))
+            .or_else(|| {
+                args.iter()
+                    .position(|arg| arg == "--append-system-prompt")
+                    .map(|index| args[index + 1].clone())
+            })
+            .expect("append-system-prompt argument");
+        assert!(
+            prompt.contains(persona),
+            "inherit family must route through add_prompt_args with the persona block"
+        );
+    }
+}
+
+#[test]
+fn native_agent_flag_bypass_reports_injection_skipped() {
+    assert_eq!(
+        persona_injection_skipped_reason(true, true),
+        Some("native_agent_flag")
+    );
+    assert_eq!(persona_injection_skipped_reason(false, true), None);
+    assert_eq!(persona_injection_skipped_reason(false, false), None);
+}
+
+#[test]
 fn test_create_mcp_config_uses_claude_external_mcp_transport() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     std::fs::create_dir_all(root.join("agents/ralphx-chat-project"))

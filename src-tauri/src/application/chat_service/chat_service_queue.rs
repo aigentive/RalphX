@@ -18,12 +18,13 @@ use super::chat_service_types::{
 };
 use super::has_meaningful_output;
 use super::{
-    coordination_mode_enables_team, team_intent_for_persisted_coordination_mode, ChatService,
-    SendMessageOptions,
+    coordination_mode_enables_team, persona_resolve_flags_for_conversation,
+    team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
 };
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
@@ -31,12 +32,12 @@ use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
     ChatContextType, ChatConversationId, ChatMessageId, CoordinationMode, IdeationSessionId,
-    InternalStatus, MessageRole, ProjectId, SessionPurpose, TaskId, TeamIntent,
+    InternalStatus, MessageRole, PersonaDirective, ProjectId, SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    ArtifactRepository, ChatMessageRepository, ChatTimelineRepository, IdeationSessionRepository,
-    QueuedMessageRepository, TaskRepository,
+    ActivityEventRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, ArtifactRepository, ChatMessageRepository, ChatTimelineRepository,
+    IdeationSessionRepository, QueuedMessageRepository, TaskRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -556,6 +557,59 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     }
 }
 
+async fn resolve_queue_resume_persona<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    feature_enabled: bool,
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+    directive: &PersonaDirective,
+    agent_name_override_set: bool,
+) -> Result<Option<crate::application::persona_prompt::ResolvedPersona>, String> {
+    if !feature_enabled {
+        return Ok(None);
+    }
+
+    let Some(handle) = app_handle else {
+        return Ok(None);
+    };
+    let Some(app_state) = handle.try_state::<AppState>() else {
+        return Ok(None);
+    };
+    let conversation = app_state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| format!("Persona conversation lookup failed: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "Persona conversation {} was not found",
+                conversation_id.as_str()
+            )
+        })?;
+    let workspace_mode = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
+        .map(|workspace| workspace.mode);
+
+    resolve_persona_for_send(
+        &conversation,
+        directive,
+        persona_resolve_flags_for_conversation(
+            feature_enabled,
+            false,
+            agent_name_override_set,
+            context_type,
+            &conversation,
+            workspace_mode,
+        ),
+        Arc::clone(&app_state.persona_repo),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
 async fn fail_queued_agent_run(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
@@ -653,6 +707,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     queue_context_id: &str,
     conversation_id: ChatConversationId,
     session_id: &str,
+    persona_feature_enabled: bool,
     message_queue: &Arc<MessageQueue>,
     queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -862,6 +917,42 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_msg.id,
                 queued_msg.content.len()
             );
+
+            let resolved_persona = match resolve_queue_resume_persona(
+                app_handle.as_ref(),
+                persona_feature_enabled,
+                context_type,
+                &conversation_id,
+                &queued_msg.persona_directive,
+                queued_msg.agent_name_override.is_some(),
+            )
+            .await
+            {
+                Ok(persona) => persona,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        %context_type,
+                        context_id,
+                        "queue resume persona resolution blocked spawn"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            };
 
             // Emit queue sent event (removes from frontend optimistic UI)
             if let Some(ref handle) = app_handle {
@@ -1415,6 +1506,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 context_type,
                 context_id,
                 &runtime_content,
+                resolved_persona,
                 queued_agent_context.identity.agent_name,
                 queued_agent_context.identity.agent_profile,
                 working_directory,
@@ -2133,6 +2225,7 @@ mod tests {
             "session-queued-switch",
             ChatConversationId::new(),
             "claude-session-old",
+            false,
             &message_queue,
             None,
             None,

@@ -20,6 +20,8 @@ mod chat_service_merge;
 mod chat_service_mock;
 mod chat_service_queue;
 mod chat_service_recovery;
+#[doc(hidden)]
+pub use chat_service_recovery::attempt_session_recovery;
 mod chat_service_replay;
 mod chat_service_repository;
 mod chat_service_send_background;
@@ -47,8 +49,11 @@ use crate::application::integration_reference_expansion::{
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
-use crate::application::question_state::QuestionState;
 use crate::application::notification_service::NotificationService;
+use crate::application::persona_prompt::ResolvedPersona;
+use crate::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
+use crate::application::question_state::QuestionState;
+use crate::application::AppState;
 use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
@@ -60,9 +65,9 @@ use crate::domain::entities::{
     AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
-    ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
-    CoordinationMode, InternalStatus, MessageRole, PersonaDirective, ProjectId, TaskId, TeamIntent,
-    TeamMessageTarget,
+    ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
+    IdeationSessionId, InternalStatus, MessageRole, PersonaDirective, ProjectId, TaskId,
+    TeamIntent, TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -72,9 +77,9 @@ use crate::domain::repositories::{
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
-    ReviewRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -92,7 +97,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 
 /// Prefix used when formatting agent errors into chat messages.
@@ -106,20 +111,20 @@ const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user
 #[doc(hidden)]
 pub use chat_service_context::create_assistant_message;
 pub use chat_service_context::{
-    build_command, build_initial_prompt, build_resume_command, build_resume_command_for_harness,
-    build_resume_initial_prompt, format_attachments_for_agent, format_session_history,
-    get_entity_status_for_resume, is_text_file, provider_resume_mode_for_session_under,
-    resolve_working_directory, ProviderResumeMode,
+    build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
+    build_resume_command_for_harness, build_resume_initial_prompt, format_attachments_for_agent,
+    format_session_history, get_entity_status_for_resume, is_text_file,
+    provider_resume_mode_for_session_under, resolve_working_directory, ProviderResumeMode,
 };
 pub use chat_service_errors::{
     classify_agent_error, classify_codex_stream_failure, classify_provider_error,
     parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
     ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
 };
-pub use chat_service_helpers::{harness_supports_rx_native_team, harness_supports_team_mode};
 pub use chat_service_helpers::{
     context_type_to_process, get_agent_name, get_assistant_role, resolve_agent_with_team_mode,
 };
+pub use chat_service_helpers::{harness_supports_rx_native_team, harness_supports_team_mode};
 pub use chat_service_merge::{
     merge_completion_watcher_loop, resolve_watcher_context, verify_merge_on_target,
     AutoCompleteGuard, MergeVerification,
@@ -580,7 +585,7 @@ fn resolve_agent_name_for_send<'a>(
 /// Without this guard, an ideation session linked to a workspace in `Ideation`
 /// mode resolved to `ralphx-chat-project`, which lacks the proposal/plan/finalize
 /// tools, so the session produced no durable ideation outputs.
-fn agent_conversation_mode_for_send(
+pub(super) fn agent_conversation_mode_for_send(
     context_type: ChatContextType,
     conversation_agent_mode: Option<AgentConversationWorkspaceMode>,
     workspace_mode: Option<AgentConversationWorkspaceMode>,
@@ -592,6 +597,40 @@ fn agent_conversation_mode_for_send(
         }
         _ => resolved,
     }
+}
+
+/// Keep all send, resume, and recovery persona gates on the same effective mode.
+/// Persona eligibility is currently limited to Project conversations, so verification
+/// children (which are Ideation conversations) do not supply a separate signal here.
+pub(super) fn persona_resolve_flags_for_conversation(
+    feature_enabled: bool,
+    is_external_mcp: bool,
+    agent_name_override_set: bool,
+    context_type: ChatContextType,
+    conversation: &ChatConversation,
+    workspace_mode: Option<AgentConversationWorkspaceMode>,
+) -> PersonaResolveFlags {
+    PersonaResolveFlags {
+        feature_enabled,
+        is_external_mcp,
+        agent_name_override_set,
+        agent_conversation_mode: agent_conversation_mode_for_send(
+            context_type,
+            conversation.agent_mode,
+            workspace_mode,
+        ),
+        is_verification: false,
+    }
+}
+
+/// PR-17/PR-19 will make `persona_builder` a real workspace mode. Keeping the
+/// predicate explicit now makes the no-read-roots rule fail closed the moment
+/// that mode is introduced, while remaining inert for today's typed modes.
+pub fn persona_builder_requires_live_draft_session(
+    agent_mode: Option<&str>,
+    has_live_draft_session: bool,
+) -> bool {
+    matches!(agent_mode, Some("persona_builder")) && !has_live_draft_session
 }
 
 fn plan_mode_runtime_message(
@@ -919,12 +958,8 @@ pub trait ChatService: Send + Sync {
         task_state: &str,
         project_id: &str,
     ) -> Result<SendResult, ChatServiceError> {
-        let options = task_runtime_bootstrap_send_options(
-            context_type,
-            context_id,
-            task_state,
-            project_id,
-        );
+        let options =
+            task_runtime_bootstrap_send_options(context_type, context_id, task_state, project_id);
         self.send_message(context_type, context_id, message, options)
             .await
     }
@@ -1048,6 +1083,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
+    persona_repo: Option<Arc<dyn PersonaRepository>>,
+    persona_feature_enabled: bool,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     task_repo: Arc<dyn TaskRepository>,
@@ -1139,6 +1176,9 @@ impl<R: Runtime> AppChatService<R> {
             chat_attachment_repo,
             artifact_repo,
             conversation_repo,
+            persona_repo: None,
+            persona_feature_enabled:
+                crate::infrastructure::agents::claude::ui_feature_flags_config().agent_personas,
             agent_run_repo,
             project_repo,
             task_repo,
@@ -1195,6 +1235,17 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
         self.chat_timeline_repo = Some(repo);
+        self
+    }
+
+    pub fn with_persona_repo(mut self, repo: Arc<dyn PersonaRepository>) -> Self {
+        self.persona_repo = Some(repo);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_persona_feature_enabled(mut self, enabled: bool) -> Self {
+        self.persona_feature_enabled = enabled;
         self
     }
 
@@ -2360,6 +2411,11 @@ impl<R: Runtime> AppChatService<R> {
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+        if self.persona_feature_enabled {
+            if let Some(app_state) = app_handle.try_state::<AppState>() {
+                self.persona_repo = Some(Arc::clone(&app_state.persona_repo));
+            }
+        }
         self.app_handle = Some(app_handle);
         self
     }
@@ -3258,6 +3314,7 @@ impl<R: Runtime> AppChatService<R> {
         &self,
         conversation: &ChatConversation,
         message: &str,
+        persona: Option<ResolvedPersona>,
         agent_name_override: Option<&str>,
         agent_profile: Option<&str>,
         context_type: ChatContextType,
@@ -3337,13 +3394,20 @@ impl<R: Runtime> AppChatService<R> {
             working_directory,
         )
         .await;
+        let persona_injection_skipped_reason =
+            crate::infrastructure::agents::claude::persona_injection_skipped_reason(
+                crate::infrastructure::agents::claude::native_agent_flag_enabled(),
+                persona.is_some(),
+            );
+        let persona_id = persona.as_ref().map(|persona| persona.id.to_string());
         let build_plan_started = Instant::now();
-        let mut launch_plan = chat_service_context::build_launch_plan_for_harness(
+        let mut launch_plan = chat_service_context::build_launch_plan_for_harness_with_persona(
             effective_harness,
             &cli_path,
             &plugin_dir,
             conversation,
             message,
+            persona,
             agent_name_override,
             agent_profile,
             context_type,
@@ -3379,6 +3443,16 @@ impl<R: Runtime> AppChatService<R> {
             ChatServiceError::SpawnFailed(error)
         })?;
         launch_plan.apply_provider_env(&provider_env);
+        if let (Some(reason), Some(persona_id)) = (persona_injection_skipped_reason, persona_id) {
+            self.emit_event(
+                "persona:injection_skipped",
+                serde_json::json!({
+                    "conversation_id": conversation.id.as_str(),
+                    "persona_id": persona_id,
+                    "reason": reason,
+                }),
+            );
+        }
         tracing::info!(
             %context_type,
             context_id,
@@ -3644,6 +3718,36 @@ impl<R: Runtime> AppChatService<R> {
             // Other contexts don't have status-based agent resolution yet
             ChatContextType::Project => None,
         }
+    }
+
+    async fn resolve_persona_for_send(
+        &self,
+        conversation: &ChatConversation,
+        options: &SendMessageOptions,
+        workspace_mode: Option<AgentConversationWorkspaceMode>,
+    ) -> Result<Option<ResolvedPersona>, ChatServiceError> {
+        if !self.persona_feature_enabled {
+            return Ok(None);
+        }
+        let Some(persona_repo) = self.persona_repo.as_ref() else {
+            return Ok(None);
+        };
+
+        resolve_persona_for_send(
+            conversation,
+            &options.persona_directive,
+            persona_resolve_flags_for_conversation(
+                self.persona_feature_enabled,
+                options.is_external_mcp,
+                options.agent_name_override.is_some(),
+                conversation.context_type,
+                conversation,
+                workspace_mode,
+            ),
+            Arc::clone(persona_repo),
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -4023,6 +4127,35 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     conversation
                 }
             };
+            if self.persona_feature_enabled {
+                let gate_workspace = self
+                    .load_agent_conversation_workspace(
+                        context_type,
+                        &conversation.context_id,
+                        Some(&conversation.id),
+                    )
+                    .await?;
+                if persona_builder_requires_live_draft_session(
+                    conversation
+                        .agent_mode
+                        .map(|mode| mode.to_string())
+                        .as_deref(),
+                    false,
+                ) {
+                    return Err(ChatServiceError::PersonaUnavailable(
+                        "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
+                            .to_string(),
+                    ));
+                }
+                let _resolved_persona = self
+                    .resolve_persona_for_send(
+                        &conversation,
+                        &options,
+                        gate_workspace.as_ref().map(|workspace| workspace.mode),
+                    )
+                    .await?;
+            }
+            // PR-13 completes the comparison against IPR persona metadata.
             let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
             let turn_attachments = if resume_in_place {
                 Vec::new()
@@ -4305,6 +4438,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             agent_conversation_mode,
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
+        if self.persona_feature_enabled
+            && persona_builder_requires_live_draft_session(
+                conversation
+                    .agent_mode
+                    .map(|mode| mode.to_string())
+                    .as_deref(),
+                false,
+            )
+        {
+            return Err(ChatServiceError::PersonaUnavailable(
+                "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
+                    .to_string(),
+            ));
+        }
+        let resolved_persona = self
+            .resolve_persona_for_send(
+                &conversation,
+                &options,
+                agent_workspace.as_ref().map(|workspace| workspace.mode),
+            )
+            .await?;
         if matches!(
             agent_conversation_mode,
             Some(
@@ -5095,40 +5249,41 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             spawn_settings_started,
         );
         let provider_spawn_check_started = Instant::now();
-        let provider_settings_for_spawn =
-            if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
-                if let Err(error) = crate::application::ensure_provider_spawn_enabled(
-                    provider_repo,
-                    resolved_spawn_settings.effective_harness,
-                    "send_agent_message",
-                )
+        let provider_settings_for_spawn = if let Some(provider_repo) =
+            self.agent_provider_settings_repo.as_ref()
+        {
+            if let Err(error) = crate::application::ensure_provider_spawn_enabled(
+                provider_repo,
+                resolved_spawn_settings.effective_harness,
+                "send_agent_message",
+            )
+            .await
+            {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+            }
+            match provider_repo
+                .get(resolved_spawn_settings.effective_harness)
                 .await
-                {
-                    cleanup_and_err!(ChatServiceError::SpawnFailed(error));
-                }
-                match provider_repo
-                    .get(resolved_spawn_settings.effective_harness)
-                    .await
-                    .map_err(|error| error.to_string())
-                {
-                    Ok(settings) => settings,
-                    Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
-                }
-            } else if uses_execution_slot(context_type) {
-                tracing::error!(
-                    %context_type,
-                    context_id,
-                    runtime_context_id = %runtime_context_id,
-                    harness = %resolved_spawn_settings.effective_harness,
-                    "Provider settings repository missing for slot-consuming runtime spawn"
-                );
-                cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                .map_err(|error| error.to_string())
+            {
+                Ok(settings) => settings,
+                Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
+            }
+        } else if uses_execution_slot(context_type) {
+            tracing::error!(
+                %context_type,
+                context_id,
+                runtime_context_id = %runtime_context_id,
+                harness = %resolved_spawn_settings.effective_harness,
+                "Provider settings repository missing for slot-consuming runtime spawn"
+            );
+            cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
                     "Provider settings were unavailable for {} runtime; spawn blocked to avoid bypassing disabled-provider policy.",
                     context_type
                 )));
-            } else {
-                None
-            };
+        } else {
+            None
+        };
         if options.service_tier_override.is_none() && resolved_spawn_settings.service_tier.is_none()
         {
             if let Some(service_tier) = provider_settings_for_spawn
@@ -5270,25 +5425,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         ));
 
         // 3. Emit run started event (deferred from step 3 to include effective model info)
-        self.emit_event(
-            "agent:run_started",
-            {
-                let mut payload = AgentRunStartedPayload::with_provider_session(
-                    agent_run_id.clone(),
-                    conversation_id.as_str().to_string(),
-                    context_type.to_string(),
-                    context_id.to_string(),
-                    run_chain_id.clone(),
-                    None,
-                    Some(effective_model_id.clone()),
-                    effective_model_label,
-                    Some(resolved_spawn_settings.effective_harness),
-                    stored_session_id.clone(),
-                );
-                payload.service_tier = resolved_spawn_settings.service_tier.clone();
-                payload
-            },
-        );
+        self.emit_event("agent:run_started", {
+            let mut payload = AgentRunStartedPayload::with_provider_session(
+                agent_run_id.clone(),
+                conversation_id.as_str().to_string(),
+                context_type.to_string(),
+                context_id.to_string(),
+                run_chain_id.clone(),
+                None,
+                Some(effective_model_id.clone()),
+                effective_model_label,
+                Some(resolved_spawn_settings.effective_harness),
+                stored_session_id.clone(),
+            );
+            payload.service_tier = resolved_spawn_settings.service_tier.clone();
+            payload
+        });
 
         // Fetch recent session messages when spawning a new process. The agent has no prior
         // context at spawn time, so we inject the history into the bootstrap prompt.
@@ -5365,6 +5517,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .spawn_process_for_harness(
                 &conversation,
                 &runtime_message,
+                resolved_persona,
                 Some(resolved_agent_name.as_str()),
                 agent_profile,
                 context_type,
@@ -5537,6 +5690,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             app_handle: self.app_handle.clone(),
             run_chain_id,
             is_retry_attempt: false,
+            persona_feature_enabled: self.persona_feature_enabled,
+            agent_name_override_set: options.agent_name_override.is_some(),
             user_message_content: Some(message.to_string()),
             turn_metadata: options.metadata.clone(),
             conversation: Some(conversation.clone()),
@@ -6850,7 +7005,8 @@ mod provider_spawn_gate_tests {
     }
 
     #[tokio::test]
-    async fn slot_runtime_spawn_fails_closed_without_provider_settings_repo_without_execution_state() {
+    async fn slot_runtime_spawn_fails_closed_without_provider_settings_repo_without_execution_state(
+    ) {
         let state = AppState::new_test();
         let temp_dir = tempfile::tempdir().expect("project dir");
         let worktree_dir = tempfile::tempdir().expect("worktree dir");

@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::application::git_service::GitService;
 use crate::application::notification_service::NotificationService;
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
@@ -31,18 +32,18 @@ use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
-    MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
-    SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata, VerificationGap,
-    VerificationStatus,
+    MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote, ReviewOutcome,
+    ReviewerType, SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata,
+    VerificationGap, VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    ActivityEventRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -336,6 +337,45 @@ impl RecoveryRetryAppRepos {
             delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
         }
     }
+}
+
+async fn resolve_recovery_retry_persona<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    feature_enabled: bool,
+    conversation: &ChatConversation,
+    context_type: ChatContextType,
+    agent_name_override_set: bool,
+) -> Result<Option<crate::application::persona_prompt::ResolvedPersona>, String> {
+    if !feature_enabled {
+        return Ok(None);
+    }
+    let Some(handle) = app_handle else {
+        return Ok(None);
+    };
+    let Some(app_state) = handle.try_state::<AppState>() else {
+        return Ok(None);
+    };
+    let workspace_mode = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
+        .map(|workspace| workspace.mode);
+    resolve_persona_for_send(
+        conversation,
+        &PersonaDirective::Inherit,
+        super::persona_resolve_flags_for_conversation(
+            feature_enabled,
+            false,
+            agent_name_override_set,
+            context_type,
+            conversation,
+            workspace_mode,
+        ),
+        Arc::clone(&app_state.persona_repo),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 fn queue_verification_auto_continue(
@@ -825,6 +865,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     app_handle: &Option<AppHandle<R>>,
     run_chain_id: Option<String>,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     user_message_content: Option<&str>,
     retry_conv: ChatConversation,
     agent_name: Option<&str>,
@@ -895,6 +937,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
         app_handle: app_handle.clone(),
         run_chain_id,
         is_retry_attempt: true,
+        persona_feature_enabled,
+        agent_name_override_set,
         user_message_content: user_message_content.map(str::to_string),
         turn_metadata: None,
         conversation: Some(retry_conv),
@@ -2039,6 +2083,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     stored_session_id: Option<&str>,
     effective_harness: AgentHarnessKind,
     is_retry_attempt: bool,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     user_message_content: Option<&str>,
     conversation: Option<&ChatConversation>,
     resolved_project_id: Option<String>,
@@ -2389,6 +2435,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Some(Arc::clone(ideation_session_repo)),
                     task_proposal_repo.clone(),
                     agent_provider_settings_repo.as_ref().map(Arc::clone),
+                    persona_feature_enabled,
+                    agent_name_override_set,
                     &session_id,
                     app_handle.as_ref(),
                 )
@@ -2426,48 +2474,61 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             agent_lane_settings_repo.as_ref().map(Arc::clone);
                         let retry_agent_provider_settings_repo =
                             agent_provider_settings_repo.as_ref().map(Arc::clone);
+                        let retry_persona = resolve_recovery_retry_persona(
+                            app_handle,
+                            persona_feature_enabled,
+                            conv,
+                            context_type,
+                            agent_name_override_set,
+                        )
+                        .await;
 
-                        let retry_provider_spawnable =
-                            chat_service_context::build_resume_command_for_harness(
-                                recovery_harness,
-                                cli_path,
-                                plugin_dir,
-                                context_type,
-                                context_id,
-                                msg,
-                                None,
-                                None,
-                                working_directory,
-                                &new_session_id,
-                                resolved_project_id.as_deref(),
-                                &[],
-                                if context_type == ChatContextType::Project {
-                                    Some(conversation_id.as_str())
-                                } else {
-                                    None
-                                },
-                                team_mode,
-                                Arc::clone(chat_attachment_repo),
-                                Arc::clone(artifact_repo),
-                                retry_agent_lane_settings_repo.clone(),
-                                retry_app_repos.ideation_effort_settings_repo.clone(),
-                                retry_app_repos.ideation_model_settings_repo.clone(),
-                                Arc::clone(ideation_session_repo),
-                                Arc::clone(
-                                    retry_app_repos
-                                        .delegated_session_repo
-                                        .as_ref()
-                                        .expect("delegated session repo available"),
-                                ),
-                                Arc::clone(task_repo),
-                                &[],
-                                0,
-                                None,
-                                None,
-                                false,
-                                None,
-                            )
-                            .await;
+                        let retry_provider_spawnable = match retry_persona {
+                            Ok(persona) => {
+                                chat_service_context::build_resume_command_for_harness(
+                                    recovery_harness,
+                                    cli_path,
+                                    plugin_dir,
+                                    context_type,
+                                    context_id,
+                                    msg,
+                                    persona,
+                                    None,
+                                    None,
+                                    working_directory,
+                                    &new_session_id,
+                                    resolved_project_id.as_deref(),
+                                    &[],
+                                    if context_type == ChatContextType::Project {
+                                        Some(conversation_id.as_str())
+                                    } else {
+                                        None
+                                    },
+                                    team_mode,
+                                    Arc::clone(chat_attachment_repo),
+                                    Arc::clone(artifact_repo),
+                                    retry_agent_lane_settings_repo.clone(),
+                                    retry_app_repos.ideation_effort_settings_repo.clone(),
+                                    retry_app_repos.ideation_model_settings_repo.clone(),
+                                    Arc::clone(ideation_session_repo),
+                                    Arc::clone(
+                                        retry_app_repos
+                                            .delegated_session_repo
+                                            .as_ref()
+                                            .expect("delegated session repo available"),
+                                    ),
+                                    Arc::clone(task_repo),
+                                    &[],
+                                    0,
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(format!("Persona unavailable: {error}")),
+                        };
                         let retry_provider_gate = RecoveryRetryProviderGate::new(
                             app_handle,
                             &retry_agent_provider_settings_repo,
@@ -2522,6 +2583,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         plan_branch_repo,
                                         app_handle,
                                         run_chain_id.clone(),
+                                        persona_feature_enabled,
+                                        agent_name_override_set,
                                         user_message_content,
                                         retry_conv,
                                         agent_name,

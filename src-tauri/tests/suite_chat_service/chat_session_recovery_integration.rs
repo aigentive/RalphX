@@ -6,18 +6,92 @@
 #![allow(unused_imports)]
 
 use chrono::Utc;
-use std::sync::Arc;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use ralphx_lib::application::chat_service::{AGENT_ERROR_PREFIX, STALE_SESSION_ERROR};
+use ralphx_lib::application::chat_service::{
+    attempt_session_recovery, AGENT_ERROR_PREFIX, STALE_SESSION_ERROR,
+};
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, IdeationSessionId,
-    MessageRole, ProjectId, TaskId,
+    MessageRole, Persona, PersonaDirective, PersonaId, PersonaStatus, ProjectId, TaskId,
 };
-use ralphx_lib::domain::repositories::{ChatConversationRepository, ChatMessageRepository};
+use ralphx_lib::domain::repositories::{
+    ChatConversationRepository, ChatMessageRepository, PersonaRepository,
+};
 use ralphx_lib::infrastructure::memory::{
-    MemoryChatConversationRepository, MemoryChatMessageRepository,
+    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
+    MemoryChatMessageRepository, MemoryPersonaRepository,
 };
+
+use crate::support::erroring_persona_repository::ErroringPersonaRepository;
+
+fn claude_spawn_override_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[allow(clippy::await_holding_lock)]
+async fn with_claude_spawn_allowed_in_tests<T, Fut>(f: impl FnOnce() -> Fut) -> T
+where
+    Fut: Future<Output = T>,
+{
+    let _guard = claude_spawn_override_lock().lock().expect("lock poisoned");
+    let _env_guard =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    f().await
+}
+
+fn repo_plugin_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repository root")
+        .join("plugins/app")
+}
+
+fn final_spawnable_command(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> String {
+    let args = spawnable.get_args_for_test();
+    let mut rendered = args.join("\n");
+    for window in args.windows(2) {
+        if window[0] == "--append-system-prompt-file" {
+            rendered.push('\n');
+            rendered.push_str(&std::fs::read_to_string(&window[1]).expect("read persona prompt"));
+        }
+    }
+    rendered
+}
+
+async fn bound_project_persona() -> (ChatConversation, Arc<MemoryPersonaRepository>) {
+    let repo = Arc::new(MemoryPersonaRepository::new());
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("recovery-bound-persona"),
+        slug: "recovery-bound-persona".to_string(),
+        name: "Recovery Bound Persona".to_string(),
+        description: "recovery command fixture".to_string(),
+        content: "Use the recovery persona voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "recovery-bound-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(persona.clone())
+        .await
+        .expect("seed active recovery persona");
+
+    let mut conversation = ChatConversation::new_project(ProjectId::from_string(
+        "recovery-persona-project".to_string(),
+    ));
+    conversation.persona_id = Some(persona.id.to_string());
+    (conversation, repo)
+}
 
 // ============================================================================
 // Test Harness
@@ -131,6 +205,176 @@ impl TestHarness {
 // ============================================================================
 // Session Recovery Flow Tests
 // ============================================================================
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_resolves_persona_from_conversation_row_before_build() {
+    let (conversation, persona_repo) = bound_project_persona().await;
+    let conversation_id = conversation.id;
+    let mut state = ralphx_lib::application::AppState::new_test();
+    state.persona_repo = persona_repo;
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("persist recovery conversation");
+    let mut history = ChatMessage::user_in_project(
+        ProjectId::from_string(conversation.context_id.as_str().to_string()),
+        "prior recovery turn",
+    );
+    history.conversation_id = Some(conversation_id);
+    state
+        .chat_message_repo
+        .create(history)
+        .await
+        .expect("persist recovery history");
+    let message_repo = Arc::clone(&state.chat_message_repo);
+    let conversation_repo = Arc::clone(&state.chat_conversation_repo);
+    let attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("temporary recovery runtime");
+    let persona_marker = temp.path().join("persona-was-injected");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  [ -f \"$arg\" ] && grep -q '<ralphx_agent_persona>' \"$arg\" && touch '{}'\ndone\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"recovered-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
+            persona_marker.display()
+        ),
+    )
+    .expect("write fake recovery cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake recovery cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("mark fake recovery cli executable");
+
+    let recovered = with_claude_spawn_allowed_in_tests(|| async {
+        attempt_session_recovery::<tauri::test::MockRuntime>(
+            &conversation_id,
+            &conversation,
+            AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            conversation.context_id.as_str(),
+            "recover this conversation",
+            &cli_path,
+            &repo_plugin_dir(),
+            temp.path(),
+            None,
+            false,
+            message_repo,
+            conversation_repo,
+            attachment_repo,
+            artifact_repo,
+            None,
+            None,
+            None,
+            true,
+            false,
+            "stale-session",
+            Some(&app_handle),
+        )
+        .await
+    })
+    .await
+    .expect("production recovery should rebuild and run the command");
+
+    assert_eq!(recovered, "recovered-session");
+    assert!(
+        persona_marker.exists(),
+        "the production recovery command must contain <ralphx_agent_persona>"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_with_persona_repo_error_fails_closed() {
+    let (conversation, _) = bound_project_persona().await;
+    let conversation_id = conversation.id;
+    let mut state = ralphx_lib::application::AppState::new_test();
+    state.persona_repo = Arc::new(ErroringPersonaRepository);
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("persist poisoned recovery conversation");
+    let mut history = ChatMessage::user_in_project(
+        ProjectId::from_string(conversation.context_id.as_str().to_string()),
+        "prior recovery turn",
+    );
+    history.conversation_id = Some(conversation_id);
+    state
+        .chat_message_repo
+        .create(history)
+        .await
+        .expect("persist poisoned recovery history");
+    let message_repo = Arc::clone(&state.chat_message_repo);
+    let conversation_repo = Arc::clone(&state.chat_conversation_repo);
+    let attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("temporary recovery runtime");
+    let invoked_marker = temp.path().join("recovery-cli-invoked");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        format!("#!/bin/sh\ntouch '{}'\n", invoked_marker.display()),
+    )
+    .expect("write fail-closed fake cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake recovery cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("mark fake recovery cli executable");
+
+    let error = with_claude_spawn_allowed_in_tests(|| async {
+        attempt_session_recovery::<tauri::test::MockRuntime>(
+            &conversation_id,
+            &conversation,
+            AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            conversation.context_id.as_str(),
+            "recover this conversation",
+            &cli_path,
+            &repo_plugin_dir(),
+            temp.path(),
+            None,
+            false,
+            message_repo,
+            conversation_repo,
+            attachment_repo,
+            artifact_repo,
+            None,
+            None,
+            None,
+            true,
+            false,
+            "stale-session",
+            Some(&app_handle),
+        )
+        .await
+    })
+    .await
+    .expect_err("persona repository failure must stop production recovery");
+
+    assert!(
+        error.to_string().contains("persona repository exploded"),
+        "{error}"
+    );
+    assert!(
+        !invoked_marker.exists(),
+        "failed persona resolution must not build or spawn a recovery command"
+    );
+}
 
 /// Test that a stale session triggers recovery and assigns a new session ID
 ///
