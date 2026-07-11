@@ -31,6 +31,7 @@ pub use codex::{
     probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, CodexCliClient, CodexExecCliConfig,
     CodexMcpRuntimeContext, ResolvedCodexCli,
 };
+pub(crate) use harness_agent_catalog::escape_prompt_context_text;
 pub use mock::{MockAgenticClient, MockCall, MockCallType};
 pub use mcp_runtime_context::McpRuntimeContext;
 pub use spawner::AgenticClientSpawner;
