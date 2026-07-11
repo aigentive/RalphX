@@ -24,8 +24,11 @@ describe("useNotificationPreferences", () => {
 
     const { result } = renderHook(() => useNotificationPreferences(), { wrapper });
 
-    expect(result.current.focusedToastsEnabled).toBe(true);
-    await waitFor(() => expect(result.current.focusedToastsEnabled).toBe(false));
-    expect(invokeMock).toHaveBeenCalledWith("get_notification_settings");
+    expect(result.current).toMatchObject({ ready: false, focusedToastsEnabled: false });
+    await waitFor(() => expect(result.current).toMatchObject({
+      ready: true,
+      focusedToastsEnabled: false,
+    }));
+    expect(invokeMock).toHaveBeenCalledWith("get_notification_settings", {});
   });
 });

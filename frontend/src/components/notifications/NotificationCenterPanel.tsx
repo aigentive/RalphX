@@ -1,20 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, X } from "lucide-react";
+import { CheckCircle2, Ellipsis, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { TaskReviewCard } from "@/components/reviews/TaskReviewCard";
+import { ReviewDetailModal } from "@/components/reviews/ReviewDetailModal";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
+import { useNotificationReadActions } from "@/hooks/useNotificationHistory";
 import { cn } from "@/lib/utils";
+import { useProjectStore } from "@/stores/projectStore";
 import { useTaskStore } from "@/stores/taskStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { AttentionItem, Notification } from "@/types/notifications";
 
 import { ATTENTION_CATEGORY_MAPPING, type AttentionGroup } from "./categoryMapping";
 import { NotificationHistoryTab } from "./NotificationHistoryTab";
 import { navigateNotification } from "./notificationNavigation";
-import { ReviewDetailModal } from "@/components/reviews/ReviewDetailModal";
 
 const GROUP_ORDER: AttentionGroup[] = ["Agent requests", "Reviews", "Tasks", "Automations", "Git"];
 
@@ -52,7 +62,15 @@ function permissionExpiry(createdAt: string | undefined, now: number): string | 
   return remaining === 0 ? "expired" : `expires in ${Math.ceil(remaining / 60_000)}m`;
 }
 
-function AttentionItemRow({ item, onOpen }: { item: AttentionItem; onOpen: (item: AttentionItem) => void }) {
+function AttentionItemRow({
+  item,
+  onOpen,
+  projectName,
+}: {
+  item: AttentionItem;
+  onOpen: (item: AttentionItem) => void;
+  projectName: string | undefined;
+}) {
   const presentation = ATTENTION_CATEGORY_MAPPING[item.category];
   const Icon = presentation.icon;
   const [now, setNow] = useState(() => Date.now());
@@ -64,12 +82,21 @@ function AttentionItemRow({ item, onOpen }: { item: AttentionItem; onOpen: (item
   const time = item.category === "permission_request"
     ? permissionExpiry(item.createdAt, now)
     : relativeTime(item.createdAt);
+  const metaTime = item.category === "permission_request" && time ? `⏳ ${time}` : time;
+  const open = () => onOpen(item);
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       data-testid={`attention-item-${item.id}`}
-      onClick={() => onOpen(item)}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      }}
       className="w-full rounded-md p-3 text-left outline-none hover:bg-[var(--bg-hover)]/30 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
       style={{
         backgroundColor: "var(--bg-elevated)", borderColor: "var(--border-subtle)",
@@ -82,12 +109,15 @@ function AttentionItemRow({ item, onOpen }: { item: AttentionItem; onOpen: (item
           <p className="truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>{item.title}</p>
           {item.detail && <p className="mt-1 line-clamp-2 text-sm" style={{ color: "var(--text-muted)" }}>{item.detail}</p>}
           <div className="mt-2 flex items-center justify-between gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
-            <span className="truncate">{[time, item.projectId].filter(Boolean).join(" · ")}</span>
-            {presentation.action && <span className="shrink-0 font-medium" style={{ color: "var(--accent-primary)" }}>{presentation.action}</span>}
+            <span className="truncate">{[metaTime, projectName].filter(Boolean).join(" · ")}</span>
+            {presentation.action && <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs text-[var(--accent-primary)]" onClick={(event) => {
+              event.stopPropagation();
+              open();
+            }}>{presentation.action}</Button>}
           </div>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -106,17 +136,20 @@ function EmptyActionState() {
 }
 
 export interface NotificationCenterPanelProps {
-  projectId?: string;
   isOpen: boolean;
   onClose: () => void;
   onOpenAutomationDetail?: (automationId: string) => void;
+  hasUnreadHistory?: boolean;
 }
 
-export function NotificationCenterPanel({ projectId, isOpen, onClose, onOpenAutomationDetail }: NotificationCenterPanelProps) {
+export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetail, hasUnreadHistory = false }: NotificationCenterPanelProps) {
   const [activeTab, setActiveTab] = useState<"action" | "history">("action");
   const [selectedReviewTaskId, setSelectedReviewTaskId] = useState<string | null>(null);
   const contentMounted = useDeferredDrawerContent(isOpen);
-  const { data: items = [], isLoading } = useAttentionItems(projectId, { enabled: contentMounted });
+  const { data: items = [], isLoading } = useAttentionItems(undefined, { enabled: contentMounted });
+  const { markAllRead } = useNotificationReadActions();
+  const openModal = useUiStore((state) => state.openModal);
+  const projects = useProjectStore((state) => state.projects);
   const tasks = useTaskStore((state) => state.tasks);
   const queryClient = useQueryClient();
 
@@ -146,18 +179,30 @@ export function NotificationCenterPanel({ projectId, isOpen, onClose, onOpenAuto
     <section data-testid="notifications-panel" role="complementary" aria-label="Notifications" className={cn("flex h-full flex-col", !isOpen && "invisible pointer-events-none")} style={{ backgroundColor: "var(--bg-surface)" }}>
       <div className="flex items-center justify-between px-4 py-3" style={{ borderBottomColor: "var(--border-subtle)", borderBottomStyle: "solid", borderBottomWidth: "1px" }}>
         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Notifications</h2>
-        <Tooltip><TooltipTrigger asChild><button type="button" data-testid="notifications-panel-close" aria-label="Close notifications" onClick={onClose} className="grid h-7 w-7 place-items-center rounded outline-none hover:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"><X className="h-4 w-4" /></button></TooltipTrigger><TooltipContent>Close notifications</TooltipContent></Tooltip>
+        <div className="flex items-center gap-1">
+          <DropdownMenu>
+            <Tooltip><TooltipTrigger asChild><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Notification actions"><Ellipsis className="h-4 w-4" /></Button></DropdownMenuTrigger></TooltipTrigger><TooltipContent>Notification actions</TooltipContent></Tooltip>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => void markAllRead()}>Mark all read</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => {
+                onClose();
+                openModal("settings", { section: "notifications" });
+              }}>Notification settings</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Tooltip><TooltipTrigger asChild><button type="button" data-testid="notifications-panel-close" aria-label="Close notifications" onClick={onClose} className="grid h-7 w-7 place-items-center rounded outline-none hover:bg-[var(--bg-hover)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"><X className="h-4 w-4" /></button></TooltipTrigger><TooltipContent>Close notifications</TooltipContent></Tooltip>
+        </div>
       </div>
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "action" | "history")} className="px-4 pt-3">
         <TabsList className="grid h-9 w-full grid-cols-2" style={{ backgroundColor: "var(--bg-surface)" }}>
-          <TabsTrigger value="action">Needs action ({items.length})</TabsTrigger><TabsTrigger value="history">History</TabsTrigger>
+          <TabsTrigger value="action">Needs action ({items.length})</TabsTrigger><TabsTrigger value="history">History{hasUnreadHistory && <span aria-label="Unread notification history" className="ml-1 h-1 w-1 rounded-full" style={{ backgroundColor: "var(--accent-primary)" }} />}</TabsTrigger>
         </TabsList>
       </Tabs>
       <ScrollArea className="min-h-0 flex-1">
-        {activeTab === "history" ? <NotificationHistoryTab active={contentMounted} {...(projectId !== undefined && { projectId })} onOpen={openHistoryNotification} /> : !contentMounted || isLoading ? <SkeletonRows /> : groups.length === 0 ? <EmptyActionState /> : <div className="space-y-4 p-4">{groups.map(({ group, items: groupedItems }) => <div key={group} className="space-y-2"><p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "color-mix(in srgb, var(--text-secondary) 60%, transparent)" }}>{group} · {groupedItems.length}</p><div className="space-y-2">{groupedItems.map((item) => {
+        {activeTab === "history" ? <NotificationHistoryTab active={contentMounted} onOpen={openHistoryNotification} /> : !contentMounted || isLoading ? <SkeletonRows /> : groups.length === 0 ? <EmptyActionState /> : <div className="space-y-4 p-4">{groups.map(({ group, items: groupedItems }) => <div key={group} className="space-y-2"><p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "color-mix(in srgb, var(--text-secondary) 60%, transparent)" }}>{group} · {groupedItems.length}</p><div className="space-y-2">{groupedItems.map((item) => {
           const taskId = item.target.taskId;
           const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId ? tasks[taskId] : undefined;
-          return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} /> : <AttentionItemRow key={item.id} item={item} onOpen={openItem} />;
+          return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} /> : <AttentionItemRow key={item.id} item={item} onOpen={openItem} projectName={item.projectId ? projects[item.projectId]?.name ?? item.projectId : undefined} />;
         })}</div></div>)}</div>}
       </ScrollArea>
     </section>

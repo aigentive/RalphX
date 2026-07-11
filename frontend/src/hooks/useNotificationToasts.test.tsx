@@ -9,7 +9,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useNotificationToasts } from "./useNotificationToasts";
 
 const { preferences, subscribers, toastWarning } = vi.hoisted(() => ({
-  preferences: { focusedToastsEnabled: true, mutedProjectIds: [] as string[] },
+  preferences: { ready: true, focusedToastsEnabled: true, mutedProjectIds: [] as string[] },
   subscribers: new Map<string, (payload: unknown) => void>(),
   toastWarning: vi.fn(),
 }));
@@ -37,6 +37,7 @@ describe("useNotificationToasts", () => {
     Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     preferences.focusedToastsEnabled = true;
+    preferences.ready = true;
     preferences.mutedProjectIds = [];
     useUiStore.setState({ notificationsPanelOpen: false });
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
@@ -73,6 +74,15 @@ describe("useNotificationToasts", () => {
     preferences.focusedToastsEnabled = false;
     renderHook(() => useNotificationToasts(), { wrapper });
     subscribers.get("notification:created")?.(notification);
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("suppresses action-required toasts until notification preferences finish hydrating", () => {
+    preferences.ready = false;
+    renderHook(() => useNotificationToasts(), { wrapper });
+
+    subscribers.get("notification:created")?.(notification);
+
     expect(toastWarning).not.toHaveBeenCalled();
   });
 

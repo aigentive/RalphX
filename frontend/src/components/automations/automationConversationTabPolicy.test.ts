@@ -139,6 +139,29 @@ describe("getAutomationConversationTabPolicy", () => {
     ).toBe("automation");
   });
 
+  it("gives an explicit caller tab hint precedence over synthesized run state", () => {
+    expect(
+      getAutomationConversationTabPolicy({
+        surface: "run",
+        runStatus: null,
+        judgeState: null,
+        workspaceMode: null,
+        availability: { ...baseAvailability, hasPlanArtifact: false, hasPullRequest: false },
+        tabHint: "plan",
+      }).defaultTab,
+    ).toBe("plan");
+    expect(
+      getAutomationConversationTabPolicy({
+        surface: "run",
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        availability: baseAvailability,
+        tabHint: "automation",
+      }).defaultTab,
+    ).toBe("automation");
+  });
+
   it("keeps terminal runs with authored plans plan-tab enabled", () => {
     const policy = getAutomationConversationTabPolicy({
       surface: "run",

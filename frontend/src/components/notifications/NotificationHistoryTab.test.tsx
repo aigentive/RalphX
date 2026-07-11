@@ -31,7 +31,7 @@ const notification = {
 };
 
 function renderHistory(active = true) {
-  return render(<TooltipProvider><NotificationHistoryTab active={active} projectId="project-1" onOpen={vi.fn()} /></TooltipProvider>);
+  return render(<TooltipProvider><NotificationHistoryTab active={active} onOpen={vi.fn()} /></TooltipProvider>);
 }
 
 function intersectLatestObserver() {
@@ -104,7 +104,7 @@ describe("NotificationHistoryTab", () => {
 
   it("navigates and marks an unread history row read when clicked", () => {
     const onOpen = vi.fn();
-    render(<TooltipProvider><NotificationHistoryTab active projectId="project-1" onOpen={onOpen} /></TooltipProvider>);
+    render(<TooltipProvider><NotificationHistoryTab active onOpen={onOpen} /></TooltipProvider>);
     act(() => { vi.runAllTimers(); });
 
     fireEvent.click(screen.getByTestId("notification-history-row-notification-1"));

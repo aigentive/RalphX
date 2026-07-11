@@ -6,6 +6,12 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
 
+const AUTOMATION_NOTIFICATION_TAB_HINTS = {
+  automation_plan_approval: "plan",
+  automation_run_failed: "automation",
+  automation_run_completed: "pr",
+} as const;
+
 function permissionRequestId(id: string): string {
   return id.replace(/^(?:permission|perm):/, "");
 }
@@ -58,6 +64,11 @@ export function navigateNotification(
       ...(target.setupConversationId && { setupConversationId: target.setupConversationId }),
     }, {
       ...(options.onOpenAutomationDetail && { onOpenAutomationDetail: options.onOpenAutomationDetail }),
+      ...(item.category in AUTOMATION_NOTIFICATION_TAB_HINTS && {
+        tabHint: AUTOMATION_NOTIFICATION_TAB_HINTS[
+          item.category as keyof typeof AUTOMATION_NOTIFICATION_TAB_HINTS
+        ],
+      }),
     });
   } else if (target.kind === "automation_run" && target.automationId) {
     options.onOpenAutomationDetail?.(target.automationId);

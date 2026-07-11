@@ -23,12 +23,16 @@ describe("useNotificationEvents", () => {
 
     expect([...subscribers.keys()]).toEqual([
       "review:update", "task:status_changed", "permission:request", "permission:expired",
+      "permission:resolved",
       "agent:ask_user_question", "agent:question_resolved", "automation:updated",
       "automation:run:updated", "plan_artifact:created", "plan_artifact:approved",
       "pr_review_artifact:created", "pr_review_artifact:updated",
       "notification:created", "notification:updated",
     ]);
     subscribers.get("permission:request")?.();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: attentionKeys.all });
+
+    subscribers.get("permission:resolved")?.();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: attentionKeys.all });
 
     subscribers.get("notification:created")?.();

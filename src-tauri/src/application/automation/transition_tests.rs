@@ -37,19 +37,20 @@ impl AutomationEventEmitter for RecordingEmitter {
     }
 }
 
-fn notification_service() -> NotificationService {
-    NotificationService::new(
+fn notification_service() -> Arc<NotificationService> {
+    Arc::new(NotificationService::new(
         Arc::new(MemoryNotificationRepository::new()) as Arc<dyn NotificationRepository>,
         Arc::new(NoopNotificationEventEmitter),
-    )
+    ))
 }
 
-fn notification_service_with_repo() -> (NotificationService, Arc<MemoryNotificationRepository>) {
+fn notification_service_with_repo() -> (Arc<NotificationService>, Arc<MemoryNotificationRepository>)
+{
     let repo = Arc::new(MemoryNotificationRepository::new());
-    let service = NotificationService::new(
+    let service = Arc::new(NotificationService::new(
         repo.clone() as Arc<dyn NotificationRepository>,
         Arc::new(NoopNotificationEventEmitter),
-    );
+    ));
     (service, repo)
 }
 

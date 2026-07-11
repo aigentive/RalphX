@@ -415,9 +415,9 @@ function AppContent() {
     readFreshPostUpdatePreparingMarker() !== null,
   );
 
-  const attentionItems = useAttentionItems(currentProjectId);
+  const attentionItems = useAttentionItems();
   const attentionCount = attentionItems.data?.length ?? 0;
-  const unreadNotificationCount = useUnreadNotificationCount(currentProjectId);
+  const unreadNotificationCount = useUnreadNotificationCount();
   const hasUnreadNotificationHistory = (unreadNotificationCount.data ?? 0) > 0;
   const [notificationPanelWasOpened, setNotificationPanelWasOpened] =
     useState(false);
@@ -1504,10 +1504,10 @@ function AppContent() {
                 }}
               >
                 <NotificationCenterPanel
-                  projectId={currentProjectId}
                   isOpen={notificationsPanelOpen}
                   onClose={() => setNotificationsPanelOpen(false)}
                   onOpenAutomationDetail={handleOpenAutomationDetail}
+                  hasUnreadHistory={hasUnreadNotificationHistory}
                 />
               </div>
             </div>

@@ -43,7 +43,7 @@ use crate::infrastructure::memory::{
 };
 use crate::tests::mock_github_service::MockGithubService;
 
-fn notification_service() -> NotificationService {
+fn notification_service() -> Arc<NotificationService> {
     AppState::new_test().notification_service()
 }
 

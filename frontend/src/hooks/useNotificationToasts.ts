@@ -28,7 +28,7 @@ function toastDuration(notification: Notification): number {
 export function useNotificationToasts() {
   const bus = useEventBus();
   const queryClient = useQueryClient();
-  const { focusedToastsEnabled, mutedProjectIds } = useNotificationPreferences();
+  const { ready, focusedToastsEnabled, mutedProjectIds } = useNotificationPreferences();
 
   useEffect(() => bus.subscribe<unknown>("notification:created", (payload) => {
     const parsed = NotificationSchema.safeParse(payload);
@@ -36,6 +36,7 @@ export function useNotificationToasts() {
     const notification = parsed.data;
     if (
       notification.severity !== "action_required" ||
+      !ready ||
       !focusedToastsEnabled ||
       (notification.projectId !== undefined && mutedProjectIds.includes(notification.projectId)) ||
       useUiStore.getState().notificationsPanelOpen ||
@@ -56,5 +57,5 @@ export function useNotificationToasts() {
         },
       },
     });
-  }), [bus, focusedToastsEnabled, mutedProjectIds, queryClient]);
+  }), [bus, focusedToastsEnabled, mutedProjectIds, queryClient, ready]);
 }

@@ -34,7 +34,7 @@ use crate::infrastructure::memory::{
     MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
 
-fn notification_service() -> NotificationService {
+fn notification_service() -> Arc<NotificationService> {
     AppState::new_test().notification_service()
 }
 

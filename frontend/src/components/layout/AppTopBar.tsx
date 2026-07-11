@@ -608,7 +608,7 @@ export function AppTopBar({
               <Inbox className="h-[15px] w-[15px]" />
               {attentionCount > 0 && (
                 <span
-                  className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[0.5938rem] font-bold leading-none"
+                  className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[10px] font-bold leading-none"
                   style={{
                     backgroundColor: "var(--accent-primary)",
                     color: "var(--text-on-accent)",

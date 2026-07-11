@@ -199,6 +199,7 @@ export function NotificationSettingsPanel() {
         label="In-app toasts for actionable items"
         description="Show a toast while RalphX is focused and the notification center is closed."
         checked={settings.focused_toasts_enabled}
+        // In-app toasts are independent of the desktop-notification master switch.
         disabled={isPending}
         onChange={(enabled) => updateSettings({ focusedToastsEnabled: enabled })}
       />

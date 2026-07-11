@@ -274,6 +274,41 @@ describe("requestAutomationRunOpen", () => {
     expect(setArtifactTabMock).not.toHaveBeenCalled();
   });
 
+  it("honors an explicit notification tab intent over the fast path's synthesized run state", async () => {
+    await requestAutomationRunOpen(
+      queryClient(),
+      {
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-1",
+        conversationId: "run-conversation-1",
+        setupConversationId: "setup-conversation-1",
+      },
+      { tabHint: "plan" },
+    );
+
+    expect(automationGetMock).not.toHaveBeenCalled();
+    expect(requestAutomationRunFocusMock).toHaveBeenCalledWith(
+      "setup-conversation-1",
+      expect.objectContaining({ seededTab: "plan" }),
+    );
+  });
+
+  it("keeps the automation tab as the default when no notification intent is supplied", async () => {
+    await requestAutomationRunOpen(queryClient(), {
+      projectId: "project-1",
+      automationId: "automation-1",
+      runId: "run-1",
+      conversationId: "run-conversation-1",
+      setupConversationId: "setup-conversation-1",
+    });
+
+    expect(requestAutomationRunFocusMock).toHaveBeenCalledWith(
+      "setup-conversation-1",
+      expect.objectContaining({ seededTab: "automation" }),
+    );
+  });
+
   it("paints the Agents shell before resolving automation detail for popover targets", async () => {
     let resolveDetail: (detail: AutomationDetail) => void = () => {};
     automationGetMock.mockReturnValue(

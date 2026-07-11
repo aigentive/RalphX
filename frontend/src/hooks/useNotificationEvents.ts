@@ -6,7 +6,7 @@ import { attentionKeys } from "./useAttentionItems";
 import { notificationKeys } from "./useNotificationHistory";
 
 const ATTENTION_INVALIDATION_EVENTS = [
-  "review:update", "task:status_changed", "permission:request", "permission:expired",
+  "review:update", "task:status_changed", "permission:request", "permission:expired", "permission:resolved",
   "agent:ask_user_question", "agent:question_resolved", "automation:updated",
   "automation:run:updated", "plan_artifact:created", "plan_artifact:approved",
   "pr_review_artifact:created", "pr_review_artifact:updated",

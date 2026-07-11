@@ -69,14 +69,13 @@ function HistoryEmptyState() {
 
 interface NotificationHistoryTabProps {
   active: boolean;
-  projectId?: string;
   onOpen: (notification: Notification) => void;
 }
 
-export function NotificationHistoryTab({ active, projectId, onOpen }: NotificationHistoryTabProps) {
+export function NotificationHistoryTab({ active, onOpen }: NotificationHistoryTabProps) {
   const contentMounted = useDeferredHistoryContent(active);
-  const history = useNotificationHistory(projectId, { enabled: contentMounted });
-  const { markRead, markReadBatch, markAllRead } = useNotificationReadActions(projectId);
+  const history = useNotificationHistory(undefined, { enabled: contentMounted });
+  const { markRead, markReadBatch, markAllRead } = useNotificationReadActions();
   const notifications = flattenNotificationPages(history.data);
   const groups = useMemo(() => groupByDay(notifications), [notifications]);
   const observe = useViewportReadBatch({ enabled: contentMounted, onMarkRead: markReadBatch });

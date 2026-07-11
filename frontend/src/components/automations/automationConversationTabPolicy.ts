@@ -40,6 +40,8 @@ export interface AutomationConversationTabPolicyInput {
   judgeState: AutomationJudgeState | null;
   workspaceMode: string | null;
   availability: AutomationConversationTabAvailability;
+  /** Caller-directed destinations (for example, an automation notification) win over inferred run state. */
+  tabHint?: AutomationConversationTabId | undefined;
 }
 
 export interface AutomationConversationTabPolicy {
@@ -98,7 +100,8 @@ function isJudgeSettlingStatus(
 }
 
 function defaultRunTab(input: AutomationConversationTabPolicyInput): AutomationConversationTabId {
-  const { runStatus, workspaceMode, availability } = input;
+  const { runStatus, workspaceMode, availability, tabHint } = input;
+  if (tabHint) return tabHint;
   if (runStatus === "awaiting_plan_approval") {
     return "plan";
   }

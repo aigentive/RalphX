@@ -6,8 +6,10 @@ import { NotificationCenterPanel } from "./NotificationCenterPanel";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
 import { useTaskStore } from "@/stores/taskStore";
+import { useProjectStore } from "@/stores/projectStore";
 import type { AttentionItem } from "@/types/notifications";
 import type { Task } from "@/types/task";
+import type { Project } from "@/types/project";
 
 vi.mock("@/hooks/useAttentionItems", () => ({ useAttentionItems: vi.fn() }));
 vi.mock("@/components/reviews/ReviewDetailModal", () => ({ ReviewDetailModal: ({ taskId }: { taskId: string }) => <div data-testid="review-detail-modal">{taskId}</div> }));
@@ -20,7 +22,7 @@ const item: AttentionItem = {
 
 function renderPanel(isOpen: boolean, onClose = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={queryClient}><TooltipProvider><NotificationCenterPanel projectId="project-1" isOpen={isOpen} onClose={onClose} /></TooltipProvider></QueryClientProvider>);
+  return render(<QueryClientProvider client={queryClient}><TooltipProvider><NotificationCenterPanel isOpen={isOpen} onClose={onClose} /></TooltipProvider></QueryClientProvider>);
 }
 
 describe("NotificationCenterPanel first-paint behavior", () => {
@@ -53,11 +55,50 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
   });
 
+  it("uses the global attention query and labels an item from another project by name", () => {
+    const otherProject: Project = {
+      id: "project-2", name: "Other project", workingDirectory: "/tmp/other", gitMode: "worktree",
+      baseBranch: "main", worktreeParentDirectory: null, useFeatureBranches: true,
+      mergeValidationMode: "block", detectedAnalysis: null, customAnalysis: null, analyzedAt: null,
+      githubPrEnabled: false, createdAt: "2026-07-10T10:00:00Z", updatedAt: "2026-07-10T10:00:00Z",
+    };
+    useProjectStore.getState().setProjects([otherProject]);
+    useProjectStore.getState().selectProject("project-1");
+    vi.mocked(useAttentionItems).mockReturnValue({
+      data: [{ ...item, projectId: "project-2" }], isLoading: false,
+    } as ReturnType<typeof useAttentionItems>);
+
+    renderPanel(true);
+    act(() => { vi.runAllTimers(); });
+
+    expect(useAttentionItems).toHaveBeenCalledWith(undefined, expect.objectContaining({ enabled: true }));
+    expect(screen.getByTestId(`attention-item-${item.id}`)).toHaveTextContent("Other project");
+  });
+
+  it("shows the unread History cue and the header overflow actions", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <NotificationCenterPanel isOpen onClose={vi.fn()} hasUnreadHistory />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByLabelText("Unread notification history")).toBeInTheDocument();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Notification actions" }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(screen.getByRole("menuitem", { name: "Mark all read" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Notification settings" })).toBeInTheDocument();
+  });
+
   it("keeps content through visual close then unmounts it after paint", () => {
     const view = renderPanel(true);
     act(() => { vi.runAllTimers(); });
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
-    view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider><NotificationCenterPanel projectId="project-1" isOpen={false} onClose={vi.fn()} /></TooltipProvider></QueryClientProvider>);
+    view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider><NotificationCenterPanel isOpen={false} onClose={vi.fn()} /></TooltipProvider></QueryClientProvider>);
     expect(screen.getByTestId(`attention-item-${item.id}`)).toBeInTheDocument();
     act(() => { vi.runAllTimers(); });
     expect(screen.queryByTestId(`attention-item-${item.id}`)).not.toBeInTheDocument();
