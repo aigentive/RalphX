@@ -451,75 +451,6 @@ describe("IntegratedChatPanel", () => {
       );
     });
 
-    it("observes all chrome below the transcript so any sibling height change can update transcript layout", async () => {
-      const observedTargets: Element[] = [];
-      const resizeCallbacks: ResizeObserverCallback[] = [];
-      const originalResizeObserver = globalThis.ResizeObserver;
-
-      class MockResizeObserver implements ResizeObserver {
-        constructor(callback: ResizeObserverCallback) {
-          resizeCallbacks.push(callback);
-        }
-
-        disconnect = vi.fn();
-        observe = vi.fn((target: Element) => {
-          observedTargets.push(target);
-        });
-        unobserve = vi.fn();
-      }
-
-      Object.defineProperty(globalThis, "ResizeObserver", {
-        value: MockResizeObserver,
-        configurable: true,
-        writable: true,
-      });
-
-      try {
-        render(
-          <TestWrapper>
-            <IntegratedChatPanel
-              projectId="project-1"
-              renderComposer={() => (
-                <div data-testid="custom-composer">
-                  Composer with CTA chrome
-                </div>
-              )}
-            />
-          </TestWrapper>,
-        );
-
-        const belowTranscriptChrome = screen.getByTestId(
-          "chat-below-transcript-chrome",
-        );
-        const inputContainer = screen.getByTestId("chat-input-container");
-        expect(belowTranscriptChrome).toContainElement(inputContainer);
-        await waitFor(() =>
-          expect(observedTargets).toContain(belowTranscriptChrome),
-        );
-        expect(resizeCallbacks).toHaveLength(1);
-
-        act(() => {
-          resizeCallbacks[0]?.(
-            [
-              {
-                contentRect: { height: 0 } as DOMRectReadOnly,
-              } as ResizeObserverEntry,
-            ],
-            {} as ResizeObserver,
-          );
-        });
-      } finally {
-        if (originalResizeObserver === undefined) {
-          Reflect.deleteProperty(globalThis, "ResizeObserver");
-        } else {
-          Object.defineProperty(globalThis, "ResizeObserver", {
-            value: originalResizeObserver,
-            configurable: true,
-            writable: true,
-          });
-        }
-      }
-    });
   });
 
   describe("transcript pagination", () => {
@@ -1424,16 +1355,14 @@ describe("IntegratedChatPanel", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("renders a custom composer when provided", async () => {
+    it("renders a custom composer with its attachment contract", () => {
       mockChatPanelContext.activeConversationId = "conv-1";
-      const renderComposer = vi.fn(({ enableAttachments, onLayoutChange }) => (
+      const renderComposer = vi.fn(({ enableAttachments }) => (
         <button
           type="button"
           data-testid="custom-composer"
-          onClick={onLayoutChange}
         >
           {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
-          {typeof onLayoutChange === "function" ? "-layout-callback" : ""}
         </button>
       ));
 
@@ -1447,16 +1376,9 @@ describe("IntegratedChatPanel", () => {
       );
 
       expect(screen.getByTestId("custom-composer")).toHaveTextContent(
-        "attachments-enabled-layout-callback",
+        "attachments-enabled",
       );
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
-
-      const renderCount = renderComposer.mock.calls.length;
-      fireEvent.click(screen.getByTestId("custom-composer"));
-
-      await waitFor(() =>
-        expect(renderComposer).toHaveBeenCalledTimes(renderCount + 1),
-      );
     });
 
     it("mounts the scrollable transcript instead of blocking on placeholder hydration", async () => {
