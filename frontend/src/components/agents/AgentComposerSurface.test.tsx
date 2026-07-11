@@ -1744,18 +1744,15 @@ describe("AgentComposerSurface", () => {
       expect(textarea.style.height).toBe("92px");
     });
 
-    it("notifies layout changes when textarea content resizes the visible composer", () => {
+    it("resizes the visible composer without emitting a transcript layout signal", () => {
       let measuredScrollHeight = 96;
       const scrollHeightSpy = vi
         .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
         .mockImplementation(() => measuredScrollHeight);
-      const onLayoutChange = vi.fn();
-
       try {
         renderComposer({
           dataTestId: "agent-composer",
           collapsible: false,
-          onLayoutChange,
         });
 
         const textarea = screen.getByLabelText(
@@ -1763,14 +1760,12 @@ describe("AgentComposerSurface", () => {
         ) as HTMLTextAreaElement;
         expect(textarea.style.height).toBe("96px");
 
-        onLayoutChange.mockClear();
         measuredScrollHeight = 132;
         fireEvent.change(textarea, {
           target: { value: "line one\nline two\nline three" },
         });
 
         expect(textarea.style.height).toBe("132px");
-        expect(onLayoutChange).toHaveBeenCalledTimes(1);
       } finally {
         scrollHeightSpy.mockRestore();
       }
@@ -1793,23 +1788,18 @@ describe("AgentComposerSurface", () => {
     });
 
     it("expands when the textarea is focused even with no text", () => {
-      const onLayoutChange = vi.fn();
-      renderComposer({ dataTestId: "agent-composer", collapsible: true, onLayoutChange });
+      renderComposer({ dataTestId: "agent-composer", collapsible: true });
       const surface = screen.getByTestId("agent-composer");
       const textarea = screen.getByLabelText(
         "Message input",
       ) as HTMLTextAreaElement;
 
-      onLayoutChange.mockClear();
       fireEvent.focus(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "false");
-      expect(onLayoutChange).toHaveBeenCalled();
 
       // Blur with no text returns to the minimal resting state.
-      onLayoutChange.mockClear();
       fireEvent.blur(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "true");
-      expect(onLayoutChange).toHaveBeenCalled();
     });
 
     it("stays minimal when a popover opens on an unfocused composer (no flicker)", () => {
