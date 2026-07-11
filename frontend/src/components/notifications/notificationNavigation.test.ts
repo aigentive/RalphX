@@ -61,6 +61,24 @@ describe("navigateNotification", () => {
     );
   });
 
+  it("keeps a supplied automation detail callback when opening a complete run", () => {
+    const onClose = vi.fn();
+    const onOpenAutomationDetail = vi.fn();
+
+    navigateNotification(
+      { id: "automation-complete", category: "automation_run_failed", target },
+      {} as QueryClient,
+      { onClose, onOpenAutomationDetail },
+    );
+
+    expect(requestAutomationRunOpen).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ runId: "run-1" }),
+      expect.objectContaining({ onOpenAutomationDetail, tabHint: "automation" }),
+    );
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("opens the selected permission request and closes the notification surface", () => {
     const onClose = vi.fn();
     const listener = vi.fn();
@@ -124,6 +142,21 @@ describe("navigateNotification", () => {
     expect(selectProject).not.toHaveBeenCalled();
     expect(navigateToTask).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes a malformed task target without fetching or selecting a task", async () => {
+    const onClose = vi.fn();
+
+    await navigateNotification(
+      { id: "task-missing-id", category: "task_failed", target: { kind: "task" } },
+      {} as QueryClient,
+      { onClose },
+    );
+
+    expect(tasksApi.get).not.toHaveBeenCalled();
+    expect(navigateToTask).not.toHaveBeenCalled();
+    expect(selectProject).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("opens either agent conversation target and ignores a target with neither conversation id", () => {

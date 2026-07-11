@@ -278,4 +278,36 @@ describe("NotificationCenterPanel first-paint behavior", () => {
     expect(onClose).not.toHaveBeenCalled();
     window.removeEventListener("ralphx:open-permission-dialog", reopen);
   });
+
+  it("opens a non-expired permission action once and supports Enter while ignoring unrelated keys", () => {
+    const permissionItem: AttentionItem = {
+      ...item,
+      id: "permission:request-keyboard",
+      category: "permission_request",
+      target: { kind: "none" },
+    };
+    const onClose = vi.fn();
+    const reopen = vi.fn();
+    window.addEventListener("ralphx:open-permission-dialog", reopen);
+    vi.mocked(useAttentionItems).mockReturnValue({
+      data: [permissionItem], isLoading: false, isError: false, refetch: vi.fn(),
+    } as ReturnType<typeof useAttentionItems>);
+    renderPanel(true, onClose);
+    act(() => { vi.advanceTimersByTime(1); });
+
+    const row = screen.getByTestId(`attention-item-${permissionItem.id}`);
+    fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+    expect(reopen).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(row, { key: "ArrowDown" });
+    expect(reopen).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(row, { key: "Enter" });
+
+    expect(reopen).toHaveBeenLastCalledWith(expect.objectContaining({
+      detail: { requestId: "request-keyboard" },
+    }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+    window.removeEventListener("ralphx:open-permission-dialog", reopen);
+  });
 });

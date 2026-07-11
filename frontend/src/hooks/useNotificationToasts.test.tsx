@@ -118,4 +118,26 @@ describe("useNotificationToasts", () => {
 
     expect(toastDismiss).toHaveBeenCalledWith("notification-1");
   });
+
+  it("does not dismiss a toast that already settled before the drawer opens", () => {
+    subscribers.get("notification:created")?.(notification);
+    const dismissedOptions = toastWarning.mock.calls[0]?.[1] as {
+      onDismiss: () => void;
+      onAutoClose: () => void;
+    };
+    dismissedOptions.onDismiss();
+
+    act(() => { useUiStore.setState({ notificationsPanelOpen: true }); });
+    expect(toastDismiss).not.toHaveBeenCalled();
+
+    act(() => { useUiStore.setState({ notificationsPanelOpen: false }); });
+    subscribers.get("notification:created")?.({ ...notification, id: "notification-auto-closed" });
+    const autoClosedOptions = toastWarning.mock.calls[1]?.[1] as {
+      onAutoClose: () => void;
+    };
+    autoClosedOptions.onAutoClose();
+
+    act(() => { useUiStore.setState({ notificationsPanelOpen: true }); });
+    expect(toastDismiss).not.toHaveBeenCalled();
+  });
 });

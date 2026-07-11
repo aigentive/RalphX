@@ -120,6 +120,27 @@ describe("notification read queries", () => {
     expect(queryClient.getQueryData(notificationKeys.history())).toBeUndefined();
   });
 
+  it("marks one unread row through the single-row action and refreshes its count", async () => {
+    vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    queryClient.setQueryData(notificationKeys.history("project-1"), {
+      pages: [{ notifications: [unreadNotification], hasMore: false }],
+      pageParams: [undefined],
+    });
+    const { result } = renderHook(() => useNotificationReadActions("project-1"), { wrapper: createWrapper(queryClient) });
+
+    act(() => result.current.markRead("unread"));
+
+    expect(notificationsApi.markRead).toHaveBeenCalledWith("unread");
+    expect(queryClient.getQueryData<{ pages: Array<{ notifications: Array<{ readAt?: string }> }> }>(
+      notificationKeys.history("project-1"),
+    )?.pages[0]?.notifications[0]?.readAt).toEqual(expect.any(String));
+    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: notificationKeys.unreadCount("project-1"),
+    }));
+  });
+
   it("marks all unread cached rows and does not toast after the authoritative all-read action succeeds", async () => {
     vi.mocked(notificationsApi.markAllRead).mockResolvedValue(null);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
