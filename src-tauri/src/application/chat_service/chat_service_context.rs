@@ -39,6 +39,7 @@ use crate::application::harness_runtime_registry::{
     resolve_chat_harness_cli, ResolvedChatHarnessCli,
 };
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
+use crate::application::persona_prompt::ResolvedPersona;
 
 /// Maximum number of recent messages to inject into the bootstrap prompt.
 pub const SESSION_HISTORY_LIMIT: usize = 50;
@@ -90,6 +91,7 @@ fn build_claude_spawnable_command(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -105,6 +107,7 @@ fn build_claude_spawnable_command(
             prompt,
             agent,
             agent_profile,
+            persona_block,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -121,6 +124,7 @@ fn build_claude_spawnable_command(
             prompt,
             agent,
             agent_profile,
+            persona_block,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -137,6 +141,7 @@ fn build_claude_spawnable_interactive_command(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -152,6 +157,7 @@ fn build_claude_spawnable_interactive_command(
             prompt,
             agent,
             agent_profile,
+            persona_block,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -169,6 +175,7 @@ fn build_claude_spawnable_interactive_command(
             prompt,
             agent,
             agent_profile,
+            persona_block,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -185,6 +192,7 @@ fn build_claude_spawnable_interactive_command(
             prompt,
             agent,
             agent_profile,
+            persona_block,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -199,6 +207,7 @@ struct BuildHarnessCommandRequest<'a> {
     plugin_dir: &'a Path,
     conversation: &'a ChatConversation,
     user_message: &'a str,
+    pub persona: Option<ResolvedPersona>,
     working_directory: &'a Path,
     entity_status: Option<&'a str>,
     project_id: Option<&'a str>,
@@ -222,6 +231,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     context_type: ChatContextType,
     context_id: &'a str,
     message: &'a str,
+    pub persona: Option<ResolvedPersona>,
     agent_name_override: Option<&'a str>,
     agent_profile: Option<&'a str>,
     working_directory: &'a Path,
@@ -250,6 +260,7 @@ struct BuildHarnessLaunchRequest<'a> {
     plugin_dir: &'a Path,
     conversation: &'a ChatConversation,
     user_message: &'a str,
+    pub persona: Option<ResolvedPersona>,
     agent_name_override: Option<&'a str>,
     agent_profile: Option<&'a str>,
     context_type: ChatContextType,
@@ -356,6 +367,10 @@ impl ResolvedChatHarnessCli {
                     request.plugin_dir,
                     request.conversation,
                     request.user_message,
+                    request
+                        .persona
+                        .as_ref()
+                        .map(|persona| persona.block.as_str()),
                     request.working_directory,
                     request.entity_status,
                     request.project_id,
@@ -397,6 +412,10 @@ impl ResolvedChatHarnessCli {
                         request.user_message,
                         None,
                         None,
+                        request
+                            .persona
+                            .as_ref()
+                            .map(|persona| persona.block.as_str()),
                         None,
                         request.working_directory,
                         request.entity_status,
@@ -432,6 +451,10 @@ impl ResolvedChatHarnessCli {
                     request.message,
                     request.agent_name_override,
                     request.agent_profile,
+                    request
+                        .persona
+                        .as_ref()
+                        .map(|persona| persona.block.as_str()),
                     request.working_directory,
                     request.session_id,
                     request.project_id,
@@ -490,6 +513,10 @@ impl ResolvedChatHarnessCli {
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
+                        request
+                            .persona
+                            .as_ref()
+                            .map(|persona| persona.block.as_str()),
                         request.working_directory,
                         request.session_id,
                         request.project_id,
@@ -526,6 +553,10 @@ impl ResolvedChatHarnessCli {
                     request.user_message,
                     request.agent_name_override,
                     request.agent_profile,
+                    request
+                        .persona
+                        .as_ref()
+                        .map(|persona| persona.block.as_str()),
                     request.agent_run_id,
                     request.working_directory,
                     request.entity_status,
@@ -567,6 +598,10 @@ impl ResolvedChatHarnessCli {
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
+                            request
+                                .persona
+                                .as_ref()
+                                .map(|persona| persona.block.as_str()),
                             request.working_directory,
                             session_id,
                             request.project_id,
@@ -595,6 +630,10 @@ impl ResolvedChatHarnessCli {
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
+                            request
+                                .persona
+                                .as_ref()
+                                .map(|persona| persona.block.as_str()),
                             request.agent_run_id,
                             request.working_directory,
                             request.entity_status,
@@ -2163,6 +2202,7 @@ pub async fn build_command(
     plugin_dir: &Path,
     conversation: &ChatConversation,
     user_message: &str,
+    persona_block: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2231,6 +2271,7 @@ pub async fn build_command(
         agent_name,
         conversation,
         user_message,
+        persona_block,
         working_directory,
         entity_status,
         project_id,
@@ -2254,6 +2295,7 @@ async fn build_command_from_resolved_settings(
     agent_name: &str,
     conversation: &ChatConversation,
     user_message: &str,
+    persona_block: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2342,6 +2384,7 @@ async fn build_command_from_resolved_settings(
         &prompt,
         Some(agent_name),
         None,
+        persona_block,
         resume_session.as_deref(),
         working_directory,
         false,
@@ -2371,6 +2414,7 @@ async fn build_recovery_command_from_resolved_settings(
     plugin_dir: &Path,
     agent_name: &str,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
     message: &str,
@@ -2434,6 +2478,7 @@ async fn build_recovery_command_from_resolved_settings(
         &prompt,
         Some(agent_name),
         agent_profile,
+        persona_block,
         None,
         working_directory,
         false,
@@ -2466,6 +2511,7 @@ pub async fn build_codex_command(
     user_message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     agent_run_id: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
@@ -2575,6 +2621,7 @@ pub async fn build_codex_command(
         Some(plugin_dir),
         Some(agent_name),
         agent_profile,
+        persona_block,
     );
     tracing::info!(
         context_type = %conversation.context_type,
@@ -2874,6 +2921,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             plugin_dir,
             conversation,
             user_message,
+            persona: None,
             agent_name_override,
             agent_profile,
             context_type,
@@ -2934,6 +2982,7 @@ pub async fn build_command_for_harness(
             plugin_dir,
             conversation,
             user_message,
+            persona: None,
             working_directory,
             entity_status,
             project_id,
@@ -2971,6 +3020,7 @@ pub async fn build_interactive_command(
     user_message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     agent_run_id: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
@@ -3106,6 +3156,7 @@ pub async fn build_interactive_command(
         &prompt,
         Some(agent_name),
         agent_profile,
+        persona_block,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -3218,6 +3269,7 @@ pub async fn build_resume_command(
     message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     working_directory: &Path,
     session_id: &str,
     project_id: Option<&str>,
@@ -3268,6 +3320,7 @@ pub async fn build_resume_command(
         plugin_dir,
         agent_name,
         agent_profile,
+        persona_block,
         context_type,
         context_id,
         message,
@@ -3293,6 +3346,7 @@ async fn build_resume_command_from_resolved_settings(
     plugin_dir: &Path,
     agent_name: &str,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
     message: &str,
@@ -3345,6 +3399,7 @@ async fn build_resume_command_from_resolved_settings(
                 &resume_prompt,
                 Some(agent_name),
                 agent_profile,
+                persona_block,
                 Some(session_id),
                 working_directory,
                 false,
@@ -3374,6 +3429,7 @@ async fn build_resume_command_from_resolved_settings(
                 plugin_dir,
                 agent_name,
                 agent_profile,
+                persona_block,
                 context_type,
                 context_id,
                 message,
@@ -3406,6 +3462,7 @@ pub async fn build_codex_resume_command(
     message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     working_directory: &Path,
     session_id: &str,
     project_id: Option<&str>,
@@ -3483,6 +3540,7 @@ pub async fn build_codex_resume_command(
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
+                persona_block,
             );
 
             let mut spawnable = build_spawnable_codex_resume_command(
@@ -3547,6 +3605,7 @@ pub async fn build_codex_resume_command(
                 Some(plugin_dir),
                 Some(agent_name),
                 agent_profile,
+                persona_block,
             );
             let mut spawnable =
                 build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;
@@ -3611,6 +3670,7 @@ pub async fn build_resume_command_for_harness(
             context_type,
             context_id,
             message,
+            persona: None,
             agent_name_override,
             agent_profile,
             working_directory,
@@ -4093,10 +4153,8 @@ exit 0
             IdeationBootstrapMode::Continuation,
         );
         assert!(execution_prompt.contains(runtime_context));
-        assert!(
-            execution_prompt
-                .contains("<user_message>Execute task: task-runtime-prompt</user_message>")
-        );
+        assert!(execution_prompt
+            .contains("<user_message>Execute task: task-runtime-prompt</user_message>"));
 
         let first_turn_execution_prompt = build_initial_prompt_with_history(
             ChatContextType::TaskExecution,

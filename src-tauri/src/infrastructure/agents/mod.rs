@@ -7,6 +7,7 @@ pub mod harness_agent_catalog;
 pub mod internal_skills;
 pub mod mcp_runtime_context;
 pub mod mock;
+pub mod persona_overlay;
 pub mod spawn_isolation;
 pub mod spawner;
 

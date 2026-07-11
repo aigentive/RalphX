@@ -3182,6 +3182,7 @@ impl<R: Runtime> AppChatService<R> {
             &self.plugin_dir,
             conversation,
             user_message,
+            None,
             working_directory,
             entity_status,
             project_id,

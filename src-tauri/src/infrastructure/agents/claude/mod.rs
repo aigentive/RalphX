@@ -772,6 +772,7 @@ fn load_agent_system_prompt_with_internal_skills(
     agent_name: &str,
     agent_profile: Option<&str>,
     prompt: &str,
+    persona_block: Option<&str>,
 ) -> Option<(String, Vec<String>)> {
     let short = mcp_agent_type(agent_name);
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
@@ -781,6 +782,7 @@ fn load_agent_system_prompt_with_internal_skills(
         AgentPromptHarness::Claude,
         agent_profile,
     )?;
+    let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, short, agent_profile);
     match inject_internal_skills_into_system_prompt_for_profile(
@@ -1559,6 +1561,7 @@ fn add_prompt_args(
     cmd: &mut Command,
     plugin_dir: &Path,
     prompt: &str,
+    persona_block: Option<&str>,
     agent: Option<&str>,
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
@@ -1596,6 +1599,7 @@ fn add_prompt_args(
                 agent_name,
                 agent_profile,
                 prompt,
+                persona_block,
             );
             if let Some((system_prompt, injected_skill_names)) =
                 prompt_with_internal_skills.as_ref()
@@ -1755,7 +1759,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         true,
     )?;
     let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
+        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
@@ -1767,6 +1771,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -1789,6 +1794,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         &mut cmd,
         plugin_dir,
         prompt,
+        persona_block,
         agent,
         agent_profile,
         resume_session,
@@ -1846,7 +1852,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         false,
     )?;
     let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
+        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
     configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
@@ -1859,6 +1865,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -1881,6 +1888,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         &mut cmd,
         plugin_dir,
         prompt,
+        persona_block,
         agent,
         agent_profile,
         resume_session,
@@ -1942,6 +1950,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context(
         prompt,
         agent,
         None,
+        None,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -1958,6 +1967,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -1977,8 +1987,16 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         true,
     )?;
     // interactive=true: no -p flag; prompt stored in stdin_prompt for spawn_interactive()
-    let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, agent_profile, resume_session, true);
+    let stdin_prompt = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        persona_block,
+        agent,
+        agent_profile,
+        resume_session,
+        true,
+    );
     configure_spawn(&mut cmd, working_directory, true);
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
@@ -2029,6 +2047,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
         prompt,
         agent,
         None,
+        None,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -2046,6 +2065,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -2064,8 +2084,16 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, agent_profile, resume_session, true);
+    let stdin_prompt = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        persona_block,
+        agent,
+        agent_profile,
+        resume_session,
+        true,
+    );
     configure_spawn(&mut cmd, working_directory, true);
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }

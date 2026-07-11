@@ -770,6 +770,7 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         Some("plan"),
         "Create a plan",
+        None,
     )
     .expect("plan profile prompt");
 
@@ -783,10 +784,159 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         None,
         "Create a plan",
+        None,
     )
     .expect("default profile prompt");
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
     assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
+}
+
+#[test]
+fn claude_prompt_orders_persona_after_base_and_appendices_before_skills_and_runtime_profile() {
+    let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let persona = "<ralphx_agent_persona>Persona voice</ralphx_agent_persona>";
+    let (system_prompt, _) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
+        Some(persona),
+    )
+    .expect("plan profile prompt");
+
+    let base = system_prompt
+        .find("## Agent Conversation Plan Mode")
+        .expect("profile prompt");
+    let persona = system_prompt.find(persona).expect("persona block");
+    // The live profile prompt mentions these tags in prose, so anchor on the
+    // APPENDED blocks (last occurrence), not the first prose mention.
+    let skills = system_prompt
+        .rfind("<ralphx_internal_skills>")
+        .expect("internal skills");
+    let runtime_profile = system_prompt
+        .rfind("<agent_runtime_profile>")
+        .expect("runtime profile");
+
+    assert!(base < persona && persona < skills && skills < runtime_profile);
+}
+
+#[test]
+fn persona_block_is_excluded_from_internal_skills_match_text() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    auto_match: true
+    allowed:
+      - persona-only-skill
+"#,
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+    std::fs::create_dir_all(root.join("plugins/app/skills/persona-only-skill"))
+        .expect("create skill dir");
+    std::fs::write(
+        root.join("plugins/app/skills/persona-only-skill/SKILL.md"),
+        r#"---
+name: persona-only-skill
+trigger: persona-only-trigger
+---
+This skill must not be selected from persona text.
+"#,
+    )
+    .expect("write skill");
+
+    let (system_prompt, injected_skills) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "test-agent",
+        None,
+        "ordinary user request",
+        Some("<ralphx_agent_persona>persona-only-trigger</ralphx_agent_persona>"),
+    )
+    .expect("system prompt");
+
+    assert!(injected_skills.is_empty());
+    assert!(!system_prompt.contains("<ralphx_internal_skills>"));
+}
+
+#[test]
+fn persona_survives_skills_injector_error_fallback() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    allowed:
+      - missing-skill
+"#,
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+
+    let persona = "<ralphx_agent_persona>Fallback persona</ralphx_agent_persona>";
+    let (system_prompt, injected_skills) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "test-agent",
+        None,
+        "ordinary user request",
+        Some(persona),
+    )
+    .expect("system prompt");
+
+    assert!(injected_skills.is_empty());
+    assert!(system_prompt.contains(persona));
+}
+
+#[test]
+fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: test-agent\nrole: test\n",
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+
+    let persona = "<ralphx_agent_persona>CLI persona</ralphx_agent_persona>";
+    let mut command = tokio::process::Command::new("/fake/claude");
+    add_prompt_args(
+        &mut command,
+        &plugin_dir,
+        "ordinary user request",
+        Some(persona),
+        Some("test-agent"),
+        None,
+        None,
+        false,
+    );
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let appended_prompt = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt-file")
+        .map(|index| read_test_file(&args[index + 1]))
+        .or_else(|| {
+            args.iter()
+                .position(|arg| arg == "--append-system-prompt")
+                .map(|index| args[index + 1].clone())
+        })
+        .expect("appended system prompt");
+
+    assert!(appended_prompt.contains(persona));
 }
 
 #[test]

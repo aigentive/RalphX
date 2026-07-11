@@ -403,7 +403,7 @@ pub fn compose_codex_prompt(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
 ) -> String {
-    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None)
+    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None, None)
 }
 
 pub fn compose_codex_prompt_for_profile(
@@ -411,6 +411,7 @@ pub fn compose_codex_prompt_for_profile(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
 ) -> String {
     let Some(plugin_dir) = plugin_dir else {
         return prompt.to_string();
@@ -429,6 +430,7 @@ pub fn compose_codex_prompt_for_profile(
     let Some(system_prompt) = system_prompt else {
         return prompt.to_string();
     };
+    let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, agent_name, agent_profile);
     let system_prompt = match inject_internal_skills_into_system_prompt_for_profile(
