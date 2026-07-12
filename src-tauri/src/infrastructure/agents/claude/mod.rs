@@ -1326,6 +1326,8 @@ pub struct SpawnableCommand {
     cmd: Command,
     stdin_prompt: Option<String>,
     prompt_arg_debug_redaction: Option<PromptArgDebugRedaction>,
+    persona_injected: bool,
+    persona_injection_skipped_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -1407,7 +1409,27 @@ impl SpawnableCommand {
             cmd,
             stdin_prompt,
             prompt_arg_debug_redaction: None,
+            persona_injected: false,
+            persona_injection_skipped_reason: None,
         }
+    }
+
+    pub(crate) fn with_persona_injection_outcome(
+        mut self,
+        persona_injected: bool,
+        persona_injection_skipped_reason: Option<&'static str>,
+    ) -> Self {
+        self.persona_injected = persona_injected;
+        self.persona_injection_skipped_reason = persona_injection_skipped_reason;
+        self
+    }
+
+    pub(crate) fn persona_injected(&self) -> bool {
+        self.persona_injected
+    }
+
+    pub(crate) fn persona_injection_skipped_reason(&self) -> Option<&'static str> {
+        self.persona_injection_skipped_reason
     }
 
     pub(crate) fn with_prompt_arg_debug_redaction(
@@ -1555,8 +1577,14 @@ pub fn format_stream_json_input(content: &str) -> String {
 /// When `interactive` is `true`, `-p -` + `--input-format stream-json` are added so the
 /// CLI stays in print mode (required for `--output-format stream-json`) while reading
 /// structured JSON messages from stdin for multi-turn conversations.
-/// The returned `Option<String>` holds the prompt for stdin delivery: `Some(prompt)` in
-/// both stdin-pipe mode and interactive mode, `None` when using the `-p <arg>` form.
+/// The returned outcome carries both stdin delivery and whether the persona block was
+/// actually appended. Fallback agent-prompt paths deliberately report no injection.
+struct PromptArgsOutcome {
+    stdin_prompt: Option<String>,
+    persona_injected: bool,
+    persona_injection_skipped_reason: Option<&'static str>,
+}
+
 fn add_prompt_args(
     cmd: &mut Command,
     plugin_dir: &Path,
@@ -1566,7 +1594,7 @@ fn add_prompt_args(
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
-) -> Option<String> {
+) -> PromptArgsOutcome {
     // Add resume if continuing an existing session
     if let Some(session_id) = resume_session {
         cmd.args(["--resume", session_id]);
@@ -1587,9 +1615,13 @@ fn add_prompt_args(
     } else {
         false
     };
+    let mut persona_injected = false;
+    let mut persona_skip_reason = None;
     if let Some(agent_name) = agent {
         if use_native_agent_flag {
             cmd.args(["--agent", agent_name]);
+            persona_skip_reason =
+                persona_injection_skipped_reason(use_native_agent_flag, persona_block.is_some());
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
             let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
@@ -1616,6 +1648,7 @@ fn add_prompt_args(
                     runtime.use_append_system_prompt_file,
                     write_agent_system_prompt_temp,
                 );
+                persona_injected = persona_block.is_some();
             } else if runtime.use_append_system_prompt_file {
                 if let Some(path_str) = prompt_path.to_str() {
                     cmd.args(["--append-system-prompt-file", path_str]);
@@ -1624,12 +1657,18 @@ fn add_prompt_args(
                         path = path_str,
                         "Injected agent prompt via --append-system-prompt-file"
                     );
+                    persona_skip_reason = persona_block
+                        .is_some()
+                        .then_some("prompt_composition_fallback_raw_prompt_file");
                 } else {
                     tracing::warn!(
                         agent = agent_name,
                         "Agent prompt path was not valid UTF-8; falling back to native --agent"
                     );
                     cmd.args(["--agent", agent_name]);
+                    persona_skip_reason = persona_block
+                        .is_some()
+                        .then_some("prompt_path_non_utf8_native_agent");
                 }
             } else {
                 tracing::warn!(
@@ -1637,6 +1676,9 @@ fn add_prompt_args(
                     "Failed to load prompt content; falling back to native --agent"
                 );
                 cmd.args(["--agent", agent_name]);
+                persona_skip_reason = persona_block
+                    .is_some()
+                    .then_some("prompt_composition_fallback_native_agent");
             }
         } else {
             tracing::warn!(
@@ -1644,6 +1686,9 @@ fn add_prompt_args(
                 "Agent prompt not found in plugin; falling back to native --agent"
             );
             cmd.args(["--agent", agent_name]);
+            persona_skip_reason = persona_block
+                .is_some()
+                .then_some("agent_prompt_not_found_native_agent");
         }
 
         // Apply CLI tool restrictions from agent_config
@@ -1674,7 +1719,7 @@ fn add_prompt_args(
         }
     }
 
-    if interactive {
+    let stdin_prompt = if interactive {
         // --output-format stream-json only works with -p (print mode).
         // Use `-p -` to stay in print mode + `--input-format stream-json` so the CLI
         // reads structured JSON messages from stdin (one per line) for multi-turn.
@@ -1691,6 +1736,12 @@ fn add_prompt_args(
         cmd.args(["-p", prompt]);
         tracing::debug!("Claude prompt mode: arg");
         None
+    };
+
+    PromptArgsOutcome {
+        stdin_prompt,
+        persona_injected,
+        persona_injection_skipped_reason: persona_skip_reason,
     }
 }
 
@@ -1769,10 +1820,13 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         mcp_runtime_context,
         true,
     )?;
-    let stdin_prompt =
+    let prompt_args =
         add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1801,7 +1855,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         mcp_runtime_context,
         true,
     )?;
-    let stdin_prompt = add_prompt_args(
+    let prompt_args = add_prompt_args(
         &mut cmd,
         plugin_dir,
         prompt,
@@ -1811,8 +1865,11 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         resume_session,
         false,
     );
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1862,10 +1919,13 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt =
+    let prompt_args =
         add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1895,7 +1955,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt = add_prompt_args(
+    let prompt_args = add_prompt_args(
         &mut cmd,
         plugin_dir,
         prompt,
@@ -1905,8 +1965,11 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         resume_session,
         false,
     );
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 /// Build a ready-to-spawn interactive CLI command (no `-p` flag).
@@ -1998,7 +2061,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         true,
     )?;
     // interactive=true: no -p flag; prompt stored in stdin_prompt for spawn_interactive()
-    let stdin_prompt = add_prompt_args(
+    let prompt_args = add_prompt_args(
         &mut cmd,
         plugin_dir,
         prompt,
@@ -2009,7 +2072,10 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         true,
     );
     configure_spawn(&mut cmd, working_directory, true);
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2095,7 +2161,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt = add_prompt_args(
+    let prompt_args = add_prompt_args(
         &mut cmd,
         plugin_dir,
         prompt,
@@ -2106,7 +2172,10 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         true,
     );
     configure_spawn(&mut cmd, working_directory, true);
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 /// Register the configured MCP server with Claude Code CLI.

@@ -372,6 +372,8 @@ async fn persona_switch_stopping_running_agent_stops_run_and_preserves_provider_
             InteractiveProcessMetadata {
                 harness: Some(AgentHarnessKind::Codex),
                 provider_session_id: Some(provider_session.provider_session_id.clone()),
+                persona_id: None,
+                persona_content_hash: None,
             },
         )
         .await;

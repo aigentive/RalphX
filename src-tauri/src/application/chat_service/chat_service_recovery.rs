@@ -24,9 +24,9 @@ use crate::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, PersonaDirective,
 };
 use crate::domain::repositories::{
-    AgentProviderSettingsRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    IdeationSessionRepository, TaskProposalRepository,
+    AgentProviderSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, IdeationSessionRepository,
+    TaskProposalRepository,
 };
 use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,

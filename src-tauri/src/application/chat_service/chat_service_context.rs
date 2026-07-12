@@ -319,6 +319,22 @@ impl ResolvedChatHarnessLaunch {
         }
     }
 
+    pub fn persona_injected(&self) -> bool {
+        match self {
+            Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
+                spawnable.persona_injected()
+            }
+        }
+    }
+
+    pub fn persona_injection_skipped_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
+                spawnable.persona_injection_skipped_reason()
+            }
+        }
+    }
+
     pub fn apply_provider_env(&mut self, provider_env: &HashMap<String, String>) {
         match self {
             Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
@@ -544,6 +560,7 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessLaunchRequest<'_>,
     ) -> Result<ResolvedChatHarnessLaunch, String> {
+        let persona_requested = request.persona.is_some();
         match self {
             Self::Claude { cli_path } => {
                 let spawnable = build_interactive_command(
@@ -655,7 +672,7 @@ impl ResolvedChatHarnessCli {
 
                 Ok(ResolvedChatHarnessLaunch::Background {
                     cli_path,
-                    spawnable,
+                    spawnable: spawnable.with_persona_injection_outcome(persona_requested, None),
                 })
             }
         }

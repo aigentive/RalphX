@@ -35,9 +35,9 @@ use crate::domain::entities::{
     InternalStatus, MessageRole, PersonaDirective, ProjectId, SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatMessageRepository, ChatTimelineRepository,
-    IdeationSessionRepository, QueuedMessageRepository, TaskRepository,
+    ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
+    ArtifactRepository, ChatMessageRepository, ChatTimelineRepository, IdeationSessionRepository,
+    QueuedMessageRepository, TaskRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,

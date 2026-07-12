@@ -691,6 +691,7 @@ pub fn start_teammate_stream<R: Runtime>(
                                     // Auto-nudge lead's stdin when a teammate sends a message
                                     // targeting the lead (or broadcasts). This wakes up the
                                     // lead's Claude CLI so it sees the teammate's message.
+                                    // Teammate nudges are persona-less by design, so no persona compare applies.
                                     //
                                     // IMPORTANT: The lead's stdin is registered under the LEAD's
                                     // context (from chat_service), not the teammate's. We must

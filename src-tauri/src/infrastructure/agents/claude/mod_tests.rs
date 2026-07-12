@@ -910,7 +910,7 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
 
     let persona = "<ralphx_agent_persona>CLI persona</ralphx_agent_persona>";
     let mut command = tokio::process::Command::new("/fake/claude");
-    add_prompt_args(
+    let outcome = add_prompt_args(
         &mut command,
         &plugin_dir,
         "ordinary user request",
@@ -920,6 +920,8 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
         None,
         false,
     );
+    assert!(outcome.persona_injected);
+    assert_eq!(outcome.persona_injection_skipped_reason, None);
     let args = command
         .as_std()
         .get_args()
@@ -937,6 +939,33 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
         .expect("appended system prompt");
 
     assert!(appended_prompt.contains(persona));
+}
+
+#[test]
+fn fallback_prompt_without_persona_pins_none_metadata() {
+    let (_dir, _root, plugin_dir) = make_temp_project_plugin_dir();
+    let persona = "<ralphx_agent_persona>Fallback persona</ralphx_agent_persona>";
+    let mut command = tokio::process::Command::new("/fake/claude");
+
+    let outcome = add_prompt_args(
+        &mut command,
+        &plugin_dir,
+        "ordinary user request",
+        Some(persona),
+        Some("missing-agent"),
+        None,
+        None,
+        false,
+    );
+
+    assert!(
+        !outcome.persona_injected,
+        "native fallback must not claim that it injected a persona"
+    );
+    assert_eq!(
+        outcome.persona_injection_skipped_reason,
+        Some("agent_prompt_not_found_native_agent")
+    );
 }
 
 #[test]

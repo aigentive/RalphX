@@ -37,13 +37,13 @@ use crate::domain::entities::{
     VerificationGap, VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -960,6 +960,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: interactive_process_registry.clone(),
+        interactive_process_token: None,
         verification_child_registry: verification_child_registry.clone(),
     }
 }

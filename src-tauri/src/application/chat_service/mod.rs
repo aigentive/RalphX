@@ -48,6 +48,7 @@ use crate::application::integration_reference_expansion::{
 };
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
+    InteractiveProcessToken,
 };
 use crate::application::notification_service::NotificationService;
 use crate::application::persona_prompt::ResolvedPersona;
@@ -532,6 +533,57 @@ fn provider_harness_switch_requires_fresh_session(
         });
 
     current_harness.is_some_and(|current_harness| current_harness != requested_harness)
+}
+
+fn persona_switch_requires_process_invalidation(
+    resolved: Option<&ResolvedPersona>,
+    process_metadata: Option<&InteractiveProcessMetadata>,
+) -> bool {
+    let Some(process_metadata) = process_metadata else {
+        return false;
+    };
+    let process_persona = (
+        process_metadata.persona_id.as_deref(),
+        process_metadata.persona_content_hash.as_deref(),
+    );
+    let resolved_persona = resolved
+        .map(|persona| {
+            (
+                Some(persona.id.as_str()),
+                Some(persona.content_hash.as_str()),
+            )
+        })
+        .unwrap_or((None, None));
+
+    process_persona != resolved_persona
+}
+
+fn effective_resolved_persona_for_injection<'a>(
+    resolved: Option<&'a ResolvedPersona>,
+    injection_would_be_skipped: bool,
+) -> Option<&'a ResolvedPersona> {
+    if injection_would_be_skipped {
+        None
+    } else {
+        resolved
+    }
+}
+
+fn registered_persona_metadata(
+    resolved_persona: Option<&ResolvedPersona>,
+    injection_skipped: bool,
+) -> (Option<String>, Option<String>) {
+    if injection_skipped {
+        return (None, None);
+    }
+
+    match resolved_persona {
+        Some(persona) => (
+            Some(persona.id.to_string()),
+            Some(persona.content_hash.clone()),
+        ),
+        None => (None, None),
+    }
 }
 
 fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'static str {
@@ -3336,6 +3388,7 @@ impl<R: Runtime> AppChatService<R> {
             PathBuf,
             tokio::process::Child,
             Option<Arc<InteractiveProcessRegistry>>,
+            Option<InteractiveProcessToken>,
         ),
         ChatServiceError,
     > {
@@ -3394,11 +3447,12 @@ impl<R: Runtime> AppChatService<R> {
             working_directory,
         )
         .await;
-        let persona_injection_skipped_reason =
+        let native_persona_injection_skipped_reason =
             crate::infrastructure::agents::claude::persona_injection_skipped_reason(
                 crate::infrastructure::agents::claude::native_agent_flag_enabled(),
                 persona.is_some(),
             );
+        let persona_for_metadata = persona.clone();
         let persona_id = persona.as_ref().map(|persona| persona.id.to_string());
         let build_plan_started = Instant::now();
         let mut launch_plan = chat_service_context::build_launch_plan_for_harness_with_persona(
@@ -3443,6 +3497,21 @@ impl<R: Runtime> AppChatService<R> {
             ChatServiceError::SpawnFailed(error)
         })?;
         launch_plan.apply_provider_env(&provider_env);
+        let persona_injected = launch_plan.persona_injected();
+        let injection_would_be_skipped =
+            native_persona_injection_skipped_reason.is_some() || !persona_injected;
+        let persona_injection_skipped_reason = native_persona_injection_skipped_reason
+            .or_else(|| launch_plan.persona_injection_skipped_reason())
+            .or_else(|| {
+                (persona_for_metadata.is_some() && !persona_injected)
+                    .then_some("persona_not_injected")
+            });
+        let effective_resolved = effective_resolved_persona_for_injection(
+            persona_for_metadata.as_ref(),
+            injection_would_be_skipped,
+        );
+        let (registered_persona_id, registered_persona_content_hash) =
+            registered_persona_metadata(effective_resolved, false);
         if let (Some(reason), Some(persona_id)) = (persona_injection_skipped_reason, persona_id) {
             self.emit_event(
                 "persona:injection_skipped",
@@ -3495,13 +3564,16 @@ impl<R: Runtime> AppChatService<R> {
                 runtime_context_id = %runtime_context_id,
                 "[IPR_REGISTER] Registering lead stdin in InteractiveProcessRegistry"
             );
-            self.ipr()
+            let interactive_process_token = self
+                .ipr()
                 .register_with_metadata(
                     interactive_key_for_register,
                     child_stdin,
                     InteractiveProcessMetadata {
                         harness: Some(resolved_spawn_settings.effective_harness),
                         provider_session_id: stored_session_id.map(str::to_string),
+                        persona_id: registered_persona_id,
+                        persona_content_hash: registered_persona_content_hash,
                     },
                 )
                 .await;
@@ -3515,7 +3587,12 @@ impl<R: Runtime> AppChatService<R> {
                 "chat_service.send_message interactive process registered"
             );
 
-            Ok((launched.cli_path, launched.child, Some(self.ipr())))
+            Ok((
+                launched.cli_path,
+                launched.child,
+                Some(self.ipr()),
+                Some(interactive_process_token),
+            ))
         } else {
             tracing::info!(
                 %context_type,
@@ -3525,7 +3602,7 @@ impl<R: Runtime> AppChatService<R> {
                 total_elapsed_ms = spawn_total_started.elapsed().as_millis() as u64,
                 "chat_service.send_message spawn process completed"
             );
-            Ok((launched.cli_path, launched.child, None))
+            Ok((launched.cli_path, launched.child, None, None))
         }
     }
 
@@ -3984,12 +4061,41 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let interactive_key =
             InteractiveProcessKey::new(context_type.to_string(), &runtime_context_id);
         let ipr_ref = self.ipr();
-        let has_ipr_entry = ipr_ref.has_process(&interactive_key).await;
-        let interactive_process_metadata = if has_ipr_entry {
+        let mut has_ipr_entry = ipr_ref.has_process(&interactive_key).await;
+        let mut interactive_process_metadata = if has_ipr_entry {
             ipr_ref.get_metadata(&interactive_key).await
         } else {
             None
         };
+        let existing_conv = if has_ipr_entry {
+            match options.conversation_id_override.as_ref() {
+                Some(conversation_id) => self
+                    .conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+                None => self
+                    .conversation_repo
+                    .get_active_for_context(context_type, context_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+            }
+        } else {
+            None
+        };
+        if has_ipr_entry && existing_conv.is_none() {
+            // A registry entry without its conversation cannot safely resolve a persona or
+            // attribute the turn. Drop it and let the normal fresh-spawn path own both.
+            ipr_ref.remove(&interactive_key).await;
+            has_ipr_entry = false;
+            interactive_process_metadata = None;
+            tracing::warn!(
+                %context_type,
+                context_id,
+                runtime_context_id = %runtime_context_id,
+                "chat_service.send_message: bypassed Gate 1 without an active conversation"
+            );
+        }
         let mut provider_switch_requires_fresh_session =
             provider_harness_switch_requires_fresh_session(
                 options.harness_override,
@@ -4004,24 +4110,60 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .and_then(|metadata| metadata.harness)
                 .is_none()
         {
-            let existing_conv = match options.conversation_id_override.as_ref() {
-                Some(conversation_id) => self
-                    .conversation_repo
-                    .get_by_id(conversation_id)
-                    .await
-                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
-                None => self
-                    .conversation_repo
-                    .get_active_for_context(context_type, context_id)
-                    .await
-                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
-            };
             provider_switch_requires_fresh_session = provider_harness_switch_requires_fresh_session(
                 options.harness_override,
                 existing_conv.as_ref(),
                 None,
             );
         }
+        let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
+            if self.persona_feature_enabled {
+                let gate_workspace = self
+                    .load_agent_conversation_workspace(
+                        context_type,
+                        &conversation.context_id,
+                        Some(&conversation.id),
+                    )
+                    .await?;
+                if persona_builder_requires_live_draft_session(
+                    conversation
+                        .agent_mode
+                        .map(|mode| mode.to_string())
+                        .as_deref(),
+                    false,
+                ) {
+                    return Err(ChatServiceError::PersonaUnavailable(
+                        "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
+                            .to_string(),
+                    ));
+                }
+                self.resolve_persona_for_send(
+                    conversation,
+                    &options,
+                    gate_workspace.as_ref().map(|workspace| workspace.mode),
+                )
+                .await?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let injection_would_be_skipped =
+            crate::infrastructure::agents::claude::persona_injection_skipped_reason(
+                crate::infrastructure::agents::claude::native_agent_flag_enabled(),
+                resolved_persona.is_some(),
+            )
+            .is_some();
+        let effective_resolved = effective_resolved_persona_for_injection(
+            resolved_persona.as_ref(),
+            injection_would_be_skipped,
+        );
+        let persona_switch_requires_process_invalidation =
+            persona_switch_requires_process_invalidation(
+                effective_resolved,
+                interactive_process_metadata.as_ref(),
+            );
         let force_new_provider_session =
             options.force_new_provider_session || provider_switch_requires_fresh_session;
         tracing::info!(
@@ -4032,6 +4174,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             has_ipr_entry,
             force_new_provider_session,
             provider_switch_requires_fresh_session,
+            persona_switch_requires_process_invalidation,
             "[GATE_TRACE] Gate 1 (IPR lookup)"
         );
         if !has_ipr_entry {
@@ -4077,6 +4220,51 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 });
             }
         }
+        if has_ipr_entry && persona_switch_requires_process_invalidation {
+            if let Some(existing) = self
+                .active_provider_switch_blocking_run(
+                    &RunningAgentKey::new(context_type.to_string(), &runtime_context_id),
+                    context_type,
+                    context_id,
+                    &runtime_context_id,
+                )
+                .await?
+            {
+                let queued = self
+                    .enqueue_pending_send(
+                        context_type,
+                        &runtime_context_id,
+                        message,
+                        &options,
+                        Some(existing.conversation_id.clone()),
+                    )
+                    .await?;
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    runtime_context_id = %runtime_context_id,
+                    queued_message_id = %queued.id,
+                    existing_run_id = %existing.agent_run_id,
+                    "chat_service.send_message: active persona mismatch queued for next turn"
+                );
+                return Ok(SendResult {
+                    conversation_id: existing.conversation_id.clone(),
+                    agent_run_id: existing.agent_run_id.clone(),
+                    is_new_conversation: false,
+                    was_queued: true,
+                    queued_message_id: Some(queued.id),
+                    queued_as_pending: false,
+                });
+            }
+
+            ipr_ref.remove(&interactive_key).await;
+            tracing::info!(
+                %context_type,
+                context_id,
+                runtime_context_id = %runtime_context_id,
+                "chat_service.send_message: removed stale interactive process after persona mismatch"
+            );
+        }
         if has_ipr_entry && force_new_provider_session {
             ipr_ref.remove(&interactive_key).await;
             tracing::info!(
@@ -4086,26 +4274,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: skipped existing interactive process for fresh provider session"
             );
         }
-        if has_ipr_entry && !force_new_provider_session {
+        if has_ipr_entry
+            && !force_new_provider_session
+            && !persona_switch_requires_process_invalidation
+        {
             tracing::info!(
                 %context_type,
                 context_id,
                 runtime_context_id = %runtime_context_id,
                 "chat_service.send_message: interactive process found, writing to stdin"
             );
-
-            let existing_conv = match options.conversation_id_override.as_ref() {
-                Some(conversation_id) => self
-                    .conversation_repo
-                    .get_by_id(conversation_id)
-                    .await
-                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
-                None => self
-                    .conversation_repo
-                    .get_active_for_context(context_type, context_id)
-                    .await
-                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
-            };
 
             let conversation = match existing_conv {
                 Some(conv) => {
@@ -4127,35 +4305,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     conversation
                 }
             };
-            if self.persona_feature_enabled {
-                let gate_workspace = self
-                    .load_agent_conversation_workspace(
-                        context_type,
-                        &conversation.context_id,
-                        Some(&conversation.id),
-                    )
-                    .await?;
-                if persona_builder_requires_live_draft_session(
-                    conversation
-                        .agent_mode
-                        .map(|mode| mode.to_string())
-                        .as_deref(),
-                    false,
-                ) {
-                    return Err(ChatServiceError::PersonaUnavailable(
-                        "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                            .to_string(),
-                    ));
-                }
-                let _resolved_persona = self
-                    .resolve_persona_for_send(
-                        &conversation,
-                        &options,
-                        gate_workspace.as_ref().map(|workspace| workspace.mode),
-                    )
-                    .await?;
-            }
-            // PR-13 completes the comparison against IPR persona metadata.
             let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
             let turn_attachments = if resume_in_place {
                 Vec::new()
@@ -5513,33 +5662,34 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Some(&working_directory),
             )
             .await;
-        let (selected_cli_path, child, interactive_process_registry) = match self
-            .spawn_process_for_harness(
-                &conversation,
-                &runtime_message,
-                resolved_persona,
-                Some(resolved_agent_name.as_str()),
-                agent_profile,
-                context_type,
-                context_id,
-                &runtime_context_id,
-                &agent_run_id,
-                &working_directory,
-                entity_status.as_deref(),
-                project_id.as_deref(),
-                &session_messages,
-                session_total,
-                options.is_external_mcp,
-                runtime_team_mode,
-                stored_session_id.as_deref(),
-                &resolved_spawn_settings,
-                Some(attachment_context.as_str()),
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => cleanup_and_err!(error),
-        };
+        let (selected_cli_path, child, interactive_process_registry, interactive_process_token) =
+            match self
+                .spawn_process_for_harness(
+                    &conversation,
+                    &runtime_message,
+                    resolved_persona,
+                    Some(resolved_agent_name.as_str()),
+                    agent_profile,
+                    context_type,
+                    context_id,
+                    &runtime_context_id,
+                    &agent_run_id,
+                    &working_directory,
+                    entity_status.as_deref(),
+                    project_id.as_deref(),
+                    &session_messages,
+                    session_total,
+                    options.is_external_mcp,
+                    runtime_team_mode,
+                    stored_session_id.as_deref(),
+                    &resolved_spawn_settings,
+                    Some(attachment_context.as_str()),
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => cleanup_and_err!(error),
+            };
 
         // Register verification child PID for explicit cleanup after reconciliation (Fix A).
         // Only for Ideation sessions with SessionPurpose::Verification.
@@ -5704,6 +5854,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             team_service: self.team_service.clone(),
             streaming_state_cache: self.streaming_state_cache.clone(),
             interactive_process_registry,
+            interactive_process_token,
             verification_child_registry: Some(Arc::clone(&self.verification_child_registry)),
         };
 
@@ -5734,148 +5885,213 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // instead of queuing. The Claude CLI handles internal message queuing mid-turn.
         let interactive_key = InteractiveProcessKey::new(context_type.to_string(), context_id);
         if self.ipr().has_process(&interactive_key).await {
-            tracing::info!(
-                %context_type,
-                context_id,
-                "queue_message: interactive process found, sending immediately via stdin"
-            );
+            let persona_switch_requires_process_invalidation = if self.persona_feature_enabled {
+                let existing_conv = self
+                    .conversation_repo
+                    .get_active_for_context(context_type, context_id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+                let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
+                    let workspace = self
+                        .load_agent_conversation_workspace(
+                            context_type,
+                            &conversation.context_id,
+                            Some(&conversation.id),
+                        )
+                        .await?;
+                    if persona_builder_requires_live_draft_session(
+                        conversation
+                            .agent_mode
+                            .map(|mode| mode.to_string())
+                            .as_deref(),
+                        false,
+                    ) {
+                        return Err(ChatServiceError::PersonaUnavailable(
+                            "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
+                                .to_string(),
+                        ));
+                    }
+                    self.resolve_persona_for_send(
+                        conversation,
+                        &SendMessageOptions::default(),
+                        workspace.as_ref().map(|workspace| workspace.mode),
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                let injection_would_be_skipped =
+                    crate::infrastructure::agents::claude::persona_injection_skipped_reason(
+                        crate::infrastructure::agents::claude::native_agent_flag_enabled(),
+                        resolved_persona.is_some(),
+                    )
+                    .is_some();
+                let effective_resolved = effective_resolved_persona_for_injection(
+                    resolved_persona.as_ref(),
+                    injection_would_be_skipped,
+                );
+                let process_metadata = self.ipr().get_metadata(&interactive_key).await;
+                persona_switch_requires_process_invalidation(
+                    effective_resolved,
+                    process_metadata.as_ref(),
+                )
+            } else {
+                false
+            };
+            if persona_switch_requires_process_invalidation {
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    "queue_message: persona mismatch queued instead of writing stale interactive stdin"
+                );
+            } else {
+                tracing::info!(
+                    %context_type,
+                    context_id,
+                    "queue_message: interactive process found, sending immediately via stdin"
+                );
 
-            // Agent is already running — no session history needed here.
-            let stdin_prompt = chat_service_context::build_initial_prompt(
-                context_type,
-                context_id,
-                content,
-                &[],
-                0,
-            );
-            let stream_json_msg =
-                crate::infrastructure::agents::claude::format_stream_json_input(&stdin_prompt);
+                // Agent is already running — no session history needed here.
+                let stdin_prompt = chat_service_context::build_initial_prompt(
+                    context_type,
+                    context_id,
+                    content,
+                    &[],
+                    0,
+                );
+                let stream_json_msg =
+                    crate::infrastructure::agents::claude::format_stream_json_input(&stdin_prompt);
 
-            match self
-                .ipr()
-                .write_message(&interactive_key, &stream_json_msg)
-                .await
-            {
-                Ok(()) => {
-                    // Re-increment running count only if the process was idle.
-                    // Same guard as send_message fast-path: prevents double-increment.
-                    if uses_execution_slot(context_type) {
-                        if let Some(ref exec) = self.execution_state {
-                            let slot_key = format!("{}/{}", context_type, context_id);
-                            if exec.claim_interactive_slot(&slot_key) {
-                                exec.increment_running();
-                                if let Some(ref handle) = self.app_handle {
-                                    exec.emit_status_changed(handle, "interactive_turn_resumed");
+                match self
+                    .ipr()
+                    .write_message(&interactive_key, &stream_json_msg)
+                    .await
+                {
+                    Ok(()) => {
+                        // Re-increment running count only if the process was idle.
+                        // Same guard as send_message fast-path: prevents double-increment.
+                        if uses_execution_slot(context_type) {
+                            if let Some(ref exec) = self.execution_state {
+                                let slot_key = format!("{}/{}", context_type, context_id);
+                                if exec.claim_interactive_slot(&slot_key) {
+                                    exec.increment_running();
+                                    if let Some(ref handle) = self.app_handle {
+                                        exec.emit_status_changed(
+                                            handle,
+                                            "interactive_turn_resumed",
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Use the EXISTING conversation — not a force-fresh one.
-                    // The interactive process was spawned with a conversation, so
-                    // get_active_for_context should always find it.
-                    let existing_conv = self
-                        .conversation_repo
-                        .get_active_for_context(context_type, context_id)
-                        .await
-                        .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?;
+                        // Use the EXISTING conversation — not a force-fresh one.
+                        // The interactive process was spawned with a conversation, so
+                        // get_active_for_context should always find it.
+                        let existing_conv = self
+                            .conversation_repo
+                            .get_active_for_context(context_type, context_id)
+                            .await
+                            .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?;
 
-                    let conversation = match existing_conv {
-                        Some(conv) => {
-                            tracing::debug!(
+                        let conversation = match existing_conv {
+                            Some(conv) => {
+                                tracing::debug!(
                                 conversation_id = conv.id.as_str(),
                                 "queue_message: reusing existing conversation for interactive process"
                             );
-                            conv
-                        }
-                        None => {
-                            // Edge case: IPR has process but no conversation found.
-                            // Create one as fallback (shouldn't happen in practice).
-                            tracing::warn!(
-                                %context_type,
-                                context_id,
-                                "queue_message: no existing conversation found despite IPR entry, creating new"
-                            );
-                            let (conversation, _) = self
-                                .get_or_create_conversation(context_type, context_id)
-                                .await?;
-                            conversation
-                        }
-                    };
-                    let user_msg = chat_service_context::create_user_message(
-                        context_type,
-                        context_id,
-                        content,
-                        conversation.id,
-                        None,
-                        None,
-                    );
-                    let user_msg_id = user_msg.id.as_str().to_string();
-                    let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                    if self
-                        .chat_message_repo
-                        .create(user_msg.clone())
-                        .await
-                        .is_ok()
-                    {
-                        chat_service_streaming::persist_message_text_timeline_item(
-                            &self.chat_timeline_repo,
-                            &user_msg,
-                        )
-                        .await;
-                    }
-
-                    if context_type == ChatContextType::Ideation {
-                        let _ = self
-                            .ideation_session_repo
-                            .touch_updated_at(context_id)
+                                conv
+                            }
+                            None => {
+                                // Edge case: IPR has process but no conversation found.
+                                // Create one as fallback (shouldn't happen in practice).
+                                tracing::warn!(
+                                    %context_type,
+                                    context_id,
+                                    "queue_message: no existing conversation found despite IPR entry, creating new"
+                                );
+                                let (conversation, _) = self
+                                    .get_or_create_conversation(context_type, context_id)
+                                    .await?;
+                                conversation
+                            }
+                        };
+                        let user_msg = chat_service_context::create_user_message(
+                            context_type,
+                            context_id,
+                            content,
+                            conversation.id,
+                            None,
+                            None,
+                        );
+                        let user_msg_id = user_msg.id.as_str().to_string();
+                        let user_msg_created_at = user_msg.created_at.to_rfc3339();
+                        if self
+                            .chat_message_repo
+                            .create(user_msg.clone())
+                            .await
+                            .is_ok()
+                        {
+                            chat_service_streaming::persist_message_text_timeline_item(
+                                &self.chat_timeline_repo,
+                                &user_msg,
+                            )
                             .await;
+                        }
+
+                        if context_type == ChatContextType::Ideation {
+                            let _ = self
+                                .ideation_session_repo
+                                .touch_updated_at(context_id)
+                                .await;
+                        }
+
+                        // Emit message_created so frontend shows the user message
+                        self.emit_event(
+                            "agent:message_created",
+                            AgentMessageCreatedPayload {
+                                message_id: user_msg_id,
+                                conversation_id: conversation.id.as_str().to_string(),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                role: "user".to_string(),
+                                content: content.to_string(),
+                                created_at: Some(user_msg_created_at),
+                                metadata: None,
+                                render_ready: None,
+                            },
+                        );
+
+                        // Build a QueuedMessage for API compatibility
+                        let msg_id = client_id
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        let queued_msg =
+                            QueuedMessage::with_id(msg_id.clone(), content.to_string());
+
+                        // Emit queue_sent to remove from frontend optimistic queue UI
+                        self.emit_event(
+                            "agent:queue_sent",
+                            AgentQueueSentPayload {
+                                message_id: msg_id,
+                                conversation_id: conversation.id.as_str().to_string(),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                            },
+                        );
+
+                        return Ok(queued_msg);
                     }
-
-                    // Emit message_created so frontend shows the user message
-                    self.emit_event(
-                        "agent:message_created",
-                        AgentMessageCreatedPayload {
-                            message_id: user_msg_id,
-                            conversation_id: conversation.id.as_str().to_string(),
-                            context_type: context_type.to_string(),
-                            context_id: context_id.to_string(),
-                            role: "user".to_string(),
-                            content: content.to_string(),
-                            created_at: Some(user_msg_created_at),
-                            metadata: None,
-                            render_ready: None,
-                        },
-                    );
-
-                    // Build a QueuedMessage for API compatibility
-                    let msg_id = client_id
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                    let queued_msg = QueuedMessage::with_id(msg_id.clone(), content.to_string());
-
-                    // Emit queue_sent to remove from frontend optimistic queue UI
-                    self.emit_event(
-                        "agent:queue_sent",
-                        AgentQueueSentPayload {
-                            message_id: msg_id,
-                            conversation_id: conversation.id.as_str().to_string(),
-                            context_type: context_type.to_string(),
-                            context_id: context_id.to_string(),
-                        },
-                    );
-
-                    return Ok(queued_msg);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        %context_type,
-                        context_id,
-                        error = %e,
-                        "queue_message: interactive stdin write failed, falling back to normal queue"
-                    );
-                    // Remove broken entry, fall through to normal queue
-                    self.ipr().remove(&interactive_key).await;
+                    Err(e) => {
+                        tracing::warn!(
+                            %context_type,
+                            context_id,
+                            error = %e,
+                            "queue_message: interactive stdin write failed, falling back to normal queue"
+                        );
+                        // Remove broken entry, fall through to normal queue
+                        self.ipr().remove(&interactive_key).await;
+                    }
                 }
             }
         }
@@ -7395,6 +7611,8 @@ mod agent_workspace_send_tests {
                 InteractiveProcessMetadata {
                     harness: Some(AgentHarnessKind::Claude),
                     provider_session_id: Some("claude-session-active".to_string()),
+                    persona_id: None,
+                    persona_content_hash: None,
                 },
             )
             .await;

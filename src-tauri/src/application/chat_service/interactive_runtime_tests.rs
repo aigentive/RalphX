@@ -1,17 +1,29 @@
 use super::{
     agent_conversation_mode_for_send, conversation_spawn_harness_override,
     edit_mode_plan_handoff_runtime_message, get_agent_name,
-    interactive_run_started_provider_session, plan_mode_runtime_message,
-    provider_harness_switch_requires_fresh_session, resolve_agent_name_for_send,
+    interactive_run_started_provider_session, persona_switch_requires_process_invalidation,
+    plan_mode_runtime_message, provider_harness_switch_requires_fresh_session,
+    registered_persona_metadata, resolve_agent_name_for_send,
     should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
+use crate::application::persona_prompt::ResolvedPersona;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
     ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, ProjectId, TaskId,
+    IdeationSessionId, PersonaId, ProjectId, TaskId,
 };
+
+fn resolved_persona(id: &str, content_hash: &str) -> ResolvedPersona {
+    ResolvedPersona {
+        id: PersonaId::from(id),
+        slug: id.to_string(),
+        version: 1,
+        content_hash: content_hash.to_string(),
+        block: String::new(),
+    }
+}
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
     AGENT_ORCHESTRATOR_IDEATION, AGENT_PR_REVIEWER,
@@ -27,6 +39,8 @@ fn interactive_run_started_provider_session_prefers_process_metadata_harness() {
         Some(&InteractiveProcessMetadata {
             harness: Some(AgentHarnessKind::Codex),
             provider_session_id: None,
+            persona_id: None,
+            persona_content_hash: None,
         }),
     );
 
@@ -58,6 +72,8 @@ fn provider_harness_switch_requires_fresh_session_for_process_harness_mismatch()
         Some(&InteractiveProcessMetadata {
             harness: Some(AgentHarnessKind::Claude),
             provider_session_id: Some("claude-session-123".to_string()),
+            persona_id: None,
+            persona_content_hash: None,
         }),
     );
 
@@ -79,10 +95,92 @@ fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
         Some(&InteractiveProcessMetadata {
             harness: None,
             provider_session_id: Some("legacy-session-123".to_string()),
+            persona_id: None,
+            persona_content_hash: None,
         }),
     );
 
     assert!(requires_fresh);
+}
+
+#[test]
+fn persona_invalidation_for_content_hash_mismatch() {
+    let resolved = resolved_persona("persona-a", "new-hash");
+    let process = InteractiveProcessMetadata {
+        harness: Some(AgentHarnessKind::Claude),
+        provider_session_id: Some("claude-session-123".to_string()),
+        persona_id: Some("persona-a".to_string()),
+        persona_content_hash: Some("old-hash".to_string()),
+    };
+
+    assert!(persona_switch_requires_process_invalidation(
+        Some(&resolved),
+        Some(&process)
+    ));
+}
+
+#[test]
+fn persona_invalidation_for_persona_id_mismatch() {
+    let resolved = resolved_persona("persona-b", "hash-b");
+    let bound = InteractiveProcessMetadata {
+        harness: None,
+        provider_session_id: None,
+        persona_id: Some("persona-a".to_string()),
+        persona_content_hash: Some("hash-a".to_string()),
+    };
+    let unbound = InteractiveProcessMetadata::default();
+
+    assert!(persona_switch_requires_process_invalidation(
+        Some(&resolved),
+        Some(&bound)
+    ));
+    assert!(persona_switch_requires_process_invalidation(
+        None,
+        Some(&bound)
+    ));
+    assert!(persona_switch_requires_process_invalidation(
+        Some(&resolved),
+        Some(&unbound)
+    ));
+}
+
+#[test]
+fn persona_invalidation_skipped_when_both_unbound() {
+    assert!(!persona_switch_requires_process_invalidation(
+        None,
+        Some(&InteractiveProcessMetadata::default())
+    ));
+    assert!(!persona_switch_requires_process_invalidation(None, None));
+}
+
+#[test]
+fn persona_invalidation_independent_of_harness_override() {
+    let resolved = resolved_persona("persona-a", "hash-a");
+    let process = InteractiveProcessMetadata {
+        harness: Some(AgentHarnessKind::Codex),
+        provider_session_id: Some("codex-session-123".to_string()),
+        persona_id: Some("persona-a".to_string()),
+        persona_content_hash: Some("stale-hash".to_string()),
+    };
+
+    assert!(persona_switch_requires_process_invalidation(
+        Some(&resolved),
+        Some(&process)
+    ));
+}
+
+#[test]
+fn injection_skipped_registers_persona_metadata_none() {
+    let resolved = resolved_persona("persona-a", "hash-a");
+
+    assert_eq!(
+        registered_persona_metadata(Some(&resolved), true),
+        (None, None)
+    );
+    assert_eq!(
+        registered_persona_metadata(Some(&resolved), false),
+        (Some("persona-a".to_string()), Some("hash-a".to_string()))
+    );
 }
 
 #[test]

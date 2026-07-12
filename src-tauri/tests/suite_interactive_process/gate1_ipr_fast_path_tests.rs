@@ -15,16 +15,23 @@
 // tests simulate the Gate 1 logic step-by-step using the real components, matching
 // the pattern used by interactive_mode_integration.rs and team_nudge_running_count_tests.rs.
 
+use chrono::Utc;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
 use ralphx_lib::application::chat_service::{ChatService, SendMessageOptions};
 use ralphx_lib::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ExecutionState;
-use ralphx_lib::domain::entities::{ChatContextType, ChatConversation, ProjectId, TaskId};
+use ralphx_lib::domain::entities::{
+    AgentRun, ChatContextType, ChatConversation, Persona, PersonaId, PersonaStatus, ProjectId,
+    TaskId,
+};
 use ralphx_lib::domain::repositories::ChatConversationRepository;
 use ralphx_lib::domain::services::running_agent_registry::{
     MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry,
@@ -33,12 +40,76 @@ use ralphx_lib::infrastructure::memory::MemoryChatConversationRepository;
 
 use crate::support::erroring_persona_repository::ErroringPersonaRepository;
 
+fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
+    Persona {
+        id: PersonaId::from(id),
+        slug: id.to_string(),
+        name: id.to_string(),
+        description: "Gate-1 test persona".to_string(),
+        content: content.to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: content_hash.to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+fn write_capturing_claude_cli(temp: &Path, capture: &Path) -> PathBuf {
+    let cli_path = temp.join("capturing-claude");
+    fs::write(
+        &cli_path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nfor arg in \"$@\"; do\n  [ -f \"$arg\" ] && cat \"$arg\" >> '{}'\ndone\nsleep 1\n",
+            capture.display(),
+            capture.display(),
+        ),
+    )
+    .expect("write capturing Claude CLI");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&cli_path)
+            .expect("capturing Claude CLI metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&cli_path, permissions).expect("mark capturing Claude CLI executable");
+    }
+    cli_path
+}
+
+fn runtime_plugin_dir_for_gate1_persona_test() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../plugins/app")
+        .canonicalize()
+        .expect("runtime plugins/app directory should resolve to a canonical path")
+}
+
+fn configure_runtime_plugin_dirs_for_gate1_persona_test() -> (
+    ralphx_lib::infrastructure::agents::claude::RuntimePluginDirsOverrideGuard,
+    tempfile::TempDir,
+) {
+    let generated_plugin_root = tempfile::tempdir().expect("generated plugin tempdir");
+    let generated_plugin_dir = generated_plugin_root.path().join("generated/claude-plugin");
+    fs::create_dir_all(&generated_plugin_dir).expect("create generated plugin dir");
+    let runtime_plugin_guard =
+        ralphx_lib::infrastructure::agents::claude::override_runtime_plugin_dirs_for_tests(
+            runtime_plugin_dir_for_gate1_persona_test(),
+            generated_plugin_dir,
+        );
+
+    (runtime_plugin_guard, generated_plugin_root)
+}
+
 // ============================================================================
 // Test 1: Gate 1 HIT — IPR has entry, writes to stdin, reuses existing conversation
 // ============================================================================
 
 #[tokio::test]
-async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
+async fn gate1_persona_resolution_failure_blocks_before_stdin_write() {
     let state = AppState::new_test();
     let context_id = "project-gate1-persona-fail-closed";
     let mut conversation =
@@ -89,7 +160,6 @@ async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
         "fail-closed resolution must leave the live IPR entry intact before any write"
     );
 
-    // PR-13 completes the compare against IPR persona metadata.
     state
         .interactive_process_registry
         .remove(&interactive_key)
@@ -107,6 +177,811 @@ async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
         observed_stdin.is_empty(),
         "persona failure must happen before Gate-1 writes the stream-json payload"
     );
+}
+
+#[tokio::test]
+async fn gate1_stdin_reuse_resolves_persona_and_compares_before_stdin_write() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-compare";
+    let persona = active_persona("persona-gate1-compare", "persona body", "new-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("cat stdin"),
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: Some("preserved-session".to_string()),
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true)
+        .with_cli_path(std::env::temp_dir().join("missing-gate1-persona-cli"));
+
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not reach stale stdin",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect_err("persona mismatch must bypass stdin and reach fresh-spawn validation");
+
+    assert!(
+        error.to_string().contains("missing-gate1-persona-cli"),
+        "a metadata match would have written stdin instead of attempting fresh spawn: {error}"
+    );
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "the stale persona-bound IPR entry must be removed before fresh spawn"
+    );
+    let mut observed_stdin = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("cat stdout")
+        .read_to_end(&mut observed_stdin)
+        .await
+        .expect("read stdin observer output");
+    let _ = child.wait().await;
+    assert!(
+        observed_stdin.is_empty(),
+        "persona mismatch must compare before any Gate-1 stdin write"
+    );
+}
+
+#[tokio::test]
+async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_session() {
+    // provider_resume_mode_for_session requires an on-disk session artifact,
+    // otherwise the respawn takes Recovery mode and omits --resume.
+    let provider_home = tempfile::tempdir().expect("provider state home");
+    let session_dir = provider_home.path().join(".claude/projects/gate1");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    std::fs::write(session_dir.join("preserved-provider-session.jsonl"), "{}\n")
+        .expect("session artifact");
+    let _provider_home_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+        provider_home.path().as_os_str(),
+    );
+    let _allow_spawn =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let (_runtime_plugin_guard, _generated_plugin_root) =
+        configure_runtime_plugin_dirs_for_gate1_persona_test();
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-edit";
+    let persona = active_persona("persona-gate1-edit", "old persona body", "old-hash");
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed persona");
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    conversation.set_provider_session_ref(ralphx_lib::domain::agents::ProviderSessionRef {
+        harness: ralphx_lib::domain::agents::AgentHarnessKind::Claude,
+        provider_session_id: "preserved-provider-session".to_string(),
+    });
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("persist bound conversation");
+
+    let mut old_process = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn old interactive process");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            old_process.stdin.take().expect("old process stdin"),
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: Some("preserved-provider-session".to_string()),
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .await;
+    state
+        .persona_repo
+        .update_content(&persona.id, "new persona body", "new-hash")
+        .await
+        .expect("simulate update_persona content hash bump");
+
+    let temp = tempfile::tempdir().expect("test tempdir");
+    let capture = temp.path().join("claude-arguments-and-prompt");
+    let cli_path = write_capturing_claude_cli(temp.path(), &capture);
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        cli_path.to_str().expect("UTF-8 CLI path"),
+    );
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true)
+        .with_cli_path(cli_path)
+        .with_plugin_dir(runtime_plugin_dir_for_gate1_persona_test())
+        .with_working_directory(temp.path());
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "send after edit",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect("idle persona mismatch should spawn a replacement process");
+
+    assert!(!result.was_queued);
+    let metadata = state
+        .interactive_process_registry
+        .get_metadata(&interactive_key)
+        .await
+        .expect("fresh spawn must replace the stale IPR entry");
+    assert_eq!(metadata.persona_id.as_deref(), Some("persona-gate1-edit"));
+    assert_eq!(metadata.persona_content_hash.as_deref(), Some("new-hash"));
+    let captured = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let captured = fs::read_to_string(&capture).unwrap_or_default();
+            if captured.contains("--resume") {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                break fs::read_to_string(&capture).expect("fresh Claude invocation capture");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fresh Claude invocation did not include --resume: {captured}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    assert!(captured.contains("--resume"));
+    assert!(captured.contains("preserved-provider-session"));
+    assert!(captured.contains("new persona body"));
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = old_process.kill().await;
+}
+
+#[tokio::test]
+async fn mid_turn_persona_mismatch_queues_behind_active_run() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-active";
+    let persona = active_persona("persona-gate1-active", "new persona body", "new-hash");
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed persona");
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    let conversation_id = conversation.id.as_str().to_string();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id.as_str().to_string();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    state.agent_run_repo.create(run).await.unwrap();
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn active interactive process");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("active process stdin"),
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: None,
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .await;
+    let running_key = RunningAgentKey::new("project", context_id);
+    state
+        .running_agent_registry
+        .register(running_key.clone(), 0, conversation_id, run_id, None, None)
+        .await;
+
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true);
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "queue after persona edit",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect("active persona mismatch should queue");
+
+    assert!(result.was_queued);
+    let queued = state
+        .message_queue
+        .get_queued(ChatContextType::Project, context_id);
+    assert_eq!(queued.len(), 1);
+    assert!(!queued[0].force_new_provider_session);
+    assert!(
+        state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn matching_persona_metadata_reuses_stdin_fast_path() {
+    let (_runtime_plugin_guard, _generated_plugin_root) =
+        configure_runtime_plugin_dirs_for_gate1_persona_test();
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-match";
+    let persona = active_persona("persona-gate1-match", "persona body", "persona-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: None,
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some(persona.content_hash.clone()),
+            },
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true);
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "fast-path message",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect("matching bound persona metadata must write stdin");
+    assert!(!result.was_queued);
+    assert!(
+        state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut observed)
+        .await
+        .unwrap();
+    let _ = child.wait().await;
+    assert!(
+        !observed.is_empty(),
+        "matching metadata must use the stdin fast path"
+    );
+}
+
+#[tokio::test]
+async fn native_agent_flag_with_bound_persona_keeps_stdin_fast_path() {
+    let _native_agent_flag =
+        crate::support::env::EnvVarGuard::set("RALPHX_USE_NATIVE_AGENT_FLAG", "1");
+    let (_runtime_plugin_guard, _generated_plugin_root) =
+        configure_runtime_plugin_dirs_for_gate1_persona_test();
+    let state = AppState::new_test();
+    let context_id = "project-gate1-native-agent-persona";
+    let persona = active_persona("persona-gate1-native", "persona body", "persona-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true);
+
+    for message in ["native persona first", "native persona second"] {
+        service
+            .send_message(
+                ChatContextType::Project,
+                context_id,
+                message,
+                SendMessageOptions::default(),
+            )
+            .await
+            .expect("native --agent suppression must preserve the existing stdin process");
+    }
+    assert!(
+        state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut observed)
+        .await
+        .unwrap();
+    let _ = child.wait().await;
+    assert!(
+        String::from_utf8_lossy(&observed).contains("native persona second"),
+        "both sends must reach the reused stdin instead of triggering a respawn"
+    );
+}
+
+#[tokio::test]
+async fn queue_message_persona_mismatch_queues_instead_of_writing_stale_stdin() {
+    let state = AppState::new_test();
+    let context_id = "project-queue-persona-mismatch";
+    let persona = active_persona("persona-queue-mismatch", "persona body", "new-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: None,
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true);
+
+    let queued = service
+        .queue_message(
+            ChatContextType::Project,
+            context_id,
+            "must queue behind persona replacement",
+            Some("client-queue-persona-mismatch"),
+        )
+        .await
+        .expect("persona mismatch must fall through to the durable queue");
+    assert_eq!(queued.id, "client-queue-persona-mismatch");
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, context_id)
+            .len(),
+        1
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut observed)
+        .await
+        .unwrap();
+    let _ = child.wait().await;
+    assert!(
+        observed.is_empty(),
+        "stale persona stdin must not receive the queue message"
+    );
+}
+
+#[tokio::test]
+async fn queue_message_matching_persona_writes_through() {
+    let state = AppState::new_test();
+    let context_id = "project-queue-persona-match";
+    let persona = active_persona("persona-queue-match", "persona body", "persona-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: None,
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some(persona.content_hash.clone()),
+            },
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true);
+
+    service
+        .queue_message(
+            ChatContextType::Project,
+            context_id,
+            "matching persona queue write",
+            None,
+        )
+        .await
+        .expect("matching persona must preserve the immediate stdin write");
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::Project, context_id)
+        .is_empty());
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut observed)
+        .await
+        .unwrap();
+    let _ = child.wait().await;
+    assert!(String::from_utf8_lossy(&observed).contains("matching persona queue write"));
+}
+
+#[tokio::test]
+async fn queue_message_persona_guard_flag_off_writes_through() {
+    let state = AppState::new_test();
+    let context_id = "project-queue-persona-flag-off";
+    state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::from_string(
+            context_id.to_string(),
+        )))
+        .await
+        .unwrap();
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+            InteractiveProcessMetadata {
+                harness: None,
+                provider_session_id: None,
+                persona_id: Some("stale-persona".to_string()),
+                persona_content_hash: Some("stale-hash".to_string()),
+            },
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_feature_enabled(false);
+
+    service
+        .queue_message(ChatContextType::Project, context_id, "flag off write", None)
+        .await
+        .expect("feature-off queue_message behavior must remain a direct stdin write");
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut observed)
+        .await
+        .unwrap();
+    let _ = child.wait().await;
+    assert!(String::from_utf8_lossy(&observed).contains("flag off write"));
+}
+
+#[tokio::test]
+async fn gate1_without_active_conversation_bypasses_fast_path() {
+    let (_runtime_plugin_guard, _generated_plugin_root) =
+        configure_runtime_plugin_dirs_for_gate1_persona_test();
+    let state = AppState::new_test();
+    let context_id = "project-gate1-no-active-conversation";
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn stdin observer");
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register(
+            interactive_key.clone(),
+            child.stdin.take().expect("observer stdin"),
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_feature_enabled(true)
+        .with_cli_path(std::env::temp_dir().join("missing-gate1-no-conversation-cli"));
+
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "must not reach an orphaned stdin",
+            SendMessageOptions::default(),
+        )
+        .await
+        .expect_err("orphaned IPR must fall through to the normal spawn path");
+    assert!(error
+        .to_string()
+        .contains("missing-gate1-no-conversation-cli"));
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+    let mut observed = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut observed)
+        .await
+        .unwrap();
+    let _ = child.wait().await;
+    assert!(observed.is_empty());
+}
+
+#[tokio::test]
+async fn harness_override_persona_mismatch_removes_stale_ipr_before_spawn() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-override-order";
+    let persona = active_persona("persona-override-order", "persona body", "new-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let (stdin, mut child) = create_test_stdin().await;
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            stdin,
+            InteractiveProcessMetadata {
+                harness: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                provider_session_id: None,
+                persona_id: Some(persona.id.to_string()),
+                persona_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true)
+        .with_cli_path(std::env::temp_dir().join("missing-gate1-override-order-cli"));
+
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "persona mismatch with explicit harness",
+            SendMessageOptions {
+                harness_override: Some(ralphx_lib::domain::agents::AgentHarnessKind::Claude),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("persona mismatch must still bypass the IPR with an override");
+    assert!(error
+        .to_string()
+        .contains("missing-gate1-override-order-cli"));
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn suppressed_send_does_not_invalidate_unbound_process() {
+    let state = AppState::new_test();
+    let context_id = "project-gate1-persona-suppressed";
+    let persona = active_persona("persona-gate1-suppressed", "persona body", "persona-hash");
+    state.persona_repo.create(persona.clone()).await.unwrap();
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string(context_id.to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let (stdin, mut child) = create_test_stdin().await;
+    let interactive_key = InteractiveProcessKey::new("project", context_id);
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            stdin,
+            InteractiveProcessMetadata::default(),
+        )
+        .await;
+    let service = state
+        .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_persona_feature_enabled(true);
+
+    let result = service
+        .send_message(
+            ChatContextType::Project,
+            context_id,
+            "suppressed persona message",
+            SendMessageOptions {
+                persona_directive: ralphx_lib::domain::entities::PersonaDirective::Suppress,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("suppressed persona must preserve an unbound process");
+    assert!(!result.was_queued);
+    assert!(
+        state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await
+    );
+
+    state
+        .interactive_process_registry
+        .remove(&interactive_key)
+        .await;
+    let _ = child.kill().await;
 }
 
 /// When IPR has a registered interactive process for a TaskExecution context,

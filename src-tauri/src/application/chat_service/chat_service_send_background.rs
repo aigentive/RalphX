@@ -17,7 +17,7 @@ use super::chat_service_types::{
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
 use crate::application::notification_service::NotificationService;
@@ -129,6 +129,9 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub streaming_state_cache: StreamingStateCache,
     // Interactive process registry for stdin cleanup on process exit
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    // Entry identity captured at registration; prevents an old stream exit from
+    // deleting a newer process that replaced the same context key.
+    pub interactive_process_token: Option<InteractiveProcessToken>,
     // Verification child process registry for PID-based cleanup after reconciliation
     pub verification_child_registry:
         Option<Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>>,
@@ -922,6 +925,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             team_service,
             streaming_state_cache,
             interactive_process_registry,
+            interactive_process_token,
             verification_child_registry,
         } = ctx;
         let BackgroundRunRepos {
@@ -1082,7 +1086,18 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 &runtime_context_id,
             );
 
-            ipr.remove(&ipr_key).await;
+            let removed = match interactive_process_token {
+                Some(token) => ipr.remove_if_token(&ipr_key, token).await,
+                None => ipr.remove(&ipr_key).await,
+            };
+            if removed.is_none() {
+                tracing::debug!(
+                    %context_type,
+                    context_id = %context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "[IPR_REMOVE] Stream exit preserved newer interactive process"
+                );
+            }
             if team_still_active {
                 tracing::info!(
                     %context_type,

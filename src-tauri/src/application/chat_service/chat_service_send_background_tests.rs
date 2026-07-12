@@ -17,8 +17,7 @@ use crate::domain::entities::{
     SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
 };
 use crate::domain::repositories::{
-    AgentProviderSettingsRepository, PersonaRepository,
-    QueuedMessageRepository,
+    AgentProviderSettingsRepository, PersonaRepository, QueuedMessageRepository,
 };
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -1717,6 +1716,7 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: None,
+        interactive_process_token: None,
         verification_child_registry: None,
     });
 
@@ -1849,6 +1849,7 @@ async fn background_run_error_passes_runtime_repos_to_error_handler() {
         team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: None,
+        interactive_process_token: None,
         verification_child_registry: None,
     });
 
