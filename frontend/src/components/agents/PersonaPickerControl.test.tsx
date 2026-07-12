@@ -1,0 +1,138 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+
+import { fetchPersonas, usePersonas } from "@/hooks/usePersonas";
+import type { Persona } from "@/types/persona";
+import { PersonaPickerControl } from "./PersonaPickerControl";
+
+vi.mock("@/hooks/usePersonas", () => ({
+  fetchPersonas: vi.fn(),
+  personaKeys: { list: () => ["personas", "list"] as const },
+  usePersonas: vi.fn(),
+}));
+
+const personas: Persona[] = [
+  {
+    id: "reviewer",
+    slug: "reviewer-voice",
+    name: "Reviewer Voice",
+    description: "Careful reviews",
+    content: "# Reviewer",
+    status: "active",
+    version: 1,
+    contentHash: "hash-reviewer",
+    sourceSessionId: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "architect",
+    slug: "terse-architect",
+    name: "Terse Architect",
+    description: "Short architecture notes",
+    content: "# Architect",
+    status: "active",
+    version: 1,
+    contentHash: "hash-architect",
+    sourceSessionId: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "draft",
+    slug: "not-ready",
+    name: "Not ready",
+    description: "Draft",
+    content: "# Draft",
+    status: "draft",
+    version: 1,
+    contentHash: "hash-draft",
+    sourceSessionId: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+];
+
+function renderControl(overrides: Partial<React.ComponentProps<typeof PersonaPickerControl>> = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const prefetchQuery = vi.spyOn(queryClient, "prefetchQuery");
+  const onOpenPersonas = vi.fn();
+  const onValueChange = vi.fn();
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <PersonaPickerControl
+          personaId={null}
+          onValueChange={onValueChange}
+          onOpenPersonas={onOpenPersonas}
+          {...overrides}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
+  );
+  return { ...view, onOpenPersonas, onValueChange, prefetchQuery };
+}
+
+describe("PersonaPickerControl", () => {
+  beforeEach(() => {
+    vi.mocked(fetchPersonas).mockResolvedValue(personas);
+    vi.mocked(usePersonas).mockReturnValue({
+      data: personas,
+      isLoading: false,
+    } as ReturnType<typeof usePersonas>);
+  });
+
+  it("uses an icon-only trigger with an accessible name and tooltip", async () => {
+    renderControl({ personaId: "reviewer" });
+
+    const trigger = screen.getByRole("button", { name: "Choose persona" });
+    expect(trigger).toHaveClass("h-8", "w-8");
+    expect(trigger).not.toHaveClass("w-full");
+    await userEvent.setup().hover(trigger);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Persona: Reviewer Voice",
+    );
+  });
+
+  it("lists active personas and No persona as the default choice", () => {
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+
+    expect(screen.getByRole("menuitemradio", { name: "No persona" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("menuitemradio", { name: "Reviewer Voice" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "Terse Architect" })).toBeInTheDocument();
+    expect(screen.queryByText("Not ready")).not.toBeInTheDocument();
+  });
+
+  it("changes selection and opens persona settings from the popover", () => {
+    const { onOpenPersonas, onValueChange } = renderControl();
+    fireEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    expect(onValueChange).toHaveBeenCalledWith("reviewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage personas" }));
+    expect(onOpenPersonas).toHaveBeenCalledOnce();
+  });
+
+  it("prefetches on intent without blocking an immediate popover shell", async () => {
+    vi.mocked(usePersonas).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+    } as ReturnType<typeof usePersonas>);
+    const { prefetchQuery } = renderControl();
+    const trigger = screen.getByRole("button", { name: "Choose persona" });
+
+    fireEvent.pointerEnter(trigger);
+    await waitFor(() => expect(prefetchQuery).toHaveBeenCalledOnce());
+    fireEvent.click(trigger);
+
+    expect(screen.getByTestId("persona-picker-popover")).toBeInTheDocument();
+    expect(screen.getByTestId("persona-picker-loading")).toBeInTheDocument();
+  });
+});

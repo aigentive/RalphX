@@ -3631,6 +3631,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: null,
       modelId: null,
       logicalEffort: null,
+      personaId: null,
       base: null,
     });
 
@@ -3639,6 +3640,7 @@ describe("startAgentConversationInvokeInput", () => {
     expect(out).not.toHaveProperty("providerHarness");
     expect(out).not.toHaveProperty("modelOverride");
     expect(out).not.toHaveProperty("logicalEffort");
+    expect(out).not.toHaveProperty("personaId");
     expect(out).not.toHaveProperty("baseRefKind");
   });
 
@@ -3650,6 +3652,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      personaId: "persona-reviewer",
       codexFastMode: true,
       mode: "chat",
       teamIntent: {
@@ -3684,6 +3687,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelOverride: "gpt-5.5",
       logicalEffort: "xhigh",
+      personaId: "persona-reviewer",
       codexFastMode: true,
       mode: "chat",
       teamIntent: {

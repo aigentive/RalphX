@@ -19,6 +19,11 @@ import type {
 } from "@/api/chat";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import {
+  PERSONA_UNAVAILABLE_PREFIX,
+  isPersonaUnavailableError,
+} from "@/lib/personaErrors";
 import { withAlpha } from "@/lib/theme-colors";
 import {
   useAgentSessionStore,
@@ -74,6 +79,8 @@ import {
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
 import { useUiStore } from "@/stores/uiStore";
+import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
+import { PersonaPickerControl } from "./PersonaPickerControl";
 
 interface PendingAttachment {
   id: string;
@@ -92,6 +99,7 @@ interface AgentsStartComposerSubmitInput {
   base: AgentConversationBaseSelection | null;
   files: File[];
   codexFastMode?: boolean | null;
+  personaId?: string | null;
   teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerProjectReferences?: ComposerProjectReference[] | undefined;
@@ -134,7 +142,8 @@ type StarterTypingPhase = "holding" | "typing" | "deleting";
 
 type StartComposerError =
   | { kind: "plain"; message: string }
-  | { kind: "linked_setup"; message: string };
+  | { kind: "linked_setup"; message: string }
+  | { kind: "persona_unavailable"; message: string };
 
 function isPendingAttachment(
   attachment: ChatComposerAttachment,
@@ -153,13 +162,26 @@ function copyRuntimeProviderValues(
 }
 
 function startComposerErrorFromUnknown(error: unknown): StartComposerError {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "Failed to start agent conversation";
+  if (isPersonaUnavailableError(message)) {
+    return {
+      kind: "persona_unavailable",
+      message: message
+        .slice(PERSONA_UNAVAILABLE_PREFIX.length)
+        .replace(/\]$/, "")
+        .trim(),
+    };
+  }
   const linked = parseLinkedSetupFailure(error);
   if (linked) {
     return { kind: "linked_setup", message: linked.message };
   }
-  return plainStartComposerError(
-    error instanceof Error ? error.message : "Failed to start agent conversation"
-  );
+  return plainStartComposerError(message);
 }
 
 function composerIntegrationReferencesEqual(
@@ -245,12 +267,14 @@ export function AgentsStartComposer({
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
+  const [personaId, setPersonaId] = useState<string | null>(null);
   const [error, setError] = useState<StartComposerError | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
   const userSelectedStartFromRef = useRef(false);
   const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
+  const { data: featureFlags } = useFeatureFlags();
   const {
     settings: providerSettings,
     providers: configuredProviders,
@@ -371,6 +395,9 @@ export function AgentsStartComposer({
     setStartConversationFailure(null);
     setError(null);
   }, [setStartConversationFailure]);
+  const openPersonaSettings = useCallback(() => {
+    openModal("settings", { section: "personas" });
+  }, [openModal]);
 
   useEffect(() => {
     setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
@@ -963,6 +990,15 @@ export function AgentsStartComposer({
     await submitStartInput(isolatedAttempt);
   }, [attachments, startConversationFailure, submitStartInput]);
 
+  const handleRemovePersonaAndRetry = useCallback(async () => {
+    const lastAttempt = lastStartAttemptRef.current;
+    if (!lastAttempt) {
+      return;
+    }
+    setPersonaId(null);
+    await submitStartInput({ ...lastAttempt, personaId: null });
+  }, [submitStartInput]);
+
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
     message,
     options,
@@ -1012,6 +1048,7 @@ export function AgentsStartComposer({
       base,
       files: attachments.map((attachment) => attachment.file),
       codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
+      ...(featureFlags.agentPersonas && personaId ? { personaId } : {}),
       ...(teamIntent ? { teamIntent } : {}),
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
@@ -1114,6 +1151,17 @@ export function AgentsStartComposer({
             </div>
           )}
 
+          {error?.kind === "persona_unavailable" && (
+            <div className="mb-3">
+              <PersonaUnavailableNotice
+                message={error.message}
+                onRemoveAndRetry={() => void handleRemovePersonaAndRetry()}
+                onOpenPersonas={openPersonaSettings}
+                disabled={isSubmitting}
+              />
+            </div>
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
@@ -1162,6 +1210,20 @@ export function AgentsStartComposer({
               },
               testId: "agents-start-team",
             }}
+            {...(featureFlags.agentPersonas
+              ? {
+                  personaControl: (
+                    <PersonaPickerControl
+                      personaId={personaId}
+                      onValueChange={(nextPersonaId) => {
+                        clearStartError();
+                        setPersonaId(nextPersonaId);
+                      }}
+                      onOpenPersonas={openPersonaSettings}
+                    />
+                  ),
+                }
+              : {})}
             project={{
               value: projectId,
               onValueChange: handleProjectChange,
