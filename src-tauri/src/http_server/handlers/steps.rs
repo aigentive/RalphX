@@ -11,9 +11,10 @@ use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
 use crate::application::validation_service::TaskValidationService;
 use crate::domain::entities::{
-    StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
+    ExecutionFailureSource, StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
 };
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
+use crate::http_server::types::HttpError;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 pub async fn get_task_steps_http(
@@ -635,7 +636,7 @@ pub async fn execution_complete_http(
     State(state): State<HttpServerState>,
     Path(task_id_str): Path<String>,
     Json(req): Json<ExecutionCompleteRequest>,
-) -> Result<Json<ExecutionCompleteResponse>, StatusCode> {
+) -> Result<Json<ExecutionCompleteResponse>, HttpError> {
     let task_id = TaskId::from_string(task_id_str.clone());
 
     // Fetch task (needed for worktree_path and metadata update)
@@ -698,7 +699,7 @@ pub async fn execution_complete_http(
                 dirty_files = ?dirty_summary,
                 "Rejecting execution_complete because task worktree has uncommitted changes"
             );
-            return Err(StatusCode::CONFLICT);
+            return Err(HttpError::from(StatusCode::CONFLICT));
         }
     }
 
@@ -712,6 +713,38 @@ pub async fn execution_complete_http(
             );
             StatusCode::CONFLICT
         })?;
+
+    // Agent-reported failed tests are terminal, but successful reports are not review evidence.
+    if let Some(ref test_result) = req.test_result {
+        if test_result.tests_ran && !test_result.tests_passed {
+            let summary = test_result
+                .test_summary
+                .as_deref()
+                .unwrap_or("reported tests failed")
+                .trim();
+            let message = if summary.is_empty() {
+                "Validation failed: reported tests failed".to_string()
+            } else {
+                format!("Validation failed: {summary}")
+            };
+            persist_execution_complete_validation_rejection(&state, &task, &message).await?;
+            tracing::warn!(
+                task_id = %task_id_str,
+                summary = %message,
+                "Rejecting execution_complete because reported validation failed"
+            );
+            return Err(HttpError {
+                status: StatusCode::CONFLICT,
+                message: Some(
+                    serde_json::json!({
+                        "error": crate::application::chat_service::VALIDATION_FAILED_ERROR_CODE,
+                        "details": message,
+                    })
+                    .to_string(),
+                ),
+            });
+        }
+    }
 
     if let Some(worktree_path) = task.worktree_path.as_deref() {
         let path = validate_absolute_non_root_path(
@@ -798,6 +831,46 @@ pub async fn execution_complete_http(
         success: true,
         message: format!("Execution complete for task {}", task_id_str),
     }))
+}
+
+async fn persist_execution_complete_validation_rejection(
+    state: &HttpServerState,
+    task: &Task,
+    message: &str,
+) -> Result<(), HttpError> {
+    let mut metadata = task
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.insert(
+            "failure_error".to_string(),
+            serde_json::Value::String(message.to_string()),
+        );
+        obj.insert(
+            "failure_source".to_string(),
+            serde_json::to_value(ExecutionFailureSource::ValidationFailed)
+                .unwrap_or_else(|_| serde_json::json!("validation_failed")),
+        );
+        obj.insert(
+            "failed_at".to_string(),
+            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+    state
+        .app_state
+        .task_repo
+        .update_metadata(&task.id, Some(metadata.to_string()))
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                task_id = %task.id.as_str(),
+                error = %error,
+                "Failed to persist validation rejection metadata"
+            );
+            HttpError::from(StatusCode::INTERNAL_SERVER_ERROR)
+        })
 }
 
 #[cfg(test)]

@@ -51,6 +51,22 @@ fn failure_source_to_reason_code_maps_agent_incomplete() {
 }
 
 #[test]
+fn failure_source_to_reason_code_maps_validation_and_local_tool_failures() {
+    assert_eq!(
+        ReconciliationRunner::failure_source_to_reason_code(
+            ExecutionFailureSource::LocalToolFailed,
+        ),
+        ExecutionRecoveryReasonCode::LocalToolFailed,
+    );
+    assert_eq!(
+        ReconciliationRunner::failure_source_to_reason_code(
+            ExecutionFailureSource::ValidationFailed,
+        ),
+        ExecutionRecoveryReasonCode::ValidationFailed,
+    );
+}
+
+#[test]
 fn stop_retrying_reason_to_code_maps_git_branch_lost() {
     assert_eq!(
         stop_retrying_reason_to_code(&StopRetryingReason::GitBranchLost),
