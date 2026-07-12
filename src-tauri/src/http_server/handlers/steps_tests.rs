@@ -245,7 +245,7 @@ async fn execution_complete_accepts_non_empty_captured_base_diff() {
 }
 
 #[tokio::test]
-async fn execution_complete_writes_validation_cache_with_targeted_metadata_update() {
+async fn execution_complete_does_not_accept_agent_test_result_as_validation_evidence() {
     let tmp_dir = create_temp_git_repo();
     let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "main"]);
     std::fs::write(tmp_dir.path().join("src.rs"), "fn main() {}\n").unwrap();
@@ -285,14 +285,10 @@ async fn execution_complete_writes_validation_cache_with_targeted_metadata_updat
         .await
         .unwrap()
         .expect("task should exist");
-    let cache = ValidationCacheMetadata::from_task_metadata(updated.metadata.as_deref())
-        .unwrap()
-        .expect("execution_complete should store validation cache metadata");
-    assert!(cache.tests_ran);
-    assert!(cache.tests_passed);
-    assert_eq!(
-        cache.test_summary.as_deref(),
-        Some("focused validation passed")
+    assert!(
+        ValidationCacheMetadata::from_task_metadata(updated.metadata.as_deref())
+            .unwrap()
+            .is_none(),
+        "execution_complete must not convert agent-provided test_result into review evidence"
     );
-    assert_eq!(cache.captured_by, "execution_complete");
 }

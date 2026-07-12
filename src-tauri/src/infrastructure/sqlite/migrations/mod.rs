@@ -411,6 +411,7 @@ mod v20260710000000_task_branch_base;
 mod v20260710003315_execution_plan_halt_mode;
 mod v20260710134609_notifications_table;
 mod v20260710201548_notification_settings;
+mod v20260712090000_validation_run_content_fingerprints;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -523,7 +524,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260710201548;
+pub const SCHEMA_VERSION: i64 = 20260712090000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1452,6 +1453,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260710201548,
         name: "notification_settings",
         migrate: v20260710201548_notification_settings::migrate,
+    },
+    Migration {
+        version: 20260712090000,
+        name: "validation_run_content_fingerprints",
+        migrate: v20260712090000_validation_run_content_fingerprints::migrate,
     },
 ];
 
