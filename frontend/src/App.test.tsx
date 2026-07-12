@@ -1185,10 +1185,14 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByTestId("notifications-panel-shell").getAttribute("style")).toContain(
+    const shell = screen.getByTestId("notifications-panel-shell");
+    expect(shell.getAttribute("style")).toContain("width: 100vw");
+    expect(shell.getAttribute("style")).toContain("max-width: 400px");
+    expect(shell.className).not.toContain("w-[400px]");
+    expect(shell.getAttribute("style")).toContain(
       "background-color: var(--bg-surface)"
     );
-    expect(screen.getByTestId("notifications-panel-shell").getAttribute("style")).toContain(
+    expect(shell.getAttribute("style")).toContain(
       "border-left-color: var(--border-subtle)"
     );
     expect(screen.getByTestId("notifications-panel-frame").getAttribute("style")).toContain(
@@ -1197,6 +1201,63 @@ describe("App", () => {
     expect(screen.getByTestId("notifications-panel-frame").getAttribute("style")).toContain(
       "box-shadow: none"
     );
+  });
+
+  it("opens and closes the notification center from the top-bar trigger", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const toggle = screen.getByTestId("reviews-toggle");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByTestId("notifications-panel-shell")).not.toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("notifications-panel-shell")).toHaveAttribute(
+      "aria-hidden",
+      "false",
+    );
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("notifications-panel-shell")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+  });
+
+  it("closes the notification center from the outside dismissal layer", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ notificationsPanelOpen: true });
+
+    render(<App />);
+
+    const toggle = screen.getByTestId("reviews-toggle");
+    const shell = screen.getByTestId("notifications-panel-shell");
+    await user.click(screen.getByTestId("notifications-panel"));
+    expect(shell).toHaveAttribute("aria-hidden", "false");
+
+    await user.click(screen.getByTestId("notifications-panel-backdrop"));
+
+    await waitFor(() => expect(shell).toHaveAttribute("aria-hidden", "true"));
+    expect(screen.queryByTestId("notifications-panel-backdrop")).not.toBeInTheDocument();
+    await waitFor(() => expect(toggle).toHaveFocus());
+  });
+
+  it("returns focus to the notification trigger after close button and Escape closes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const toggle = screen.getByTestId("reviews-toggle");
+    await user.click(toggle);
+    await user.click(screen.getByTestId("notifications-panel-close"));
+    await waitFor(() => expect(toggle).toHaveFocus());
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(toggle);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(toggle).toHaveFocus());
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
   });
 
   it("keeps the notification badge global when a different project is active", () => {

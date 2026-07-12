@@ -183,6 +183,31 @@ async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     child
 }
 
+async fn spawn_jsonl_process_with_exit_status(
+    lines: &[&str],
+    exit_status: i32,
+) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exit \"$RALPHX_EXIT_STATUS\"")
+        .env("RALPHX_STREAM_LINES", payload)
+        .env("RALPHX_EXIT_STATUS", exit_status.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command
+        .spawn()
+        .expect("spawn codex jsonl fixture with exit status")
+}
+
 async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::process::Child {
     let mut command = Command::new("sh");
     command
@@ -394,6 +419,91 @@ async fn codex_stream_accepted_completion_tool_enters_grace_path() {
     assert!(outcome.completion_tool_called);
     assert_eq!(outcome.tool_calls.len(), 1);
     assert_eq!(outcome.tool_calls[0].name, "ralphx::execution_complete");
+}
+
+#[tokio::test]
+async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
+    let child = spawn_jsonl_process_with_exit_status(
+        &[r#"{"type":"thread.started","thread_id":"compacted-thread"}"#],
+        1,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(StreamError::NoOutput {
+                context_type: ChatContextType::Ideation
+            })
+        ),
+        "a non-zero terminal exit without diagnostics must not be reduced to AgentExit"
+    );
+}
+
+#[tokio::test]
+async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
+    let child = spawn_jsonl_process_with_exit_status(
+        &[r#"{"type":"thread.started","thread_id":"empty-success-thread"}"#],
+        0,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(StreamError::NoOutput { context_type: ChatContextType::Ideation })),
+        "a terminal success without text, tool output, or completion signal must not settle as success"
+    );
 }
 
 #[tokio::test]
