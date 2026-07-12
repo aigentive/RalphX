@@ -39,6 +39,9 @@ fn validation_run(task: &Task) -> ValidationRun {
         mode: ValidationRunMode::ReuseOrRun,
         policy_enabled: true,
         head_sha: Some("abcdef1234567890".to_string()),
+        start_content_fingerprint: Some("tree-start".to_string()),
+        validated_content_fingerprint: Some("tree-validated".to_string()),
+        promoted_commit_sha: None,
         base_ref: Some("main".to_string()),
         analysis_fingerprint: Some("analysis-a".to_string()),
         status_episode_entered_at: Some(Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap()),
@@ -138,6 +141,14 @@ async fn validation_run_repo_roundtrips_runs_and_orders_command_results() {
         latest.run.analysis_fingerprint.as_deref(),
         Some("analysis-a")
     );
+    assert_eq!(
+        latest.run.start_content_fingerprint.as_deref(),
+        Some("tree-start")
+    );
+    assert_eq!(
+        latest.run.validated_content_fingerprint.as_deref(),
+        Some("tree-validated")
+    );
     assert_eq!(latest.commands.len(), 2);
     assert_eq!(latest.commands[0].id, "command-earlier");
     assert_eq!(latest.commands[0].status, ValidationCommandStatus::Cached);
@@ -148,6 +159,34 @@ async fn validation_run_repo_roundtrips_runs_and_orders_command_results() {
     );
     assert_eq!(latest.commands[1].id, "command-later");
     assert_eq!(latest.commands[1].status, ValidationCommandStatus::Passed);
+}
+
+#[tokio::test]
+async fn validation_run_repo_promotes_a_matching_validated_run_to_commit() {
+    let (_db, repo, task) = setup_repo().await;
+    let run = validation_run(&task);
+    repo.create_run(&run).await.expect("run should persist");
+
+    repo.record_validated_content_fingerprint(&run.id, Some("tree-final".to_string()))
+        .await
+        .expect("validated fingerprint should persist");
+    repo.promote_run_to_commit(&run.id, "commit-validated-tree")
+        .await
+        .expect("promotion should persist");
+
+    let latest = repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest run lookup should succeed")
+        .expect("run should exist");
+    assert_eq!(
+        latest.run.promoted_commit_sha.as_deref(),
+        Some("commit-validated-tree")
+    );
+    assert_eq!(
+        latest.run.validated_content_fingerprint.as_deref(),
+        Some("tree-final")
+    );
 }
 
 #[tokio::test]

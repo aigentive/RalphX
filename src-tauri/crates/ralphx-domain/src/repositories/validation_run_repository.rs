@@ -16,6 +16,14 @@ pub trait ValidationRunRepository: Send + Sync {
         completed_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<()>;
 
+    async fn record_validated_content_fingerprint(
+        &self,
+        run_id: &str,
+        fingerprint: Option<String>,
+    ) -> AppResult<()>;
+
+    async fn promote_run_to_commit(&self, run_id: &str, commit_sha: &str) -> AppResult<()>;
+
     async fn add_command_result(&self, result: &ValidationCommandResult) -> AppResult<()>;
 
     async fn list_command_results_for_task(
