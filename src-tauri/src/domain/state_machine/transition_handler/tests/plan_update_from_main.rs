@@ -96,7 +96,8 @@ async fn update_plan_already_up_to_date() {
 #[tokio::test]
 async fn non_pr_freshness_plan_update_uses_primary_checkout_path() {
     let (repo, plan_branch) = setup_plan_behind_main();
-    let project = make_test_project(&repo.path_string());
+    let mut project = make_test_project(&repo.path_string());
+    project.github_pr_enabled = false;
 
     let result =
         update_plan_for_freshness(repo.path(), &plan_branch, "main", &project, "task-3", None)
