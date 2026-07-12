@@ -6,6 +6,11 @@ import { ArrowLeft, FilePlus2 } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
   personaKeys,
@@ -140,9 +145,20 @@ export function PersonaBuilderView({
   return (
     <section aria-label="Persona Builder" className="flex h-full min-h-[520px] flex-col gap-4">
       <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Back to personas" onClick={onBack}>
-          <ArrowLeft aria-hidden="true" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Back to personas"
+              onClick={onBack}
+            >
+              <ArrowLeft aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Back to personas</TooltipContent>
+        </Tooltip>
         <div>
           <h3 className="text-base font-semibold text-[var(--text-primary)]">Persona Builder</h3>
           <p className="text-sm text-[var(--text-secondary)]">Build a reusable agent voice with guided context.</p>
