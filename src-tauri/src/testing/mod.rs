@@ -13,7 +13,7 @@ pub use test_prompts::{
 
 // Re-export merge validation helpers for integration testing
 pub use crate::domain::state_machine::transition_handler::{
-    PreExecSetupResult, run_pre_execution_setup,
+    run_pre_execution_setup, PreExecSetupResult,
 };
 
 #[cfg(feature = "test-utils")]
@@ -26,4 +26,13 @@ pub use mock_app::{create_mock_app, create_mock_app_handle};
 #[cfg(feature = "test-utils")]
 pub fn seed_available_harness_probes_for_test() {
     crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+}
+
+/// Seed fake harness probes pinned to a caller-owned fake CLI path, for tests
+/// that exercise real spawn paths which validate CLI existence on disk.
+#[cfg(feature = "test-utils")]
+pub fn seed_available_harness_probes_for_test_at(binary_path: &str) {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test_at(
+        binary_path,
+    );
 }

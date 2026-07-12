@@ -337,6 +337,7 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
         StartAgentConversationInput {
             project_id: origin.context_id.clone(),
             content,
+            persona_id: None,
             conversation_id: None,
             parent_conversation_id: Some(origin.id.as_str()),
             title: Some(req.title.clone()),

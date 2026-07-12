@@ -2443,6 +2443,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Inspect the repo without editing".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -2535,6 +2536,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Review this PR".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -2695,6 +2697,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Prepare an editable workspace".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -2852,6 +2855,7 @@ mod ipc_contract {
                 StartAgentConversationInput {
                     project_id: fix.project_id.as_str().to_string(),
                     content: format!("Use the selected plan in {mode} mode"),
+                    persona_id: None,
                     conversation_id: None,
                     parent_conversation_id: None,
                     title: None,
@@ -3001,6 +3005,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: fix.project_id.as_str().to_string(),
                 content: "Review the selected PR".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3074,6 +3079,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: fix.project_id.as_str().to_string(),
                 content: "Use both selected plans".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3175,6 +3181,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Continue on the linked branch".to_string(),
+                persona_id: None,
                 conversation_id: Some(conversation.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -3275,6 +3282,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Start on linked branch".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3369,6 +3377,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Start on checked-out linked branch".to_string(),
+                persona_id: None,
                 conversation_id: Some(draft.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -3462,6 +3471,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Plan a small refactor".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,

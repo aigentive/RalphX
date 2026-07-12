@@ -466,13 +466,22 @@ pub(crate) fn standard_chat_harness_cli_resolvers(
 /// installed `claude`/`codex` binaries.
 #[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn seed_available_harness_probes_for_test() {
+    seed_available_harness_probes_for_test_at("/tmp/test-harness");
+}
+
+/// Like [`seed_available_harness_probes_for_test`], but pins the probe's
+/// binary path to a caller-owned fixture so send paths that validate CLI
+/// existence on disk (e.g. `resolve_claude_chat_harness_cli`) can spawn a
+/// real fake CLI.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn seed_available_harness_probes_for_test_at(binary_path: &str) {
     let cache = HARNESS_RUNTIME_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().expect("lock harness probe cache");
     for harness in standard_harness_runtime_adapters().into_keys() {
         cache.insert(
             harness,
             HarnessRuntimeProbe {
-                binary_path: Some("/tmp/test-harness".to_string()),
+                binary_path: Some(binary_path.to_string()),
                 binary_found: true,
                 probe_succeeded: true,
                 available: true,
