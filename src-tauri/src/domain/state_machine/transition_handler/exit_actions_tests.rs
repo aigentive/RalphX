@@ -5,6 +5,8 @@ use crate::domain::entities::{
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     ExecutionRecoveryState, Project, Task,
 };
+use std::process::Command;
+use tempfile::TempDir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -48,6 +50,96 @@ fn make_retrying_recovery_with_auto_retry() -> ExecutionRecoveryMetadata {
         ExecutionRecoveryState::Retrying,
     );
     recovery
+}
+
+fn setup_git_repo() -> TempDir {
+    let dir = TempDir::new().expect("create temporary git repo");
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test User"],
+    ] {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .status()
+            .expect("run git setup command");
+        assert!(status.success());
+    }
+    std::fs::write(dir.path().join("tracked.txt"), "initial\n").expect("write tracked file");
+    let status = Command::new("git")
+        .args(["add", "tracked.txt"])
+        .current_dir(dir.path())
+        .status()
+        .expect("stage tracked file");
+    assert!(status.success());
+    let status = Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(dir.path())
+        .status()
+        .expect("commit initial file");
+    assert!(status.success());
+    dir
+}
+
+fn git_output(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git command");
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .expect("git output is utf8")
+        .trim()
+        .to_string()
+}
+
+#[tokio::test]
+async fn pr_mode_execution_exit_does_not_commit_primary_checkout() {
+    let repo = setup_git_repo();
+    let app_state = AppState::new_test();
+    let mut project = Project::new(
+        "Protected Project".into(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.github_pr_enabled = true;
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let recovery = make_retrying_recovery_with_auto_retry();
+    let mut task = Task::new(project.id.clone(), "Protected task".into());
+    task.metadata = Some(recovery.update_task_metadata(None).unwrap());
+    task.worktree_path = None;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    std::fs::write(repo.path().join("tracked.txt"), "user change\n")
+        .expect("dirty primary checkout");
+    let head_before = git_output(repo.path(), &["rev-parse", "HEAD"]);
+    let status_before = git_output(repo.path(), &["status", "--porcelain"]);
+
+    let ctx = make_exit_ctx(&app_state, task.id.as_str(), project.id.as_str());
+    auto_commit_on_execution_done(&ctx).await;
+
+    assert_eq!(git_output(repo.path(), &["rev-parse", "HEAD"]), head_before);
+    assert_eq!(
+        git_output(repo.path(), &["status", "--porcelain"]),
+        status_before,
+        "PR mode must preserve primary-checkout changes exactly"
+    );
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let metadata = ExecutionRecoveryMetadata::from_task_metadata(updated.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.last_state, ExecutionRecoveryState::Succeeded);
 }
 
 // ── GAP B4: Auto-commit skipped for transient failures ───────────────────────

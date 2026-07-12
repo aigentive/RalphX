@@ -22,8 +22,40 @@ use crate::domain::repositories::ActivityEventRepository;
 use crate::infrastructure::agents::claude::ReconciliationConfig;
 
 use super::merge_coordination::{
-    update_plan_from_main, update_source_from_target, PlanUpdateResult, SourceUpdateResult,
+    update_plan_from_main, update_plan_from_main_isolated, update_source_from_target,
+    PlanUpdateResult, SourceUpdateResult,
 };
+
+async fn update_plan_for_freshness(
+    repo_path: &Path,
+    plan_branch_name: &str,
+    base_branch: &str,
+    project: &Project,
+    task_id_str: &str,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
+) -> PlanUpdateResult {
+    if project.github_pr_enabled {
+        update_plan_from_main_isolated(
+            repo_path,
+            plan_branch_name,
+            base_branch,
+            project,
+            task_id_str,
+            event_sink,
+        )
+        .await
+    } else {
+        update_plan_from_main(
+            repo_path,
+            plan_branch_name,
+            base_branch,
+            project,
+            task_id_str,
+            event_sink,
+        )
+        .await
+    }
+}
 
 /// Typed metadata for branch freshness conflict tracking.
 ///
@@ -395,6 +427,15 @@ pub async fn ensure_branches_fresh(
 
     // 5. Dirty worktree guard
     match is_worktree_dirty(repo_path).await {
+        Ok(true)
+            if super::automatic_commit_policy::protects_primary_checkout(project, repo_path) =>
+        {
+            info!(
+                task_id = task_id_str,
+                reason = "pr_mode_primary_checkout_protected",
+                "Skipping emergency auto-commit for the PR-mode primary checkout"
+            );
+        }
         Ok(true) => {
             warn!(
                 task_id = task_id_str,
@@ -486,7 +527,7 @@ pub async fn ensure_branches_fresh(
         // when startup reconciliation inlines deep async chains.
         let plan_result = tokio::time::timeout(
             freshness_timeout,
-            Box::pin(update_plan_from_main(
+            Box::pin(update_plan_for_freshness(
                 repo_path,
                 plan_branch_name,
                 base_branch,
@@ -577,7 +618,7 @@ pub async fn ensure_branches_fresh(
                 );
                 let retry_result = tokio::time::timeout(
                     freshness_timeout,
-                    Box::pin(update_plan_from_main(
+                    Box::pin(update_plan_for_freshness(
                         repo_path,
                         plan_branch_name,
                         base_branch,
