@@ -72,7 +72,7 @@ export function TaskReviewCard({
         "bg-[var(--bg-elevated)] border-[var(--border-subtle)]",
         "rounded-[var(--radius-md)]",
         panelPresentation
-          ? "min-w-0 overflow-hidden p-3 shadow-none"
+          ? "w-full max-w-full min-w-0 overflow-hidden p-3 shadow-none"
           : "p-5",
         !panelPresentation && isHovered && "shadow-[var(--shadow-xs)]",
         !panelPresentation && isHovered && "-translate-y-[1px]",
@@ -84,7 +84,7 @@ export function TaskReviewCard({
         data-testid="task-review-title"
         className={cn(
           "font-semibold text-sm text-[var(--text-primary)] leading-tight",
-          panelPresentation ? "min-w-0 break-words line-clamp-2" : "truncate"
+          panelPresentation ? "min-w-0 break-words [overflow-wrap:anywhere] line-clamp-2" : "truncate"
         )}
       >
         {task.title}
@@ -125,12 +125,16 @@ export function TaskReviewCard({
           <div
             className={cn(
               "min-w-0 overflow-hidden p-2 rounded-[var(--radius-sm)]",
-              "bg-[var(--bg-base)]"
+              "bg-[var(--bg-base)]",
+              panelPresentation && "max-w-full"
             )}
           >
             <p
               data-testid="task-review-description"
-              className="text-sm text-[var(--text-secondary)] italic line-clamp-2 leading-normal break-words"
+              className={cn(
+                "text-sm text-[var(--text-secondary)] italic line-clamp-2 leading-normal break-words",
+                panelPresentation && "[overflow-wrap:anywhere]",
+              )}
             >
               {task.description}
             </p>

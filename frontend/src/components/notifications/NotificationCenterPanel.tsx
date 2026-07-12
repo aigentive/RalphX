@@ -118,7 +118,7 @@ function AttentionItemRow({
           open();
         }
       }}
-      className="w-full min-w-0 overflow-hidden rounded-md p-3 text-left outline-none hover:bg-[var(--bg-hover)]/30 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+      className="w-full max-w-full min-w-0 overflow-hidden rounded-md p-3 text-left outline-none hover:bg-[var(--bg-hover)]/30 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
       style={{
         backgroundColor: "var(--bg-elevated)", borderColor: "var(--border-subtle)",
         borderStyle: "solid", borderWidth: "1px",
@@ -127,7 +127,7 @@ function AttentionItemRow({
       <div className="flex min-w-0 gap-2">
         <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color: presentation.iconColor }} />
         <div className="min-w-0 flex-1 overflow-hidden">
-          <p className="min-w-0 truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>{item.title}</p>
+          <p className="min-w-0 truncate text-sm font-medium [overflow-wrap:anywhere]" style={{ color: "var(--text-primary)" }}>{item.title}</p>
           {item.detail && <p className="mt-1 line-clamp-2 break-words text-sm" style={{ color: "var(--text-muted)" }}>{item.detail}</p>}
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
             <span className="min-w-0 flex-1 truncate">{[metaTime, projectName].filter(Boolean).join(" · ")}</span>
@@ -252,7 +252,7 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
           <TabsTrigger value="action">Needs action ({items.length})</TabsTrigger><TabsTrigger value="history">History{hasUnreadHistory && <span aria-label="Unread notification history" className="ml-1 h-1 w-1 rounded-full" style={{ backgroundColor: "var(--accent-primary)" }} />}</TabsTrigger>
         </TabsList>
       </Tabs>
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0 [&_[data-radix-scroll-area-viewport]>div]:!w-full">
         {activeTab === "history" ? <NotificationHistoryTab active={contentMounted} now={now} onOpen={openHistoryNotification} /> : !contentMounted || isLoading ? <SkeletonRows /> : isError && items.length === 0 ? <AttentionLoadError onRetry={() => void refetch()} /> : <>{isError && <p className="px-4 pt-3 text-xs" data-testid="attention-stale-indicator" style={{ color: "var(--text-muted)" }}>Showing saved notifications</p>}{groups.length === 0 ? <EmptyActionState /> : <div className="space-y-4 p-4">{groups.map(({ group, items: groupedItems }) => <div key={group} className="space-y-2"><p className="text-[11px] font-semibold uppercase tracking-[0.08em]" style={{ color: "color-mix(in srgb, var(--text-secondary) 60%, transparent)" }}>{group} · {groupedItems.length}</p><div className="space-y-2">{groupedItems.map((item) => {
           const taskId = item.target.taskId;
           const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId
