@@ -3464,6 +3464,11 @@ ui:
 
     assert!(cfg.runtime.ui_feature_flags.ticketing_dashboard);
     assert!(!cfg.runtime.ui_feature_flags.agent_personas);
+    assert!(
+        !cfg.runtime
+            .ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
 }
 
 #[test]
@@ -3566,6 +3571,7 @@ fn test_env_override_true_value_enables_flag() {
             atlassian_oauth: false,
             ticketing_dashboard: false,
             agent_personas: false,
+            persona_switch_forces_fresh_provider_session: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {

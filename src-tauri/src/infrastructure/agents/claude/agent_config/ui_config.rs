@@ -34,6 +34,8 @@ pub struct UiFeatureFlagsConfig {
     pub ticketing_dashboard: bool,
     /// Enable or disable agent personas. Default: false.
     pub agent_personas: bool,
+    /// Force a new provider session after a persona switch. Default: false.
+    pub persona_switch_forces_fresh_provider_session: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -48,6 +50,7 @@ impl Default for UiFeatureFlagsConfig {
             atlassian_oauth: false,
             ticketing_dashboard: false,
             agent_personas: false,
+            persona_switch_forces_fresh_provider_session: false,
         }
     }
 }

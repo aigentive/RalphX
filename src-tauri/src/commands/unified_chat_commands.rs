@@ -3144,6 +3144,22 @@ pub async fn switch_agent_conversation_persona_for_state_stopping_running_agent(
     state: &AppState,
     chat_service: &dyn ChatService,
 ) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    switch_agent_conversation_persona_for_state_with_provider_session_reset(
+        input,
+        state,
+        chat_service,
+        ui_feature_flags_config().persona_switch_forces_fresh_provider_session,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_with_provider_session_reset(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    chat_service: &dyn ChatService,
+    force_fresh_provider_session: bool,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
     if !ui_feature_flags_config().agent_personas {
         return Err(crate::error::AppError::FeatureDisabled(format!(
             "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
@@ -3203,6 +3219,13 @@ pub async fn switch_agent_conversation_persona_for_state_stopping_running_agent(
         )
         .await
         .map_err(|error| error.to_string())?;
+    if force_fresh_provider_session {
+        state
+            .chat_conversation_repo
+            .clear_provider_session_ref(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     conversation.persona_id = persona_id.map(|persona_id| persona_id.to_string());
     let conversation = state
         .chat_conversation_repo

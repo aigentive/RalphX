@@ -23,10 +23,12 @@ use ralphx_lib::commands::unified_chat_commands::{
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
     switch_agent_conversation_mode_for_state_stopping_running_agent,
-    switch_agent_conversation_persona_for_state_stopping_running_agent, AgentRunStatusResponse,
-    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, ModeSwitchInitiator,
-    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
-    SwitchAgentConversationPersonaInput, AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
+    switch_agent_conversation_persona_for_state_stopping_running_agent,
+    switch_agent_conversation_persona_for_state_with_provider_session_reset,
+    AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
+    ModeSwitchInitiator, QueuedMessageResponse, SendAgentMessageResponse,
+    SwitchAgentConversationModeInput, SwitchAgentConversationPersonaInput,
+    AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
@@ -446,6 +448,90 @@ async fn persona_switch_stopping_running_agent_stops_run_and_preserves_provider_
         .wait()
         .await
         .expect("interactive observer should exit");
+}
+
+#[tokio::test]
+async fn persona_switch_forces_fresh_provider_session_when_resume_fallback_enabled() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let retained_conversation = seed_persona_switch_project_conversation(
+        &state,
+        ChatConversationId::from_string("14141414-1414-4414-8414-141414141410"),
+        ProjectId::from_string("project-persona-switch-resume-default".to_string()),
+    )
+    .await;
+    let fresh_conversation = seed_persona_switch_project_conversation(
+        &state,
+        ChatConversationId::from_string("14141414-1414-4414-8414-141414141411"),
+        ProjectId::from_string("project-persona-switch-fresh-fallback".to_string()),
+    )
+    .await;
+    let persona = seed_persona_for_switch(
+        &state,
+        "persona-switch-session-fallback",
+        PersonaStatus::Active,
+    )
+    .await;
+    let retained_session = ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-persona-switch-resume".to_string(),
+    };
+    let fresh_session = ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-persona-switch-fresh".to_string(),
+    };
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(&retained_conversation.id, &retained_session)
+        .await
+        .expect("default conversation session should persist");
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(&fresh_conversation.id, &fresh_session)
+        .await
+        .expect("fallback conversation session should persist");
+    let service = MockChatService::new();
+
+    switch_agent_conversation_persona_for_state_with_provider_session_reset(
+        persona_switch_input(&retained_conversation.id, Some(&persona.id)),
+        &state,
+        &service,
+        false,
+    )
+    .await
+    .expect("default switch should succeed");
+    switch_agent_conversation_persona_for_state_with_provider_session_reset(
+        persona_switch_input(&fresh_conversation.id, Some(&persona.id)),
+        &state,
+        &service,
+        true,
+    )
+    .await
+    .expect("fallback switch should succeed");
+
+    let retained = state
+        .chat_conversation_repo
+        .get_by_id(&retained_conversation.id)
+        .await
+        .expect("default conversation lookup succeeds")
+        .expect("default conversation exists");
+    let fresh = state
+        .chat_conversation_repo
+        .get_by_id(&fresh_conversation.id)
+        .await
+        .expect("fallback conversation lookup succeeds")
+        .expect("fallback conversation exists");
+    assert_eq!(
+        retained
+            .provider_session_ref()
+            .map(|session| session.provider_session_id),
+        Some(retained_session.provider_session_id),
+        "default-off must retain the session that the next Claude send resumes"
+    );
+    assert!(
+        fresh.provider_session_ref().is_none(),
+        "fallback-on must clear the session so the next send starts fresh"
+    );
 }
 
 #[tokio::test]
