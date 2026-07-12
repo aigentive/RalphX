@@ -142,6 +142,51 @@ async fn pr_mode_execution_exit_does_not_commit_primary_checkout() {
     assert_eq!(metadata.last_state, ExecutionRecoveryState::Succeeded);
 }
 
+#[tokio::test]
+async fn pr_mode_execution_exit_commits_dirty_isolated_worktree() {
+    let primary_checkout = TempDir::new().expect("create primary checkout directory");
+    let worktree = setup_git_repo();
+    let app_state = AppState::new_test();
+    let mut project = Project::new(
+        "Protected Project".into(),
+        primary_checkout.path().to_string_lossy().into_owned(),
+    );
+    project.github_pr_enabled = true;
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let recovery = make_retrying_recovery_with_auto_retry();
+    let mut task = Task::new(project.id.clone(), "Isolated worktree task".into());
+    task.metadata = Some(recovery.update_task_metadata(None).unwrap());
+    task.worktree_path = Some(worktree.path().to_string_lossy().into_owned());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    std::fs::write(worktree.path().join("tracked.txt"), "task change\n")
+        .expect("dirty isolated worktree");
+    let head_before = git_output(worktree.path(), &["rev-parse", "HEAD"]);
+
+    let ctx = make_exit_ctx(&app_state, task.id.as_str(), project.id.as_str());
+    auto_commit_on_execution_done(&ctx).await;
+
+    let head_after = git_output(worktree.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(
+        head_after, head_before,
+        "PR mode should still preserve task work by committing an isolated worktree"
+    );
+    assert_eq!(
+        git_output(worktree.path(), &["status", "--porcelain"]),
+        "",
+        "the isolated worktree should be clean after the safety commit"
+    );
+    assert_eq!(
+        git_output(worktree.path(), &["log", "-1", "--pretty=%s"]),
+        "feat: Isolated worktree task"
+    );
+}
+
 // ── GAP B4: Auto-commit skipped for transient failures ───────────────────────
 
 /// Transient timeout: auto_commit_on_execution_done returns early, H11 NOT applied.

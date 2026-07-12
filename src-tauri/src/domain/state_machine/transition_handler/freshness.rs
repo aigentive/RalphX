@@ -26,7 +26,7 @@ use super::merge_coordination::{
     PlanUpdateResult, SourceUpdateResult,
 };
 
-async fn update_plan_for_freshness(
+pub(super) async fn update_plan_for_freshness(
     repo_path: &Path,
     plan_branch_name: &str,
     base_branch: &str,
