@@ -63,6 +63,7 @@ export const AGENT_CONVERSATION_MODE_VALUES = [
   "ideation",
   "review_pr",
   "automation",
+  "persona_builder",
 ] as const;
 export const AgentConversationModeSchema = z.enum(
   AGENT_CONVERSATION_MODE_VALUES
@@ -99,6 +100,7 @@ export const ChatConversationSchema = z.object({
   effectiveEffort: z.string().nullable().optional(),
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  personaId: z.string().nullable().optional(),
   coordinationMode: CoordinationModeSchema.default("solo"),
   automationId: z.string().nullable().optional(),
   automationRunId: z.string().nullable().optional(),

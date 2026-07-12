@@ -524,6 +524,33 @@ describe("chat api", () => {
     });
   });
 
+  it("accepts persona_builder mode and threads nullable persona_id to personaId", async () => {
+    mockInvoke.mockResolvedValue([
+      {
+        ...planSeedConversationResponse(),
+        agent_mode: "persona_builder",
+        persona_id: null,
+      },
+    ]);
+
+    const result = await listConversations("project", "p1");
+
+    expect(result[0]).toMatchObject({
+      agentMode: "persona_builder",
+      personaId: null,
+    });
+  });
+
+  it("threads a set snake_case persona_id to camelCase personaId", async () => {
+    mockInvoke.mockResolvedValue([
+      { ...planSeedConversationResponse(), persona_id: "persona-1" },
+    ]);
+
+    const result = await listConversations("project", "p1");
+
+    expect(result[0]?.personaId).toBe("persona-1");
+  });
+
   it("lists paginated conversations with server-side search", async () => {
     mockInvoke.mockResolvedValue({
       conversations: [

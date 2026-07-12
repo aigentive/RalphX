@@ -22,6 +22,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
+  agentPersonas: false,
 };
 
 export function applyFeatureFlagOverrides(flags: FeatureFlags): FeatureFlags {
