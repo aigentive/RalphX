@@ -1,8 +1,7 @@
 /**
  * Test helpers for ReviewDetailModal
  *
- * Uses React state manipulation via exposed test helper
- * (similar to task-detail.helpers.ts approach - see Phase 52 for pattern)
+ * Uses the shared visual-test modal opening pattern.
  */
 
 import type { Page } from "@playwright/test";
