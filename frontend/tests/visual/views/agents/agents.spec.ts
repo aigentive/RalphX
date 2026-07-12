@@ -1331,8 +1331,10 @@ test.describe("Agents View", () => {
         );
       });
     await expectAgentsTaskDetailOneColumn(page, "merged-task-detail");
-    await expect(page.getByTestId("timeline-badge-reviewing")).toHaveCount(2);
-    await page.getByTestId("timeline-badge-reviewing").nth(1).click();
+    await page.getByTestId("task-history-dropdown-trigger").click();
+    await page
+      .getByTestId("task-history-dropdown-item-reviewing-2026-07-07T10:30:00.000Z")
+      .click();
     await expect(page.getByTestId("history-mode-banner")).toContainText(
       "Review attempt 2",
     );
