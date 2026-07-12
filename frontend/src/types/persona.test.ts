@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PersonaDraftUpdatedEventSchema,
+  PersonaBuilderIngestStatusSchema,
   PersonaIngestEntrySchema,
   PersonaIngestManifestSchema,
   PersonaSchema,
@@ -42,6 +43,11 @@ describe("persona support schemas", () => {
         content_hash: "hash-2",
       }),
     ).toEqual({ draft_id: "persona-1", version: 2, content_hash: "hash-2" });
+  });
+
+  it("parses the PersonaBuilder ingest liveness response", () => {
+    expect(PersonaBuilderIngestStatusSchema.parse({ live: true })).toEqual({ live: true });
+    expect(PersonaBuilderIngestStatusSchema.safeParse({ live: "yes" }).success).toBe(false);
   });
 
   it("parses a persona ingest entry reason", () => {

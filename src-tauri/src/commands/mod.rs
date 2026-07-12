@@ -154,7 +154,9 @@ pub use automation_commands::{
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
 };
 pub use persona_builder_commands::{
-    create_persona_builder_conversation, CreatePersonaBuilderConversationInput,
+    create_persona_builder_conversation, get_persona_builder_ingest_status,
+    CreatePersonaBuilderConversationInput, PersonaBuilderIngestStatusInput,
+    PersonaBuilderIngestStatusResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,

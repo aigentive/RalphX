@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 use crate::application::persona_ingest::{
-    ingest_picked_root, persona_ingest_conversation_path, persona_ingest_storage_path,
-    PersonaIngestManifest,
+    ingest_picked_root, persona_builder_ingest_session_is_live, persona_ingest_conversation_path,
+    persona_ingest_storage_path, PersonaIngestManifest,
 };
 use crate::application::personas::PERSONA_FEATURE_DISABLED_PREFIX;
 use crate::application::AppState;
@@ -26,6 +26,18 @@ pub struct CreatePersonaBuilderConversationInput {
 pub struct IngestPersonaContextInput {
     pub conversation_id: String,
     pub picked_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaBuilderIngestStatusInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaBuilderIngestStatusResponse {
+    pub live: bool,
 }
 
 /// Create the sole persisted entry point for a PersonaBuilder conversation.
@@ -50,6 +62,26 @@ pub async fn ingest_persona_context<R: tauri::Runtime>(
         .app_data_dir()
         .map_err(|error| format!("Failed to resolve app data dir: {error}"))?;
     ingest_persona_context_for_state(
+        input,
+        state.inner(),
+        agent_personas_enabled(),
+        &app_data_dir,
+    )
+    .await
+}
+
+/// Return whether a PersonaBuilder conversation has app-owned ingested context available.
+#[tauri::command]
+pub async fn get_persona_builder_ingest_status<R: tauri::Runtime>(
+    input: PersonaBuilderIngestStatusInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle<R>,
+) -> Result<PersonaBuilderIngestStatusResponse, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data dir: {error}"))?;
+    get_persona_builder_ingest_status_for_state(
         input,
         state.inner(),
         agent_personas_enabled(),
@@ -113,4 +145,35 @@ pub async fn ingest_persona_context_for_state(
     let destination_root = persona_ingest_conversation_path(&storage_root, &input.conversation_id);
     ingest_picked_root(Path::new(&input.picked_path), &destination_root)
         .map_err(|error| error.to_string())
+}
+
+#[doc(hidden)]
+pub async fn get_persona_builder_ingest_status_for_state(
+    input: PersonaBuilderIngestStatusInput,
+    state: &AppState,
+    feature_enabled: bool,
+    app_data_dir: &Path,
+) -> Result<PersonaBuilderIngestStatusResponse, String> {
+    if !feature_enabled {
+        return Err(crate::error::AppError::FeatureDisabled(format!(
+            "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
+        ))
+        .to_string());
+    }
+
+    let conversation_id =
+        crate::domain::entities::ChatConversationId::from_string(input.conversation_id.clone());
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "PersonaBuilder conversation was not found".to_string())?;
+    if conversation.agent_mode != Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+        return Err("Persona context ingestion requires a PersonaBuilder conversation".to_string());
+    }
+
+    Ok(PersonaBuilderIngestStatusResponse {
+        live: persona_builder_ingest_session_is_live(Some(app_data_dir), &input.conversation_id),
+    })
 }

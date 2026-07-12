@@ -53,15 +53,20 @@ function renderBuilder() {
   );
 }
 
-function mockBuilderCommands() {
+function mockBuilderCommands({ ingestLive = true }: { ingestLive?: boolean } = {}) {
+  let currentIngestLive = ingestLive;
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "create_persona_builder_conversation") {
       return { id: "builder-conversation" };
+    }
+    if (command === "get_persona_builder_ingest_status") {
+      return { live: currentIngestLive };
     }
     if (command === "get_persona") return rawPersona;
     if (command === "approve_persona") return { ...rawPersona, status: "active" };
     if (command === "list_personas") return [{ ...rawPersona, status: "active" }];
     if (command === "ingest_persona_context") {
+      currentIngestLive = true;
       return {
         copied: [{ path: "guidelines.md" }],
         skipped: [{ path: "ignored.log", reason: "ignored" }],
@@ -104,6 +109,10 @@ describe("PersonaBuilderView", () => {
     expect(invoke).toHaveBeenCalledWith("create_persona_builder_conversation", {
       input: { projectId: "project-1" },
     });
+    // Flush the ingest-status query behind the same fake clock.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
       "data-conversation-id",
       "builder-conversation",
@@ -144,6 +153,61 @@ describe("PersonaBuilderView", () => {
     expect(screen.getByText(/ignored.log: ignored/)).toBeInTheDocument();
     expect(screen.getByText(/outside: symlink/)).toBeInTheDocument();
     expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument();
+  });
+
+  it("gates the builder chat until context has been ingested", async () => {
+    mockBuilderCommands({ ingestLive: false });
+    vi.mocked(openDialog).mockResolvedValue("/tmp/context" as never);
+    renderBuilder();
+
+    expect(await screen.findByText("Add context to start")).toBeInTheDocument();
+    expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("persona-builder-empty-add-context"));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
+        input: {
+          conversationId: "builder-conversation",
+          pickedPath: "/tmp/context",
+        },
+      }),
+    );
+  });
+
+  it("mounts the builder chat after a live ingest status response", async () => {
+    mockBuilderCommands({ ingestLive: true });
+    renderBuilder();
+
+    expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
+    expect(screen.queryByText("Add context to start")).not.toBeInTheDocument();
+  });
+
+  it("mounts the builder chat when ingestion copies context", async () => {
+    mockBuilderCommands({ ingestLive: false });
+    vi.mocked(openDialog).mockResolvedValue("/tmp/context" as never);
+    renderBuilder();
+
+    await screen.findByText("Add context to start");
+    fireEvent.click(screen.getByTestId("persona-builder-empty-add-context"));
+
+    expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
+  });
+
+  it("fails closed to the context gate when ingest status lookup errors", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "create_persona_builder_conversation") {
+        return { id: "builder-conversation" };
+      }
+      if (command === "get_persona_builder_ingest_status") {
+        throw new Error("ingest status unavailable");
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderBuilder();
+
+    expect(await screen.findByText("Add context to start")).toBeInTheDocument();
+    expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
   });
 
   it("approves the authoritative draft and returns to the persona list", async () => {

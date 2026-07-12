@@ -276,6 +276,7 @@ vi.mock("@/hooks/usePersonas", () => ({
   useArchivePersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeletePersonaDraft: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useIngestPersonaContext: () => ({ data: undefined, mutateAsync: vi.fn(), isPending: false }),
+  usePersonaBuilderIngestStatus: () => ({ data: { live: true }, isPending: false }),
   useSwitchConversationPersona: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 

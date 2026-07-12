@@ -4,9 +4,11 @@ import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
 import {
   PersonaIngestManifestSchema,
+  PersonaBuilderIngestStatusSchema,
   PersonaResponseSchema,
   transformPersona,
   type Persona,
+  type PersonaBuilderIngestStatus,
   type PersonaIngestManifest,
 } from "@/types/persona";
 
@@ -16,6 +18,8 @@ export const personaKeys = {
   detail: (id: string) => [...personaKeys.all, "detail", id] as const,
   ingestManifest: (conversationId: string) =>
     [...personaKeys.all, "ingest-manifest", conversationId] as const,
+  ingestStatus: (conversationId: string) =>
+    [...personaKeys.all, "ingest-status", conversationId] as const,
 };
 
 export type CreatePersonaDraftInput = {
@@ -98,6 +102,15 @@ export async function ingestPersonaContext(
   return PersonaIngestManifestSchema.parse(raw);
 }
 
+export async function fetchPersonaBuilderIngestStatus(
+  conversationId: string,
+): Promise<PersonaBuilderIngestStatus> {
+  const raw = await invoke<unknown>("get_persona_builder_ingest_status", {
+    input: { conversationId },
+  });
+  return PersonaBuilderIngestStatusSchema.parse(raw);
+}
+
 export async function switchConversationPersona(
   input: SwitchConversationPersonaInput,
 ): Promise<void> {
@@ -116,6 +129,14 @@ export function usePersona(id: string) {
     queryKey: personaKeys.detail(id),
     queryFn: () => fetchPersona(id),
     enabled: Boolean(id),
+  });
+}
+
+export function usePersonaBuilderIngestStatus(conversationId: string | null) {
+  return useQuery<PersonaBuilderIngestStatus, Error>({
+    queryKey: personaKeys.ingestStatus(conversationId ?? ""),
+    queryFn: () => fetchPersonaBuilderIngestStatus(conversationId ?? ""),
+    enabled: Boolean(conversationId),
   });
 }
 
@@ -172,6 +193,15 @@ export function useIngestPersonaContext() {
     mutationFn: ingestPersonaContext,
     onSuccess: (manifest, input) => {
       queryClient.setQueryData(personaKeys.ingestManifest(input.conversationId), manifest);
+      if (manifest.copied.length > 0) {
+        queryClient.setQueryData<PersonaBuilderIngestStatus>(
+          personaKeys.ingestStatus(input.conversationId),
+          { live: true },
+        );
+      }
+      void queryClient.invalidateQueries({
+        queryKey: personaKeys.ingestStatus(input.conversationId),
+      });
     },
   });
 }

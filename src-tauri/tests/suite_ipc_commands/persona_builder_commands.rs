@@ -6,8 +6,9 @@ use ralphx_lib::application::personas::PERSONA_FEATURE_DISABLED_PREFIX;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::persona_builder_commands::{
     create_persona_builder_conversation, create_persona_builder_conversation_for_state,
-    ingest_persona_context, ingest_persona_context_for_state,
-    CreatePersonaBuilderConversationInput, IngestPersonaContextInput,
+    get_persona_builder_ingest_status_for_state, ingest_persona_context,
+    ingest_persona_context_for_state, CreatePersonaBuilderConversationInput,
+    IngestPersonaContextInput, PersonaBuilderIngestStatusInput,
 };
 use ralphx_lib::domain::entities::{AgentConversationWorkspaceMode, ChatConversation, ProjectId};
 use std::fs;
@@ -77,6 +78,11 @@ fn persona_builder_command_input_uses_camel_case_project_id() {
     .expect("camelCase ingestion input should deserialize");
     assert_eq!(ingest.conversation_id, "conversation-persona-builder-input");
     assert_eq!(ingest.picked_path, "/tmp/context.md");
+
+    let status: PersonaBuilderIngestStatusInput =
+        serde_json::from_str(r#"{"conversationId":"conversation-persona-builder-input"}"#)
+            .expect("camelCase conversationId should deserialize");
+    assert_eq!(status.conversation_id, "conversation-persona-builder-input");
 }
 
 #[test]
@@ -247,4 +253,141 @@ async fn ingest_command_maps_absent_persona_builder_conversation_to_not_found() 
         !app_data_dir.exists(),
         "a missing conversation must not create app-owned ingest storage"
     );
+}
+
+#[tokio::test]
+async fn persona_ingest_status_command_rejects_flag_off() {
+    let state = AppState::new_test();
+
+    let error = get_persona_builder_ingest_status_for_state(
+        PersonaBuilderIngestStatusInput {
+            conversation_id: "missing-persona-builder".to_string(),
+        },
+        &state,
+        false,
+        std::path::Path::new("."),
+    )
+    .await
+    .expect_err("flag-off status lookup must reject before conversation or filesystem access");
+
+    assert!(error.contains(PERSONA_FEATURE_DISABLED_PREFIX));
+}
+
+#[tokio::test]
+async fn persona_ingest_status_command_rejects_missing_conversation() {
+    let state = AppState::new_test();
+    let temp = tempfile::tempdir().expect("persona ingest status temp directory");
+    let app_data_dir = temp.path().join("app-data");
+
+    let error = get_persona_builder_ingest_status_for_state(
+        PersonaBuilderIngestStatusInput {
+            conversation_id: "missing-persona-builder".to_string(),
+        },
+        &state,
+        true,
+        &app_data_dir,
+    )
+    .await
+    .expect_err("missing PersonaBuilder conversation must reject status lookup");
+
+    assert_eq!(error, "PersonaBuilder conversation was not found");
+    assert!(
+        !app_data_dir.exists(),
+        "a missing conversation must not create app-owned ingest storage"
+    );
+}
+
+#[tokio::test]
+async fn persona_ingest_status_command_rejects_non_builder_conversation() {
+    let state = AppState::new_test();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::from_string(
+            "project-non-persona-builder-status".to_string(),
+        )))
+        .await
+        .expect("non-PersonaBuilder fixture conversation");
+    let temp = tempfile::tempdir().expect("persona ingest status temp directory");
+    let app_data_dir = temp.path().join("app-data");
+
+    let error = get_persona_builder_ingest_status_for_state(
+        PersonaBuilderIngestStatusInput {
+            conversation_id: conversation.id.as_str().to_string(),
+        },
+        &state,
+        true,
+        &app_data_dir,
+    )
+    .await
+    .expect_err("non-PersonaBuilder conversation must reject status lookup");
+
+    assert_eq!(
+        error,
+        "Persona context ingestion requires a PersonaBuilder conversation"
+    );
+}
+
+#[tokio::test]
+async fn persona_ingest_status_command_reports_not_live_without_ingested_files() {
+    let state = AppState::new_test();
+    let conversation = create_persona_builder_conversation_for_state(
+        CreatePersonaBuilderConversationInput {
+            project_id: "project-persona-builder-status-empty".to_string(),
+        },
+        &state,
+        true,
+    )
+    .await
+    .expect("PersonaBuilder conversation should persist before status lookup");
+    let temp = tempfile::tempdir().expect("persona ingest status temp directory");
+    let app_data_dir = temp.path().join("app-data");
+
+    let status = get_persona_builder_ingest_status_for_state(
+        PersonaBuilderIngestStatusInput {
+            conversation_id: conversation.id,
+        },
+        &state,
+        true,
+        &app_data_dir,
+    )
+    .await
+    .expect("PersonaBuilder status lookup should succeed without ingest storage");
+
+    assert!(!status.live);
+}
+
+#[tokio::test]
+async fn persona_ingest_status_command_reports_live_after_ingesting_a_file() {
+    let state = AppState::new_test();
+    let conversation = create_persona_builder_conversation_for_state(
+        CreatePersonaBuilderConversationInput {
+            project_id: "project-persona-builder-status-live".to_string(),
+        },
+        &state,
+        true,
+    )
+    .await
+    .expect("PersonaBuilder conversation should persist before status lookup");
+    let temp = tempfile::tempdir().expect("persona ingest status temp directory");
+    let app_data_dir = temp.path().join("app-data");
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &conversation.id,
+    );
+    fs::create_dir_all(&ingest_root).expect("create PersonaBuilder ingest root");
+    fs::write(ingest_root.join("context.md"), "Persona context\n")
+        .expect("write app-owned PersonaBuilder context");
+
+    let status = get_persona_builder_ingest_status_for_state(
+        PersonaBuilderIngestStatusInput {
+            conversation_id: conversation.id,
+        },
+        &state,
+        true,
+        &app_data_dir,
+    )
+    .await
+    .expect("PersonaBuilder status lookup should succeed after ingesting context");
+
+    assert!(status.live);
 }

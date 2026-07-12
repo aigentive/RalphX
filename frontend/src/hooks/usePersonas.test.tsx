@@ -86,7 +86,7 @@ describe("persona fetchers", () => {
 
   it("uses the single picked-path ingest contract", async () => {
     vi.mocked(invoke).mockResolvedValue({
-      copied: [{ name: "notes.md" }],
+      copied: [{ path: "notes.md" }],
       skipped: [],
       rejected: [],
     });
@@ -96,7 +96,7 @@ describe("persona fetchers", () => {
         conversationId: "conversation-1",
         pickedPath: "/picked/context",
       }),
-    ).resolves.toHaveProperty("copied.0.name", "notes.md");
+    ).resolves.toHaveProperty("copied.0.path", "notes.md");
     expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
       input: {
         conversationId: "conversation-1",

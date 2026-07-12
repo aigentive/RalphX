@@ -17,6 +17,7 @@ import {
   useApprovePersona,
   useIngestPersonaContext,
   usePersona,
+  usePersonaBuilderIngestStatus,
 } from "@/hooks/usePersonas";
 import { usePersonaDraftEvents } from "@/hooks/usePersonaDraftEvents";
 import type { PersonaIngestManifest } from "@/types/persona";
@@ -64,6 +65,38 @@ function ManifestEntries({ entries }: { entries: PersonaIngestManifest["rejected
   ) : null;
 }
 
+function PersonaBuilderContextGate({
+  isAddingContext,
+  onAddContext,
+}: {
+  isAddingContext: boolean;
+  onAddContext: () => void;
+}) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+      <FilePlus2 aria-hidden="true" className="size-8 text-[var(--text-muted)]" />
+      <h4 className="mt-4 text-base font-semibold text-[var(--text-primary)]">
+        Add context to start
+      </h4>
+      <p className="mt-2 max-w-sm text-sm text-[var(--text-secondary)]">
+        The builder agent can only read files you add. Add project docs, style guides, or examples,
+        then describe the persona you want.
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        className="mt-5"
+        onClick={onAddContext}
+        disabled={isAddingContext}
+        data-testid="persona-builder-empty-add-context"
+      >
+        <FilePlus2 aria-hidden="true" />
+        {isAddingContext ? "Adding…" : "Add context…"}
+      </Button>
+    </div>
+  );
+}
+
 export function PersonaBuilderView({
   projectId,
   onBack,
@@ -80,6 +113,7 @@ export function PersonaBuilderView({
   const approvePersona = useApprovePersona();
   const ingestContext = useIngestPersonaContext();
   const chatReady = useAfterPaintMounted(true);
+  const ingestStatus = usePersonaBuilderIngestStatus(conversationId);
   const draftPreviewReady = useAfterPaintMounted(Boolean(draft));
 
   useEffect(() => {
@@ -169,7 +203,9 @@ export function PersonaBuilderView({
         <div className="min-h-[360px] overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
           {creationError ? (
             <div className="p-4"><ErrorNotice message={creationError} /></div>
-          ) : chatReady && conversationId ? (
+          ) : !chatReady || !conversationId || ingestStatus.isPending ? (
+            <div className="h-full animate-pulse bg-[var(--bg-elevated)]" aria-label="Loading builder chat" />
+          ) : ingestStatus.data?.live === true ? (
             <Suspense fallback={<div className="h-full animate-pulse bg-[var(--bg-elevated)]" aria-label="Loading builder chat" />}>
               <LazyIntegratedChatPanel
                 projectId={projectId}
@@ -180,7 +216,10 @@ export function PersonaBuilderView({
               />
             </Suspense>
           ) : (
-            <div className="h-full animate-pulse bg-[var(--bg-elevated)]" aria-label="Loading builder chat" />
+            <PersonaBuilderContextGate
+              isAddingContext={ingestContext.isPending}
+              onAddContext={() => void handleAddContext()}
+            />
           )}
         </div>
 

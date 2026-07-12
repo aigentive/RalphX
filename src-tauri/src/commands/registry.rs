@@ -57,6 +57,7 @@ macro_rules! register_tauri_commands {
             commands::persona_commands::delete_persona_draft,
             commands::persona_builder_commands::create_persona_builder_conversation,
             commands::persona_builder_commands::ingest_persona_context,
+            commands::persona_builder_commands::get_persona_builder_ingest_status,
             commands::linear_commands::get_agent_conversation_linear_issue,
             commands::linear_commands::assign_agent_conversation_linear_issue,
             commands::linear_commands::refresh_agent_conversation_linear_issue,

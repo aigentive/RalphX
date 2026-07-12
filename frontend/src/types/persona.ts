@@ -65,6 +65,14 @@ export const PersonaIngestManifestSchema = z.object({
 
 export type PersonaIngestManifest = z.infer<typeof PersonaIngestManifestSchema>;
 
+export const PersonaBuilderIngestStatusSchema = z.object({
+  live: z.boolean(),
+});
+
+export type PersonaBuilderIngestStatus = z.infer<
+  typeof PersonaBuilderIngestStatusSchema
+>;
+
 /** Raw `persona:draft_updated` Tauri event payload; never contains persona content. */
 export const PersonaDraftUpdatedEventSchema = z.object({
   draft_id: z.string().min(1),
