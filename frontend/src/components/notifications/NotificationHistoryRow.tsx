@@ -39,21 +39,24 @@ export const NotificationHistoryRow = memo(function NotificationHistoryRow({
       data-testid={`notification-history-row-${notification.id}`}
       onClick={() => onOpen(notification)}
       className={cn(
-        "flex w-full items-center gap-2 px-3 py-2 text-left outline-none hover:bg-[var(--bg-hover)]/35 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]",
+        "grid w-full grid-cols-[0.5rem_1rem_minmax(0,1fr)_max-content] items-start gap-x-2 overflow-hidden px-3 py-2 text-left outline-none hover:bg-[var(--bg-hover)]/35 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]",
         unread && "bg-[var(--accent-muted)]",
       )}
-      style={{ backgroundColor: unread ? "var(--accent-muted)" : "transparent" }}
+      style={unread ? { backgroundColor: "var(--accent-muted)" } : undefined}
     >
-      <span className="flex w-2 shrink-0 justify-center" aria-hidden="true">
+      <span className="mt-2 flex w-2 justify-center" aria-hidden="true">
         {unread && <span className="h-1 w-1 rounded-full" style={{ backgroundColor: "var(--accent-primary)" }} />}
       </span>
-      <Icon className="h-4 w-4 shrink-0" style={{ color: presentation.iconColor }} aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+      <Icon className="mt-0.5 h-4 w-4" style={{ color: presentation.iconColor }} aria-hidden="true" />
+      <span className="min-w-0 text-sm font-medium leading-5 break-words [overflow-wrap:anywhere] line-clamp-2" style={{ color: "var(--text-primary)" }}>
         {notification.title}
       </span>
-      <span className="shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
+      <span className="whitespace-nowrap pt-0.5 pl-1 text-right text-xs" style={{ color: "var(--text-muted)" }}>
         {relativeTime(notification.createdAt, now)}
       </span>
+      {notification.body && <span className="col-start-3 col-end-4 min-w-0 pt-0.5 text-xs leading-snug break-words [overflow-wrap:anywhere] line-clamp-2" style={{ color: "var(--text-muted)" }}>
+        {notification.body}
+      </span>}
     </button>
   );
 });

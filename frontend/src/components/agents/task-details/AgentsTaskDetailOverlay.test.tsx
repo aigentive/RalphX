@@ -85,13 +85,13 @@ vi.mock("./AuditTrailDialog", () => ({
   AuditTrailDialog: () => null,
 }));
 
-vi.mock("./StateTimelineNav", () => ({
-  StateTimelineNav: ({
+vi.mock("./TaskHistoryDropdown", () => ({
+  TaskHistoryDropdown: ({
     onStateSelect,
   }: {
     onStateSelect: (state: TaskHistoryState | null) => void;
   }) => (
-    <div data-testid="mock-state-timeline-nav">
+    <div data-testid="mock-task-history-dropdown">
       <button
         type="button"
         onClick={() =>

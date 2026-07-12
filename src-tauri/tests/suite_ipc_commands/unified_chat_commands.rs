@@ -1042,6 +1042,60 @@ async fn user_mode_switch_still_allows_non_automation_conversation() {
 }
 
 #[tokio::test]
+async fn plan_to_edit_mode_switch_clears_the_planning_provider_session() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-plan-to-edit-session-boundary".to_string());
+    let conversation_id = ChatConversationId::from_string("3a3a3a3a-3a3a-4a3a-8a3a-3a3a3a3a3a3a");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(
+            &conversation_id,
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Codex,
+                provider_session_id: "planning-thread".to_string(),
+            },
+        )
+        .await
+        .expect("planning session should persist");
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect("Plan-to-Edit switch should succeed");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+    assert!(response.conversation.provider_session_id.is_none());
+    assert!(response.conversation.provider_harness.is_none());
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("conversation should exist");
+    assert!(
+        stored.provider_session_ref().is_none(),
+        "the next implementation send must create a provider session instead of resuming Plan mode"
+    );
+}
+
+#[tokio::test]
 async fn active_linked_ideation_session_blocks_mode_switch() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-active-ideation-link".to_string());

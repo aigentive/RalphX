@@ -9,9 +9,9 @@ use super::*;
 use crate::application::git_service::GitService;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
+use crate::application::validation_service::TaskValidationService;
 use crate::domain::entities::{
     StepProgressSummary, Task, TaskId, TaskStep, TaskStepId, TaskStepStatus,
-    ValidationCacheMetadata,
 };
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -713,77 +713,24 @@ pub async fn execution_complete_http(
             StatusCode::CONFLICT
         })?;
 
-    // If test_result provided, capture HEAD SHA and store validation cache in metadata
-    if let Some(ref test_result) = req.test_result {
-        if let Some(ref worktree_path) = task.worktree_path {
-            let path = validate_absolute_non_root_path(
-                std::path::Path::new(worktree_path),
-                "execution complete worktree",
-            )
-            .map_err(|e| {
-                tracing::error!(
-                    task_id = %task_id_str,
-                    worktree_path = %worktree_path,
-                    error = %e,
-                    "Skipping validation cache because worktree path failed validation"
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            match GitService::get_head_sha(&path).await {
-                Ok(commit_sha) => {
-                    let cache = ValidationCacheMetadata {
-                        version: 1,
-                        commit_sha,
-                        tests_ran: test_result.tests_ran,
-                        tests_passed: test_result.tests_passed,
-                        test_summary: test_result.test_summary.clone(),
-                        captured_at: chrono::Utc::now(),
-                        captured_by: "execution_complete".to_string(),
-                    };
-                    match cache.update_task_metadata(task.metadata.as_deref()) {
-                        Ok(new_metadata) => {
-                            if let Err(e) = state
-                                .app_state
-                                .task_repo
-                                .update_metadata(&task_id, Some(new_metadata))
-                                .await
-                            {
-                                tracing::warn!(
-                                    "Failed to store validation cache for task {}: {}",
-                                    task_id_str,
-                                    e
-                                );
-                            } else {
-                                tracing::info!(
-                                    "Validation cache stored for task {} (tests_ran={}, tests_passed={})",
-                                    task_id_str,
-                                    test_result.tests_ran,
-                                    test_result.tests_passed
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to serialize validation cache for task {}: {}",
-                                task_id_str,
-                                e
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to get HEAD SHA for task {} (validation cache not stored): {}",
-                        task_id_str,
-                        e
-                    );
-                }
-            }
-        } else {
-            tracing::warn!(
-                "No worktree_path for task {} — validation cache not stored",
-                task_id_str
-            );
+    if let Some(worktree_path) = task.worktree_path.as_deref() {
+        let path = validate_absolute_non_root_path(
+            std::path::Path::new(worktree_path),
+            "execution complete validation promotion worktree",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let commit_sha = GitService::get_head_sha(&path)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if let Err(error) = TaskValidationService::promote_matching_validation_to_commit(
+            &state.app_state,
+            &task_id,
+            &path,
+            &commit_sha,
+        )
+        .await
+        {
+            tracing::warn!(task_id = %task_id_str, %error, "Could not promote validation evidence");
         }
     }
 

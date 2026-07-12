@@ -371,6 +371,66 @@ async fn stress_rapid_conflict_cycles_blocked_at_cap() {
     }
 }
 
+/// PR mode treats dirty primary-checkout changes as user-owned state. Freshness
+/// may inspect refs and update task branches in isolation, but it must not create
+/// the emergency chore commit or alter the primary checkout's index/worktree.
+#[tokio::test]
+async fn pr_mode_dirty_primary_checkout_is_not_auto_committed() {
+    let repo = setup_real_git_repo();
+    let path = repo.path();
+    std::fs::write(path.join("user_owned_change.rs"), "// user-owned work").unwrap();
+
+    let head_before = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output()
+        .expect("read HEAD before freshness");
+    assert!(head_before.status.success());
+    let status_before = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .expect("read status before freshness");
+    assert!(status_before.status.success());
+
+    let mut project = make_project_at(&repo.path_string());
+    project.github_pr_enabled = true;
+    let task = make_task_with_branch(&repo.task_branch, 0);
+    let result = ensure_branches_fresh(
+        path,
+        &task,
+        &project,
+        "pr-mode-dirty-primary",
+        None,
+        None,
+        None,
+        None,
+        "executing",
+        &concurrent_test_config(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "freshness should proceed without consuming user changes"
+    );
+    let head_after = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output()
+        .expect("read HEAD after freshness");
+    assert!(head_after.status.success());
+    let status_after = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .expect("read status after freshness");
+    assert!(status_after.status.success());
+
+    assert_eq!(head_after.stdout, head_before.stdout);
+    assert_eq!(status_after.stdout, status_before.stdout);
+}
+
 // ==================
 // Test 3: Dirty worktree — emergency auto-commit enables freshness
 // ==================
@@ -403,7 +463,8 @@ async fn dirty_worktree_emergency_commit_enables_freshness() {
         "Pre-condition: worktree must be dirty before test"
     );
 
-    let project = make_project_at(&repo.path_string());
+    let mut project = make_project_at(&repo.path_string());
+    project.github_pr_enabled = false;
     let task = make_task_with_branch(&repo.task_branch, 0);
     let cfg = concurrent_test_config();
 

@@ -430,6 +430,10 @@ function AppContent() {
     }
   }, [notificationsPanelOpen]);
 
+  const closeNotificationsPanel = useCallback(() => {
+    setNotificationsPanelOpen(false);
+  }, [setNotificationsPanelOpen]);
+
   // Real-time execution status updates via Tauri events
   useExecutionEvents(executionProjectParam);
   useTicketingCacheEvents();
@@ -1480,37 +1484,54 @@ function AppContent() {
               panel, 0 elsewhere so the panel fills
               the viewport instead of leaving a ~84px void. */}
           {shouldRenderNotificationPanel && (
-            <div
-              className={cn(
-                "fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l",
-                !notificationsPanelOpen && "pointer-events-none",
+            <>
+              {notificationsPanelOpen && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label="Close notifications outside panel"
+                  className="fixed inset-x-0 top-12 z-40 cursor-default border-0 bg-transparent p-0"
+                  data-testid="notifications-panel-backdrop"
+                  onClick={closeNotificationsPanel}
+                  style={{
+                    bottom: showsExecutionFooter ? "76px" : "0px",
+                  }}
+                />
               )}
-              data-testid="notifications-panel-shell"
-              aria-hidden={!notificationsPanelOpen}
-              style={{
-                bottom: showsExecutionFooter ? "76px" : "0px",
-                backgroundColor: "var(--bg-surface)",
-                borderLeftColor: "var(--border-subtle)",
-                borderLeftStyle: "solid",
-                borderLeftWidth: "1px",
-              }}
-            >
               <div
-                className="flex flex-1 flex-col overflow-hidden"
-                data-testid="notifications-panel-frame"
+                className={cn(
+                  "fixed top-12 right-0 z-50 flex flex-col border-l",
+                  !notificationsPanelOpen && "pointer-events-none",
+                )}
+                data-testid="notifications-panel-shell"
+                aria-hidden={!notificationsPanelOpen}
                 style={{
+                  bottom: showsExecutionFooter ? "76px" : "0px",
+                  width: "100vw",
+                  maxWidth: "400px",
                   backgroundColor: "var(--bg-surface)",
-                  boxShadow: "none",
+                  borderLeftColor: "var(--border-subtle)",
+                  borderLeftStyle: "solid",
+                  borderLeftWidth: "1px",
                 }}
               >
-                <NotificationCenterPanel
-                  isOpen={notificationsPanelOpen}
-                  onClose={() => setNotificationsPanelOpen(false)}
-                  onOpenAutomationDetail={handleOpenAutomationDetail}
-                  hasUnreadHistory={hasUnreadNotificationHistory}
-                />
+                <div
+                  className="flex flex-1 flex-col overflow-hidden"
+                  data-testid="notifications-panel-frame"
+                  style={{
+                    backgroundColor: "var(--bg-surface)",
+                    boxShadow: "none",
+                  }}
+                >
+                  <NotificationCenterPanel
+                    isOpen={notificationsPanelOpen}
+                    onClose={closeNotificationsPanel}
+                    onOpenAutomationDetail={handleOpenAutomationDetail}
+                    hasUnreadHistory={hasUnreadNotificationHistory}
+                  />
+                </div>
               </div>
-            </div>
+            </>
           )}
 
         </div>
