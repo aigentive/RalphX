@@ -3,7 +3,7 @@ import { useStore, type Edge, type Node } from "@xyflow/react";
 import type { GraphSelection } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { PlanGroupInfo } from "@/api/task-graph.types";
-import type { GroupingState } from "../controls/GraphControls";
+import type { GroupingState } from "../controls/graph-controls";
 import {
   getPlanGroupNodeId,
   getTierGroupNodeId,

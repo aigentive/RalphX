@@ -6,7 +6,6 @@
  */
 
 export { TaskBoard, type TaskBoardProps } from "./TaskBoard";
-export { TaskBoardWithHeader } from "./TaskBoardWithHeader";
 export { TaskBoardSkeleton } from "./TaskBoardSkeleton";
 export { Column } from "./Column";
 export { TaskCard } from "./TaskCard";

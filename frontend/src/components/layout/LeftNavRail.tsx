@@ -1,9 +1,8 @@
 /**
  * LeftNavRail — narrow vertical app navigation.
  *
- * Hosts the same primary views as the legacy top-bar Navigation
- * (Agents, Ideation, Graph, Kanban, Insights, plus feature-flagged items)
- * and the Settings entry, in a compact icon-and-label rail.
+ * Hosts the primary app views and the Settings entry in a compact
+ * icon-and-label rail.
  */
 
 import { Bug, Settings } from "lucide-react";
