@@ -179,6 +179,7 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest \
             --profile ci \
+            --workspace \
             --lib \
             --features test-utils \
             --partition hash:${{ matrix.partition }} \

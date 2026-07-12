@@ -12,13 +12,15 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
         "agent_workspace_pr_review_monitors",
         "auto_approve_enabled",
         "INTEGER NOT NULL DEFAULT 1",
-    )?;
+    )
+    .map(|_| ())?;
     add_column_if_not_exists(
         conn,
         "agent_workspace_pr_review_monitors",
         "first_action_resolved",
         "INTEGER NOT NULL DEFAULT 0",
-    )?;
+    )
+    .map(|_| ())?;
     conn.execute(
         "UPDATE agent_workspace_pr_review_monitors
          SET first_action_resolved = 1
@@ -29,6 +31,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
                AND agent_workspace_pr_review_actions.status IN ('submitted', 'skipped')
          )",
         [],
-    )?;
+    )
+    .map(|_| ())?;
     Ok(())
 }

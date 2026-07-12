@@ -399,21 +399,7 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(())
     }
 
-    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool> {
-        let Some(action) = self.get_pr_review_action(action_id).await? else {
-            return Ok(false);
-        };
-        if action.status != AgentWorkspacePrReviewActionStatus::Pending {
-            return Ok(false);
-        }
-        self.update_pr_review_action_status(
-            action_id,
-            AgentWorkspacePrReviewActionStatus::Submitting,
-            None,
-        )
-        .await?;
-        Ok(true)
-    }
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool>;
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 

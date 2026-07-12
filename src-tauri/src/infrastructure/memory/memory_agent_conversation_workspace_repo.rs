@@ -20,6 +20,10 @@ use crate::domain::entities::{
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
 
+#[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo_tests.rs"]
+mod memory_agent_conversation_workspace_repo_tests;
+
 pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
     followup_provenance: RwLock<HashMap<ChatConversationId, AgentWorkspaceFollowupProvenance>>,

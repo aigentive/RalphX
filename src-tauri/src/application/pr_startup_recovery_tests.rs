@@ -927,6 +927,10 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
         Err(repo_error())
     }
 
+    async fn claim_pending_pr_review_action(&self, _action_id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
     }

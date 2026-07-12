@@ -79,3 +79,32 @@ fn migration_marks_existing_resolved_actions_as_eligible() {
         .unwrap();
     assert!(resolved);
 }
+
+#[test]
+fn migration_is_idempotent_and_marks_skipped_actions_as_resolved() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO agent_workspace_pr_review_monitors (conversation_id) VALUES ('skipped-review')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO agent_workspace_pr_review_actions (id, conversation_id, status)
+         VALUES ('action-1', 'skipped-review', 'skipped')",
+        [],
+    )
+    .unwrap();
+
+    v20260712153932_agent_workspace_pr_review_auto_approve::migrate(&conn).unwrap();
+    v20260712153932_agent_workspace_pr_review_auto_approve::migrate(&conn).unwrap();
+
+    let resolved: bool = conn
+        .query_row(
+            "SELECT first_action_resolved FROM agent_workspace_pr_review_monitors
+             WHERE conversation_id = 'skipped-review'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(resolved);
+}
