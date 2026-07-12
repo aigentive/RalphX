@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IdeationSession } from "@/types/ideation";
-import { navigateToIdeationSession } from "./navigation";
+import { navigateToAgentConversation, navigateToIdeationSession } from "./navigation";
 
 // ============================================================================
 // Hoisted mock factories
@@ -15,6 +15,7 @@ const {
   selectConversationMock,
   setArtifactTabMock,
   setFocusedProjectMock,
+  setActiveConversationMock,
 } =
   vi.hoisted(() => ({
     mockUiGetState: vi.fn(),
@@ -25,6 +26,7 @@ const {
     selectConversationMock: vi.fn(),
     setArtifactTabMock: vi.fn(),
     setFocusedProjectMock: vi.fn(),
+    setActiveConversationMock: vi.fn(),
   }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -52,6 +54,14 @@ vi.mock("@/stores/agentSessionStore", () => ({
       selectConversation: selectConversationMock,
       setArtifactTab: setArtifactTabMock,
       setFocusedProject: setFocusedProjectMock,
+    }),
+  },
+}));
+
+vi.mock("@/stores/chatStore", () => ({
+  useChatStore: {
+    getState: () => ({
+      setActiveConversation: setActiveConversationMock,
     }),
   },
 }));
@@ -409,5 +419,46 @@ describe("navigateToIdeationSession", () => {
 
       expect(selectProjectMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("navigateToAgentConversation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProjectGetState.mockReturnValue({
+      activeProjectId: PROJECT_A,
+      selectProject: selectProjectMock,
+    });
+    mockUiGetState.mockReturnValue({
+      viewByProject: {},
+      setCurrentView: setCurrentViewMock,
+    });
+  });
+
+  it("selects the exact same-project Agent conversation and shows Agents", () => {
+    navigateToAgentConversation(PROJECT_A, CONVERSATION_A);
+
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_A}`,
+      CONVERSATION_A,
+    );
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+    expect(selectProjectMock).not.toHaveBeenCalled();
+  });
+
+  it("preselects the exact cross-project conversation before switching projects", () => {
+    navigateToAgentConversation(PROJECT_B, CONVERSATION_A);
+
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_B, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_B}`,
+      CONVERSATION_A,
+    );
+    expect(mockUiSetState).toHaveBeenCalledWith({
+      viewByProject: { [PROJECT_B]: "agents" },
+    });
+    expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
+    expect(setCurrentViewMock).not.toHaveBeenCalled();
   });
 });
