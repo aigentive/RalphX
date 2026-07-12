@@ -10,7 +10,8 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
-    DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Project, SessionPurpose,
+    ChatConversationId, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Project,
+    SessionPurpose,
 };
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
@@ -186,14 +187,12 @@ async fn create_project_agent_workspace(
 
     let worktree_path =
         resolve_agent_conversation_workspace_path(&project, &conversation.id).unwrap();
-    let safe_worktree_path =
-        ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
-            &worktree_path,
-            "test agent workspace",
-        )
-        .unwrap();
-    fs::create_dir_all(safe_worktree_path.join(".git"))
-        .expect("create fake workspace git marker");
+    let safe_worktree_path = ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        &worktree_path,
+        "test agent workspace",
+    )
+    .unwrap();
+    fs::create_dir_all(safe_worktree_path.join(".git")).expect("create fake workspace git marker");
     let workspace = AgentConversationWorkspace::new(
         conversation.id,
         project.id.clone(),
@@ -292,6 +291,33 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
     assert!(start.delegated_agent_run_id.is_some());
     assert_eq!(start.history.len(), 1);
     assert_eq!(start.history[0].status, "running");
+
+    let delegated_messages = state
+        .app_state
+        .chat_message_repo
+        .get_by_conversation(&ChatConversationId::from_string(
+            start
+                .delegated_conversation_id
+                .as_deref()
+                .expect("delegated conversation id"),
+        ))
+        .await
+        .expect("delegated conversation messages");
+    let assignment = delegated_messages
+        .iter()
+        .find(|message| message.content.contains("<delegated_assignment>"))
+        .expect("delegate_start must persist the authoritative assignment");
+    assert!(assignment.content.contains("<delegation_lineage>"));
+    assert!(assignment
+        .content
+        .contains("<parent_turn_id>turn-42</parent_turn_id>"));
+    assert_eq!(
+        assignment.content.matches("<delegated_assignment>").count(),
+        1
+    );
+    assert!(assignment
+        .content
+        .contains("Review the proposal set and summarize the main implementation risks."));
 
     let delegated_id = DelegatedSessionId::from_string(start.delegated_session_id.clone());
     let delegated = state

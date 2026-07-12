@@ -17,9 +17,8 @@ use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    DelegatedSession, DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose,
-    TaskId,
+    AgentRun, ChatContextType, ChatConversation, ChatConversationId, ChatMessage, DelegatedSession,
+    DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose, TaskId,
 };
 use crate::http_server::delegation::DelegationJobSnapshot;
 use crate::http_server::types::{
@@ -304,7 +303,10 @@ async fn resolve_ideation_delegate_parent(
     }
 
     let parent_session_id = req.parent_session_id.as_deref().ok_or_else(|| {
-        json_error(StatusCode::BAD_REQUEST, "delegate_start requires parent_session_id")
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start requires parent_session_id",
+        )
     })?;
     let parent_conversation_id =
         resolve_parent_conversation_id(state, req, parent_session_id).await?;
@@ -327,7 +329,9 @@ async fn load_parent_conversation(
     state
         .app_state
         .chat_conversation_repo
-        .get_by_id(&ChatConversationId::from_string(conversation_id.to_string()))
+        .get_by_id(&ChatConversationId::from_string(
+            conversation_id.to_string(),
+        ))
         .await
         .map_err(|error| {
             json_error(
@@ -343,8 +347,7 @@ async fn load_project_parent_conversation(
     req: &DelegateStartRequest,
     caller_context_id: &str,
 ) -> Result<Option<ChatConversation>, JsonError> {
-    let conversation = if let Some(parent_conversation_id) = req.parent_conversation_id.as_deref()
-    {
+    let conversation = if let Some(parent_conversation_id) = req.parent_conversation_id.as_deref() {
         Some(load_parent_conversation(state, parent_conversation_id).await?)
     } else {
         let candidate_id = ChatConversationId::from_string(caller_context_id.to_string());
@@ -497,7 +500,9 @@ async fn resolve_nested_delegation_parent(
     let session = state
         .app_state
         .delegated_session_repo
-        .get_by_id(&DelegatedSessionId::from_string(caller_context_id.to_string()))
+        .get_by_id(&DelegatedSessionId::from_string(
+            caller_context_id.to_string(),
+        ))
         .await
         .map_err(|error| {
             json_error(
@@ -582,32 +587,42 @@ fn build_delegated_prompt(
     delegated_session_id: &str,
     prompt: &str,
 ) -> String {
-    let parent_line = if parent_context_type == ChatContextType::Ideation {
-        format!("Parent ideation session: `{parent_context_id}`")
-    } else {
-        format!("Parent {} context: `{parent_context_id}`", parent_context_type)
-    };
-    let mut metadata_lines = vec![
-        parent_line,
-        format!("Delegated session: `{delegated_session_id}`"),
-    ];
-    if let Some(turn_id) = parent_turn_id {
-        metadata_lines.push(format!("Parent turn id: `{turn_id}`"));
-    }
-    if let Some(message_id) = parent_message_id {
-        metadata_lines.push(format!("Parent message id: `{message_id}`"));
-    }
-    if let Some(conversation_id) = parent_conversation_id {
-        metadata_lines.push(format!("Parent conversation id: `{conversation_id}`"));
-    }
-    if let Some(tool_use_id) = parent_tool_use_id {
-        metadata_lines.push(format!("Parent tool use id: `{tool_use_id}`"));
-    }
+    let optional_lineage = [
+        parent_turn_id.map(|value| ("parent_turn_id", value)),
+        parent_message_id.map(|value| ("parent_message_id", value)),
+        parent_conversation_id.map(|value| ("parent_conversation_id", value)),
+        parent_tool_use_id.map(|value| ("parent_tool_use_id", value)),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|(field, value)| format!("<{field}>{}</{field}>", xml_escape(value)))
+    .collect::<Vec<_>>()
+    .join("\n");
 
     format!(
-        "You are running as delegated RalphX specialist `{agent_name}`.\n{}\nOperate through the RalphX MCP tools available to your role and treat the delegated session as your working context.\n\nDelegated task:\n{prompt}",
-        metadata_lines.join("\n"),
+        "<delegation_lineage>\n\
+         <delegated_agent>{}</delegated_agent>\n\
+         <parent_context_type>{}</parent_context_type>\n\
+         <parent_context_id>{}</parent_context_id>\n\
+         <delegated_session_id>{}</delegated_session_id>\n\
+         {}\n\
+         </delegation_lineage>\n\
+         <delegated_assignment>{}</delegated_assignment>",
+        xml_escape(agent_name),
+        parent_context_type,
+        xml_escape(parent_context_id),
+        xml_escape(delegated_session_id),
+        optional_lineage,
+        xml_escape(prompt),
     )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn delegated_event_seq() -> u64 {
