@@ -24,6 +24,7 @@ const personaChipRendered = vi.hoisted(() => vi.fn());
 
 vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: () => ({ data: featureFlags }),
+  useUpdateFeatureFlags: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
@@ -349,7 +350,7 @@ describe("agent personas flag-off sweep", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "Personas" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Personas" })).toBeInTheDocument();
     expect(screen.queryByText("Build with agent")).not.toBeInTheDocument();
     settings.unmount();
 

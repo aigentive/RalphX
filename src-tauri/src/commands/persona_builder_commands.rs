@@ -13,7 +13,7 @@ use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, AgentConversationResponse,
 };
 use crate::domain::entities::{AgentConversationWorkspaceMode, ChatConversation, ProjectId};
-use crate::infrastructure::agents::claude::ui_feature_flags_config;
+use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,12 +34,8 @@ pub async fn create_persona_builder_conversation(
     input: CreatePersonaBuilderConversationInput,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationResponse, String> {
-    create_persona_builder_conversation_for_state(
-        input,
-        state.inner(),
-        ui_feature_flags_config().agent_personas,
-    )
-    .await
+    create_persona_builder_conversation_for_state(input, state.inner(), agent_personas_enabled())
+        .await
 }
 
 /// Copy a picked context path into app-owned PersonaBuilder ingest storage.
@@ -56,7 +52,7 @@ pub async fn ingest_persona_context<R: tauri::Runtime>(
     ingest_persona_context_for_state(
         input,
         state.inner(),
-        ui_feature_flags_config().agent_personas,
+        agent_personas_enabled(),
         &app_data_dir,
     )
     .await

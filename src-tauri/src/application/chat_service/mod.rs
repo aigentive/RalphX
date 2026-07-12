@@ -1149,7 +1149,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     artifact_repo: Arc<dyn ArtifactRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
     persona_repo: Option<Arc<dyn PersonaRepository>>,
-    persona_feature_enabled: bool,
+    persona_feature_enabled_override: Option<bool>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     task_repo: Arc<dyn TaskRepository>,
@@ -1242,8 +1242,7 @@ impl<R: Runtime> AppChatService<R> {
             artifact_repo,
             conversation_repo,
             persona_repo: None,
-            persona_feature_enabled:
-                crate::infrastructure::agents::claude::ui_feature_flags_config().agent_personas,
+            persona_feature_enabled_override: None,
             agent_run_repo,
             project_repo,
             task_repo,
@@ -1310,8 +1309,19 @@ impl<R: Runtime> AppChatService<R> {
 
     #[doc(hidden)]
     pub fn with_persona_feature_enabled(mut self, enabled: bool) -> Self {
-        self.persona_feature_enabled = enabled;
+        self.persona_feature_enabled_override = Some(enabled);
         self
+    }
+
+    fn persona_feature_enabled(&self) -> bool {
+        self.persona_feature_enabled_override.unwrap_or_else(
+            crate::infrastructure::agents::claude::agent_personas_enabled,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn persona_feature_enabled_for_test(&self) -> bool {
+        self.persona_feature_enabled()
     }
 
     pub fn with_queued_message_repo(mut self, repo: Arc<dyn QueuedMessageRepository>) -> Self {
@@ -2476,10 +2486,10 @@ impl<R: Runtime> AppChatService<R> {
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
-        if self.persona_feature_enabled {
-            if let Some(app_state) = app_handle.try_state::<AppState>() {
-                self.persona_repo = Some(Arc::clone(&app_state.persona_repo));
-            }
+        // Wire unconditionally: the flag is runtime-toggleable, so a flag-off
+        // startup must still leave persona resolution reachable after enable.
+        if let Some(app_state) = app_handle.try_state::<AppState>() {
+            self.persona_repo = Some(Arc::clone(&app_state.persona_repo));
         }
         self.app_handle = Some(app_handle);
         self
@@ -3826,7 +3836,7 @@ impl<R: Runtime> AppChatService<R> {
         options: &SendMessageOptions,
         workspace_mode: Option<AgentConversationWorkspaceMode>,
     ) -> Result<Option<ResolvedPersona>, ChatServiceError> {
-        if !self.persona_feature_enabled {
+        if !self.persona_feature_enabled() {
             return Ok(None);
         }
         let Some(persona_repo) = self.persona_repo.as_ref() else {
@@ -3837,7 +3847,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             &options.persona_directive,
             persona_resolve_flags_for_conversation(
-                self.persona_feature_enabled,
+                self.persona_feature_enabled(),
                 options.is_external_mcp,
                 options.agent_name_override.is_some(),
                 conversation.context_type,
@@ -4140,7 +4150,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
         }
         let resolved_persona = if let Some(conversation) = existing_conv.as_ref() {
-            if self.persona_feature_enabled {
+            if self.persona_feature_enabled() {
                 let gate_workspace = self
                     .load_agent_conversation_workspace(
                         context_type,
@@ -4609,7 +4619,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             agent_conversation_mode,
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
-        if self.persona_feature_enabled
+        if self.persona_feature_enabled()
             && persona_builder_requires_live_draft_session(conversation.agent_mode, false)
         {
             return Err(ChatServiceError::PersonaUnavailable(
@@ -5883,7 +5893,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             app_handle: self.app_handle.clone(),
             run_chain_id,
             is_retry_attempt: false,
-            persona_feature_enabled: self.persona_feature_enabled,
+            persona_feature_enabled: self.persona_feature_enabled(),
             agent_name_override_set: options.agent_name_override.is_some(),
             user_message_content: Some(message.to_string()),
             turn_metadata: options.metadata.clone(),
@@ -5928,7 +5938,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // instead of queuing. The Claude CLI handles internal message queuing mid-turn.
         let interactive_key = InteractiveProcessKey::new(context_type.to_string(), context_id);
         if self.ipr().has_process(&interactive_key).await {
-            let persona_switch_requires_process_invalidation = if self.persona_feature_enabled {
+            let persona_switch_requires_process_invalidation = if self.persona_feature_enabled() {
                 let existing_conv = self
                     .conversation_repo
                     .get_active_for_context(context_type, context_id)

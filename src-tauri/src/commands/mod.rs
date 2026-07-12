@@ -377,7 +377,9 @@ pub use plan_branch_commands::{
     EnableFeatureBranchInput, PlanBranchResponse,
 };
 // UI feature flag commands
-pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
+pub use ui_commands::{
+    get_ui_feature_flags, update_ui_feature_flags, UiFeatureFlagsResponse, UpdateUiFeatureFlagsInput,
+};
 pub use workspace_open_commands::{
     list_workspace_open_targets, open_agent_conversation_workspace,
     open_agent_conversation_workspace_path, WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,

@@ -101,6 +101,7 @@ pub mod sqlite_task_proposal_repo;
 pub mod sqlite_task_qa_repo;
 pub mod sqlite_task_repo;
 pub mod sqlite_task_step_repo;
+pub mod sqlite_ui_feature_flag_overrides_repo;
 pub mod sqlite_team_message_repo;
 #[cfg(test)]
 mod sqlite_team_message_repo_tests;
@@ -190,6 +191,7 @@ pub use sqlite_task_proposal_repo::SqliteTaskProposalRepository;
 pub use sqlite_task_qa_repo::SqliteTaskQARepository;
 pub use sqlite_task_repo::SqliteTaskRepository;
 pub use sqlite_task_step_repo::SqliteTaskStepRepository;
+pub use sqlite_ui_feature_flag_overrides_repo::SqliteUiFeatureFlagOverridesRepository;
 pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
 pub use sqlite_team_session_repo::SqliteTeamSessionRepository;
 pub use sqlite_ticket_canonical_branch_repo::SqliteTicketCanonicalBranchRepository;

@@ -7,7 +7,6 @@ import {
 import { X } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import {
   Dialog,
   DialogContent,
@@ -53,8 +52,6 @@ export default function SettingsDialog({
   const activeModal = useUiStore((s) => s.activeModal);
   const modalContext = useUiStore((s) => s.modalContext);
   const closeModal = useUiStore((s) => s.closeModal);
-  const { data: featureFlags } = useFeatureFlags();
-
   const isOpen = activeModal === "settings";
 
   const [activeSection, setActiveSectionState] = useState<SettingsSectionId>(
@@ -128,9 +125,7 @@ export default function SettingsDialog({
   }, [isOpen, modalContext, setActiveSection]);
 
   const activeSectionMeta = SETTINGS_SECTIONS.find((s) => s.id === activeSection);
-  const visibleSections = SETTINGS_SECTIONS.filter(
-    (section) => section.id !== "personas" || featureFlags.agentPersonas,
-  );
+  const visibleSections = SETTINGS_SECTIONS;
 
   const disabled = isLoadingSettings || isSavingSettings;
 

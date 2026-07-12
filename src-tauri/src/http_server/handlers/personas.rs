@@ -13,7 +13,7 @@ use crate::domain::entities::{Persona, PersonaId};
 use crate::error::AppError;
 use crate::http_server::handlers::automations::CALLER_SESSION_ID_HEADER;
 use crate::http_server::types::{HttpError, HttpServerState};
-use crate::infrastructure::agents::claude::ui_feature_flags_config;
+use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +83,7 @@ fn service(state: &HttpServerState) -> PersonaService {
 }
 
 fn ensure_enabled() -> Result<(), HttpError> {
-    if ui_feature_flags_config().agent_personas {
+    if agent_personas_enabled() {
         Ok(())
     } else {
         Err(HttpError {

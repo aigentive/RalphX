@@ -16,6 +16,7 @@ mod chat_service_merge;
 mod chat_service_pause_flows;
 mod chat_session_recovery_integration;
 mod pending_session_drain;
+mod persona_feature_flag;
 mod session_fixes_integration;
 mod session_linking_integration;
 mod http_helpers;

@@ -292,13 +292,13 @@ describe("SettingsDialog", () => {
       expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
     });
 
-    it("hides the Personas navigation and content when the feature flag is off", () => {
+    it("keeps Personas navigation available when the feature flag is off", () => {
       uiState.activeModal = "settings";
       uiState.modalContext = { section: "personas" };
       featureFlags.agentPersonas = false;
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(screen.queryByRole("button", { name: "Personas" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Personas" })).toBeInTheDocument();
       expect(screen.queryByTestId("personas-section")).not.toBeInTheDocument();
       expect(invoke).not.toHaveBeenCalledWith("list_personas", { input: {} });
     });

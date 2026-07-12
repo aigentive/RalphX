@@ -4,7 +4,7 @@ use tauri::State;
 use crate::application::personas::{draft_updated_payload, PersonaService, SavePersonaDraftInput};
 use crate::application::AppState;
 use crate::domain::entities::{Persona, PersonaId};
-use crate::infrastructure::agents::claude::ui_feature_flags_config;
+use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,7 +193,7 @@ fn service(state: &AppState) -> PersonaService {
 }
 
 fn enabled() -> bool {
-    ui_feature_flags_config().agent_personas
+    agent_personas_enabled()
 }
 
 fn persona_id(id: String) -> Result<PersonaId, String> {

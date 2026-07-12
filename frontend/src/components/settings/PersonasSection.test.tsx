@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { describe, expect, it, vi } from "vitest";
 
-import { PersonasSection } from "./PersonasSection";
+import { PersonasManagementSection } from "./PersonasManagementSection";
 
 const toastError = vi.hoisted(() => vi.fn());
 
@@ -72,7 +72,7 @@ function renderSection() {
   return render(
     <QueryClientProvider client={createQueryClient()}>
       <TooltipProvider delayDuration={0}>
-        <PersonasSection />
+        <PersonasManagementSection />
       </TooltipProvider>
     </QueryClientProvider>,
   );
@@ -118,7 +118,7 @@ function mockPersonaCommands(personas: RawPersona[]) {
   });
 }
 
-describe("PersonasSection", () => {
+describe("PersonasManagementSection", () => {
   it("filters archived personas from the list and renders the v1 limits copy", async () => {
     mockPersonaCommands([activePersona, draftPersona, archivedPersona]);
     renderSection();
@@ -143,7 +143,7 @@ describe("PersonasSection", () => {
     render(
       <QueryClientProvider client={createQueryClient()}>
         <TooltipProvider delayDuration={0}>
-          <PersonasSection showBuilderEntry={false} />
+          <PersonasManagementSection showBuilderEntry={false} />
         </TooltipProvider>
       </QueryClientProvider>,
     );

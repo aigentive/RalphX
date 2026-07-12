@@ -490,6 +490,7 @@ macro_rules! register_tauri_commands {
             commands::diagnostic_commands::get_codex_cli_diagnostics,
             // UI feature flag commands
             commands::ui_commands::get_ui_feature_flags,
+            commands::ui_commands::update_ui_feature_flags,
             commands::ticketing_commands::list_ticketing_providers,
             commands::ticketing_commands::list_ticketing_containers,
             commands::ticketing_commands::list_ticketing_columns,

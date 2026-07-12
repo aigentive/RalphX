@@ -70,8 +70,8 @@ use crate::domain::repositories::{
     ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
-    ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
-    WorkspaceReviewRuntimeSettingsRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -106,7 +106,8 @@ use crate::infrastructure::memory::{
     MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
     MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
     MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
-    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -141,7 +142,8 @@ use crate::infrastructure::sqlite::{
     SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
     SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
     SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
-    SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteUiFeatureFlagOverridesRepository, SqliteValidationRunRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -205,6 +207,8 @@ pub struct AppState {
     pub review_repo: Arc<dyn ReviewRepository>,
     /// Review settings repository
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
+    /// Persisted UI feature flag overrides.
+    pub ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     /// Durable task validation run/result repository
     pub validation_run_repo: Arc<dyn ValidationRunRepository>,
     /// Provider-keyed Workspace Review runtime defaults repository
@@ -1282,6 +1286,9 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            ui_feature_flag_overrides_repo: Arc::new(
+                SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             notification_settings_repo: Arc::new(
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1558,6 +1565,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1726,6 +1734,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1903,6 +1912,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -2077,6 +2087,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),

@@ -135,7 +135,9 @@ use crate::domain::services::{
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
-use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags_config};
+use crate::infrastructure::agents::claude::{
+    agent_personas_enabled, git_runtime_config, ui_feature_flags_config,
+};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -3160,7 +3162,7 @@ pub async fn switch_agent_conversation_persona_for_state_with_provider_session_r
     chat_service: &dyn ChatService,
     force_fresh_provider_session: bool,
 ) -> Result<SwitchAgentConversationPersonaResponse, String> {
-    if !ui_feature_flags_config().agent_personas {
+    if !agent_personas_enabled() {
         return Err(crate::error::AppError::FeatureDisabled(format!(
             "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
         ))

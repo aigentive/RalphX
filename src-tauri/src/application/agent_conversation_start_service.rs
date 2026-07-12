@@ -26,7 +26,7 @@ use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
 };
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::ui_feature_flags_config;
+use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 mod helpers;
 
@@ -265,7 +265,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 Arc::clone(&self.deps.state.persona_repo),
                 Arc::clone(&self.deps.state.chat_conversation_repo),
             )
-            .ensure_bindable(ui_feature_flags_config().agent_personas, persona_id)
+            .ensure_bindable(agent_personas_enabled(), persona_id)
             .await
             .map_err(|error| error.to_string())?;
         }

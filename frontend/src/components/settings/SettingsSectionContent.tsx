@@ -1,6 +1,5 @@
 import { Suspense, lazy } from "react";
 
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import type { ProjectSettings } from "@/types/settings";
 
 import type { SettingsSectionId } from "./settings-registry";
@@ -133,8 +132,6 @@ export function SettingsSectionContent({
   isHydrated,
   onSettingsChange,
 }: SettingsSectionContentProps) {
-  const { data: featureFlags } = useFeatureFlags();
-
   if (!isHydrated) {
     return <SettingsSectionLoading />;
   }
@@ -158,7 +155,7 @@ export function SettingsSectionContent({
       {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
-      {section === "personas" && featureFlags.agentPersonas && <LazyPersonasSection />}
+      {section === "personas" && <LazyPersonasSection />}
       {section === "workspace-review" && <LazyWorkspaceReviewSection />}
       {section === "review" && <LazyReviewPolicySection />}
       {section === "autonomy" && <LazyAutonomyPolicySection />}
