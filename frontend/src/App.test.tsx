@@ -1186,8 +1186,7 @@ describe("App", () => {
     render(<App />);
 
     const shell = screen.getByTestId("notifications-panel-shell");
-    expect(shell.getAttribute("style")).toContain("width: 100vw");
-    expect(shell.getAttribute("style")).toContain("max-width: 400px");
+    expect(shell.getAttribute("style")).toContain("width: min(100vw, 400px)");
     expect(shell.className).not.toContain("w-[400px]");
     expect(shell.getAttribute("style")).toContain(
       "background-color: var(--bg-surface)"
