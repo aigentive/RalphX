@@ -111,6 +111,62 @@ pub async fn close_agent_workspace_pr_for_state(
     .await
 }
 
+/// Strictly close the effective PR before replacing an implementation attempt.
+///
+/// Unlike archive cleanup, restart cannot continue with local state that claims an
+/// open PR was closed when the remote operation failed. Once remote closure succeeds,
+/// clear both active PR pointers so the replacement implementation cannot reuse it.
+pub(crate) async fn close_agent_workspace_pr_for_restart(
+    workspace: &AgentConversationWorkspace,
+    linked_plan_branch: &PlanBranch,
+    state: &AppState,
+) -> crate::error::AppResult<()> {
+    let target = resolve_effective_pr(workspace, Some(linked_plan_branch));
+    if let Some(target) = target.as_ref().filter(|target| target.is_open) {
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .map_err(|error| crate::error::AppError::Database(error.to_string()))?
+            .ok_or_else(|| {
+                crate::error::AppError::NotFound(format!(
+                    "Project not found while closing PR {} for restart: {}",
+                    target.number, workspace.project_id
+                ))
+            })?;
+        let project_path = crate::utils::path_safety::validate_absolute_non_root_path(
+            Path::new(&project.working_directory),
+            "project checkout",
+        )?;
+        let github_svc = state.github_service.as_ref().ok_or_else(|| {
+            crate::error::AppError::Validation(format!(
+                "Restart cannot close existing PR {} because GitHub integration is unavailable",
+                target.number
+            ))
+        })?;
+        github_svc
+            .close_pr(&project_path, target.number)
+            .await
+            .map_err(|error| {
+                crate::error::AppError::Infrastructure(format!(
+                    "Restart could not close existing PR {}: {}",
+                    target.number, error
+                ))
+            })?;
+    }
+
+    state
+        .plan_branch_repo
+        .clear_pr_info(&linked_plan_branch.id)
+        .await
+        .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(&workspace.conversation_id, None, None, None, None)
+        .await
+        .map_err(|error| crate::error::AppError::Database(error.to_string()))
+}
+
 async fn stop_project_agent(
     conversation_id: &ChatConversationId,
     state: &AppState,
