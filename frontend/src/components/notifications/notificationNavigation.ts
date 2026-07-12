@@ -112,7 +112,7 @@ export async function navigateNotification(
   }
   if (target.kind === "project" && target.projectId) {
     useProjectStore.getState().selectProject(target.projectId);
-    useUiStore.getState().setCurrentView("kanban");
+    useUiStore.getState().setCurrentView("agents");
     options.onClose?.();
     return true;
   }

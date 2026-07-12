@@ -12,6 +12,7 @@ import {
   createIdeationContext,
   createTaskDetailContext,
   createProjectContext,
+  normalizeMainView,
 } from "./chat";
 
 describe("ViewTypeSchema", () => {
@@ -43,6 +44,13 @@ describe("ViewTypeSchema", () => {
     expect(() => ViewTypeSchema.parse("invalid")).toThrow();
     expect(() => ViewTypeSchema.parse("Kanban")).toThrow();
   });
+
+  it.each(["kanban", "graph", "ideation"] as const)(
+    "normalizes deprecated %s views to Agents",
+    (view) => {
+      expect(normalizeMainView(view)).toBe("agents");
+    },
+  );
 });
 
 describe("ChatContextSchema", () => {

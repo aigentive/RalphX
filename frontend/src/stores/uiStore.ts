@@ -16,7 +16,11 @@ import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlag
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
-import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
+import {
+  DEFAULT_PROJECT_VIEW,
+  normalizeMainView,
+  type ViewType,
+} from "@/types/chat";
 import type { TaskHistoryState } from "@/types/task-history";
 import {
   loadCollapsedColumns,
@@ -111,7 +115,18 @@ const SELECTED_TASK_BY_PROJECT_KEY = "ralphx-selected-task-by-project";
 function loadViewByProject(): Record<string, ViewType> {
   try {
     const stored = localStorage.getItem(VIEW_BY_PROJECT_KEY);
-    return stored ? (JSON.parse(stored) as Record<string, ViewType>) : {};
+    if (!stored) return {};
+    const parsed = JSON.parse(stored) as Record<string, ViewType>;
+    const normalized = Object.fromEntries(
+      Object.entries(parsed).map(([projectId, view]) => [
+        projectId,
+        normalizeMainView(view),
+      ]),
+    ) as Record<string, ViewType>;
+    if (JSON.stringify(normalized) !== stored) {
+      saveViewByProject(normalized);
+    }
+    return normalized;
   } catch {
     return {};
   }
@@ -885,20 +900,17 @@ export const useUiStore = create<UiState & UiActions>()(
         let restoredView: ViewType = preserveCurrentView
           ? state.currentView
           : state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
-        let restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
+        const restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
         // Guard against stale localStorage values ("settings" was removed from ViewType)
         if ((restoredView as string) === "settings" || restoredView === "team") {
           restoredView = DEFAULT_PROJECT_VIEW;
         }
         if (restoredView === "task_detail") {
-          restoredView = restoredSelectedTaskId ? "kanban" : DEFAULT_PROJECT_VIEW;
+          restoredView = DEFAULT_PROJECT_VIEW;
         }
         // Feature flag guard: redirect disabled views to the default project view
         if (!isViewEnabled(restoredView, state.featureFlags)) {
           restoredView = DEFAULT_PROJECT_VIEW;
-        }
-        if (restoredView !== "kanban" && restoredView !== "graph") {
-          restoredSelectedTaskId = null;
         }
         if (preserveCurrentView) {
           state.viewByProject[newProjectId] = restoredView;
@@ -950,7 +962,7 @@ export const useUiStore = create<UiState & UiActions>()(
       }),
 
     navigateToTask: (taskId) => {
-      get().setCurrentView("kanban");
+      get().setCurrentView("agents");
       set((state) => {
         applyTaskSelection(state, taskId);
         state.graphSelection = { kind: "task", id: taskId };

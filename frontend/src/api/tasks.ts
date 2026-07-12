@@ -57,6 +57,11 @@ import {
   type StateTransition,
   type UnblockTaskResponse,
 } from "./tasks.transforms";
+import {
+  ExecutionTaskAgentWorkspaceSchema,
+  transformExecutionTaskAgentWorkspace,
+  type ExecutionTaskAgentWorkspace,
+} from "./execution-task-agent-workspace";
 
 // Re-export types for convenience
 export type {
@@ -204,6 +209,18 @@ export const tasksApi = {
    */
   get: (taskId: string): Promise<Task> =>
     typedInvokeWithTransform("get_task", { id: taskId }, TaskSchema, transformTask),
+
+  /**
+   * Resolve the Agent conversation workspace that owns a task, when available.
+   */
+  resolveAgentWorkspace: (taskId: string): Promise<ExecutionTaskAgentWorkspace | null> =>
+    typedInvokeWithTransform(
+      "get_task_agent_workspace",
+      { taskId },
+      ExecutionTaskAgentWorkspaceSchema.nullable(),
+      (workspace) =>
+        workspace ? transformExecutionTaskAgentWorkspace(workspace) : null,
+    ),
 
   /**
    * Create a new task

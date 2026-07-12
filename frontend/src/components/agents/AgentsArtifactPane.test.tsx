@@ -353,6 +353,21 @@ vi.mock("@/components/tasks/TaskBoard", () => ({
   ),
 }));
 
+vi.mock("@/components/TaskGraph", () => ({
+  TaskGraphView: ({
+    hidePlanSelector,
+  }: {
+    hidePlanSelector?: boolean;
+  }) => (
+    <div data-testid="mock-agent-task-graph">
+      <div data-testid="floating-graph-filters">Graph filters</div>
+      {!hidePlanSelector && (
+        <div data-testid="global-plan-selector">Global plan selector</div>
+      )}
+    </div>
+  ),
+}));
+
 vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
   AgentsTaskDetailOverlay: ({
     onFocusTaskRuntime,
@@ -1799,6 +1814,23 @@ describe("AgentsArtifactPane", () => {
       "task-1",
     );
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
+  });
+
+  it("shows graph filters without the global plan selector in the Tasks artifact", async () => {
+    renderPane(
+      "tasks",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "graph" },
+    );
+
+    expect(await screen.findByTestId("floating-graph-filters")).toBeInTheDocument();
+    expect(screen.queryByTestId("global-plan-selector")).not.toBeInTheDocument();
   });
 
   it("passes task runtime focus requests from task details to the host chat", async () => {

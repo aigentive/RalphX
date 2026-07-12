@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { NodeMode } from "../components/TaskGraph/controls/GraphControls";
+import type { NodeMode } from "../components/TaskGraph/controls/graph-controls";
 
 const STORAGE_KEY = "ralphx:graph:nodeMode";
 

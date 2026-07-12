@@ -105,22 +105,25 @@ describe("uiStore", () => {
       expect(state.currentView).toBe("agents");
     });
 
-    it("sets current view to ideation", () => {
-      useUiStore.getState().setCurrentView("ideation");
-      expect(useUiStore.getState().currentView).toBe("ideation");
-    });
+    it.each(["ideation", "graph", "kanban"] as const)(
+      "normalizes deprecated %s current views to Agents",
+      (view) => {
+        useUiStore.getState().setCurrentView(view);
+        expect(useUiStore.getState().currentView).toBe("agents");
+      },
+    );
 
     it("sets current view to activity", () => {
       useUiStore.getState().setCurrentView("activity");
       expect(useUiStore.getState().currentView).toBe("activity");
     });
 
-    it("switches between views", () => {
+    it("does not retain a deprecated view after switching views", () => {
       useUiStore.getState().setCurrentView("ideation");
-      expect(useUiStore.getState().currentView).toBe("ideation");
+      expect(useUiStore.getState().currentView).toBe("agents");
 
-      useUiStore.getState().setCurrentView("kanban");
-      expect(useUiStore.getState().currentView).toBe("kanban");
+      useUiStore.getState().setCurrentView("insights");
+      expect(useUiStore.getState().currentView).toBe("insights");
     });
   });
 

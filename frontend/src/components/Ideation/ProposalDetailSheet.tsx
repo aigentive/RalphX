@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { TaskProposal } from "@/types/ideation";
 import type { DependencyDetail } from "./ProposalCard";
-import { PRIORITY_CONFIG } from "./PlanningView.constants";
+import { PRIORITY_CONFIG } from "./proposalPriority";
 
 // ============================================================================
 // Types
