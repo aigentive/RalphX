@@ -3001,6 +3001,12 @@ describe("AgentsSidebar", () => {
     const user = userEvent.setup();
     const onArchiveConversation = vi.fn();
     const activeConversation = conversation({ id: "conversation-archive", title: "Untitled agent" });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: activeConversation.id,
+        linkedPlanBranchId: "plan-branch-archive",
+      }),
+    ]);
     conversationsByProject.set("project-1", {
       data: [activeConversation],
       total: 1,
@@ -3017,10 +3023,115 @@ describe("AgentsSidebar", () => {
 
     expect(screen.getByText("Archive session?")).toBeInTheDocument();
     expect(onArchiveConversation).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Archiving leaves this pull request open unless you choose to close it.")
+    ).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Close pull request" })).not.toBeChecked();
 
     await user.click(screen.getByRole("button", { name: "Archive session" }));
 
-    expect(onArchiveConversation).toHaveBeenCalledWith(activeConversation);
+    expect(onArchiveConversation).toHaveBeenCalledWith(activeConversation, {
+      closePullRequest: false,
+    });
+  });
+
+  it("does not offer pull-request closure when the session has no pull request", async () => {
+    const user = userEvent.setup();
+    const activeConversation = conversation({ id: "conversation-archive-without-pr" });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: activeConversation.id }),
+    ]);
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Archive session"));
+
+    expect(screen.queryByRole("checkbox", { name: "Close pull request" })).not.toBeInTheDocument();
+  });
+
+  it("sends archive PR closure only after explicit selection and resets it when reopened", async () => {
+    const user = userEvent.setup();
+    const onArchiveConversation = vi.fn();
+    const activeConversation = conversation({ id: "conversation-archive-opt-in" });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: activeConversation.id,
+        publicationPrNumber: 43,
+        publicationPrStatus: "open",
+      }),
+    ]);
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onArchiveConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Archive session"));
+    const closePullRequest = screen.getByRole("checkbox", { name: "Close pull request" });
+    await user.click(closePullRequest);
+    expect(closePullRequest).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Archive session"));
+    expect(screen.getByRole("checkbox", { name: "Close pull request" })).not.toBeChecked();
+
+    await user.click(screen.getByRole("checkbox", { name: "Close pull request" }));
+    await user.click(screen.getByRole("button", { name: "Archive session" }));
+
+    expect(onArchiveConversation).toHaveBeenCalledWith(activeConversation, {
+      closePullRequest: true,
+    });
+  });
+
+  it("keeps Review PR archive separate from pull-request closure", async () => {
+    const user = userEvent.setup();
+    const onArchiveConversation = vi.fn();
+    const activeConversation = conversation({ id: "conversation-archive-review-pr" });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: activeConversation.id,
+        mode: "review_pr",
+        publicationPrNumber: 44,
+        publicationPrStatus: "open",
+      }),
+    ]);
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onArchiveConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Archive session"));
+
+    expect(screen.queryByRole("checkbox", { name: "Close pull request" })).not.toBeInTheDocument();
+    expect(screen.getByText("The reviewed pull request will remain open.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Archive session" }));
+    expect(onArchiveConversation).toHaveBeenCalledWith(activeConversation, {
+      closePullRequest: false,
+    });
   });
 
   it("toggles the sidebar search input and clears the query via the X button", async () => {
@@ -3790,6 +3901,13 @@ describe("AgentsSidebar", () => {
       isFetchingNextPage: false,
       fetchNextPage: vi.fn(),
     });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: active.id,
+        publicationPrNumber: 45,
+        publicationPrStatus: "open",
+      }),
+    ]);
 
     renderSidebar([project()], {
       onSelectConversation,
@@ -3821,8 +3939,13 @@ describe("AgentsSidebar", () => {
     );
     await user.click(screen.getByText("Archive session"));
     expect(screen.getByText("Archive session?")).toBeInTheDocument();
+    const closePullRequest = screen.getByRole("checkbox", { name: "Close pull request" });
+    expect(closePullRequest).not.toBeChecked();
+    await user.click(closePullRequest);
     await user.click(screen.getByRole("button", { name: "Archive session" }));
-    expect(onArchiveConversation).toHaveBeenCalledWith(active);
+    expect(onArchiveConversation).toHaveBeenCalledWith(active, {
+      closePullRequest: true,
+    });
   });
 
   it("starts auto rename from the publication session rename dialog", async () => {

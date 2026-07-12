@@ -2564,7 +2564,9 @@ describe("AgentsView start conversation", () => {
     await user.click(screen.getByRole("button", { name: "Archive session" }));
 
     await waitFor(() =>
-      expect(archiveConversationMock).toHaveBeenCalledWith("conversation-1")
+      expect(archiveConversationMock).toHaveBeenCalledWith("conversation-1", {
+        closePullRequest: false,
+      })
     );
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()

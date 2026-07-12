@@ -18,6 +18,10 @@ export type AgentConversation = ChatConversation & {
   ideationSessionId: string | null;
 };
 
+export interface AgentConversationArchiveOptions {
+  closePullRequest: boolean;
+}
+
 export function toProjectAgentConversation(
   conversation: ChatConversation
 ): AgentConversation {
