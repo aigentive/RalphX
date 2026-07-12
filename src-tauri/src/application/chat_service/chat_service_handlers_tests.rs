@@ -769,6 +769,22 @@ async fn cancelled_stream_marks_recovery_task_run_as_system_recovery() {
     );
 }
 
+#[test]
+fn stream_error_recovery_reason_code_maps_local_tool_and_validation_failures() {
+    assert_eq!(
+        stream_error_recovery_reason_code(&StreamError::LocalToolFailed {
+            message: "local tool failed".to_string(),
+        }),
+        ExecutionRecoveryReasonCode::LocalToolFailed,
+    );
+    assert_eq!(
+        stream_error_recovery_reason_code(&StreamError::ValidationFailed {
+            message: "validation failed".to_string(),
+        }),
+        ExecutionRecoveryReasonCode::ValidationFailed,
+    );
+}
+
 #[tokio::test]
 async fn cancelled_stream_marks_retrying_recovery_metadata_as_system_recovery() {
     let state = AppState::new_test();

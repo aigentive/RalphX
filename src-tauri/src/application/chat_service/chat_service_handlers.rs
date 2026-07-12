@@ -1314,6 +1314,20 @@ async fn persist_shutdown_interrupted_metadata(
         .await;
 }
 
+fn stream_error_recovery_reason_code(
+    stream_error: &StreamError,
+) -> crate::domain::entities::ExecutionRecoveryReasonCode {
+    use crate::domain::entities::ExecutionRecoveryReasonCode;
+    match stream_error {
+        StreamError::Timeout { .. } => ExecutionRecoveryReasonCode::Timeout,
+        StreamError::ParseStall { .. } => ExecutionRecoveryReasonCode::ParseStall,
+        StreamError::AgentExit { .. } => ExecutionRecoveryReasonCode::AgentExit,
+        StreamError::LocalToolFailed { .. } => ExecutionRecoveryReasonCode::LocalToolFailed,
+        StreamError::ValidationFailed { .. } => ExecutionRecoveryReasonCode::ValidationFailed,
+        _ => ExecutionRecoveryReasonCode::Unknown,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_stream_success<R: Runtime>(
     agent_run_id: &str,
@@ -2974,28 +2988,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 if !se.is_provider_error() {
                                     use crate::domain::entities::{
                                         ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
-                                        ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
-                                        ExecutionRecoverySource, ExecutionRecoveryState,
+                                        ExecutionRecoveryMetadata, ExecutionRecoverySource,
+                                        ExecutionRecoveryState,
                                     };
                                     let failure_source = se.to_execution_failure_source();
-                                    let reason_code = match se {
-                                        StreamError::Timeout { .. } => {
-                                            ExecutionRecoveryReasonCode::Timeout
-                                        }
-                                        StreamError::ParseStall { .. } => {
-                                            ExecutionRecoveryReasonCode::ParseStall
-                                        }
-                                        StreamError::AgentExit { .. } => {
-                                            ExecutionRecoveryReasonCode::AgentExit
-                                        }
-                                        StreamError::LocalToolFailed { .. } => {
-                                            ExecutionRecoveryReasonCode::LocalToolFailed
-                                        }
-                                        StreamError::ValidationFailed { .. } => {
-                                            ExecutionRecoveryReasonCode::ValidationFailed
-                                        }
-                                        _ => ExecutionRecoveryReasonCode::Unknown,
-                                    };
+                                    let reason_code = stream_error_recovery_reason_code(se);
                                     let recovery_event = ExecutionRecoveryEvent::new(
                                         ExecutionRecoveryEventKind::Failed,
                                         ExecutionRecoverySource::System,

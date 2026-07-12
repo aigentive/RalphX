@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 
 use super::mark_orphaned_validation_runs_on_startup;
 use crate::domain::entities::{
-    ProjectId, TaskId, ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
-    ValidationRunStatus,
+    ProjectId, TaskId, ValidationCommandResult, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus, ValidationRunWithResults,
 };
 use crate::domain::repositories::ValidationRunRepository;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::MemoryValidationRunRepository;
 
 fn validation_run(id: &str, task_id: &str, status: ValidationRunStatus) -> ValidationRun {
@@ -72,4 +74,99 @@ async fn startup_cleanup_marks_running_validation_runs_error() {
     assert_eq!(passed.run.id, "passed");
     assert_eq!(passed.run.status, ValidationRunStatus::Passed);
     assert!(passed.run.completed_at.is_none());
+}
+
+#[tokio::test]
+async fn startup_cleanup_accepts_no_orphaned_validation_runs() {
+    let repo = Arc::new(MemoryValidationRunRepository::new());
+    repo.create_run(&validation_run(
+        "passed",
+        "task-startup-cleanup-no-running",
+        ValidationRunStatus::Passed,
+    ))
+    .await
+    .expect("passed run should be created");
+
+    mark_orphaned_validation_runs_on_startup(repo.clone()).await;
+
+    let task_id = TaskId::from_string("task-startup-cleanup-no-running".to_string());
+    let passed = repo
+        .latest_run_with_results_for_task(&task_id)
+        .await
+        .expect("passed run query should succeed")
+        .expect("passed run should exist");
+    assert_eq!(passed.run.status, ValidationRunStatus::Passed);
+    assert!(passed.run.completed_at.is_none());
+}
+
+#[derive(Default)]
+struct FailingValidationRunRepository;
+
+#[async_trait]
+impl ValidationRunRepository for FailingValidationRunRepository {
+    async fn create_run(&self, _run: &ValidationRun) -> AppResult<()> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn update_run_status(
+        &self,
+        _run_id: &str,
+        _status: ValidationRunStatus,
+        _completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<()> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn record_validated_content_fingerprint(
+        &self,
+        _run_id: &str,
+        _fingerprint: Option<String>,
+    ) -> AppResult<()> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn promote_run_to_commit(&self, _run_id: &str, _commit_sha: &str) -> AppResult<()> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn mark_running_runs_error(
+        &self,
+        _completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
+        Err(AppError::Infrastructure(
+            "validation repo unavailable".to_string(),
+        ))
+    }
+
+    async fn add_command_result(&self, _result: &ValidationCommandResult) -> AppResult<()> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn list_command_results_for_task(
+        &self,
+        _task_id: &TaskId,
+    ) -> AppResult<Vec<ValidationCommandResult>> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn latest_run_with_results_for_task(
+        &self,
+        _task_id: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+
+    async fn latest_non_baseline_run_with_results_for_task(
+        &self,
+        _task_id: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        unimplemented!("startup cleanup error test only calls mark_running_runs_error")
+    }
+}
+
+#[tokio::test]
+async fn startup_cleanup_logs_and_continues_when_validation_repo_fails() {
+    let repo = Arc::new(FailingValidationRunRepository);
+
+    mark_orphaned_validation_runs_on_startup(repo).await;
 }
