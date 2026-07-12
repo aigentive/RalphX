@@ -156,6 +156,7 @@ impl TaskValidationService {
 
         let repo_path = resolve_validation_repo_path(&task, &project)?;
         let current_head_sha = GitService::get_head_sha(&repo_path).await.ok();
+        let start_content_fingerprint = GitService::working_tree_fingerprint(&repo_path).await.ok();
         let status_episode_entered_at = latest_execution_episode_entered_at(state, &task_id).await;
         let task_diff_base = resolve_task_diff_base(state, &task, &project).await;
         let base_ref = Some(task_diff_base.effective_base_ref.clone());
@@ -177,6 +178,9 @@ impl TaskValidationService {
             mode,
             policy_enabled: settings.run_task_validations,
             head_sha: current_head_sha.clone(),
+            start_content_fingerprint,
+            validated_content_fingerprint: None,
+            promoted_commit_sha: None,
             base_ref: base_ref.clone(),
             analysis_fingerprint: request.analysis_fingerprint.clone(),
             status_episode_entered_at,
@@ -222,14 +226,24 @@ impl TaskValidationService {
 
         let completed_at = Utc::now();
         let status = aggregate_run_status(&summaries);
+        let validated_content_fingerprint = if status == ValidationRunStatus::Passed {
+            GitService::working_tree_fingerprint(&repo_path).await.ok()
+        } else {
+            None
+        };
         state
             .validation_run_repo
             .update_run_status(&run_id, status, Some(completed_at))
+            .await?;
+        state
+            .validation_run_repo
+            .record_validated_content_fingerprint(&run_id, validated_content_fingerprint.clone())
             .await?;
 
         let mut completed_run = run;
         completed_run.status = status;
         completed_run.completed_at = Some(completed_at);
+        completed_run.validated_content_fingerprint = validated_content_fingerprint;
         emit_task_validation_event(
             state,
             &TaskValidationEventPayload::run_completed(&completed_run),
@@ -319,6 +333,43 @@ impl TaskValidationService {
             disabled_reason: (!settings.run_task_validations)
                 .then(|| "Run Task Validations is disabled in Review Policy".to_string()),
         })
+    }
+
+    pub async fn promote_matching_validation_to_commit(
+        state: &AppState,
+        task_id: &TaskId,
+        repo_path: &Path,
+        commit_sha: &str,
+    ) -> AppResult<bool> {
+        let Some(with_results) = state
+            .validation_run_repo
+            .latest_non_baseline_run_with_results_for_task(task_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let fingerprint = GitService::working_tree_fingerprint(repo_path).await?;
+        let commands = with_results
+            .commands
+            .iter()
+            .map(ValidationCommandSummary::from)
+            .collect::<Vec<_>>();
+        let passed_test_run = with_results.run.status == ValidationRunStatus::Passed
+            && commands.iter().any(|command| {
+                command.category == ValidationCommandCategory::Test.as_str()
+                    && validation_command_status_success_like(&command.status)
+            });
+        if !passed_test_run
+            || with_results.run.validated_content_fingerprint.as_deref()
+                != Some(fingerprint.as_str())
+        {
+            return Ok(false);
+        }
+        state
+            .validation_run_repo
+            .promote_run_to_commit(&with_results.run.id, commit_sha)
+            .await?;
+        Ok(true)
     }
 }
 
@@ -783,7 +834,11 @@ fn classify_validation_evidence(
     commands: &[ValidationCommandSummary],
 ) -> ValidationEvidenceClassification {
     let current_for_head = current_head_sha
-        .zip(run.head_sha.as_deref())
+        .zip(
+            run.promoted_commit_sha
+                .as_deref()
+                .or(run.head_sha.as_deref()),
+        )
         .map(|(current, captured)| current == captured)
         .unwrap_or(false);
     let current_for_execution_episode = match (
@@ -947,6 +1002,28 @@ mod tests {
     async fn seeded_state() -> (AppState, tempfile::TempDir, TaskId) {
         let state = AppState::new_test();
         let temp_dir = tempfile::tempdir().expect("temp project dir");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(temp_dir.path())
+                .env("GIT_AUTHOR_NAME", "Validation Test")
+                .env("GIT_AUTHOR_EMAIL", "validation@example.test")
+                .env("GIT_COMMITTER_NAME", "Validation Test")
+                .env("GIT_COMMITTER_EMAIL", "validation@example.test")
+                .output()
+                .expect("git should run");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        std::fs::write(temp_dir.path().join("README.md"), "validation fixture")
+            .expect("fixture readme should be written");
+        git(&["add", "README.md"]);
+        git(&["commit", "-m", "initial"]);
         let project = Project::new(
             "Validation Test".to_string(),
             temp_dir.path().to_string_lossy().to_string(),
@@ -1009,6 +1086,9 @@ mod tests {
             mode: ValidationRunMode::Force,
             policy_enabled: true,
             head_sha: head_sha.map(ToString::to_string),
+            start_content_fingerprint: None,
+            validated_content_fingerprint: None,
+            promoted_commit_sha: None,
             base_ref: Some("main".to_string()),
             analysis_fingerprint: None,
             status_episode_entered_at: episode_entered_at,
@@ -1112,6 +1192,30 @@ mod tests {
     }
 
     #[test]
+    fn validation_run_summary_accepts_matching_promoted_commit() {
+        let episode = Utc::now();
+        let mut run = validation_run_fixture(
+            ValidationPurpose::Final,
+            ValidationRunStatus::Passed,
+            Some("validation-start-head"),
+            Some(episode),
+        );
+        run.promoted_commit_sha = Some("committed-validated-tree".to_string());
+        let commands = vec![command_summary("test", "passed")];
+
+        let summary = ValidationRunSummary::from_run_with_evidence(
+            &run,
+            Some("committed-validated-tree"),
+            Some(episode),
+            &commands,
+        );
+
+        assert!(summary.current_for_head);
+        assert!(summary.review_evidence_eligible);
+        assert!(summary.ineligible_reason.is_none());
+    }
+
+    #[test]
     fn validation_run_summary_marks_stale_episode_ineligible() {
         let previous_episode = Utc::now();
         let current_episode = previous_episode + chrono::Duration::seconds(1);
@@ -1200,6 +1304,9 @@ mod tests {
             mode: ValidationRunMode::Force,
             policy_enabled: true,
             head_sha: Some("abcdef1234567890".to_string()),
+            start_content_fingerprint: None,
+            validated_content_fingerprint: None,
+            promoted_commit_sha: None,
             base_ref: Some("main".to_string()),
             analysis_fingerprint: Some("analysis".to_string()),
             status_episode_entered_at: None,
@@ -1397,6 +1504,111 @@ mod tests {
         assert_eq!(summary.latest_run.expect("latest run").status, "passed");
         assert_eq!(summary.commands[0].cache_decision, "cached");
         assert!(summary.disabled_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn matching_committed_tree_promotes_persisted_validation_evidence() {
+        let (state, temp_dir, task_id) = seeded_state().await;
+        state
+            .task_repo
+            .persist_status_change(
+                &task_id,
+                InternalStatus::Ready,
+                InternalStatus::Executing,
+                "agent-started",
+            )
+            .await
+            .expect("execution episode should be recorded");
+        let source = temp_dir.path().join("validated.rs");
+        std::fs::write(&source, "pub fn validated() {}").expect("source should be written");
+
+        let validation = TaskValidationService::run_task_validation(
+            &state,
+            request(&task_id, "ralphx-execution-worker"),
+        )
+        .await
+        .expect("validation should run against dirty worktree");
+        assert_eq!(validation.latest_run.expect("run").status, "passed");
+
+        let commit = std::process::Command::new("git")
+            .args(["add", "validated.rs"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("git add should run");
+        assert!(commit.status.success());
+        let commit = std::process::Command::new("git")
+            .args(["commit", "-m", "validated work"])
+            .current_dir(temp_dir.path())
+            .env("GIT_AUTHOR_NAME", "Validation Test")
+            .env("GIT_AUTHOR_EMAIL", "validation@example.test")
+            .env("GIT_COMMITTER_NAME", "Validation Test")
+            .env("GIT_COMMITTER_EMAIL", "validation@example.test")
+            .output()
+            .expect("git commit should run");
+        assert!(commit.status.success());
+        let commit_sha = GitService::get_head_sha(temp_dir.path())
+            .await
+            .expect("head should resolve");
+
+        assert!(
+            TaskValidationService::promote_matching_validation_to_commit(
+                &state,
+                &task_id,
+                temp_dir.path(),
+                &commit_sha,
+            )
+            .await
+            .expect("promotion should succeed")
+        );
+        let latest = state
+            .validation_run_repo
+            .latest_non_baseline_run_with_results_for_task(&task_id)
+            .await
+            .expect("validation run lookup should succeed")
+            .expect("validation run should exist");
+        assert_eq!(
+            latest.run.promoted_commit_sha.as_deref(),
+            Some(commit_sha.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn changed_worktree_cannot_promote_persisted_validation_evidence() {
+        let (state, temp_dir, task_id) = seeded_state().await;
+        state
+            .task_repo
+            .persist_status_change(
+                &task_id,
+                InternalStatus::Ready,
+                InternalStatus::Executing,
+                "agent-started",
+            )
+            .await
+            .expect("execution episode should be recorded");
+        let source = temp_dir.path().join("validated.rs");
+        std::fs::write(&source, "pub fn validated() {}").expect("source should be written");
+        TaskValidationService::run_task_validation(
+            &state,
+            request(&task_id, "ralphx-execution-worker"),
+        )
+        .await
+        .expect("validation should run against dirty worktree");
+
+        std::fs::write(&source, "pub fn changed_after_validation() {}")
+            .expect("source should be changed after validation");
+        let commit_sha = GitService::get_head_sha(temp_dir.path())
+            .await
+            .expect("head should resolve");
+        assert!(
+            !TaskValidationService::promote_matching_validation_to_commit(
+                &state,
+                &task_id,
+                temp_dir.path(),
+                &commit_sha,
+            )
+            .await
+            .expect("mismatch should be a normal rejected promotion")
+        );
     }
 
     #[tokio::test]

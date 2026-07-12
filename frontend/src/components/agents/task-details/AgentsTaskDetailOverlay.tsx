@@ -21,7 +21,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AgentsTaskDetailPanel } from "./AgentsTaskDetailPanel";
 import { TaskEditForm } from "./TaskEditForm";
 import { StatusDropdown } from "./StatusDropdown";
-import { StateTimelineNav } from "./StateTimelineNav";
+import { TaskHistoryDropdown } from "./TaskHistoryDropdown";
 import { useQuery } from "@tanstack/react-query";
 import { useTaskMutation } from "@/hooks/useTaskMutation";
 import { useUiStore } from "@/stores/uiStore";
@@ -726,9 +726,9 @@ export function AgentsTaskDetailOverlay({
             </TooltipProvider>
           </div>
 
-          {/* State Timeline Navigation - for viewing historical states (hidden in edit mode) */}
+          {/* History selector for viewing historical states (hidden in edit mode) */}
           {!isEditing && (
-            <StateTimelineNav
+            <TaskHistoryDropdown
               taskId={task.id}
               currentStatus={task.internalStatus}
               onStateSelect={handleHistoryStateSelect}

@@ -3913,8 +3913,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 None,
             );
         }
-        let force_new_provider_session =
-            options.force_new_provider_session || provider_switch_requires_fresh_session;
+        let agent_override_requires_fresh_session = options.agent_name_override.is_some();
+        let force_new_provider_session = chat_service_helpers::should_start_fresh_provider_session(
+            options.force_new_provider_session,
+            provider_switch_requires_fresh_session,
+            options.agent_name_override.as_deref(),
+        );
         tracing::info!(
             %context_type,
             context_id,
@@ -3923,6 +3927,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             has_ipr_entry,
             force_new_provider_session,
             provider_switch_requires_fresh_session,
+            agent_override_requires_fresh_session,
             "[GATE_TRACE] Gate 1 (IPR lookup)"
         );
         if !has_ipr_entry {
@@ -5167,12 +5172,40 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "Disabling team mode because the selected harness does not support it"
             );
         }
+        let effective_model_id = resolved_spawn_settings.model.clone();
         let stored_provider_session = if force_new_provider_session {
             None
         } else {
-            conversation.provider_session_ref().filter(|session_ref| {
+            let candidate = conversation.provider_session_ref().filter(|session_ref| {
                 session_ref.harness == resolved_spawn_settings.effective_harness
-            })
+            });
+            let latest_session_model = match candidate.as_ref() {
+                Some(session_ref) => self
+                    .agent_run_repo
+                    .get_latest_for_conversation(&conversation.id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                    .filter(|run| {
+                        run.provider_session_id.as_deref()
+                            == Some(session_ref.provider_session_id.as_str())
+                    })
+                    .and_then(|run| run.effective_model_id.or(run.logical_model)),
+                None => None,
+            };
+            if !chat_service_helpers::provider_session_model_matches_requested(
+                latest_session_model.as_deref(),
+                &effective_model_id,
+            ) {
+                tracing::info!(
+                    conversation_id = %conversation.id,
+                    stored_model = ?latest_session_model,
+                    requested_model = %effective_model_id,
+                    "Starting fresh provider session because the requested model changed"
+                );
+                None
+            } else {
+                candidate
+            }
         };
         let stored_session_id = stored_provider_session
             .as_ref()
@@ -5184,7 +5217,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 resolved_spawn_settings.effective_harness,
                 Some(&resolved_agent_name),
             );
-        let effective_model_id = resolved_spawn_settings.model.clone();
         let effective_effort = chat_service_helpers::effective_effort_for_harness(
             resolved_spawn_settings.effective_harness,
             resolved_spawn_settings.claude_effort.as_deref(),

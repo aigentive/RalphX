@@ -3220,6 +3220,8 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     };
 
     validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
+    let plan_to_edit_handoff = current_mode == AgentConversationWorkspaceMode::Plan
+        && target_mode == AgentConversationWorkspaceMode::Edit;
 
     if agent_is_running {
         if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
@@ -3344,6 +3346,19 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
     };
+
+    if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
+        state
+            .chat_conversation_repo
+            .clear_provider_session_ref(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        conversation.clear_provider_session_ref();
+        tracing::info!(
+            conversation_id = %conversation.id,
+            "Cleared planning provider session before Plan-to-Edit implementation handoff"
+        );
+    }
 
     state
         .chat_conversation_repo
