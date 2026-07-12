@@ -237,6 +237,32 @@ async fn start_with_app(
 }
 
 #[tokio::test]
+async fn start_agent_conversation_rejects_persona_builder_mode() {
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let project_id = ProjectId::from_string("project-persona-builder-rejected".to_string());
+
+    let error = start_with_app(
+        &app,
+        service_start_input(
+            &project_id,
+            "reserved mode must not start generically",
+            "persona_builder",
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("generic start must reject PersonaBuilder before any project or workspace work");
+
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn start_with_persona_persists_binding_and_first_send_includes_persona_block() {
     let _persona_feature = enable_personas_for_test();
     let _allow_spawn =

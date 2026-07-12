@@ -219,6 +219,33 @@ fn enable_personas_for_test() -> crate::support::env::EnvVarGuard {
     crate::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "true")
 }
 
+async fn seed_mode_locked_conversation_without_workspace(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    project_id: ProjectId,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let mut project = Project::new(
+        "Mode-locked conversation project".to_string(),
+        "/tmp/persona-builder-mode-lock".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.id = conversation_id;
+    conversation.set_agent_mode(Some(mode));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation persisted");
+}
+
 async fn seed_persona_switch_project_conversation(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -759,6 +786,103 @@ async fn user_mode_switch_rejects_automation_run_conversation() {
         .expect("workspace lookup should succeed")
         .expect("workspace should still exist");
     assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+}
+
+#[tokio::test]
+async fn switch_mode_rejects_persona_builder_target() {
+    let state = AppState::new_test();
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: "persona-builder-target".to_string(),
+            mode: "persona_builder".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("generic mode switch must reject PersonaBuilder before loading a conversation");
+
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn mode_switch_rejected_from_persona_builder_keyed_on_conversation_agent_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-persona-builder-mode-lock".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("56565656-5656-4565-8565-565656565656".to_string());
+    seed_mode_locked_conversation_without_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::PersonaBuilder,
+    )
+    .await;
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("PersonaBuilder source mode must lock without a workspace row");
+
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup succeeds")
+        .is_none());
+}
+
+#[tokio::test]
+async fn mode_switch_rejected_from_automation_conversation_backend() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-automation-mode-lock".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("57575757-5757-4575-8575-575757575757".to_string());
+    seed_mode_locked_conversation_without_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Automation,
+    )
+    .await;
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Automation source mode must be locked without automation-run metadata");
+
+    assert!(error.contains("Automation"), "unexpected error: {error}");
 }
 
 #[tokio::test]

@@ -98,15 +98,24 @@ fn final_spawnable_command(
 #[test]
 fn persona_builder_send_without_live_draft_session_resolves_zero_read_roots_and_fails_closed() {
     assert!(
-        persona_builder_requires_live_draft_session(Some("persona_builder"), false),
+        persona_builder_requires_live_draft_session(
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+            false
+        ),
         "PersonaBuilder sends without a live draft session must fail closed before root reads"
     );
     assert!(
-        !persona_builder_requires_live_draft_session(Some("persona_builder"), true),
+        !persona_builder_requires_live_draft_session(
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
+            true
+        ),
         "a live draft session satisfies the PersonaBuilder read-root guard"
     );
     assert!(
-        !persona_builder_requires_live_draft_session(Some("chat"), false),
+        !persona_builder_requires_live_draft_session(
+            Some(AgentConversationWorkspaceMode::Chat),
+            false
+        ),
         "existing modes must remain inert until PersonaBuilder is introduced"
     );
 }

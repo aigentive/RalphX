@@ -19,6 +19,7 @@ pub enum AgentConversationWorkspaceMode {
     Ideation,
     ReviewPr,
     Automation,
+    PersonaBuilder,
 }
 
 impl std::fmt::Display for AgentConversationWorkspaceMode {
@@ -30,6 +31,7 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
             AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
             AgentConversationWorkspaceMode::Automation => write!(f, "automation"),
+            AgentConversationWorkspaceMode::PersonaBuilder => write!(f, "persona_builder"),
         }
     }
 }
@@ -45,6 +47,7 @@ impl FromStr for AgentConversationWorkspaceMode {
             "ideation" => Ok(Self::Ideation),
             "review_pr" => Ok(Self::ReviewPr),
             "automation" => Ok(Self::Automation),
+            "persona_builder" => Ok(Self::PersonaBuilder),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"
             )),
@@ -1077,6 +1080,10 @@ mod enum_roundtrip_tests {
             (AgentConversationWorkspaceMode::Ideation, "ideation"),
             (AgentConversationWorkspaceMode::ReviewPr, "review_pr"),
             (AgentConversationWorkspaceMode::Automation, "automation"),
+            (
+                AgentConversationWorkspaceMode::PersonaBuilder,
+                "persona_builder",
+            ),
         ] {
             assert_eq!(variant.to_string(), text);
             assert_eq!(
@@ -1085,6 +1092,18 @@ mod enum_roundtrip_tests {
             );
         }
         assert!(AgentConversationWorkspaceMode::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn persona_builder_mode_display_fromstr_round_trip() {
+        assert_eq!(
+            AgentConversationWorkspaceMode::PersonaBuilder.to_string(),
+            "persona_builder"
+        );
+        assert_eq!(
+            AgentConversationWorkspaceMode::from_str("persona_builder").unwrap(),
+            AgentConversationWorkspaceMode::PersonaBuilder
+        );
     }
 
     #[test]

@@ -23,13 +23,15 @@ use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_PR_REVIEWER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
 };
 
 pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
     "A new workspace branch has been created automatically.";
 pub(crate) const REVIEW_PR_SOURCE_PULL_REQUEST_REQUIRED_ERROR: &str =
     "Review PR mode requires a selected pull request";
+pub(crate) const PERSONA_BUILDER_GENERIC_ENTRY_POINT_ERROR: &str =
+    "PersonaBuilder mode can only be created through the persona builder command";
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentConversationWorkspaceBaseSelection {
@@ -999,6 +1001,16 @@ pub fn agent_name_for_workspace_mode(mode: AgentConversationWorkspaceMode) -> &'
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
         AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
+        AgentConversationWorkspaceMode::PersonaBuilder => AGENT_PERSONA_EXTRACTOR,
+    }
+}
+
+/// Reject the reserved builder mode at generic workspace entry points.
+pub(crate) fn reject_persona_builder_workspace_mode(mode: &str) -> Result<(), String> {
+    if mode.trim() == AgentConversationWorkspaceMode::PersonaBuilder.to_string() {
+        Err(PERSONA_BUILDER_GENERIC_ENTRY_POINT_ERROR.to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -1467,6 +1479,14 @@ mod tests {
     };
     use crate::infrastructure::memory::MemoryPlanBranchRepository;
     use std::process::Command;
+
+    #[test]
+    fn agent_name_maps_resolve_persona_builder_to_extractor() {
+        assert_eq!(
+            agent_name_for_workspace_mode(AgentConversationWorkspaceMode::PersonaBuilder),
+            AGENT_PERSONA_EXTRACTOR
+        );
+    }
 
     fn git(repo: &Path, args: &[&str]) -> String {
         let output = Command::new("git")

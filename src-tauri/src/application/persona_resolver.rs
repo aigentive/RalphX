@@ -77,7 +77,10 @@ pub async fn resolve_persona_for_send(
     if flags.agent_name_override_set
         || matches!(
             flags.agent_conversation_mode,
-            Some(AgentConversationWorkspaceMode::Automation)
+            Some(
+                AgentConversationWorkspaceMode::Automation
+                    | AgentConversationWorkspaceMode::PersonaBuilder
+            )
         )
         || flags.is_verification
     {

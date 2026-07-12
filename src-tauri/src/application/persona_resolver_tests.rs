@@ -419,6 +419,25 @@ async fn automation_mode_suppresses() {
 }
 
 #[tokio::test]
+async fn persona_builder_conversation_send_is_suppressed() {
+    let mut conversation = conversation();
+    conversation.persona_id = Some("persona-a".to_string());
+    let mut builder_flags = flags();
+    builder_flags.agent_conversation_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+
+    let resolved = resolve_persona_for_send(
+        &conversation,
+        &PersonaDirective::Inherit,
+        builder_flags,
+        Arc::new(MemoryPersonaRepository::new()),
+    )
+    .await
+    .expect("PersonaBuilder mode should suppress without a persona read");
+
+    assert!(resolved.is_none());
+}
+
+#[tokio::test]
 async fn verification_purpose_suppresses() {
     let mut conversation = conversation();
     conversation.persona_id = Some("persona-a".to_string());

@@ -21,3 +21,4 @@ mod unified_chat_commands;
 mod task_step_commands;
 mod harness_provider_commands;
 mod persona_commands;
+mod persona_builder_commands;

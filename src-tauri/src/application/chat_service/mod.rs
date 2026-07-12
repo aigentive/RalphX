@@ -89,7 +89,7 @@ use crate::domain::services::{
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_PR_REVIEWER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -594,6 +594,7 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
         AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
+        AgentConversationWorkspaceMode::PersonaBuilder => AGENT_PERSONA_EXTRACTOR,
     }
 }
 
@@ -675,14 +676,12 @@ pub(super) fn persona_resolve_flags_for_conversation(
     }
 }
 
-/// PR-17/PR-19 will make `persona_builder` a real workspace mode. Keeping the
-/// predicate explicit now makes the no-read-roots rule fail closed the moment
-/// that mode is introduced, while remaining inert for today's typed modes.
+/// PersonaBuilder never reads roots outside its live draft ingest session.
 pub fn persona_builder_requires_live_draft_session(
-    agent_mode: Option<&str>,
+    agent_mode: Option<AgentConversationWorkspaceMode>,
     has_live_draft_session: bool,
 ) -> bool {
-    matches!(agent_mode, Some("persona_builder")) && !has_live_draft_session
+    agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) && !has_live_draft_session
 }
 
 fn plan_mode_runtime_message(
@@ -4125,13 +4124,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         Some(&conversation.id),
                     )
                     .await?;
-                if persona_builder_requires_live_draft_session(
-                    conversation
-                        .agent_mode
-                        .map(|mode| mode.to_string())
-                        .as_deref(),
-                    false,
-                ) {
+                if persona_builder_requires_live_draft_session(conversation.agent_mode, false) {
                     return Err(ChatServiceError::PersonaUnavailable(
                         "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
                             .to_string(),
@@ -4588,13 +4581,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
         if self.persona_feature_enabled
-            && persona_builder_requires_live_draft_session(
-                conversation
-                    .agent_mode
-                    .map(|mode| mode.to_string())
-                    .as_deref(),
-                false,
-            )
+            && persona_builder_requires_live_draft_session(conversation.agent_mode, false)
         {
             return Err(ChatServiceError::PersonaUnavailable(
                 "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
@@ -5899,13 +5886,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             Some(&conversation.id),
                         )
                         .await?;
-                    if persona_builder_requires_live_draft_session(
-                        conversation
-                            .agent_mode
-                            .map(|mode| mode.to_string())
-                            .as_deref(),
-                        false,
-                    ) {
+                    if persona_builder_requires_live_draft_session(conversation.agent_mode, false) {
                         return Err(ChatServiceError::PersonaUnavailable(
                             "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
                                 .to_string(),

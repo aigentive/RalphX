@@ -58,6 +58,7 @@ pub mod notification_commands;
 #[cfg(test)]
 mod notification_commands_tests;
 pub mod permission_commands;
+pub mod persona_builder_commands;
 pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
@@ -151,6 +152,9 @@ pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation, resume_automation,
     stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
+};
+pub use persona_builder_commands::{
+    create_persona_builder_conversation, CreatePersonaBuilderConversationInput,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,

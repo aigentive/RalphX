@@ -45,7 +45,7 @@ pub use crate::application::agent_conversation_start_service::{
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    resolve_agent_conversation_workspace_path_for_send,
+    reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
 };
@@ -2594,10 +2594,12 @@ pub fn parse_context_type(context_type: &str) -> Result<ChatContextType, String>
 fn parse_agent_workspace_mode(
     mode: Option<&str>,
 ) -> Result<AgentConversationWorkspaceMode, String> {
-    mode.map(str::trim)
+    let mode = mode
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("edit")
-        .parse::<AgentConversationWorkspaceMode>()
+        .unwrap_or("edit");
+    reject_persona_builder_workspace_mode(mode)?;
+    mode.parse::<AgentConversationWorkspaceMode>()
 }
 
 fn parse_agent_workspace_base_kind(
@@ -2810,10 +2812,17 @@ async fn agent_workspace_pr_automation_defaults_for_project(
 }
 
 fn validate_agent_conversation_mode_transition(
-    _current_mode: AgentConversationWorkspaceMode,
+    current_mode: AgentConversationWorkspaceMode,
     target_mode: AgentConversationWorkspaceMode,
     workspace_mode_lock: &AgentConversationWorkspaceModeLock,
 ) -> Result<(), String> {
+    if matches!(
+        current_mode,
+        AgentConversationWorkspaceMode::Automation | AgentConversationWorkspaceMode::PersonaBuilder
+    ) {
+        return Err("Automation and PersonaBuilder conversations cannot change mode".to_string());
+    }
+    reject_persona_builder_workspace_mode(&target_mode.to_string())?;
     if workspace_mode_lock.locked && target_mode != AgentConversationWorkspaceMode::Ideation {
         return Err(workspace_mode_lock.reason.clone().unwrap_or_else(|| {
             "This workspace is owned by active ideation or execution state and cannot leave Ideation Mode"
@@ -9202,6 +9211,9 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
         AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
+        AgentConversationWorkspaceMode::PersonaBuilder => {
+            AgentConversationRuntimeIndexMode::Automation
+        }
     }
 }
 
