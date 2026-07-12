@@ -414,6 +414,7 @@ mod v20260710201548_notification_settings;
 mod v20260711151804_personas;
 mod v20260712090000_validation_run_content_fingerprints;
 mod v20260712155425_ui_feature_flag_overrides;
+mod v20260712162657_persona_builder_agent_mode;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -422,6 +423,8 @@ mod v20260710201548_notification_settings_tests;
 mod v20260711151804_personas_tests;
 #[cfg(test)]
 mod v20260712155425_ui_feature_flag_overrides_tests;
+#[cfg(test)]
+mod v20260712162657_persona_builder_agent_mode_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -530,7 +533,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260712155425;
+pub const SCHEMA_VERSION: i64 = 20260712162657;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1474,6 +1477,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260712155425,
         name: "ui_feature_flag_overrides",
         migrate: v20260712155425_ui_feature_flag_overrides::migrate,
+    },
+    Migration {
+        version: 20260712162657,
+        name: "persona_builder_agent_mode",
+        migrate: v20260712162657_persona_builder_agent_mode::migrate,
     },
 ];
 
