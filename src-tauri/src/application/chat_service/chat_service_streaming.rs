@@ -3794,10 +3794,38 @@ async fn process_codex_stream_background<R: Runtime>(
         {
             return Err(provider_error);
         }
-        return Err(StreamError::AgentExit {
-            exit_code: status_code,
-            stderr: stderr_trimmed,
-        });
+        if !stderr_trimmed.is_empty() {
+            return Err(StreamError::AgentExit {
+                exit_code: status_code,
+                stderr: stderr_trimmed,
+            });
+        }
+    }
+
+    if !outcome.has_meaningful_output() && !completion_signal_tracker.was_called() {
+        if persist_conversation_provider_session_ref {
+            if let Some(repository) = conversation_repo.as_ref() {
+                if let Err(error) = repository.clear_provider_session_ref(conversation_id).await {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "Failed to clear provider session after empty Codex completion"
+                    );
+                }
+            }
+        }
+        tracing::warn!(
+            context_type = %context_type,
+            context_id,
+            conversation_id = %conversation_id,
+            exit_code = ?status_code,
+            status_success,
+            codex_turn_completed,
+            runtime_error_count = runtime_errors.len(),
+            local_tool_error_count = local_tool_errors.len(),
+            "Codex terminal stream produced no meaningful completion"
+        );
+        return Err(StreamError::NoOutput { context_type });
     }
 
     if outcome.tool_calls.is_empty() {
