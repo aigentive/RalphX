@@ -3,7 +3,7 @@ use crate::domain::repositories::PersonaRepository;
 use crate::error::AppError;
 use crate::infrastructure::sqlite::SqlitePersonaRepository;
 use crate::testing::SqliteTestDb;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 
 fn setup_repo() -> (SqliteTestDb, SqlitePersonaRepository) {
     let db = SqliteTestDb::new("sqlite_persona_repo_tests");
@@ -109,6 +109,28 @@ async fn list_by_status_filters() {
 }
 
 #[tokio::test]
+async fn list_and_get_by_slug_use_newest_persona_and_missing_ids_are_none() {
+    let (_db, repo) = setup_repo();
+    let mut older = persona("older", PersonaStatus::Draft);
+    older.created_at -= Duration::seconds(1);
+    let newer = persona("newer", PersonaStatus::Draft);
+    repo.create(older.clone()).await.unwrap();
+    repo.create(newer.clone()).await.unwrap();
+
+    let listed = repo.list().await.unwrap();
+    assert_eq!(
+        listed.iter().map(|persona| &persona.id).collect::<Vec<_>>(),
+        vec![&newer.id, &older.id]
+    );
+    assert!(repo
+        .get_by_id(&PersonaId::from("missing-persona"))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo.get_by_slug("missing").await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn update_content_bumps_version_and_hash() {
     let (_db, repo) = setup_repo();
     let original = persona("reviewer", PersonaStatus::Draft);
@@ -138,4 +160,16 @@ async fn set_status_transitions_row() {
         repo.get_by_id(&original.id).await.unwrap().unwrap().status,
         PersonaStatus::Active
     );
+}
+
+#[tokio::test]
+async fn delete_removes_persona_from_future_reads() {
+    let (_db, repo) = setup_repo();
+    let original = persona("delete-me", PersonaStatus::Draft);
+    repo.create(original.clone()).await.unwrap();
+
+    repo.delete(&original.id).await.unwrap();
+
+    assert!(repo.get_by_id(&original.id).await.unwrap().is_none());
+    assert!(repo.get_by_slug("delete-me").await.unwrap().is_none());
 }

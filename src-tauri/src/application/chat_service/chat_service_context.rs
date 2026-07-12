@@ -2955,6 +2955,76 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
     .await
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+// Test seam consumed by suite_chat_service.
+pub async fn build_launch_plan_for_harness_with_persona_for_test(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    persona: Option<ResolvedPersona>,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: Option<String>,
+    agent_run_id: Option<&str>,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    runtime_team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    is_external_mcp: bool,
+    stored_session_id: Option<&str>,
+    resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    agent_workspace_prompt_context: Option<&str>,
+    attachment_context_override: Option<&str>,
+) -> Result<ResolvedChatHarnessLaunch, String> {
+    build_launch_plan_for_harness_with_spawn_guard(
+        harness,
+        cli_path,
+        plugin_dir,
+        conversation,
+        user_message,
+        persona,
+        agent_name_override,
+        agent_profile,
+        context_type,
+        context_id,
+        conversation_id,
+        agent_run_id,
+        working_directory,
+        entity_status,
+        project_id,
+        filesystem_read_roots,
+        runtime_team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        is_external_mcp,
+        stored_session_id,
+        resolved_spawn_settings,
+        false,
+        agent_workspace_prompt_context,
+        attachment_context_override,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn build_launch_plan_for_harness_with_spawn_guard(
     harness: AgentHarnessKind,

@@ -1,7 +1,7 @@
 use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
 use crate::domain::repositories::PersonaRepository;
 use crate::infrastructure::memory::MemoryPersonaRepository;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 
 fn persona(slug: &str, status: PersonaStatus) -> Persona {
     let now = Utc::now();
@@ -46,13 +46,16 @@ async fn memory_persona_repo_trait_parity_get_by_slug() {
 #[tokio::test]
 async fn memory_persona_repo_trait_parity_list() {
     let repo = MemoryPersonaRepository::new();
-    repo.create(persona("one", PersonaStatus::Draft))
-        .await
-        .unwrap();
-    repo.create(persona("two", PersonaStatus::Active))
-        .await
-        .unwrap();
-    assert_eq!(repo.list().await.unwrap().len(), 2);
+    let mut older = persona("one", PersonaStatus::Draft);
+    older.created_at -= Duration::seconds(1);
+    let newer = persona("two", PersonaStatus::Active);
+    repo.create(older.clone()).await.unwrap();
+    repo.create(newer.clone()).await.unwrap();
+
+    let listed = repo.list().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, newer.id, "newest persona is listed first");
+    assert_eq!(listed[1].id, older.id);
 }
 
 #[tokio::test]
@@ -115,4 +118,19 @@ async fn memory_persona_repo_trait_parity_delete() {
 async fn memory_persona_repo_trait_parity_get_by_slug_returns_none_when_missing() {
     let repo = MemoryPersonaRepository::new();
     assert!(repo.get_by_slug("missing").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn memory_persona_repo_reuses_archived_slug_and_selects_newest_match() {
+    let repo = MemoryPersonaRepository::new();
+    let mut archived = persona("reviewer", PersonaStatus::Archived);
+    archived.created_at -= Duration::seconds(1);
+    let replacement = persona("reviewer", PersonaStatus::Draft);
+    repo.create(archived).await.unwrap();
+    repo.create(replacement.clone()).await.unwrap();
+
+    assert_eq!(
+        repo.get_by_slug("reviewer").await.unwrap().unwrap().id,
+        replacement.id
+    );
 }

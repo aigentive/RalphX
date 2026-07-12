@@ -185,4 +185,30 @@ describe("PersonaBuilderView", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("slug already exists");
   });
+
+  it("keeps the builder open when context selection is cancelled", async () => {
+    mockBuilderCommands();
+    vi.mocked(openDialog).mockResolvedValue(null);
+    renderBuilder();
+
+    expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add context…" }));
+
+    await waitFor(() => expect(openDialog).toHaveBeenCalledOnce());
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("ingest_persona_context", expect.anything());
+    expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument();
+  });
+
+  it("shows builder conversation creation errors without starting the embedded chat", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "create_persona_builder_conversation") {
+        throw new Error("Persona Builder is unavailable");
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderBuilder();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Persona Builder is unavailable");
+    expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+  });
 });

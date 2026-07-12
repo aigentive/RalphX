@@ -111,6 +111,12 @@ const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user
 // Re-exports from extracted modules
 #[doc(hidden)]
 pub use chat_service_context::create_assistant_message;
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+pub use chat_service_context::build_launch_plan_for_harness_with_persona_for_test;
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+pub use chat_service_context::ResolvedChatHarnessLaunch;
 pub use chat_service_context::{
     build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
     build_resume_command_for_harness, build_resume_initial_prompt, format_attachments_for_agent,

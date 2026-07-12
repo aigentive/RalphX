@@ -108,6 +108,14 @@ fn structural_tag_blocklist_rejects_all_variants() {
 }
 
 #[test]
+fn structural_tag_scan_ignores_normal_angle_bracket_text_but_detects_whitespace_after_close() {
+    assert!(reject_structural_tags("2 < 3; use <ordinary-example> in prose.").is_ok());
+
+    let blocked = "A closing tag can still be structural: </\nralphx_agent_persona>";
+    assert!(reject_structural_tags(blocked).is_err());
+}
+
+#[test]
 fn content_hash_is_stable_and_input_sensitive() {
     let frontmatter = "name: test\nkind: persona\ndescription: Test\n";
     let body = "body";

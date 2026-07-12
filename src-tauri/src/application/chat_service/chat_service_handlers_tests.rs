@@ -18,7 +18,8 @@ use crate::domain::entities::{
     ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
     IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
-    NotificationTargetKind, Project, ProjectId, Task, VerificationStatus,
+    NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, Task,
+    VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -5252,4 +5253,84 @@ async fn test_normal_completion_unaffected_by_verification_guards() {
         !is_unknown,
         "Gate B must return false for unknown sessions (safe fallthrough to normal agent:error)"
     );
+}
+
+#[tokio::test]
+async fn recovery_retry_persona_short_circuits_without_feature_or_app_handle() {
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
+
+    assert_eq!(
+        resolve_recovery_retry_persona::<MockRuntime>(
+            &None,
+            false,
+            &conversation,
+            ChatContextType::Project,
+            false,
+        )
+        .await
+        .expect("feature-off retries must not resolve personas"),
+        None
+    );
+    assert_eq!(
+        resolve_recovery_retry_persona::<MockRuntime>(
+            &None,
+            true,
+            &conversation,
+            ChatContextType::Project,
+            false,
+        )
+        .await
+        .expect("retries without a Tauri app must keep the prior no-persona behavior"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("retry-bound-persona"),
+        slug: "retry-bound-persona".to_string(),
+        name: "Retry Bound Persona".to_string(),
+        description: "Retry persona fixture".to_string(),
+        content: "Keep the recovered conversation focused.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "retry-bound-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    let state = AppState::new_test();
+    state
+        .persona_repo
+        .create(persona)
+        .await
+        .expect("seed active retry persona");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let resolved = resolve_recovery_retry_persona(
+        &app_handle,
+        true,
+        &conversation,
+        ChatContextType::Project,
+        false,
+    )
+    .await
+    .expect("workspace fallback should resolve the bound project persona")
+    .expect("active binding should produce a persona block");
+
+    assert!(resolved.block.contains("<ralphx_agent_persona>"));
+    assert!(resolved
+        .block
+        .contains("Keep the recovered conversation focused."));
 }

@@ -44,11 +44,20 @@ impl From<CreatePersonaDraftInput> for SavePersonaDraftInput {
 
 #[tauri::command]
 pub async fn list_personas(
-    _input: ListPersonasInput,
+    input: ListPersonasInput,
     state: State<'_, AppState>,
 ) -> Result<Vec<Persona>, String> {
-    service(&state)
-        .list_personas(enabled())
+    list_personas_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn list_personas_for_state(
+    _input: ListPersonasInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Vec<Persona>, String> {
+    service(state)
+        .list_personas(feature_enabled)
         .await
         .map_err(to_string)
 }
@@ -58,8 +67,17 @@ pub async fn get_persona(
     input: PersonaIdInput,
     state: State<'_, AppState>,
 ) -> Result<Persona, String> {
-    service(&state)
-        .get_persona(enabled(), &persona_id(input.id)?)
+    get_persona_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn get_persona_for_state(
+    input: PersonaIdInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    service(state)
+        .get_persona(feature_enabled, &persona_id(input.id)?)
         .await
         .map_err(to_string)
 }
@@ -69,11 +87,20 @@ pub async fn create_persona_draft(
     input: CreatePersonaDraftInput,
     state: State<'_, AppState>,
 ) -> Result<Persona, String> {
-    let persona = service(&state)
-        .create_draft(enabled(), input.into())
+    create_persona_draft_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn create_persona_draft_for_state(
+    input: CreatePersonaDraftInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    let persona = service(state)
+        .create_draft(feature_enabled, input.into())
         .await
         .map_err(to_string)?;
-    emit_draft_updated(&state, &persona);
+    emit_draft_updated(state, &persona);
     Ok(persona)
 }
 
@@ -82,8 +109,17 @@ pub async fn update_persona(
     input: UpdatePersonaInput,
     state: State<'_, AppState>,
 ) -> Result<Persona, String> {
-    service(&state)
-        .update_persona(enabled(), &persona_id(input.id)?, &input.content)
+    update_persona_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn update_persona_for_state(
+    input: UpdatePersonaInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    service(state)
+        .update_persona(feature_enabled, &persona_id(input.id)?, &input.content)
         .await
         .map_err(to_string)
 }
@@ -93,8 +129,17 @@ pub async fn approve_persona(
     input: PersonaIdInput,
     state: State<'_, AppState>,
 ) -> Result<Persona, String> {
-    service(&state)
-        .approve_persona(enabled(), &persona_id(input.id)?)
+    approve_persona_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn approve_persona_for_state(
+    input: PersonaIdInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    service(state)
+        .approve_persona(feature_enabled, &persona_id(input.id)?)
         .await
         .map_err(to_string)
 }
@@ -104,8 +149,17 @@ pub async fn archive_persona(
     input: PersonaIdInput,
     state: State<'_, AppState>,
 ) -> Result<Persona, String> {
-    service(&state)
-        .archive_persona(enabled(), &persona_id(input.id)?)
+    archive_persona_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn archive_persona_for_state(
+    input: PersonaIdInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    service(state)
+        .archive_persona(feature_enabled, &persona_id(input.id)?)
         .await
         .map_err(to_string)
 }
@@ -115,8 +169,17 @@ pub async fn delete_persona_draft(
     input: PersonaIdInput,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    service(&state)
-        .hard_delete_draft(enabled(), &persona_id(input.id)?)
+    delete_persona_draft_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn delete_persona_draft_for_state(
+    input: PersonaIdInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<(), String> {
+    service(state)
+        .hard_delete_draft(feature_enabled, &persona_id(input.id)?)
         .await
         .map_err(to_string)
 }

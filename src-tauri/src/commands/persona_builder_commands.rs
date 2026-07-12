@@ -44,10 +44,10 @@ pub async fn create_persona_builder_conversation(
 
 /// Copy a picked context path into app-owned PersonaBuilder ingest storage.
 #[tauri::command]
-pub async fn ingest_persona_context(
+pub async fn ingest_persona_context<R: tauri::Runtime>(
     input: IngestPersonaContextInput,
     state: State<'_, AppState>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<PersonaIngestManifest, String> {
     let app_data_dir = app
         .path()

@@ -1,10 +1,23 @@
+use ralphx_lib::application::persona_ingest::{
+    build_persona_ingest_file_path, persona_ingest_conversation_path, persona_ingest_storage_path,
+};
 use ralphx_lib::application::personas::PERSONA_FEATURE_DISABLED_PREFIX;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::persona_builder_commands::{
-    create_persona_builder_conversation_for_state, ingest_persona_context_for_state,
+    create_persona_builder_conversation, create_persona_builder_conversation_for_state,
+    ingest_persona_context, ingest_persona_context_for_state,
     CreatePersonaBuilderConversationInput, IngestPersonaContextInput,
 };
 use ralphx_lib::domain::entities::{AgentConversationWorkspaceMode, ChatConversation, ProjectId};
+use std::fs;
+use tauri::Manager;
+
+fn persona_builder_command_app() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
+}
 
 #[tokio::test]
 async fn builder_conversation_created_only_via_flag_gated_settings_command() {
@@ -56,6 +69,40 @@ fn persona_builder_command_input_uses_camel_case_project_id() {
         serde_json::from_str(r#"{"projectId":"project-persona-builder-input"}"#)
             .expect("camelCase projectId should deserialize");
     assert_eq!(input.project_id, "project-persona-builder-input");
+
+    let ingest: IngestPersonaContextInput = serde_json::from_str(
+        r#"{"conversationId":"conversation-persona-builder-input","pickedPath":"/tmp/context.md"}"#,
+    )
+    .expect("camelCase ingestion input should deserialize");
+    assert_eq!(ingest.conversation_id, "conversation-persona-builder-input");
+    assert_eq!(ingest.picked_path, "/tmp/context.md");
+}
+
+#[tokio::test]
+async fn persona_builder_command_adapters_use_mock_app_state_and_live_feature_flag() {
+    let app = persona_builder_command_app();
+
+    let creation_error = create_persona_builder_conversation(
+        CreatePersonaBuilderConversationInput {
+            project_id: "project-persona-builder-wrapper".to_string(),
+        },
+        app.state(),
+    )
+    .await
+    .expect_err("the checked-in feature flag must keep the builder entry point unavailable");
+    assert!(creation_error.contains(PERSONA_FEATURE_DISABLED_PREFIX));
+
+    let ingest_error = ingest_persona_context(
+        IngestPersonaContextInput {
+            conversation_id: "missing-persona-builder-wrapper".to_string(),
+            picked_path: "not-inspected-while-disabled".to_string(),
+        },
+        app.state(),
+        app.handle().clone(),
+    )
+    .await
+    .expect_err("the checked-in feature flag must reject ingestion through the command adapter");
+    assert!(ingest_error.contains(PERSONA_FEATURE_DISABLED_PREFIX));
 }
 
 #[tokio::test]
@@ -93,4 +140,77 @@ async fn ingest_command_rejects_non_persona_builder_conversation() {
         .expect_err("non-PersonaBuilder conversation must reject before filesystem access");
 
     assert!(error.contains("PersonaBuilder"));
+}
+
+#[tokio::test]
+async fn ingest_command_copies_context_for_a_persona_builder_conversation() {
+    let state = AppState::new_test();
+    let conversation = create_persona_builder_conversation_for_state(
+        CreatePersonaBuilderConversationInput {
+            project_id: "project-persona-builder-ingest".to_string(),
+        },
+        &state,
+        true,
+    )
+    .await
+    .expect("PersonaBuilder conversation should persist before ingest");
+    let temp = tempfile::tempdir().expect("ingest temp directory");
+    let picked_path = temp.path().join("context.md");
+    fs::write(&picked_path, "Persona context\n").expect("write picked context");
+    let app_data_dir = temp.path().join("app-data");
+
+    let manifest = ingest_persona_context_for_state(
+        IngestPersonaContextInput {
+            conversation_id: conversation.id.clone(),
+            picked_path: picked_path.to_string_lossy().to_string(),
+        },
+        &state,
+        true,
+        &app_data_dir,
+    )
+    .await
+    .expect("PersonaBuilder ingestion should copy approved context into app-owned storage");
+
+    assert_eq!(manifest.copied.len(), 1);
+    assert_eq!(manifest.copied[0].path, "context.md");
+    assert!(manifest.skipped.is_empty());
+    assert!(manifest.rejected.is_empty());
+
+    let destination_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &conversation.id,
+    );
+    let copied_path =
+        build_persona_ingest_file_path(&destination_root, std::path::Path::new("context.md"))
+            .expect("ingest destination is derived from the approved relative path");
+    assert_eq!(
+        fs::read_to_string(copied_path).expect("app-owned copy should be readable"),
+        "Persona context\n"
+    );
+    assert!(destination_root.join("manifest.json").is_file());
+}
+
+#[tokio::test]
+async fn ingest_command_maps_absent_persona_builder_conversation_to_not_found() {
+    let state = AppState::new_test();
+    let temp = tempfile::tempdir().expect("ingest temp directory");
+    let app_data_dir = temp.path().join("app-data");
+
+    let error = ingest_persona_context_for_state(
+        IngestPersonaContextInput {
+            conversation_id: "missing-persona-builder".to_string(),
+            picked_path: temp.path().join("context.md").to_string_lossy().to_string(),
+        },
+        &state,
+        true,
+        &app_data_dir,
+    )
+    .await
+    .expect_err("an absent conversation must not ingest picked context");
+
+    assert_eq!(error, "PersonaBuilder conversation was not found");
+    assert!(
+        !app_data_dir.exists(),
+        "a missing conversation must not create app-owned ingest storage"
+    );
 }

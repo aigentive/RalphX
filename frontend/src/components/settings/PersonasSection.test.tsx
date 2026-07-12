@@ -130,6 +130,14 @@ describe("PersonasSection", () => {
     expect(screen.getByText(/delegated, subagent, or pipeline work/i)).toBeInTheDocument();
   });
 
+  it("shows the empty state when every persona is archived", async () => {
+    mockPersonaCommands([archivedPersona]);
+    renderSection();
+
+    expect(await screen.findByText("No personas yet. Create a draft to get started.")).toBeInTheDocument();
+    expect(screen.queryByText("Old Voice")).not.toBeInTheDocument();
+  });
+
   it("hides the builder entry when the feature flag is off", async () => {
     mockPersonaCommands([activePersona]);
     render(
@@ -217,6 +225,21 @@ describe("PersonasSection", () => {
         input: { id: "persona-active", content: "Updated body" },
       }),
     );
+  });
+
+  it("cancels an active persona edit without saving the modified draft", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
+    await user.clear(screen.getByLabelText("Persona content"));
+    await user.type(screen.getByLabelText("Persona content"), "Unsaved revision");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByText("Reviewer Voice")).toBeInTheDocument();
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("update_persona", expect.anything());
   });
 
   it("opens drafts read-only with the builder-only explanation", async () => {

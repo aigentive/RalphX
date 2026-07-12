@@ -97,4 +97,21 @@ describe("PersonaChip", () => {
       });
     });
   });
+
+  it("uses the generic label when no active persona is bound", () => {
+    renderChip({ personaId: null });
+
+    expect(screen.getByRole("button", { name: "Switch conversation persona" })).toHaveTextContent("Persona");
+    expect(screen.getByRole("button", { name: "Switch conversation persona" })).not.toHaveTextContent("Reviewer Voice");
+  });
+
+  it("keeps the picker open and reports a failed persona switch", async () => {
+    mockMutateAsync.mockRejectedValueOnce(new Error("Persona is archived"));
+    renderChip();
+    fireEvent.click(screen.getByRole("button", { name: "Switch conversation persona" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Terse Architect" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Persona is archived");
+    expect(screen.getByRole("menu", { name: "Conversation persona" })).toBeInTheDocument();
+  });
 });

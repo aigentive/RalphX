@@ -17,6 +17,7 @@ import SettingsDialog from "./SettingsDialog";
 import { invoke } from "@tauri-apps/api/core";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import { SETTINGS_SECTIONS } from "./settings-registry";
+import { sectionModuleLoaders } from "./SettingsDialog.performance";
 
 const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 
@@ -185,6 +186,10 @@ describe("SettingsDialog", () => {
       groupId: "general",
       label: "Personas",
     });
+  });
+
+  it("keeps Personas available through the deferred settings-section loader", async () => {
+    await expect(sectionModuleLoaders.personas()).resolves.toHaveProperty("PersonasSection");
   });
 
   describe("Section initialization via modalContext deep-link", () => {

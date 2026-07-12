@@ -83,10 +83,6 @@ vi.mock("./AgentProviderSettingsButton", () => ({
   AgentProviderSettingsButton: () => null,
 }));
 
-vi.mock("@/components/personas/PersonaUnavailableNotice", () => ({
-  PersonaUnavailableNotice: () => null,
-}));
-
 vi.mock("./PersonaChip", () => ({
   PersonaChip: () => {
     personaChipRendered();
@@ -433,5 +429,45 @@ describe("agent personas A18 icon-only controls", () => {
     await user.hover(back);
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Back to personas");
     builder.unmount();
+  });
+});
+
+describe("agent persona start retries", () => {
+  beforeEach(() => {
+    featureFlags.agentPersonas = true;
+  });
+
+  it("removes an unavailable persona before retrying and shows the retry failure", async () => {
+    const onSubmit = vi.fn()
+      .mockRejectedValueOnce(new Error("[Persona unavailable: Reviewer Voice is archived]"))
+      .mockRejectedValueOnce(new Error("Retry could not start the agent"));
+    renderWithProviders(
+      <AgentsStartComposer
+        projects={[{ id: "project-1", name: "Project", workingDirectory: "/tmp/project" }]}
+        defaultProjectId="project-1"
+        defaultRuntime={{ provider: "codex", modelId: "gpt-5.5", effort: "xhigh" }}
+        isLoadingProjects={false}
+        isSubmitting={false}
+        modelRegistry={{
+          claude: [],
+          codex: [{ id: "gpt-5.5", label: "gpt-5.5", menuLabel: "gpt-5.5", defaultEffort: "xhigh", supportedEfforts: ["xhigh"] }],
+        }}
+        onCreateProject={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Choose persona" }));
+    await userEvent.setup().click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Start Agent" }));
+
+    expect(await screen.findByTestId("persona-unavailable-notice")).toHaveTextContent(
+      "Reviewer Voice is archived",
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "Remove persona and retry" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit.mock.calls[1]?.[0]).toMatchObject({ personaId: null });
+    expect(await screen.findByText("Retry could not start the agent")).toBeInTheDocument();
   });
 });

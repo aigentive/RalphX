@@ -293,6 +293,91 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn recovery_with_persona_feature_off_rebuilds_without_reading_bound_persona() {
+    let (conversation, persona_repo) = bound_project_persona().await;
+    let conversation_id = conversation.id;
+    let mut state = ralphx_lib::application::AppState::new_test();
+    state.persona_repo = persona_repo;
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("persist recovery conversation");
+    let mut history = ChatMessage::user_in_project(
+        ProjectId::from_string(conversation.context_id.as_str().to_string()),
+        "prior recovery turn",
+    );
+    history.conversation_id = Some(conversation_id);
+    state
+        .chat_message_repo
+        .create(history)
+        .await
+        .expect("persist recovery history");
+    let message_repo = Arc::clone(&state.chat_message_repo);
+    let conversation_repo = Arc::clone(&state.chat_conversation_repo);
+    let attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("temporary recovery runtime");
+    let persona_marker = temp.path().join("persona-was-injected");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  [ -f \"$arg\" ] && grep -q '<ralphx_agent_persona>' \"$arg\" && touch '{}'\ndone\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"recovered-without-persona\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
+            persona_marker.display()
+        ),
+    )
+    .expect("write fake recovery cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake recovery cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("mark fake recovery cli executable");
+
+    let recovered = with_claude_spawn_allowed_in_tests(|| async {
+        attempt_session_recovery::<tauri::test::MockRuntime>(
+            &conversation_id,
+            &conversation,
+            AgentHarnessKind::Claude,
+            ChatContextType::Project,
+            conversation.context_id.as_str(),
+            "recover this conversation without personas",
+            &cli_path,
+            &repo_plugin_dir(),
+            temp.path(),
+            None,
+            false,
+            message_repo,
+            conversation_repo,
+            attachment_repo,
+            artifact_repo,
+            None,
+            None,
+            None,
+            false,
+            false,
+            "stale-session",
+            Some(&app_handle),
+        )
+        .await
+    })
+    .await
+    .expect("feature-off recovery should run without resolving the bound persona");
+
+    assert_eq!(recovered, "recovered-without-persona");
+    assert!(
+        !persona_marker.exists(),
+        "feature-off recovery must not inject the conversation persona"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn recovery_with_persona_repo_error_fails_closed() {
     let (conversation, _) = bound_project_persona().await;
     let conversation_id = conversation.id;

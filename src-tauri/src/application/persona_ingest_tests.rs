@@ -2,8 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::persona_ingest::{
-    build_persona_ingest_file_path, ingest_picked_root, PersonaIngestManifest, MAX_INGEST_FILES,
-    MAX_INGEST_FILE_BYTES, MAX_INGEST_TOTAL_BYTES,
+    build_persona_ingest_file_path, ingest_picked_root, persona_ingest_conversation_path,
+    persona_ingest_storage_path, PersonaIngestManifest, MAX_INGEST_FILES, MAX_INGEST_FILE_BYTES,
+    MAX_INGEST_TOTAL_BYTES,
 };
 
 fn temp_dir() -> tempfile::TempDir {
@@ -247,4 +248,76 @@ fn manifest_reports_copied_skipped_rejected() {
         serde_json::from_slice(&fs::read(manifest_path).expect("persisted manifest"))
             .expect("valid persisted manifest");
     assert_eq!(persisted, manifest);
+}
+
+#[test]
+fn ingest_skips_non_utf8_text_and_uses_app_owned_hashed_conversation_roots() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "source");
+    let app_data = fixture_path(temp.path(), "app-data");
+    let storage = persona_ingest_storage_path(&app_data);
+    let destination = persona_ingest_conversation_path(&storage, "conversation/identifier");
+    write_fixture(&source, "binary.txt", &[0xff, 0xfe, 0x00]);
+
+    let manifest = ingest_fixture(&source, &destination);
+
+    assert!(manifest.copied.is_empty());
+    assert!(manifest.skipped.iter().any(|entry| {
+        entry.path == "binary.txt"
+            && entry
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("UTF-8"))
+    }));
+    assert!(destination.starts_with(storage));
+    assert!(!destination
+        .to_string_lossy()
+        .contains("conversation/identifier"));
+}
+
+#[test]
+fn ingesting_a_single_file_uses_its_filename_as_manifest_path() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "single.md");
+    let destination = fixture_path(temp.path(), "destination");
+    // codeql[rust/path-injection]
+    fs::write(&source, b"single file source").expect("single fixture file");
+
+    let manifest = ingest_fixture(&source, &destination);
+
+    assert_eq!(manifest.copied.len(), 1);
+    assert_eq!(manifest.copied[0].path, "single.md");
+    let copied = build_persona_ingest_file_path(&destination, Path::new("single.md"))
+        .expect("single file destination");
+    // codeql[rust/path-injection]
+    assert_eq!(
+        fs::read(copied).expect("single file copy"),
+        b"single file source"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ingest_refuses_to_replace_an_app_owned_manifest_symlink() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "source");
+    let destination = fixture_path(temp.path(), "destination");
+    let manifest_target = fixture_path(temp.path(), "manifest-target.json");
+    write_fixture(&source, "accepted.txt", b"accepted");
+    // codeql[rust/path-injection]
+    fs::create_dir_all(&destination).expect("destination root");
+    // codeql[rust/path-injection]
+    fs::write(&manifest_target, b"must remain untouched").expect("manifest target");
+    std::os::unix::fs::symlink(&manifest_target, destination.join("manifest.json"))
+        .expect("manifest symlink");
+
+    let error = ingest_picked_root(&source, &destination)
+        .expect_err("manifest symlinks must not be followed");
+
+    assert!(error.to_string().contains("manifest"));
+    // codeql[rust/path-injection]
+    assert_eq!(
+        fs::read(&manifest_target).expect("manifest target remains readable"),
+        b"must remain untouched"
+    );
 }

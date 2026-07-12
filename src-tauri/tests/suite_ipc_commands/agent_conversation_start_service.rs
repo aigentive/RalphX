@@ -362,6 +362,59 @@ async fn start_input_persona_id_rejected_for_non_project_context() {
 }
 
 #[tokio::test]
+async fn start_with_persona_flag_off_fails_before_creating_conversation_or_workspace() {
+    let _persona_feature =
+        super::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "false");
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-start-persona-flag-off",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let persona = seed_persona(&state, "feature-off-persona", PersonaStatus::Active).await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+    let mut input = service_start_input(
+        &project.id,
+        "Do not create an edit workspace when personas are disabled",
+        "edit",
+        None,
+        None,
+        None,
+        None,
+    );
+    input.persona_id = Some(persona.id.as_str().to_string());
+
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("persona feature flag must be enforced before setup side effects");
+
+    assert!(
+        error.contains("[Personas disabled:"),
+        "unexpected error: {error}"
+    );
+    assert!(app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_context(ChatContextType::Project, project.id.as_str())
+        .await
+        .expect("conversation lookup should succeed")
+        .is_empty());
+    assert!(app
+        .state::<AppState>()
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&project.id)
+        .await
+        .expect("workspace lookup should succeed")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn start_with_draft_or_archived_persona_fails_closed_without_binding() {
     let _persona_feature = enable_personas_for_test();
     ralphx_lib::testing::seed_available_harness_probes_for_test();

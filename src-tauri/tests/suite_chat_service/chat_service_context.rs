@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 use ralphx_lib::application::chat_service::{
-    build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
+    build_command, build_command_for_harness, build_initial_prompt,
+    build_launch_plan_for_harness_with_persona_for_test, build_resume_command,
     build_resume_command_for_harness, build_resume_initial_prompt, create_assistant_message,
     finalize_assistant_message_for_test, finalize_structured_assistant_message_for_test,
     format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
     is_text_file, persona_builder_requires_live_draft_session,
     provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
-    resolve_working_directory, ProviderResumeMode,
+    resolve_working_directory, ProviderResumeMode, ResolvedChatHarnessLaunch,
 };
 use ralphx_lib::application::persona_ingest::{
     persona_ingest_conversation_path, persona_ingest_storage_path,
@@ -290,6 +291,56 @@ async fn persona_builder_without_ingest_session_resolves_zero_roots() {
         roots.is_empty(),
         "empty PersonaBuilder ingest destination must provide no MCP read roots"
     );
+}
+
+#[tokio::test]
+async fn persona_builder_read_roots_fail_closed_without_owned_identity() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let app_data_dir = root.path().join("app-data");
+
+    let without_app_data = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-no-app-data"),
+        None,
+    )
+    .await;
+    let without_conversation = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        None,
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+    let with_relative_app_data = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-relative-app-data"),
+        Some(Path::new("relative-app-data")),
+    )
+    .await;
+
+    for roots in [
+        without_app_data,
+        without_conversation,
+        with_relative_app_data,
+    ] {
+        assert!(
+            roots.is_empty(),
+            "PersonaBuilder must fail closed without a safe ingest root"
+        );
+        assert!(
+            !roots.contains(&project_directory),
+            "PersonaBuilder must never fall back to the project directory"
+        );
+    }
 }
 
 #[tokio::test]
@@ -791,6 +842,160 @@ exit 0
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("chmod script");
     script_path
+}
+
+fn codex_command_fixture() -> (TempDir, TempDir, PathBuf, PathBuf, PathBuf) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let cli_temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = make_fake_codex_cli(&cli_temp);
+    let plugin_dir = cli_temp.path().join("plugins").join("app");
+    fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+    write_file(
+        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-plan-verifier/agent.yaml"),
+        "name: ralphx-plan-verifier\nrole: plan_verifier\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
+        "runtime_features:\n  shell_tool: false\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/agent.yaml"),
+        "name: ralphx-chat-project\nrole: project_chat\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/codex/prompt.md"),
+        "You are the RalphX project chat agent.",
+    );
+    let working_dir = cli_temp.path().to_path_buf();
+    (home, cli_temp, cli_path, plugin_dir, working_dir)
+}
+
+#[tokio::test]
+async fn codex_fresh_command_forwards_a_resolved_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let (home, _cli_temp, cli_path, plugin_dir, working_dir) = codex_command_fixture();
+
+    let command = with_provider_state_home_override(home.path(), || async {
+        build_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "fresh codex persona send",
+            Some(persona),
+            &working_dir,
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("codex fresh command should build");
+
+    assert!(
+        spawnable_prompt(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the Codex fresh prompt must retain the resolved persona block"
+    );
+}
+
+#[tokio::test]
+async fn codex_launch_plans_preserve_personas_for_fresh_and_recovery_modes() {
+    let (conversation, persona) = bound_project_persona().await;
+    let (home, _cli_temp, cli_path, plugin_dir, working_directory) = codex_command_fixture();
+    let spawn_settings =
+        ralphx_lib::application::agent_lane_resolution::resolve_agent_spawn_settings(
+            "ralphx-chat-project",
+            Some(conversation.context_id.as_str()),
+            ChatContextType::Project,
+            None,
+            Some(AgentHarnessKind::Codex),
+            None,
+            None,
+        )
+        .await;
+
+    for (stored_session_id, expected_subcommand) in
+        [(None, "exec"), (Some("missing-session"), "exec")]
+    {
+        let launch = with_provider_state_home_override(home.path(), || async {
+            build_launch_plan_for_harness_with_persona_for_test(
+                AgentHarnessKind::Codex,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                "launch with the bound persona",
+                Some(persona.clone()),
+                None,
+                None,
+                ChatContextType::Project,
+                conversation.context_id.as_str(),
+                Some(conversation.id.to_string()),
+                None,
+                &working_directory,
+                None,
+                Some(conversation.context_id.as_str()),
+                &[],
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MockIdeationRepo::empty()),
+                empty_delegated_session_repo(),
+                Arc::new(MockTaskRepo),
+                &[],
+                0,
+                false,
+                stored_session_id,
+                &spawn_settings,
+                None,
+                None,
+            )
+            .await
+        })
+        .await
+        .expect("Codex launch plan should build");
+
+        let spawnable = match launch {
+            ResolvedChatHarnessLaunch::Background { spawnable, .. } => spawnable,
+            ResolvedChatHarnessLaunch::Interactive { .. } => {
+                panic!("Codex launch plans must remain background commands")
+            }
+        };
+        let args = spawnable.get_args_for_test();
+        assert_eq!(args.first().map(String::as_str), Some(expected_subcommand));
+        assert!(
+            !args.iter().any(|arg| arg == "resume"),
+            "missing Codex provider state must use recovery exec: {args:?}"
+        );
+        assert!(
+            spawnable_prompt(&spawnable).contains("<ralphx_agent_persona>"),
+            "fresh and recovery launch prompts must retain the resolved persona"
+        );
+    }
 }
 
 fn make_codex_home_with_session(session_id: &str) -> TempDir {
@@ -2166,29 +2371,9 @@ async fn test_build_resume_command_with_team_mode() {
 }
 
 #[tokio::test]
-async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
-    let home = tempfile::tempdir().expect("tempdir");
-    let cli_temp = tempfile::tempdir().expect("tempdir");
-    let cli_path = make_fake_codex_cli(&cli_temp);
-    let plugin_dir = cli_temp.path().join("plugins").join("app");
-    fs::create_dir_all(&plugin_dir).expect("create plugin dir");
-    write_file(
-        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
-        "// fake mcp server",
-    );
-    write_file(
-        &cli_temp
-            .path()
-            .join("agents/ralphx-plan-verifier/agent.yaml"),
-        "name: ralphx-plan-verifier\nrole: plan_verifier\n",
-    );
-    write_file(
-        &cli_temp
-            .path()
-            .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
-        "runtime_features:\n  shell_tool: false\n",
-    );
-    let working_dir = cli_temp.path().to_path_buf();
+async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
+    let (conversation, persona) = bound_project_persona().await;
+    let (home, _cli_temp, cli_path, plugin_dir, working_dir) = codex_command_fixture();
 
     let result = with_provider_state_home_override(home.path(), || async {
         build_resume_command_for_harness(
@@ -2196,16 +2381,16 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
             &cli_path,
             &plugin_dir,
             ChatContextType::Project,
-            "project-1",
+            conversation.context_id.as_str(),
             "continue",
-            None,
+            Some(persona),
             None,
             None,
             &working_dir,
             "missing-session",
-            None,
+            Some(conversation.context_id.as_str()),
             &[],
-            None,
+            Some(conversation.id.to_string()),
             false,
             Arc::new(MemoryChatAttachmentRepository::new()),
             Arc::new(MemoryArtifactRepository::new()),
@@ -2232,6 +2417,10 @@ async fn codex_resume_command_falls_back_to_exec_when_session_is_missing() {
     assert!(
         !args.iter().any(|arg| arg == "resume"),
         "missing Codex session should force recovery, not exec resume: {args:?}"
+    );
+    assert!(
+        spawnable_prompt(&result.spawnable).contains("<ralphx_agent_persona>"),
+        "the Codex recovery prompt must retain the resolved persona block"
     );
 }
 
