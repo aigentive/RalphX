@@ -51,6 +51,7 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessToken,
 };
 use crate::application::notification_service::NotificationService;
+use crate::application::persona_ingest::persona_builder_ingest_session_is_live;
 use crate::application::persona_prompt::ResolvedPersona;
 use crate::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use crate::application::question_state::QuestionState;
@@ -1317,6 +1318,28 @@ impl<R: Runtime> AppChatService<R> {
         self.persona_feature_enabled_override.unwrap_or_else(
             crate::infrastructure::agents::claude::agent_personas_enabled,
         )
+    }
+
+    fn has_live_persona_builder_ingest_session(
+        &self,
+        agent_mode: Option<AgentConversationWorkspaceMode>,
+        conversation_id: &str,
+    ) -> bool {
+        is_persona_builder_conversation(agent_mode)
+            && self
+                .app_handle
+                .as_ref()
+                .and_then(|handle| {
+                    handle
+                        .try_state::<AppState>()
+                        .map(|state| state.app_paths.app_data_dir().to_path_buf())
+                })
+                .is_some_and(|app_data_dir| {
+                    persona_builder_ingest_session_is_live(
+                        Some(app_data_dir.as_path()),
+                        conversation_id,
+                    )
+                })
     }
 
     #[doc(hidden)]
@@ -4158,7 +4181,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         Some(&conversation.id),
                     )
                     .await?;
-                if persona_builder_requires_live_draft_session(conversation.agent_mode, false) {
+                if persona_builder_requires_live_draft_session(
+                    conversation.agent_mode,
+                    self.has_live_persona_builder_ingest_session(
+                        conversation.agent_mode,
+                        &conversation.id.as_str(),
+                    ),
+                ) {
                     return Err(ChatServiceError::PersonaUnavailable(
                         "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
                             .to_string(),
@@ -4620,7 +4649,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
         if self.persona_feature_enabled()
-            && persona_builder_requires_live_draft_session(conversation.agent_mode, false)
+            && persona_builder_requires_live_draft_session(
+                conversation.agent_mode,
+                self.has_live_persona_builder_ingest_session(
+                    conversation.agent_mode,
+                    &conversation.id.as_str(),
+                ),
+            )
         {
             return Err(ChatServiceError::PersonaUnavailable(
                 "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
@@ -5952,7 +5987,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             Some(&conversation.id),
                         )
                         .await?;
-                    if persona_builder_requires_live_draft_session(conversation.agent_mode, false) {
+                    if persona_builder_requires_live_draft_session(
+                        conversation.agent_mode,
+                        self.has_live_persona_builder_ingest_session(
+                            conversation.agent_mode,
+                            &conversation.id.as_str(),
+                        ),
+                    ) {
                         return Err(ChatServiceError::PersonaUnavailable(
                             "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
                                 .to_string(),

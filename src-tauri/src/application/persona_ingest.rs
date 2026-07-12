@@ -43,6 +43,53 @@ pub fn persona_ingest_conversation_path(storage_root: &Path, conversation_id: &s
     storage_root.join(hashed_component("conversation", conversation_id))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PersonaBuilderIngestSessionLiveness {
+    MissingAppDataDirectory,
+    InvalidRoot,
+    MissingRoot,
+    UnreadableRoot,
+    EmptyRoot,
+}
+
+/// Returns the validated non-empty ingest root for a PersonaBuilder conversation.
+pub(crate) fn live_persona_builder_ingest_root(
+    app_data_dir: Option<&Path>,
+    conversation_id: &str,
+) -> Result<PathBuf, PersonaBuilderIngestSessionLiveness> {
+    let app_data_dir =
+        app_data_dir.ok_or(PersonaBuilderIngestSessionLiveness::MissingAppDataDirectory)?;
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(app_data_dir),
+        conversation_id,
+    );
+    let ingest_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        &ingest_root,
+        "PersonaBuilder MCP filesystem read root",
+    )
+    .map_err(|_| PersonaBuilderIngestSessionLiveness::InvalidRoot)?;
+    if !ingest_root.is_dir() {
+        return Err(PersonaBuilderIngestSessionLiveness::MissingRoot);
+    }
+    // codeql[rust/path-injection]
+    let mut entries = fs::read_dir(&ingest_root)
+        .map_err(|_| PersonaBuilderIngestSessionLiveness::UnreadableRoot)?;
+    if entries.next().is_none() {
+        return Err(PersonaBuilderIngestSessionLiveness::EmptyRoot);
+    }
+
+    Ok(ingest_root)
+}
+
+/// True when the conversation's ingest store exists, is validated, and is non-empty —
+/// the spec's definition of a live PersonaBuilder draft ingest session (A11).
+pub fn persona_builder_ingest_session_is_live(
+    app_data_dir: Option<&Path>,
+    conversation_id: &str,
+) -> bool {
+    live_persona_builder_ingest_root(app_data_dir, conversation_id).is_ok()
+}
+
 /// Builds a hash-addressed destination for one validated relative source path.
 ///
 /// # Errors

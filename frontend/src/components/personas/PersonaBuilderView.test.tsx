@@ -63,9 +63,9 @@ function mockBuilderCommands() {
     if (command === "list_personas") return [{ ...rawPersona, status: "active" }];
     if (command === "ingest_persona_context") {
       return {
-        copied: [{ name: "guidelines.md" }],
-        skipped: [{ name: "ignored.log", reason: "ignored" }],
-        rejected: [{ name: "outside", reason: "symlink" }],
+        copied: [{ path: "guidelines.md" }],
+        skipped: [{ path: "ignored.log", reason: "ignored" }],
+        rejected: [{ path: "outside", reason: "symlink" }],
       };
     }
     throw new Error(`Unexpected command: ${command}`);

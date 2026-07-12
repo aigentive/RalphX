@@ -1,5 +1,6 @@
 use ralphx_lib::application::persona_ingest::{
-    build_persona_ingest_file_path, persona_ingest_conversation_path, persona_ingest_storage_path,
+    build_persona_ingest_file_path, persona_builder_ingest_session_is_live,
+    persona_ingest_conversation_path, persona_ingest_storage_path,
 };
 use ralphx_lib::application::personas::PERSONA_FEATURE_DISABLED_PREFIX;
 use ralphx_lib::application::AppState;
@@ -76,6 +77,39 @@ fn persona_builder_command_input_uses_camel_case_project_id() {
     .expect("camelCase ingestion input should deserialize");
     assert_eq!(ingest.conversation_id, "conversation-persona-builder-input");
     assert_eq!(ingest.picked_path, "/tmp/context.md");
+}
+
+#[test]
+fn persona_builder_ingest_session_liveness_requires_a_non_empty_owned_store() {
+    let temp = tempfile::tempdir().expect("persona ingest liveness temp directory");
+    let app_data_dir = temp.path().join("app-data");
+    let conversation_id = "persona-builder-live-ingest";
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        conversation_id,
+    );
+
+    assert!(
+        !persona_builder_ingest_session_is_live(None, conversation_id),
+        "an absent app data directory must fail closed"
+    );
+    assert!(
+        !persona_builder_ingest_session_is_live(Some(&app_data_dir), conversation_id),
+        "a missing ingest directory must not be live"
+    );
+
+    fs::create_dir_all(&ingest_root).expect("create empty persona ingest root");
+    assert!(
+        !persona_builder_ingest_session_is_live(Some(&app_data_dir), conversation_id),
+        "an empty ingest directory must not be live"
+    );
+
+    fs::write(ingest_root.join("content"), "approved context")
+        .expect("write persona ingest content");
+    assert!(
+        persona_builder_ingest_session_is_live(Some(&app_data_dir), conversation_id),
+        "a non-empty validated ingest directory must be live"
+    );
 }
 
 #[tokio::test]

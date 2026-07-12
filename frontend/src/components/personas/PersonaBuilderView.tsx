@@ -56,8 +56,8 @@ function ManifestEntries({ entries }: { entries: PersonaIngestManifest["rejected
   return entries.length > 0 ? (
     <ul className="mt-2 space-y-1 text-xs text-[var(--text-secondary)]">
       {entries.map((entry) => (
-        <li key={`${entry.name}:${entry.reason ?? ""}`}>
-          {entry.name}{entry.reason ? `: ${entry.reason}` : ""}
+        <li key={`${entry.path}:${entry.reason ?? ""}`}>
+          {entry.path}{entry.reason ? `: ${entry.reason}` : ""}
         </li>
       ))}
     </ul>

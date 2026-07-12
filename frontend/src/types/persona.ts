@@ -53,7 +53,7 @@ export function transformPersona(raw: PersonaResponse): Persona {
 }
 
 export const PersonaIngestEntrySchema = z.object({
-  name: z.string().min(1),
+  path: z.string().min(1),
   reason: z.string().min(1).optional(),
 });
 

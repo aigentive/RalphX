@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PersonaDraftUpdatedEventSchema,
+  PersonaIngestEntrySchema,
   PersonaIngestManifestSchema,
   PersonaSchema,
 } from "./persona";
@@ -26,14 +27,14 @@ describe("PersonaSchema", () => {
 });
 
 describe("persona support schemas", () => {
-  it("parses the ingest manifest and body-free draft event", () => {
+  it("parses the backend ingest manifest shape and body-free draft event", () => {
     expect(
       PersonaIngestManifestSchema.parse({
-        copied: [{ name: "notes.md" }],
-        skipped: [{ name: "image.png", reason: "unsupported type" }],
-        rejected: [{ name: "link", reason: "symlink" }],
+        copied: [{ path: "notes.md" }],
+        skipped: [{ path: "image.png", reason: "unsupported type" }],
+        rejected: [{ path: "link", reason: "symlink" }],
       }),
-    ).toHaveProperty("copied.0.name", "notes.md");
+    ).toHaveProperty("copied.0.path", "notes.md");
     expect(
       PersonaDraftUpdatedEventSchema.parse({
         draft_id: "persona-1",
@@ -41,5 +42,18 @@ describe("persona support schemas", () => {
         content_hash: "hash-2",
       }),
     ).toEqual({ draft_id: "persona-1", version: 2, content_hash: "hash-2" });
+  });
+
+  it("parses a persona ingest entry reason", () => {
+    expect(
+      PersonaIngestEntrySchema.parse({
+        path: "image.png",
+        reason: "unsupported type",
+      }),
+    ).toEqual({ path: "image.png", reason: "unsupported type" });
+  });
+
+  it("rejects the legacy persona ingest entry name field", () => {
+    expect(PersonaIngestEntrySchema.safeParse({ name: "notes.md" }).success).toBe(false);
   });
 });

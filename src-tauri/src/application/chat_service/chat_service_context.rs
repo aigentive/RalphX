@@ -40,7 +40,7 @@ use crate::application::harness_runtime_registry::{
 };
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
 use crate::application::persona_ingest::{
-    persona_ingest_conversation_path, persona_ingest_storage_path,
+    live_persona_builder_ingest_root, PersonaBuilderIngestSessionLiveness,
 };
 use crate::application::persona_prompt::ResolvedPersona;
 
@@ -1589,44 +1589,41 @@ pub async fn resolve_mcp_filesystem_read_roots(
         let Some(conversation_id) = conversation_id else {
             return Vec::new();
         };
-        let ingest_root = persona_ingest_conversation_path(
-            &persona_ingest_storage_path(app_data_dir),
-            conversation_id,
-        );
-        let ingest_root = match crate::utils::path_safety::validate_absolute_non_root_path(
-            &ingest_root,
-            "PersonaBuilder MCP filesystem read root",
-        ) {
-            Ok(path) => path,
-            Err(_) => {
-                tracing::warn!(
-                    conversation_id,
-                    "Skipping invalid PersonaBuilder MCP filesystem read root"
-                );
-                return Vec::new();
-            }
-        };
-        if !ingest_root.is_dir() {
-            tracing::warn!(
-                conversation_id,
-                "Skipping missing PersonaBuilder MCP filesystem read root"
-            );
-            return Vec::new();
-        }
-        let Ok(mut entries) = std::fs::read_dir(&ingest_root) else {
-            tracing::warn!(
-                conversation_id,
-                "Skipping unreadable PersonaBuilder MCP filesystem read root"
-            );
-            return Vec::new();
-        };
-        if entries.next().is_none() {
-            tracing::warn!(
-                conversation_id,
-                "Skipping empty PersonaBuilder MCP filesystem read root"
-            );
-            return Vec::new();
-        }
+        let ingest_root =
+            match live_persona_builder_ingest_root(Some(app_data_dir), conversation_id) {
+                Ok(path) => path,
+                Err(PersonaBuilderIngestSessionLiveness::InvalidRoot) => {
+                    tracing::warn!(
+                        conversation_id,
+                        "Skipping invalid PersonaBuilder MCP filesystem read root"
+                    );
+                    return Vec::new();
+                }
+                Err(PersonaBuilderIngestSessionLiveness::MissingRoot) => {
+                    tracing::warn!(
+                        conversation_id,
+                        "Skipping missing PersonaBuilder MCP filesystem read root"
+                    );
+                    return Vec::new();
+                }
+                Err(PersonaBuilderIngestSessionLiveness::UnreadableRoot) => {
+                    tracing::warn!(
+                        conversation_id,
+                        "Skipping unreadable PersonaBuilder MCP filesystem read root"
+                    );
+                    return Vec::new();
+                }
+                Err(PersonaBuilderIngestSessionLiveness::EmptyRoot) => {
+                    tracing::warn!(
+                        conversation_id,
+                        "Skipping empty PersonaBuilder MCP filesystem read root"
+                    );
+                    return Vec::new();
+                }
+                Err(PersonaBuilderIngestSessionLiveness::MissingAppDataDirectory) => {
+                    return Vec::new()
+                }
+            };
 
         return vec![ingest_root];
     }
