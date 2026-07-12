@@ -4712,7 +4712,7 @@ mod ipc_contract {
         let (_temp, state, conv_id, _github) =
             super::setup_ipc_workspace_state("archive-status", true, None, github).await;
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, false, &state)
             .await
             .expect("archive should succeed");
 
@@ -4744,7 +4744,7 @@ mod ipc_contract {
             .await;
         assert!(state.running_agent_registry.is_running(&key).await);
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, false, &state)
             .await
             .expect("archive should succeed");
 
@@ -4758,7 +4758,7 @@ mod ipc_contract {
             super::setup_ipc_workspace_state("archive-close-pr", true, Some(42), github.clone())
                 .await;
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, true, &state)
             .await
             .expect("archive should succeed");
 
@@ -4772,6 +4772,52 @@ mod ipc_contract {
             .unwrap();
         assert_eq!(ws.publication_pr_status.as_deref(), Some("closed"));
         assert_eq!(ws.status, AgentConversationWorkspaceStatus::Archived);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_keeps_open_pr_without_close_request() {
+        let github = Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conv_id, github) =
+            super::setup_ipc_workspace_state("archive-keep-pr", true, Some(43), github.clone())
+                .await;
+
+        archive_agent_conversation_inner(&conv_id, false, &state)
+            .await
+            .expect("archive should succeed");
+
+        assert_eq!(*github.close_pr_calls.lock().unwrap(), 0);
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conv_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(workspace.status, AgentConversationWorkspaceStatus::Archived);
+        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+    }
+
+    #[tokio::test]
+    async fn archive_review_pr_keeps_open_pr_even_when_close_is_requested() {
+        let github = Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conv_id, github) =
+            super::setup_ipc_workspace_state("archive-review-pr", true, Some(44), github.clone())
+                .await;
+        set_archive_test_workspace_mode(&state, &conv_id, AgentConversationWorkspaceMode::ReviewPr)
+            .await;
+
+        archive_agent_conversation_inner(&conv_id, true, &state)
+            .await
+            .expect("archive should preserve the reviewed PR");
+
+        assert_eq!(*github.close_pr_calls.lock().unwrap(), 0);
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conv_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(workspace.status, AgentConversationWorkspaceStatus::Archived);
+        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
     }
 
     #[tokio::test]
@@ -4790,7 +4836,7 @@ mod ipc_contract {
             .update_publication(&conv_id, Some(99), None, Some("closed"), None)
             .await;
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, true, &state)
             .await
             .expect("archive should succeed");
 
@@ -4809,7 +4855,7 @@ mod ipc_contract {
             .update_publication(&conv_id, Some(77), None, Some("merged"), None)
             .await;
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, true, &state)
             .await
             .expect("archive should succeed");
 
@@ -4850,7 +4896,7 @@ mod ipc_contract {
             .await
             .expect("workspace publication clear should succeed");
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, true, &state)
             .await
             .expect("archive should succeed");
 
@@ -4926,7 +4972,7 @@ mod ipc_contract {
             .await
             .expect("stale task should be created");
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, false, &state)
             .await
             .expect("archive should succeed");
 
@@ -4998,7 +5044,7 @@ mod ipc_contract {
             .await
             .expect("task should be created");
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, false, &state)
             .await
             .expect("archive should succeed");
 
@@ -5039,7 +5085,7 @@ mod ipc_contract {
             .await
             .unwrap();
 
-        archive_agent_conversation_inner(&conv_id, &state)
+        archive_agent_conversation_inner(&conv_id, false, &state)
             .await
             .expect("archive should succeed even without workspace");
     }

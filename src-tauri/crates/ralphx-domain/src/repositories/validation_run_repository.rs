@@ -24,6 +24,11 @@ pub trait ValidationRunRepository: Send + Sync {
 
     async fn promote_run_to_commit(&self, run_id: &str, commit_sha: &str) -> AppResult<()>;
 
+    async fn mark_running_runs_error(
+        &self,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64>;
+
     async fn add_command_result(&self, result: &ValidationCommandResult) -> AppResult<()>;
 
     async fn list_command_results_for_task(

@@ -45,6 +45,7 @@ import {
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type AgentConversationRuntimeStatus,
+  type AgentWorkspacePrReviewContext,
   type AgentWorkspaceReviewContext,
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
@@ -668,6 +669,46 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     prReviewContextQuery.data,
     prReviewConversationId,
   );
+  const [autoApprovePreference, setAutoApprovePreference] = useState<{
+    conversationId: string;
+    enabled: boolean;
+  } | null>(null);
+  useEffect(() => {
+    setAutoApprovePreference(null);
+  }, [prReviewConversationId]);
+  const autoApproveEnabled =
+    autoApprovePreference?.conversationId === prReviewConversationId
+      ? autoApprovePreference.enabled
+      : (prReviewContext?.monitor?.autoApproveEnabled ?? true);
+  const autoApproveMutation = useMutation({
+    mutationFn: ({
+      conversationId,
+      enabled,
+    }: {
+      conversationId: string;
+      enabled: boolean;
+    }) => chatApi.setAgentWorkspacePrReviewAutoApprove(conversationId, enabled),
+    onSuccess: (result, variables) => {
+      setAutoApprovePreference({
+        conversationId: variables.conversationId,
+        enabled: result.monitor.autoApproveEnabled,
+      });
+      queryClient.setQueryData(
+        agentWorkspaceKeys.prReview(variables.conversationId),
+        (previous: AgentWorkspacePrReviewContext | undefined) =>
+          previous ? { ...previous, monitor: result.monitor } : previous,
+      );
+      void invalidateWorkspaceQueries(queryClient, variables.conversationId);
+    },
+    onError: (error, variables) => {
+      setAutoApprovePreference((previous) =>
+        previous?.conversationId === variables.conversationId ? null : previous,
+      );
+      toast.error(
+        extractErrorMessage(error, "Failed to update Auto Approve"),
+      );
+    },
+  });
   const shouldLoadWorkspaceReviewContext = Boolean(
     conversationId &&
     workspace &&
@@ -1509,6 +1550,20 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           taskMode={taskMode}
           reviewArtifact={reviewArtifact}
           reviewContext={workspaceReviewContext}
+          isReviewPrWorkspace={workspace?.mode === "review_pr"}
+          autoApproveEnabled={autoApproveEnabled}
+          isAutoApproveSaving={autoApproveMutation.isPending}
+          onAutoApproveChange={(enabled) => {
+            if (!prReviewConversationId) return;
+            setAutoApprovePreference({
+              conversationId: prReviewConversationId,
+              enabled,
+            });
+            autoApproveMutation.mutate({
+              conversationId: prReviewConversationId,
+              enabled,
+            });
+          }}
           reviewStartResult={workspaceReviewStartResult}
           reviewStartError={
             isWorkspaceReviewActionPending
@@ -1586,6 +1641,10 @@ type ArtifactContentProps = {
   taskMode: AgentTaskArtifactMode;
   reviewArtifact: Artifact | null;
   reviewContext: AgentWorkspaceReviewContext | null;
+  isReviewPrWorkspace: boolean;
+  autoApproveEnabled: boolean;
+  isAutoApproveSaving: boolean;
+  onAutoApproveChange: (enabled: boolean) => void;
   reviewStartResult: StartAgentWorkspaceReviewResult | null;
   reviewStartError: Error | null;
   isReviewLoading: boolean;
@@ -1659,6 +1718,10 @@ function ArtifactContent({
   taskMode,
   reviewArtifact,
   reviewContext,
+  isReviewPrWorkspace,
+  autoApproveEnabled,
+  isAutoApproveSaving,
+  onAutoApproveChange,
   reviewStartResult,
   reviewStartError,
   isReviewLoading,
@@ -1802,6 +1865,10 @@ function ArtifactContent({
       <AgentReviewPanel
         reviewArtifact={reviewArtifact}
         reviewContext={reviewContext}
+        isReviewPrWorkspace={isReviewPrWorkspace}
+        autoApproveEnabled={autoApproveEnabled}
+        isAutoApproveSaving={isAutoApproveSaving}
+        onAutoApproveChange={onAutoApproveChange}
         reviewStartResult={reviewStartResult}
         reviewStartError={reviewStartError}
         isReviewLoading={isReviewLoading}
@@ -2368,7 +2435,7 @@ function AgentPlanPanel({
     void confirm({
       title: "Restart implementation?",
       description:
-        "Running work will be stopped, the current task attempt will be archived, and implementation will start again from freshly created tasks.",
+        "Running work will be stopped. RalphX will close the existing PR, archive the current task attempt, reset the implementation branch and workspace to the latest base branch from origin, and create fresh tasks.",
       confirmText: "Restart Implementation",
       pendingText: "Restarting...",
       variant: "destructive",

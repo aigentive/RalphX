@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { navigateNotification } from "@/components/notifications/notificationNavigation";
 import { notificationsApi } from "@/api/notifications";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { resetNotificationToastStateForTests, useNotificationToasts } from "./useNotificationToasts";
 
@@ -29,6 +30,21 @@ const notification = {
   body: "git push", target: { kind: "none" },
 };
 
+const agentConversationNotification = {
+  id: "agent-notification-1",
+  createdAt: "2026-07-10T10:00:00Z",
+  projectId: "project-1",
+  category: "agent_question" as const,
+  severity: "action_required" as const,
+  title: "Agent has a question",
+  body: "Need a decision",
+  target: {
+    kind: "agent_conversation" as const,
+    projectId: "project-1",
+    conversationId: "conversation-1",
+  },
+};
+
 function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
 }
@@ -41,7 +57,9 @@ describe("useNotificationToasts", () => {
     preferences.ready = true;
     preferences.mutedProjectIds = [];
     useUiStore.setState({ notificationsPanelOpen: false });
+    useAgentSessionStore.setState({ selectedConversationId: null });
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
+    vi.mocked(navigateNotification).mockResolvedValue(true);
     renderHook(() => useNotificationToasts(), { wrapper });
   });
 
@@ -108,6 +126,90 @@ describe("useNotificationToasts", () => {
     await Promise.resolve();
     expect(navigateNotification).toHaveBeenCalledWith(notification, expect.any(QueryClient));
     expect(notificationsApi.markRead).toHaveBeenCalledWith("notification-1");
+  });
+
+  it("keeps Agent conversation toasts open until manually dismissed", () => {
+    subscribers.get("notification:created")?.(agentConversationNotification);
+
+    const options = toastWarning.mock.calls[0]?.[1] as {
+      closeButton: boolean;
+      closeButtonAriaLabel: string;
+      duration: number;
+      onDismiss: () => void;
+    };
+    expect(options.duration).toBe(Infinity);
+    expect(options.closeButton).toBe(true);
+    expect(options.closeButtonAriaLabel).toBe("Dismiss notification");
+
+    options.onDismiss();
+
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges and dismisses an Agent conversation toast after its CTA navigates", async () => {
+    subscribers.get("notification:created")?.(agentConversationNotification);
+    const options = toastWarning.mock.calls[0]?.[1] as {
+      action: { onClick: () => void };
+    };
+
+    options.action.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(navigateNotification).toHaveBeenCalledWith(
+      agentConversationNotification,
+      expect.any(QueryClient),
+    );
+    expect(toastDismiss).toHaveBeenCalledWith(agentConversationNotification.id);
+    expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+  });
+
+  it("acknowledges and dismisses only the toast for the conversation the user visits", async () => {
+    subscribers.get("notification:created")?.(agentConversationNotification);
+    subscribers.get("notification:created")?.({
+      ...agentConversationNotification,
+      id: "agent-notification-2",
+      target: {
+        ...agentConversationNotification.target,
+        conversationId: "conversation-2",
+      },
+    });
+
+    act(() => {
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-2" });
+    });
+    await Promise.resolve();
+
+    expect(toastDismiss).toHaveBeenCalledWith("agent-notification-2");
+    expect(toastDismiss).not.toHaveBeenCalledWith(agentConversationNotification.id);
+    expect(notificationsApi.markRead).toHaveBeenCalledWith("agent-notification-2");
+    expect(notificationsApi.markRead).not.toHaveBeenCalledWith(agentConversationNotification.id);
+  });
+
+  it("acknowledges an Agent notification that arrives while its conversation is already selected", () => {
+    act(() => {
+      useAgentSessionStore.setState({ selectedConversationId: "conversation-1" });
+    });
+
+    subscribers.get("notification:created")?.(agentConversationNotification);
+
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).toHaveBeenCalledWith(agentConversationNotification.id);
+  });
+
+  it("keeps an Agent conversation toast unread when its CTA cannot navigate", async () => {
+    vi.mocked(navigateNotification).mockResolvedValue(false);
+    subscribers.get("notification:created")?.(agentConversationNotification);
+    const options = toastWarning.mock.calls[0]?.[1] as {
+      action: { onClick: () => void };
+    };
+
+    options.action.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(toastDismiss).not.toHaveBeenCalled();
+    expect(notificationsApi.markRead).not.toHaveBeenCalled();
   });
 
   it("dismisses active notification toasts when the drawer opens", () => {

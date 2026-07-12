@@ -61,6 +61,21 @@ impl ValidationRunRepository for MemoryValidationRunRepository {
         Ok(())
     }
 
+    async fn mark_running_runs_error(
+        &self,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
+        let mut count = 0;
+        for run in self.runs.write().await.values_mut() {
+            if run.status == ValidationRunStatus::Running {
+                run.status = ValidationRunStatus::Error;
+                run.completed_at = Some(completed_at);
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     async fn add_command_result(&self, result: &ValidationCommandResult) -> AppResult<()> {
         self.commands.write().await.push(result.clone());
         Ok(())

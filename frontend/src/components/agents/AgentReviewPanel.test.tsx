@@ -185,4 +185,38 @@ describe("AgentReviewPanel", () => {
       screen.queryByText("Review will be available after the current agent run."),
     ).not.toBeInTheDocument();
   });
+
+  it("renders the Review PR Auto Approve switch with an accessible explanation", async () => {
+    const user = userEvent.setup();
+    const onAutoApproveChange = vi.fn();
+
+    renderPanel({
+      isReviewPrWorkspace: true,
+      autoApproveEnabled: false,
+      onAutoApproveChange,
+    });
+
+    const toggle = screen.getByRole("switch", { name: "Auto Approve" });
+    expect(toggle).toHaveAttribute("data-state", "unchecked");
+
+    await user.click(toggle);
+    expect(onAutoApproveChange).toHaveBeenCalledWith(true);
+
+    await user.hover(
+      screen.getByRole("button", { name: "About Auto Approve" }),
+    );
+    expect(
+      await screen.findByRole("tooltip", {
+        name: /After you decide the first review/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps Auto Approve out of non-Review PR Review tabs", () => {
+    renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-review-pr-auto-approve"),
+    ).not.toBeInTheDocument();
+  });
 });

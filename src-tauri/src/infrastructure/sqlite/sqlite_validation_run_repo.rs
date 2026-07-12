@@ -223,6 +223,26 @@ impl ValidationRunRepository for SqliteValidationRunRepository {
             .await
     }
 
+    async fn mark_running_runs_error(&self, completed_at: DateTime<Utc>) -> AppResult<u64> {
+        self.db
+            .run(move |conn| {
+                let rows = conn
+                    .execute(
+                        "UPDATE validation_runs
+                         SET status = ?1, completed_at = ?2
+                         WHERE status = ?3",
+                        rusqlite::params![
+                            ValidationRunStatus::Error.as_str(),
+                            Self::format_datetime(&completed_at),
+                            ValidationRunStatus::Running.as_str(),
+                        ],
+                    )
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(rows as u64)
+            })
+            .await
+    }
+
     async fn add_command_result(&self, result: &ValidationCommandResult) -> AppResult<()> {
         let result = result.clone();
         self.db

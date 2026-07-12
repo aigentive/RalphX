@@ -4,6 +4,8 @@ pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
+#[cfg(test)]
+mod agent_conversation_workspace_tests;
 pub mod agent_run;
 pub mod agent_task;
 pub mod api_key;

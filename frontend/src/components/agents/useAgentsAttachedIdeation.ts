@@ -133,7 +133,7 @@ export function useAgentsAttachedIdeation({
       return;
     }
     childArchiveSyncRef.current.add(activeConversation.id);
-    void chatApi.archiveConversation(activeConversation.id)
+    void chatApi.archiveConversation(activeConversation.id, { closePullRequest: false })
       .then(() => invalidateProjectConversations(activeConversation.projectId))
       .catch(() => {
         childArchiveSyncRef.current.delete(activeConversation.id);

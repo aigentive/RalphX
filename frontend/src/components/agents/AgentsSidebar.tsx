@@ -101,6 +101,7 @@ import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
   type AgentConversation,
+  type AgentConversationArchiveOptions,
 } from "./agentConversations";
 import {
   getSidebarPublicationGroupLabel,
@@ -116,6 +117,10 @@ import {
 import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
+import {
+  ArchiveConversationDialog,
+  type ArchiveConversationDialogTarget,
+} from "./ArchiveConversationDialog";
 import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
 
 export const PERSONA_BUILDER_MODE_META = {
@@ -133,6 +138,11 @@ const AGENTS_SIDEBAR_ADAPTIVE_MAX_VISIBLE_SESSION_ROWS = 48;
 const AGENTS_SIDEBAR_ADAPTIVE_PAGE_OVERSCAN_ROWS = 2;
 const AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX = 46;
 const AGENTS_SIDEBAR_SCROLL_MEMORY_LIMIT = 120;
+
+type ArchiveConversationHandler = (
+  conversation: AgentConversation,
+  options: AgentConversationArchiveOptions
+) => void;
 
 interface AgentSidebarSessionScrollMemory {
   rowCount?: number;
@@ -783,7 +793,7 @@ interface AgentsSidebarProps {
   onArchiveProject: (projectId: string) => void | Promise<void>;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   showArchived: boolean;
@@ -1688,7 +1698,7 @@ interface AgentSidebarConversationRowsPanelProps {
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
@@ -1725,8 +1735,8 @@ function AgentSidebarConversationRowsPanel({
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
   const [autoRenameDialogConversationId, setAutoRenameDialogConversationId] =
     useState<string | null>(null);
-  const [archiveDialogConversation, setArchiveDialogConversation] =
-    useState<AgentConversation | null>(null);
+  const [archiveDialogTarget, setArchiveDialogTarget] =
+    useState<ArchiveConversationDialogTarget | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
   const [visibleEffectRows, setVisibleEffectRows] = useState<
     AgentSidebarConversationRow[]
@@ -1836,7 +1846,9 @@ function AgentSidebarConversationRowsPanel({
           onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
           onFork={() => onForkConversation(conversation)}
           onRestore={() => onRestoreConversation(conversation)}
-          onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+          onArchiveRequest={() =>
+            setArchiveDialogTarget({ conversation, workspace: row.workspace })
+          }
           setActionsTriggerRef={(node) => {
             sessionActionsTriggerRefs.current[conversation.id] = node;
           }}
@@ -1934,52 +1946,13 @@ function AgentSidebarConversationRowsPanel({
         </DialogContent>
       </Dialog>
 
-      <AlertDialog
-        open={archiveDialogConversation !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setArchiveDialogConversation(null);
-          }
+      <ArchiveConversationDialog
+        target={archiveDialogTarget}
+        onClose={() => setArchiveDialogTarget(null)}
+        onArchive={(conversation, options) => {
+          void onArchiveConversation(conversation, options);
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Archive session?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div>
-                <p>
-                  This hides{" "}
-                  <span className="font-medium">
-                    {archiveDialogConversation?.title || "Untitled agent"}
-                  </span>{" "}
-                  from the active conversation list. You can restore it later
-                  from archived sessions.
-                </p>
-                {archiveDialogConversation?.contextType === "project" && (
-                  <p className="mt-2 text-text-muted">
-                    Any open PR will be closed. The local workspace branch will
-                    be cleaned up on next app restart.
-                  </p>
-                )}
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (archiveDialogConversation) {
-                  void onArchiveConversation(archiveDialogConversation);
-                }
-                setArchiveDialogConversation(null);
-              }}
-              variant="destructive"
-            >
-              Archive session
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      />
 
       {expanded && (
         <ScrollableAgentSessionList
@@ -2012,7 +1985,7 @@ interface PublicationStateGroupsProps {
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
@@ -2112,7 +2085,7 @@ interface PublicationStateGroupProps {
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
@@ -2278,7 +2251,7 @@ interface AutomationGroupsProps {
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
@@ -2394,7 +2367,7 @@ interface AutomationGroupProps {
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onToggleAutomationGroup: (groupKey: string, expanded: boolean) => void;
@@ -2830,7 +2803,7 @@ interface ProjectSessionGroupProps {
   onArchiveProject: (projectId: string) => void | Promise<void>;
   onAutoRenameConversation: (conversation: AgentConversation) => void | Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
-  onArchiveConversation: (conversation: AgentConversation) => void;
+  onArchiveConversation: ArchiveConversationHandler;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
@@ -2880,8 +2853,8 @@ function ProjectSessionGroup({
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
   const [autoRenameDialogConversationId, setAutoRenameDialogConversationId] =
     useState<string | null>(null);
-  const [archiveDialogConversation, setArchiveDialogConversation] =
-    useState<AgentConversation | null>(null);
+  const [archiveDialogTarget, setArchiveDialogTarget] =
+    useState<ArchiveConversationDialogTarget | null>(null);
   const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
   const [visibleEffectRows, setVisibleEffectRows] = useState<
     AgentSidebarConversationRow[]
@@ -3071,7 +3044,9 @@ function ProjectSessionGroup({
           onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
           onFork={() => onForkConversation(conversation)}
           onRestore={() => onRestoreConversation(conversation)}
-          onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+          onArchiveRequest={() =>
+            setArchiveDialogTarget({ conversation, workspace: row.workspace })
+          }
           setActionsTriggerRef={(node) => {
             sessionActionsTriggerRefs.current[conversation.id] = node;
           }}
@@ -3339,52 +3314,13 @@ function ProjectSessionGroup({
             </DialogContent>
           </Dialog>
 
-          <AlertDialog
-            open={archiveDialogConversation !== null}
-            onOpenChange={(open) => {
-              if (!open) {
-                setArchiveDialogConversation(null);
-              }
+          <ArchiveConversationDialog
+            target={archiveDialogTarget}
+            onClose={() => setArchiveDialogTarget(null)}
+            onArchive={(conversation, options) => {
+              void onArchiveConversation(conversation, options);
             }}
-          >
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Archive session?</AlertDialogTitle>
-                <AlertDialogDescription asChild>
-                  <div>
-                    <p>
-                      This hides{" "}
-                      <span className="font-medium">
-                        {archiveDialogConversation?.title || "Untitled agent"}
-                      </span>{" "}
-                      from the active conversation list. You can restore it later
-                      from archived sessions.
-                    </p>
-                    {archiveDialogConversation?.contextType === "project" && (
-                      <p className="mt-2 text-text-muted">
-                        Any open PR will be closed. The local workspace branch will
-                        be cleaned up on next app restart.
-                      </p>
-                    )}
-                  </div>
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => {
-                    if (archiveDialogConversation) {
-                      void onArchiveConversation(archiveDialogConversation);
-                    }
-                    setArchiveDialogConversation(null);
-                  }}
-                  variant="destructive"
-                >
-                  Archive session
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          />
 
           {(showProjectHeader ? expanded : true) && (
             <ScrollableAgentSessionList

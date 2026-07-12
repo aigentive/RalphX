@@ -1,6 +1,10 @@
 pub mod memory_archive_job;
 pub mod ui_feature_flag_overrides;
 
+#[cfg(test)]
+#[path = "agent_conversation_workspace_tests.rs"]
+mod agent_conversation_workspace_tests;
+
 pub use ralphx_domain::entities::*;
 pub use ralphx_domain::entities::{
     activity_event, agent_run, api_key, app_state, artifact, artifact_flow, chat_attachment,

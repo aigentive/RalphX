@@ -179,6 +179,7 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest \
             --profile ci \
+            --workspace \
             --lib \
             --features test-utils \
             --partition hash:${{ matrix.partition }} \
@@ -453,7 +454,7 @@ jobs:
             --test suite_ipc_commands \
             --test suite_commands \
             --test suite_agent_workspace \
-            -E 'test(ipc_contract) or test(release_notes_commands) or test(agent_workspace_repair_auto_publish)' \
+            -E 'test(ipc_contract) or test(release_notes_commands) or test(agent_workspace_repair_auto_publish) or test(agent_workspace_pr_review_notifications)' \
             --remap-path-prefix \
             | tee ../coverage/rust-ipc/summary.txt
           cargo llvm-cov nextest \

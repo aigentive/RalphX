@@ -980,6 +980,19 @@ async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows(
         .unwrap();
     assert_eq!(saved.status, AgentWorkspacePrReviewMonitorStatus::Watching);
     assert_eq!(saved.last_seen_head_sha.as_deref(), Some("head-sha-1"));
+    assert!(saved.auto_approve_enabled);
+    assert!(!saved.first_action_resolved);
+
+    let settings_updated = repo
+        .set_pr_review_auto_approve_enabled(&conversation_id, false)
+        .await
+        .unwrap();
+    assert!(!settings_updated.auto_approve_enabled);
+    let resolution_updated = repo
+        .mark_pr_review_first_action_resolved(&conversation_id)
+        .await
+        .unwrap();
+    assert!(resolution_updated.first_action_resolved);
 
     let loaded = repo
         .get_pr_review_monitor(&conversation_id)
@@ -998,6 +1011,7 @@ async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows(
     );
     assert_eq!(loaded.review_artifact_version, Some(1));
     assert!(loaded.review_artifact_updated_at.is_some());
+    assert!(!loaded.auto_approve_enabled);
 
     let active = repo.list_active_pr_review_monitors().await.unwrap();
     assert_eq!(active.len(), 1);
@@ -1018,6 +1032,17 @@ async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows(
         preserved.review_artifact_id.as_ref().map(|id| id.as_str()),
         Some("artifact-v1")
     );
+    assert!(!preserved.auto_approve_enabled);
+    assert!(preserved.first_action_resolved);
+    let missing_conversation_id = ChatConversationId::new();
+    assert!(repo
+        .set_pr_review_auto_approve_enabled(&missing_conversation_id, true)
+        .await
+        .is_err());
+    assert!(repo
+        .mark_pr_review_first_action_resolved(&missing_conversation_id)
+        .await
+        .is_err());
     assert_eq!(
         preserved.review_artifact_head_sha.as_deref(),
         Some("head-sha-1")
@@ -1090,6 +1115,19 @@ async fn pr_review_actions_update_existing_pending_action_for_same_head() {
         .await
         .unwrap();
     assert_eq!(actions.len(), 1);
+
+    assert!(repo
+        .claim_pending_pr_review_action(&saved.id)
+        .await
+        .unwrap());
+    assert!(!repo
+        .claim_pending_pr_review_action(&saved.id)
+        .await
+        .unwrap());
+    assert!(!repo
+        .claim_pending_pr_review_action("missing-action")
+        .await
+        .unwrap());
 
     repo.update_pr_review_action_status(
         &saved.id,

@@ -128,7 +128,7 @@ pub use chat_service_context::{
 pub use chat_service_errors::{
     classify_agent_error, classify_codex_stream_failure, classify_provider_error,
     parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
-    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
+    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR, VALIDATION_FAILED_ERROR_CODE,
 };
 pub use chat_service_helpers::{
     context_type_to_process, get_agent_name, get_assistant_role, resolve_agent_with_team_mode,

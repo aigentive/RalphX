@@ -5,6 +5,7 @@ mod branch_tests;
 mod commit_tests;
 mod merge_tests;
 mod query_tests;
+mod rebase_tests;
 mod state_query_tests;
 mod worktree_tests;
 

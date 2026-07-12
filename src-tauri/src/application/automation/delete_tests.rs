@@ -707,7 +707,7 @@ async fn delete_aborts_when_conversation_archive_fails_and_leaves_rows_intact() 
 }
 
 #[tokio::test]
-async fn delete_skips_already_archived_conversations_without_refiring_pr_close() {
+async fn delete_archives_active_open_pr_without_closing_and_skips_archived_pr() {
     let (temp, state, project_id, github) = setup_state().await;
     let stopped = automation("automation-retry", &project_id, AutomationStatus::Stopped);
     state.automation_repo.create(stopped.clone()).await.unwrap();
@@ -735,16 +735,39 @@ async fn delete_skips_already_archived_conversations_without_refiring_pr_close()
         .await
         .unwrap();
 
-    // A fresh (unarchived) conversation that DOES get archived.
+    // A fresh (unarchived) conversation with an open PR must be archived without
+    // closing the PR, because automation deletion passes explicit false intent.
     let fresh_conv = seed_conversation(&state, &project_id, &stopped.id, None, false).await;
+    let mut fresh_ws = AgentConversationWorkspace::new(
+        fresh_conv.clone(),
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "agent/fresh".to_string(),
+        temp.path()
+            .join("fresh-worktree")
+            .to_string_lossy()
+            .to_string(),
+    );
+    fresh_ws.publication_pr_number = Some(78);
+    fresh_ws.publication_pr_url = Some("https://github.com/mock/repo/pull/78".to_string());
+    fresh_ws.publication_pr_status = Some("open".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(fresh_ws)
+        .await
+        .unwrap();
 
     delete_automation_with_archive(&state, &stopped.id)
         .await
         .expect("delete succeeds");
 
-    // The already-archived conversation with the open PR was skipped: no close_pr.
+    // Neither the skipped nor newly archived conversation closes its open PR.
     assert_eq!(github.state().close_pr_calls, 0);
-    // Fresh conversation archived, automation gone.
+    // Fresh conversation and workspace archived, but its PR remains open.
     let fresh_after = state
         .chat_conversation_repo
         .get_by_id(&fresh_conv)
@@ -752,6 +775,20 @@ async fn delete_skips_already_archived_conversations_without_refiring_pr_close()
         .unwrap()
         .unwrap();
     assert!(fresh_after.archived_at.is_some());
+    let fresh_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&fresh_conv)
+        .await
+        .unwrap()
+        .expect("fresh workspace should exist");
+    assert_eq!(
+        fresh_workspace.status,
+        crate::domain::entities::AgentConversationWorkspaceStatus::Archived
+    );
+    assert_eq!(
+        fresh_workspace.publication_pr_status.as_deref(),
+        Some("open")
+    );
     assert!(state
         .automation_repo
         .get_by_id(&stopped.id)
