@@ -238,6 +238,10 @@ async fn start_with_app(
 
 #[tokio::test]
 async fn start_agent_conversation_rejects_persona_builder_mode() {
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
     let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
     let project_id = ProjectId::from_string("project-persona-builder-rejected".to_string());
 
