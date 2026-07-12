@@ -97,7 +97,10 @@ import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceCha
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
-import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
+import {
+  AGENT_CONVERSATION_MODE_OPTIONS,
+  isConversationModeLocked,
+} from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
@@ -829,7 +832,6 @@ interface AgentsActiveConversationPanelProps {
 export const AgentsActiveConversationPanel = memo(function AgentsActiveConversationPanel({
   activeConversation,
   activeConversationMode,
-  activeConversationModeLocked,
   activeProjectId,
   activeProjectOptions,
   activeWorkspace,
@@ -877,6 +879,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
+  const resolvedConversationModeLocked = isConversationModeLocked(
+    activeConversation,
+    activeWorkspace,
+  );
   const queryClient = useQueryClient();
   const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
@@ -1561,7 +1567,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const automationConfigId =
     automationConfig?.id ?? activeConversation.automationId ?? null;
   const modeOptions = useMemo(() => {
-    if (!activeConversationModeLocked) {
+    if (!resolvedConversationModeLocked) {
       return AGENT_CONVERSATION_MODE_OPTIONS;
     }
     const lockReason =
@@ -1578,7 +1584,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     );
   }, [
     activeConversationMode,
-    activeConversationModeLocked,
+    resolvedConversationModeLocked,
     activeWorkspace?.modeSwitchLockReason,
   ]);
   const isPlanWorkspaceComposer =
@@ -2395,7 +2401,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return;
       }
 
-      if (activeConversationModeLocked) {
+      if (resolvedConversationModeLocked) {
         toast.error(
           activeWorkspace?.modeSwitchLockReason ??
             "This conversation cannot switch modes while the workspace is busy.",
@@ -2413,7 +2419,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       activeConversation.contextType,
       activeConversation.automationRunId,
       activeConversationMode,
-      activeConversationModeLocked,
+      resolvedConversationModeLocked,
       activeWorkspace,
       automationConfigId,
       continuePlanModeConversation,

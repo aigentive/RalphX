@@ -130,12 +130,26 @@ describe("PersonasSection", () => {
     expect(screen.getByText(/delegated, subagent, or pipeline work/i)).toBeInTheDocument();
   });
 
-  it("keeps the builder entry hidden by default", async () => {
+  it("hides the builder entry when the feature flag is off", async () => {
+    mockPersonaCommands([activePersona]);
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <TooltipProvider delayDuration={0}>
+          <PersonasSection showBuilderEntry={false} />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Reviewer Voice");
+    expect(screen.queryByRole("button", { name: "Build with agent" })).not.toBeInTheDocument();
+  });
+
+  it("shows the builder entry by default when the feature is enabled", async () => {
     mockPersonaCommands([activePersona]);
     renderSection();
 
     await screen.findByText("Reviewer Voice");
-    expect(screen.queryByRole("button", { name: "Build with agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build with agent" })).toBeInTheDocument();
   });
 
   it("creates a draft, returns to the list, then activates it", async () => {

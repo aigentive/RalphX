@@ -28,6 +28,7 @@ import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  WandSparkles,
   X,
 } from "lucide-react";
 import {
@@ -116,6 +117,15 @@ import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationP
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
+
+export const PERSONA_BUILDER_MODE_META = {
+  label: "Persona Builder",
+  icon: WandSparkles,
+} as const;
+
+const CONVERSATION_MODE_META = {
+  persona_builder: PERSONA_BUILDER_MODE_META,
+} as const;
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
 const AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS = 8;
@@ -2631,6 +2641,10 @@ function AgentSessionRow({
   onActionsOpenChange,
 }: AgentSessionRowProps) {
   const title = conversation.title || "Untitled agent";
+  const modeMeta =
+    conversation.agentMode === "persona_builder"
+      ? CONVERSATION_MODE_META.persona_builder
+      : null;
   const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
   const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
 
@@ -2666,6 +2680,19 @@ function AgentSessionRow({
                   ·
                 </span>
               </>
+            )}
+            {modeMeta && (
+              <span className="inline-flex shrink-0 items-center gap-1">
+                <modeMeta.icon
+                  className="h-3 w-3"
+                  data-testid={`agents-mode-icon-${conversation.agentMode}`}
+                  aria-hidden="true"
+                />
+                <span>{modeMeta.label}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
+              </span>
             )}
             <span className="inline-flex min-w-0 items-center gap-1">
               {refKind === "pull-request" ? (

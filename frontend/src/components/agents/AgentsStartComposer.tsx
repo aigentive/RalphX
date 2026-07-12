@@ -203,7 +203,7 @@ function composerIntegrationReferencesEqual(
   });
 }
 
-const AGENT_MODE_OPTIONS: Array<{
+export const AGENT_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
   label: string;
   description: string;

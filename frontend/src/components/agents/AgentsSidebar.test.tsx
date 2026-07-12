@@ -999,6 +999,19 @@ describe("AgentsSidebar", () => {
     expect(firstRow.queryByText("codex")).not.toBeInTheDocument();
   });
 
+  it("builder_conversation_renders_visible_in_sidebar_with_distinct_label_and_icon", () => {
+    conversationsByProject.set("project-1", {
+      data: [conversation({ agentMode: "persona_builder", title: "Persona builder" })],
+      isLoading: false,
+    });
+
+    renderSidebar();
+
+    const row = within(screen.getByTestId("agents-session-conversation-1"));
+    expect(row.getByText("Persona Builder")).toBeInTheDocument();
+    expect(row.getByTestId("agents-mode-icon-persona_builder")).toBeInTheDocument();
+  });
+
   it("shows compact conversation time with a full timestamp title", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));

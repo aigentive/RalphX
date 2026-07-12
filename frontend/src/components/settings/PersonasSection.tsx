@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft, Info, Trash2 } from "lucide-react";
 
+import { PersonaBuilderView } from "@/components/personas/PersonaBuilderView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +19,7 @@ import {
   isPersonaFeatureDisabledError,
   isPersonaUnavailableError,
 } from "@/lib/personaErrors";
+import { useProjectStore } from "@/stores/projectStore";
 import type { Persona } from "@/types/persona";
 
 type EditorState =
@@ -25,7 +27,7 @@ type EditorState =
   | { kind: "edit"; persona: Persona };
 
 export interface PersonasSectionProps {
-  /** Reserved for the builder-agent slice; manual editing remains the default. */
+  /** Feature flag from the Settings surface. */
   showBuilderEntry?: boolean;
 }
 
@@ -259,14 +261,26 @@ function PersonaRow({
   );
 }
 
-export function PersonasSection({ showBuilderEntry = false }: PersonasSectionProps) {
+export function PersonasSection({ showBuilderEntry = true }: PersonasSectionProps) {
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [showBuilder, setShowBuilder] = useState(false);
+  const [builderEntryError, setBuilderEntryError] = useState<string | null>(null);
+  const activeProjectId = useProjectStore((state) => state.activeProjectId);
   const { data: personas = [], error, isLoading } = usePersonas();
   const approvePersona = useApprovePersona();
   const archivePersona = useArchivePersona();
   const deleteDraft = useDeletePersonaDraft();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const visiblePersonas = personas.filter((persona) => persona.status !== "archived");
+
+  if (showBuilder && activeProjectId) {
+    return (
+      <PersonaBuilderView
+        projectId={activeProjectId}
+        onBack={() => setShowBuilder(false)}
+      />
+    );
+  }
 
   const handleEdit = (persona: Persona) => {
     if (persona.status === "draft") {
@@ -316,7 +330,19 @@ export function PersonasSection({ showBuilderEntry = false }: PersonasSectionPro
         </div>
         <div className="flex items-center gap-2">
           {showBuilderEntry && (
-            <Button type="button" variant="outline" size="sm">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (!activeProjectId) {
+                  setBuilderEntryError("Select a project before building a persona.");
+                  return;
+                }
+                setBuilderEntryError(null);
+                setShowBuilder(true);
+              }}
+            >
               Build with agent
             </Button>
           )}
@@ -354,6 +380,15 @@ export function PersonasSection({ showBuilderEntry = false }: PersonasSectionPro
             />
           ))}
         </ul>
+      )}
+
+      {builderEntryError && (
+        <div
+          role="alert"
+          className="rounded-md border border-[var(--status-error-border)] bg-[var(--status-error-muted)] px-3 py-2 text-sm text-[var(--status-error)]"
+        >
+          {builderEntryError}
+        </div>
       )}
 
       <div className="flex gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-3 text-xs leading-relaxed text-[var(--text-muted)]">
