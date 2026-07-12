@@ -1,4 +1,5 @@
-use super::StreamError;
+use super::{classify_codex_stream_failure, StreamError, VALIDATION_FAILED_ERROR_CODE};
+use crate::domain::entities::{ChatContextType, ExecutionFailureSource, InternalStatus};
 
 fn agent_exit_message(stderr: impl Into<String>) -> String {
     StreamError::AgentExit {
@@ -80,4 +81,128 @@ fn agent_exit_summary_preserves_short_unranked_multiline_output() {
     let summary = agent_exit_message(stderr.clone());
 
     assert_eq!(summary, format!("Agent failed: {stderr}"));
+}
+
+#[test]
+fn local_tool_failed_error_reports_failed_status_and_source() {
+    let err = StreamError::LocalToolFailed {
+        message: "local command failed".to_string(),
+    };
+
+    assert_eq!(err.to_string(), "Local tool failed: local command failed");
+    assert_eq!(err.suggested_task_status(), Some(InternalStatus::Failed));
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::LocalToolFailed
+    );
+}
+
+#[test]
+fn validation_failed_error_reports_failed_status_and_source() {
+    let err = StreamError::ValidationFailed {
+        message: "validation rejected completion".to_string(),
+    };
+
+    assert_eq!(
+        err.to_string(),
+        "Validation failed: validation rejected completion"
+    );
+    assert_eq!(err.suggested_task_status(), Some(InternalStatus::Failed));
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::ValidationFailed
+    );
+}
+
+#[test]
+fn codex_completed_turn_suppresses_prior_local_tool_diagnostics() {
+    let result = classify_codex_stream_failure(
+        &[],
+        &[format!(
+            "earlier execute_run_task_validation diagnostic: {VALIDATION_FAILED_ERROR_CODE}"
+        )],
+        Some(0),
+        true,
+    );
+
+    assert!(
+        result.is_none(),
+        "successful completion must not turn prior local diagnostics into a failure"
+    );
+}
+
+#[test]
+fn codex_validation_failure_code_returns_validation_failed() {
+    let result = classify_codex_stream_failure(
+        &[],
+        &[format!(
+            "execute_run_task_validation rejected: {VALIDATION_FAILED_ERROR_CODE}"
+        )],
+        Some(1),
+        false,
+    )
+    .expect("validation failure should classify");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("execute_run_task_validation"));
+            assert!(message.contains(VALIDATION_FAILED_ERROR_CODE));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn codex_runtime_error_with_local_diagnostics_returns_agent_exit() {
+    let result = classify_codex_stream_failure(
+        &["codex runtime exited".to_string()],
+        &["local command stderr".to_string()],
+        Some(1),
+        false,
+    )
+    .expect("runtime failure should classify");
+
+    match result {
+        StreamError::AgentExit { exit_code, stderr } => {
+            assert_eq!(exit_code, Some(1));
+            assert!(stderr.contains("codex runtime exited"));
+            assert!(stderr.contains("local command stderr"));
+        }
+        other => panic!("expected agent exit, got {other:?}"),
+    }
+}
+
+#[test]
+fn codex_local_diagnostics_without_runtime_error_returns_local_tool_failed() {
+    let result =
+        classify_codex_stream_failure(&[], &["local MCP tool failed".to_string()], Some(1), false)
+            .expect("local tool failure should classify");
+
+    match result {
+        StreamError::LocalToolFailed { message } => {
+            assert_eq!(message, "local MCP tool failed");
+        }
+        other => panic!("expected local tool failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn timeout_and_agent_exit_status_mapping_remains_failed() {
+    let timeout = StreamError::Timeout {
+        context_type: ChatContextType::TaskExecution,
+        elapsed_secs: 10,
+    };
+    let agent_exit = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: "runtime exited".to_string(),
+    };
+
+    assert_eq!(
+        timeout.suggested_task_status(),
+        Some(InternalStatus::Failed)
+    );
+    assert_eq!(
+        agent_exit.suggested_task_status(),
+        Some(InternalStatus::Failed)
+    );
 }

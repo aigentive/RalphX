@@ -917,6 +917,10 @@ impl ReconciliationRunner {
             }
             ExecutionFailureSource::GitIsolation => ExecutionRecoveryReasonCode::GitIsolationFailed,
             ExecutionFailureSource::AgentIncomplete => ExecutionRecoveryReasonCode::IncompleteSteps,
+            ExecutionFailureSource::LocalToolFailed => ExecutionRecoveryReasonCode::LocalToolFailed,
+            ExecutionFailureSource::ValidationFailed => {
+                ExecutionRecoveryReasonCode::ValidationFailed
+            }
             ExecutionFailureSource::Unknown => ExecutionRecoveryReasonCode::Unknown,
         }
     }

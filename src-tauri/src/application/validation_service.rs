@@ -198,7 +198,7 @@ impl TaskValidationService {
         let mut summaries = Vec::new();
 
         for command in request.commands {
-            let result = build_or_run_command(
+            let result = match build_or_run_command(
                 state,
                 &run,
                 &task,
@@ -212,11 +212,18 @@ impl TaskValidationService {
                 command,
                 &prior_results,
             )
-            .await?;
-            state
-                .validation_run_repo
-                .add_command_result(&result)
-                .await?;
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    settle_validation_run_after_error(state, &run).await;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = state.validation_run_repo.add_command_result(&result).await {
+                settle_validation_run_after_error(state, &run).await;
+                return Err(error);
+            }
             emit_task_validation_event(
                 state,
                 &TaskValidationEventPayload::command_completed(&run, &result),
@@ -371,6 +378,30 @@ impl TaskValidationService {
             .await?;
         Ok(true)
     }
+}
+
+async fn settle_validation_run_after_error(state: &AppState, run: &ValidationRun) {
+    let completed_at = Utc::now();
+    if let Err(error) = state
+        .validation_run_repo
+        .update_run_status(&run.id, ValidationRunStatus::Error, Some(completed_at))
+        .await
+    {
+        tracing::warn!(
+            validation_run_id = %run.id,
+            error = %error,
+            "Failed to settle validation run after infrastructure error"
+        );
+        return;
+    }
+
+    let mut completed_run = run.clone();
+    completed_run.status = ValidationRunStatus::Error;
+    completed_run.completed_at = Some(completed_at);
+    emit_task_validation_event(
+        state,
+        &TaskValidationEventPayload::run_completed(&completed_run),
+    );
 }
 
 async fn build_or_run_command(
