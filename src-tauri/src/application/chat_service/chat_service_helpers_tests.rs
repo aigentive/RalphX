@@ -170,6 +170,31 @@ fn test_harness_supports_merge_completion_watcher_only_for_claude() {
 }
 
 #[test]
+fn fresh_provider_session_policy_rejects_implicit_workflow_continuation() {
+    assert!(should_start_fresh_provider_session(
+        false,
+        false,
+        Some("ralphx-pr-fixer")
+    ));
+    assert!(should_start_fresh_provider_session(false, true, None));
+    assert!(should_start_fresh_provider_session(true, false, None));
+    assert!(!should_start_fresh_provider_session(false, false, None));
+}
+
+#[test]
+fn provider_session_model_compatibility_requires_an_exact_known_match() {
+    assert!(provider_session_model_matches_requested(None, "gpt-5.5"));
+    assert!(provider_session_model_matches_requested(
+        Some("gpt-5.5"),
+        "gpt-5.5"
+    ));
+    assert!(!provider_session_model_matches_requested(
+        Some("gpt-5.6"),
+        "gpt-5.5"
+    ));
+}
+
+#[test]
 fn test_context_type_to_process_mapping() {
     assert_eq!(
         context_type_to_process(&ChatContextType::Ideation),
