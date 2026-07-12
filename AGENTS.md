@@ -74,6 +74,7 @@ Primary project docs:
 - Behavioral tests only (NON-NEGOTIABLE): every test drives a production entry path and carries a falsifiable assertion. No getter/no-op/line-execution tests. Guards get both directions: CAS wrong-`from` leaves state untouched; suppressed side effects get absence assertions.
 - Rust test stack: root-lib tests need `--features test-utils`; `cargo test` takes ONE name filter; suites run under `cargo nextest`; SQLite repos test on `SqliteTestDb`/`SqliteStateFixture`; scheduler/service tests use memory repos through production tick/entry paths. Source: `.claude/rules/rust-test-execution.md`.
 - Frontend tests: Vitest via `cd frontend && npm run test:run -- <files>`; assert user-visible behavior (Testing Library), not implementation internals; strict TS with no `any`; API layer follows the zod snake_case schema → camelCase transform pipeline (`.claude/rules/api-layer.md`).
+- Package build hygiene (NON-NEGOTIABLE): use each package's configured scripts (`frontend/`: `npm run ...`; `plugins/app/ralphx-mcp-server`: `npm run build` after any `src/` change — committing without rebuilding dist is a broken commit).
 - Zero-warning handoff: both cargo clippy gates, `python3 scripts/check-layering.py`, and touched-suite tests green before reporting done — including on test-only changes.
 
 ## Test Coverage Work
