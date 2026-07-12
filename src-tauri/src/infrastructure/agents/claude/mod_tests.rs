@@ -547,6 +547,60 @@ fn test_create_mcp_config_allowed_tools_value_matches_agent_mcp_tools() {
 }
 
 #[test]
+fn persona_extractor_spawn_emits_tools_flag_and_mcp_grants() {
+    let (_plugin_dir_guard, plugin_dir) = make_temp_plugin_dir();
+    let working_directory = tempfile::tempdir().expect("working directory");
+    let command = build_spawnable_command_with_mcp_runtime_context_for_test(
+        Path::new("/fake/claude"),
+        &plugin_dir,
+        "Distill the selected context into a persona.",
+        Some("ralphx:ralphx-persona-extractor"),
+        None,
+        working_directory.path(),
+        None,
+        None,
+        None,
+    )
+    .expect("persona extractor command should build");
+    let args = command.get_args_for_test();
+
+    let tools_index = args
+        .iter()
+        .position(|arg| arg == "--tools")
+        .expect("A7 containment requires --tools on the extractor command");
+    assert!(
+        !args[tools_index + 1].is_empty(),
+        "A7 containment requires a non-empty --tools value"
+    );
+    assert_eq!(args[tools_index + 1], "TaskList");
+
+    let mcp_config_index = args
+        .iter()
+        .position(|arg| arg == "--mcp-config")
+        .expect("extractor command should carry a strict MCP config");
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&read_test_file(Path::new(&args[mcp_config_index + 1])))
+            .expect("generated MCP config should be valid JSON");
+    let mcp_args = get_json_args(&mcp_config);
+    let allowed_tools = mcp_args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--allowed-tools="))
+        .expect("extractor MCP config should explicitly restrict allowed tools");
+
+    let expected_grants = BTreeSet::from([
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_grep",
+        "fs_glob",
+        "ask_user_question",
+        "save_persona_draft",
+        "get_persona_draft",
+    ]);
+    let actual_grants = allowed_tools.split(',').collect::<BTreeSet<_>>();
+    assert_eq!(actual_grants, expected_grants);
+}
+
+#[test]
 fn test_create_mcp_config_injects_no_tools_sentinel_for_automation_judge() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     let config =

@@ -17,6 +17,7 @@ pub const SHORT_ORCHESTRATOR_IDEATION: &str = "ralphx-ideation";
 pub const SHORT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx-ideation-readonly";
 pub const SHORT_SESSION_NAMER: &str = "ralphx-utility-session-namer";
 pub const SHORT_PR_DESCRIBER: &str = "ralphx-utility-pr-describer";
+pub const SHORT_PERSONA_EXTRACTOR: &str = "ralphx-persona-extractor";
 pub const SHORT_PLAN_COMPLEXITY_ASSESSOR: &str = "ralphx-utility-plan-complexity";
 pub const SHORT_CHAT_TASK: &str = "ralphx-chat-task";
 pub const SHORT_CHAT_PROJECT: &str = "ralphx-chat-project";
@@ -141,6 +142,9 @@ pub const AGENT_REVIEW_HISTORY: &str = "ralphx:ralphx-review-history";
 
 /// Session naming agent (haiku, background)
 pub const AGENT_SESSION_NAMER: &str = "ralphx:ralphx-utility-session-namer";
+
+/// PersonaBuilder-only helper for distilling ingested copies into persona drafts.
+pub const AGENT_PERSONA_EXTRACTOR: &str = "ralphx:ralphx-persona-extractor";
 
 /// Agent workspace PR description writer (background)
 pub const AGENT_PR_DESCRIBER: &str = "ralphx:ralphx-utility-pr-describer";
