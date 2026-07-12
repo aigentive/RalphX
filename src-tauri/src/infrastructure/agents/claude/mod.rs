@@ -1344,15 +1344,14 @@ struct DebugCommandView<'a> {
 impl std::fmt::Debug for DebugCommandView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let std_cmd = self.cmd.as_std();
-        let mut args = std_cmd
-            .get_args()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        if let Some(redaction) = self.prompt_arg_debug_redaction {
-            if let Some(arg) = args.get_mut(redaction.arg_index) {
-                *arg = format!("<prompt logged at {}>", redaction.artifact_path.display());
-            }
-        }
+        let args_count = std_cmd.get_args().count();
+        let prompt_arg_index = self
+            .prompt_arg_debug_redaction
+            .map(|redaction| redaction.arg_index);
+        let has_prompt_artifact = self.prompt_arg_debug_redaction.is_some();
+        let prompt_artifact = self
+            .prompt_arg_debug_redaction
+            .map(|redaction| redaction.artifact_path.display().to_string());
 
         let envs = std_cmd
             .get_envs()
@@ -1372,7 +1371,10 @@ impl std::fmt::Debug for DebugCommandView<'_> {
                     .get_current_dir()
                     .map(|path| path.to_string_lossy().into_owned()),
             )
-            .field("args", &args)
+            .field("args_count", &args_count)
+            .field("prompt_arg_index", &prompt_arg_index)
+            .field("has_prompt_artifact", &has_prompt_artifact)
+            .field("prompt_artifact", &prompt_artifact)
             .field("envs", &envs)
             .finish()
     }
@@ -1381,13 +1383,6 @@ impl std::fmt::Debug for DebugCommandView<'_> {
 impl std::fmt::Debug for SpawnableCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let prompt_len = self.stdin_prompt.as_ref().map(|s| s.len());
-        let prompt_preview = self.stdin_prompt.as_ref().map(|s| {
-            let mut out = s.chars().take(200).collect::<String>();
-            if s.chars().count() > 200 {
-                out.push_str("...");
-            }
-            out.replace('\n', "\\n")
-        });
         f.debug_struct("SpawnableCommand")
             .field(
                 "cmd",
@@ -1398,7 +1393,7 @@ impl std::fmt::Debug for SpawnableCommand {
             )
             .field("uses_stdin", &self.stdin_prompt.is_some())
             .field("stdin_prompt_len", &prompt_len)
-            .field("stdin_prompt_preview", &prompt_preview)
+            .field("stdin_prompt_redacted", &self.stdin_prompt.is_some())
             .finish()
     }
 }
@@ -2350,6 +2345,10 @@ pub fn format_allowed_tools_arg_value(tools: Option<&[String]>) -> Option<String
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod create_mcp_config_tests;
+
+#[cfg(test)]
+#[path = "spawnable_command_tests.rs"]
+mod spawnable_command_tests;
 
 #[cfg(test)]
 mod tests {

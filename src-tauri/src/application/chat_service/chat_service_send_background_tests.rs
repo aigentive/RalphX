@@ -4,9 +4,11 @@ use super::{
     should_recover_silent_completion, should_warn_missing_agent_task_ledger,
     silent_completion_recovery_backoff, SilentCompletionRecoveryEnqueue,
 };
+use crate::application::chat_service::{AppChatService, ChatService, SendMessageOptions};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
+use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
@@ -16,9 +18,8 @@ use crate::domain::entities::{
     IdeationSession, IdeationSessionStatus, Persona, PersonaId, PersonaStatus, ProjectId,
     SessionPurpose, VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
 };
-use crate::domain::repositories::{
-    AgentProviderSettingsRepository, PersonaRepository, QueuedMessageRepository,
-};
+use crate::domain::repositories::PersonaRepository;
+use crate::domain::repositories::{AgentProviderSettingsRepository, QueuedMessageRepository};
 use crate::domain::services::{QueueKey, RunningAgentKey};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 use crate::infrastructure::memory::{
@@ -26,7 +27,8 @@ use crate::infrastructure::memory::{
 };
 use chrono::Utc;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use tauri::{Listener, Manager};
 use tokio::io::AsyncWriteExt;
 
 fn test_tool_call(name: &str) -> ToolCall {
@@ -45,6 +47,202 @@ fn agent_mode_conversation() -> ChatConversation {
     let mut conversation = ChatConversation::new_project(ProjectId::new());
     conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
     conversation
+}
+
+fn claude_spawn_permission_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn persona_for_send_fixture(id: &str, status: PersonaStatus) -> Persona {
+    Persona {
+        id: PersonaId::from(id),
+        slug: id.to_string(),
+        name: format!("{id} persona"),
+        description: "send failure fixture".to_string(),
+        content: "A persona body that must never reach excluded effects.".to_string(),
+        status,
+        version: 1,
+        content_hash: format!("{id}-hash"),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+async fn send_bound_persona_and_capture_pre_spawn_effects(
+    persona: Option<Persona>,
+    bound_persona_id: &str,
+) -> (String, bool, Vec<ChatMessage>, Vec<String>) {
+    let _spawn_guard = claude_spawn_permission_lock()
+        .lock()
+        .expect("lock poisoned");
+    let _spawn_permission = EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let mut state = AppState::new_test();
+    let project_dir = tempfile::tempdir().expect("project directory");
+    let project = crate::domain::entities::Project::new(
+        "Persona send fixture".to_string(),
+        project_dir.path().to_string_lossy().to_string(),
+    );
+    let project_id = project.id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+
+    let persona_repo = Arc::new(MemoryPersonaRepository::new());
+    if let Some(persona) = persona {
+        persona_repo
+            .create(persona)
+            .await
+            .expect("persona fixture should persist");
+    }
+    state.persona_repo = persona_repo;
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.persona_id = Some(bound_persona_id.to_string());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("bound conversation should persist");
+    let message_repo = Arc::clone(&state.chat_message_repo);
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let emitted_events = Arc::new(Mutex::new(Vec::new()));
+    for event_name in [
+        "agent:conversation_created",
+        "agent:message_created",
+        "agent:run_started",
+        "agent:error",
+        "persona:injection_skipped",
+    ] {
+        let event_log = Arc::clone(&emitted_events);
+        let event_name = event_name.to_string();
+        let _ = app.listen(event_name.clone(), move |_| {
+            event_log
+                .lock()
+                .expect("event log lock")
+                .push(event_name.clone());
+        });
+    }
+
+    let spawn_marker = project_dir.path().join("spawned");
+    let cli_path = project_dir.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"unexpected-spawn\",\"is_error\":false,\"result\":\"unexpected spawn\",\"cost_usd\":0.0}}'\n",
+            spawn_marker.display()
+        ),
+    )
+    .expect("write capture CLI");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("capture CLI metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("make capture CLI executable");
+
+    let service: AppChatService<tauri::test::MockRuntime> = app
+        .state::<AppState>()
+        .build_chat_service_for_runtime(Some(Arc::new(ExecutionState::new())), None)
+        .with_persona_feature_enabled(true)
+        .with_cli_path(cli_path)
+        .with_working_directory(project_dir.path())
+        .with_app_handle(app.handle().clone());
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "must fail before effects",
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("unavailable persona must reject the send before spawning");
+
+    tokio::task::yield_now().await;
+    let messages = message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("conversation message lookup");
+    let events = emitted_events.lock().expect("event log lock").clone();
+    (error.to_string(), spawn_marker.exists(), messages, events)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn invalid_persona_blocks_send_before_spawn_no_process_no_message_row_no_events() {
+    let (error, spawned, messages, events) =
+        send_bound_persona_and_capture_pre_spawn_effects(None, "missing-persona").await;
+
+    assert!(
+        error.starts_with(PERSONA_UNAVAILABLE_PREFIX),
+        "a missing bound persona must retain the typed unavailable prefix: {error}"
+    );
+    assert!(!spawned, "the CLI capture proves no process was spawned");
+    assert!(
+        messages.is_empty(),
+        "no user or error message row may persist"
+    );
+    assert!(
+        events.is_empty(),
+        "no agent event may be emitted before authority"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn send_on_bound_draft_persona_fails_closed_with_persona_unavailable() {
+    let draft = persona_for_send_fixture("bound-draft-persona", PersonaStatus::Draft);
+    let (error, spawned, messages, events) =
+        send_bound_persona_and_capture_pre_spawn_effects(Some(draft), "bound-draft-persona").await;
+
+    assert!(
+        error.starts_with(PERSONA_UNAVAILABLE_PREFIX),
+        "draft-bound sends must expose the A15 unavailable prefix: {error}"
+    );
+    assert!(!spawned, "a draft persona must fail before process spawn");
+    assert!(
+        messages.is_empty(),
+        "a draft persona must fail before message persistence"
+    );
+    assert!(
+        events.is_empty(),
+        "a draft persona must fail before event emission"
+    );
 }
 
 #[test]
@@ -1249,7 +1447,12 @@ EOF
 }
 
 #[cfg(unix)]
-async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -> bool {
+async fn process_queue_resume_persona_block(
+    agent_name_override: Option<&str>,
+    persona_directive: crate::domain::entities::PersonaDirective,
+    archive_before_flush: bool,
+    replace_binding_before_flush: bool,
+) -> (bool, bool) {
     let mut state = AppState::new_test();
     let persona_repo = Arc::new(MemoryPersonaRepository::new());
     let persona = Persona {
@@ -1270,6 +1473,26 @@ async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -
         .create(persona.clone())
         .await
         .expect("seed queued resume persona");
+    let replacement_persona = Persona {
+        id: PersonaId::from("queued-resume-replacement-persona"),
+        slug: "queued-resume-replacement-persona".to_string(),
+        name: "Queued Resume Replacement Persona".to_string(),
+        description: "queue resume replacement fixture".to_string(),
+        content: "Use the replacement queued persona voice.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "queued-resume-replacement-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    if replace_binding_before_flush {
+        persona_repo
+            .create(replacement_persona.clone())
+            .await
+            .expect("seed replacement queued resume persona");
+    }
     state.persona_repo = persona_repo;
     let project_id = ProjectId::from_string("queued-resume-project".to_string());
     let mut conversation = ChatConversation::new_project(project_id.clone());
@@ -1286,9 +1509,11 @@ async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -
     let chat_message_repo = Arc::clone(&state.chat_message_repo);
     let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&state.artifact_repo);
+    let chat_conversation_repo = Arc::clone(&state.chat_conversation_repo);
     let activity_event_repo = Arc::clone(&state.activity_event_repo);
     let task_repo = Arc::clone(&state.task_repo);
     let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+    let persona_repo_for_flush = Arc::clone(&state.persona_repo);
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -1299,12 +1524,14 @@ async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -
         .expect("repository root")
         .join("plugins/app");
     let persona_marker = temp.path().join("persona-was-injected");
+    let replacement_persona_marker = temp.path().join("replacement-persona-was-injected");
     let cli_path = temp.path().join("fake-claude");
     std::fs::write(
         &cli_path,
         format!(
-            "#!/bin/sh\nfor arg in \"$@\"; do\n  [ -f \"$arg\" ] && grep -q '<ralphx_agent_persona>' \"$arg\" && touch '{}'\ndone\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"queue-resume-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
-            persona_marker.display()
+            "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ -f \"$arg\" ]; then\n    grep -q '<ralphx_agent_persona>' \"$arg\" && touch '{}'\n    grep -q 'Use the replacement queued persona voice.' \"$arg\" && touch '{}'\n  fi\ndone\nprintf '%s\\n' '{{\"type\":\"result\",\"session_id\":\"queue-resume-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}}'\n",
+            persona_marker.display(),
+            replacement_persona_marker.display(),
         ),
     )
     .expect("write fake queued resume cli");
@@ -1316,7 +1543,20 @@ async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -
         .expect("mark fake queued resume cli executable");
     let mut queued = crate::domain::services::QueuedMessage::new("queued follow-up".to_string());
     queued.agent_name_override = agent_name_override.map(str::to_string);
+    queued.persona_directive = persona_directive;
     message_queue.queue_front_existing(ChatContextType::Project, project_id.as_str(), queued);
+    if replace_binding_before_flush {
+        chat_conversation_repo
+            .update_persona_binding(&conversation_id, Some(replacement_persona.id.as_str()))
+            .await
+            .expect("replace binding between enqueue and flush");
+    }
+    if archive_before_flush {
+        persona_repo_for_flush
+            .set_status(&persona.id, PersonaStatus::Archived)
+            .await
+            .expect("archive explicit persona between enqueue and flush");
+    }
 
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
@@ -1356,19 +1596,86 @@ async fn process_queue_resume_persona_block(agent_name_override: Option<&str>) -
         .await;
 
     assert_eq!(outcome.total_processed, 1);
-    persona_marker.exists()
+    (persona_marker.exists(), replacement_persona_marker.exists())
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn queued_resume_resolves_inherit_persona_unless_agent_override_is_set() {
     assert!(
-        process_queue_resume_persona_block(None).await,
+        process_queue_resume_persona_block(
+            None,
+            crate::domain::entities::PersonaDirective::Inherit,
+            false,
+            false,
+        )
+        .await
+        .0,
         "bound Project persona must reach the real queued resume command"
     );
     assert!(
-        !process_queue_resume_persona_block(Some("ralphx-queued-agent")).await,
+        !process_queue_resume_persona_block(
+            Some("ralphx-queued-agent"),
+            crate::domain::entities::PersonaDirective::Inherit,
+            false,
+            false,
+        )
+        .await
+        .0,
         "queued agent override must suppress the inherited persona block"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queued_flush_rereads_current_db_binding_not_enqueued_snapshot() {
+    let (persona_injected, replacement_injected) = process_queue_resume_persona_block(
+        None,
+        crate::domain::entities::PersonaDirective::Inherit,
+        false,
+        true,
+    )
+    .await;
+
+    assert!(
+        persona_injected,
+        "the current active binding must still inject a persona"
+    );
+    assert!(
+        replacement_injected,
+        "queue flush must re-read the current conversation binding instead of retaining enqueue-time state"
+    );
+
+    let (suppressed_injected, suppressed_replacement_injected) =
+        process_queue_resume_persona_block(
+            None,
+            crate::domain::entities::PersonaDirective::Suppress,
+            false,
+            true,
+        )
+        .await;
+    assert!(
+        !suppressed_injected && !suppressed_replacement_injected,
+        "a queued Suppress directive must still suppress after the binding changes"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queued_explicit_persona_archived_before_flush_fails_closed() {
+    let (persona_injected, replacement_injected) = process_queue_resume_persona_block(
+        None,
+        crate::domain::entities::PersonaDirective::Explicit(PersonaId::from(
+            "queued-resume-persona",
+        )),
+        true,
+        false,
+    )
+    .await;
+
+    assert!(
+        !persona_injected && !replacement_injected,
+        "an archived explicit persona must block the queued continuation before command spawn"
     );
 }
 

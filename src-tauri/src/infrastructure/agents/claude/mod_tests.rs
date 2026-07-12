@@ -1756,6 +1756,30 @@ fn test_materialize_generated_plugin_dir_matches_canonical_and_runtime_semantics
 }
 
 #[test]
+fn generated_plugin_agents_contain_no_persona_content() {
+    let (_dir, root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let generated_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
+    let agent_names =
+        crate::infrastructure::agents::harness_agent_catalog::list_canonical_prompt_backed_agents(
+            &root,
+            crate::infrastructure::agents::harness_agent_catalog::AgentPromptHarness::Claude,
+        );
+
+    for agent_name in agent_names {
+        let generated_markdown = read_test_file(
+            generated_dir
+                .join("agents")
+                .join(format!("{agent_name}.md")),
+        );
+        assert!(
+            !generated_markdown.contains("<ralphx_agent_persona>"),
+            "generated agent {agent_name} must not contain conversation persona content"
+        );
+    }
+}
+
+#[test]
 fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_local_bundle_is_incomplete(
 ) {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();

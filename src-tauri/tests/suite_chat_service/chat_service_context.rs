@@ -460,6 +460,63 @@ async fn bound_project_persona() -> (
     (conversation, resolved)
 }
 
+async fn assert_suppressed_persona_has_no_final_command_block(
+    context_type: ChatContextType,
+    flags: PersonaResolveFlags,
+) {
+    let (mut conversation, _) = bound_project_persona().await;
+    conversation.context_type = context_type;
+    let resolved = resolve_persona_for_send(
+        &conversation,
+        &PersonaDirective::Inherit,
+        flags,
+        Arc::new(MemoryPersonaRepository::new()),
+    )
+    .await
+    .expect("excluded spawn family must suppress before a persona repository read");
+    assert!(
+        resolved.is_none(),
+        "excluded spawn family must suppress personas"
+    );
+
+    let working_dir = tempfile::tempdir().expect("working directory");
+    let stub_cli = stub_claude_cli(working_dir.path());
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command_for_harness(
+            AgentHarnessKind::Claude,
+            &stub_cli,
+            &repo_plugin_dir(),
+            &conversation,
+            "excluded-family persona absence",
+            resolved,
+            working_dir.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("excluded-family command should build");
+
+    assert!(
+        !final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
+        "the final command for an excluded spawn family must not contain a persona block"
+    );
+}
+
 #[tokio::test]
 async fn fresh_spawn_prompt_includes_bound_persona_block() {
     let (conversation, persona) = bound_project_persona().await;
@@ -591,12 +648,9 @@ async fn recovery_command_prompt_includes_bound_persona_block() {
 }
 
 #[tokio::test]
-async fn fresh_spawn_with_agent_name_override_has_no_persona_block() {
-    let (conversation, _) = bound_project_persona().await;
-    let repo = Arc::new(MemoryPersonaRepository::new());
-    let resolved = resolve_persona_for_send(
-        &conversation,
-        &PersonaDirective::Inherit,
+async fn automation_override_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Project,
         PersonaResolveFlags {
             feature_enabled: true,
             is_external_mcp: false,
@@ -604,46 +658,83 @@ async fn fresh_spawn_with_agent_name_override_has_no_persona_block() {
             agent_conversation_mode: None,
             is_verification: false,
         },
-        repo,
     )
-    .await
-    .expect("agent override suppresses before a repository read");
-    let working_dir = tempfile::tempdir().expect("working directory");
-    let stub_cli = stub_claude_cli(working_dir.path());
-    let command = with_claude_spawn_allowed_in_tests(|| async {
-        build_command_for_harness(
-            AgentHarnessKind::Claude,
-            &stub_cli,
-            &repo_plugin_dir(),
-            &conversation,
-            "override persona send",
-            resolved,
-            working_dir.path(),
-            None,
-            Some(conversation.context_id.as_str()),
-            &[],
-            false,
-            Arc::new(MemoryChatAttachmentRepository::new()),
-            Arc::new(MemoryArtifactRepository::new()),
-            None,
-            None,
-            None,
-            &[],
-            0,
-            None,
-            None,
-            false,
-            None,
-        )
-        .await
-    })
-    .await
-    .expect("override command should build");
+    .await;
+}
 
-    assert!(
-        !final_spawnable_command(&command.spawnable).contains("<ralphx_agent_persona>"),
-        "the final override command must not include a persona block"
-    );
+#[tokio::test]
+async fn automation_setup_conversation_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Project,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: Some(AgentConversationWorkspaceMode::Automation),
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn persona_builder_final_command_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Project,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: Some(AgentConversationWorkspaceMode::PersonaBuilder),
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn ideation_context_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Ideation,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_chat_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Task,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn merge_chat_send_has_no_persona_block() {
+    assert_suppressed_persona_has_no_final_command_block(
+        ChatContextType::Merge,
+        PersonaResolveFlags {
+            feature_enabled: true,
+            is_external_mcp: false,
+            agent_name_override_set: false,
+            agent_conversation_mode: None,
+            is_verification: false,
+        },
+    )
+    .await;
 }
 
 fn empty_delegated_session_repo() -> Arc<dyn DelegatedSessionRepository> {
