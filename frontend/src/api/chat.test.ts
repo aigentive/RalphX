@@ -13,6 +13,7 @@ import {
   getAgentTimelineItemToolCallDetail,
   getConversationStats,
   getAgentWorkspacePrReviewContext,
+  setAgentWorkspacePrReviewAutoApprove,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
@@ -2960,6 +2961,9 @@ describe("chat api", () => {
     expect(chatApi.skipAgentWorkspacePrReviewAction).toBe(
       skipAgentWorkspacePrReviewAction,
     );
+    expect(chatApi.setAgentWorkspacePrReviewAutoApprove).toBe(
+      setAgentWorkspacePrReviewAutoApprove,
+    );
     expect(chatApi.switchAgentConversationMode).toBe(
       switchAgentConversationMode,
     );
@@ -3014,7 +3018,9 @@ describe("getConversationActiveState", () => {
     pr_number: 411,
     status: "awaiting_user",
     monitor_enabled: true,
+    auto_approve_enabled: true,
     first_review_completed: false,
+    first_action_resolved: false,
     last_seen_head_sha: "abcdef1234567890",
     last_reviewed_head_sha: null,
     last_review_run_id: "run-1",
@@ -3429,6 +3435,33 @@ describe("getConversationActiveState", () => {
     expect(submitted.submittedReviewId).toBe("review-1");
     expect(submitted.action.status).toBe("submitted");
     expect(skipped.action.status).toBe("skipped");
+  });
+
+  it("updates Review PR Auto Approve through the typed REST setting endpoint", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          monitor: rawMonitor({ auto_approve_enabled: false }),
+        }),
+    });
+
+    const result = await setAgentWorkspacePrReviewAutoApprove(
+      "conversation/1",
+      false,
+    );
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl("agent-workspaces/conversation%2F1/pr-review-settings"),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_approve_enabled: false }),
+      },
+    );
+    expect(result.monitor.autoApproveEnabled).toBe(false);
+    expect(result.monitor.firstActionResolved).toBe(false);
   });
 
   it("lists and mutates agent conversation issues through REST endpoints", async () => {

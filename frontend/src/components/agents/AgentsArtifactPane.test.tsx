@@ -87,6 +87,7 @@ const {
   updateWorkspaceFromBaseMock,
   setWorkspaceAutoPublishMock,
   setWorkspacePrSupervisionMock,
+  setPrReviewAutoApproveMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
   sendAgentMessageMock,
@@ -151,6 +152,7 @@ const {
   updateWorkspaceFromBaseMock: vi.fn(),
   setWorkspaceAutoPublishMock: vi.fn(),
   setWorkspacePrSupervisionMock: vi.fn(),
+  setPrReviewAutoApproveMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
@@ -220,6 +222,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         setWorkspaceAutoPublishMock(...args),
       setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
         setWorkspacePrSupervisionMock(...args),
+      setAgentWorkspacePrReviewAutoApprove: (...args: unknown[]) =>
+        setPrReviewAutoApproveMock(...args),
       precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
         precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
@@ -1005,7 +1009,9 @@ function prReviewContext(
       prNumber: 78,
       status: "watching",
       monitorEnabled: true,
+      autoApproveEnabled: true,
       firstReviewCompleted: Boolean(reviewArtifactId),
+      firstActionResolved: Boolean(reviewArtifactId),
       lastSeenHeadSha: "head-sha",
       lastReviewedHeadSha: reviewArtifactId ? "head-sha" : null,
       lastReviewRunId: reviewArtifactId ? "run-1" : null,
@@ -1396,6 +1402,7 @@ describe("AgentsArtifactPane", () => {
               : "disabled",
         }),
     );
+    setPrReviewAutoApproveMock.mockReset();
     setWorkspaceAutoPublishMock.mockImplementation(
       async (conversationId: string, input: { autoPublishEnabled: boolean }) =>
         workspace({
@@ -3319,7 +3326,9 @@ describe("AgentsArtifactPane", () => {
         prNumber: 78,
         status: "watching",
         monitorEnabled: true,
+        autoApproveEnabled: true,
         firstReviewCompleted: true,
+        firstActionResolved: true,
         lastSeenHeadSha: "head-sha",
         lastReviewedHeadSha: "head-sha",
         lastReviewRunId: "run-1",
@@ -3369,6 +3378,84 @@ describe("AgentsArtifactPane", () => {
     expect(await screen.findByText("PR Review")).toBeInTheDocument();
     expect(getPrReviewContextMock).toHaveBeenCalledWith("conversation-1");
     expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-1");
+  });
+
+  it("persists the Review PR Auto Approve switch through the authoritative API", async () => {
+    const user = userEvent.setup();
+    const context = prReviewContext("conversation-1", "review-artifact-1");
+    getPrReviewContextMock.mockResolvedValue(context);
+    setPrReviewAutoApproveMock.mockResolvedValue({
+      success: true,
+      monitor: {
+        ...context.monitor!,
+        autoApproveEnabled: false,
+      },
+    });
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane("review", workspace({ mode: "review_pr" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "review_pr",
+    });
+
+    const toggle = await screen.findByRole("switch", { name: "Auto Approve" });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+
+    await waitFor(() =>
+      expect(setPrReviewAutoApproveMock).toHaveBeenCalledWith(
+        "conversation-1",
+        false,
+      ),
+    );
+    expect(toggle).not.toBeChecked();
+  });
+
+  it("restores the Review PR Auto Approve preference when saving fails", async () => {
+    const user = userEvent.setup();
+    const context = prReviewContext("conversation-1", "review-artifact-1");
+    getPrReviewContextMock.mockResolvedValue(context);
+    setPrReviewAutoApproveMock.mockRejectedValue(
+      new Error("Auto Approve is unavailable"),
+    );
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane("review", workspace({ mode: "review_pr" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "review_pr",
+    });
+
+    const toggle = await screen.findByRole("switch", { name: "Auto Approve" });
+    await user.click(toggle);
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("Auto Approve is unavailable"),
+    );
+    expect(toggle).toBeChecked();
   });
 
   it("drops placeholder PR review context when switching conversations", async () => {

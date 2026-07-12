@@ -3984,6 +3984,21 @@ impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository
         Err(repo_error())
     }
 
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
     }
@@ -4094,6 +4109,21 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
         &self,
         _conversation_id: &ChatConversationId,
     ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
+        Err(repo_error())
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
         Err(repo_error())
     }
 

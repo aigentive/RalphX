@@ -4,15 +4,18 @@ use axum::{extract::Path, extract::State, http::StatusCode, Json};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, NotificationCategory, NotificationTargetKind,
     ProjectId,
 };
-use ralphx_lib::domain::services::github_service::GithubServiceTrait;
+use ralphx_lib::domain::services::github_service::{GithubServiceTrait, PrStatus, PrSyncState};
 use ralphx_lib::http_server::handlers::agent_workspaces::{
-    propose_agent_workspace_pr_review_action, submit_agent_workspace_pr_review_action,
-    ProposeAgentWorkspacePrReviewActionRequest, SubmitAgentWorkspacePrReviewActionRequest,
+    propose_agent_workspace_pr_review_action, skip_agent_workspace_pr_review_action,
+    submit_agent_workspace_pr_review_action, update_agent_workspace_pr_review_settings,
+    ProposeAgentWorkspacePrReviewActionRequest, SkipAgentWorkspacePrReviewActionRequest,
+    SubmitAgentWorkspacePrReviewActionRequest, UpdateAgentWorkspacePrReviewSettingsRequest,
 };
 use ralphx_lib::http_server::types::HttpServerState;
 
@@ -32,11 +35,16 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
 
 async fn setup_review_workspace(
     with_github: bool,
-) -> (Arc<AppState>, HttpServerState, AgentConversationWorkspace) {
+) -> (
+    Arc<AppState>,
+    HttpServerState,
+    AgentConversationWorkspace,
+    Option<Arc<MockGithubService>>,
+) {
     let mut app_state = AppState::new_test();
-    if with_github {
-        app_state.github_service =
-            Some(Arc::new(MockGithubService::new()) as Arc<dyn GithubServiceTrait>);
+    let github = with_github.then(|| Arc::new(MockGithubService::new()));
+    if let Some(github) = github.as_ref() {
+        app_state.github_service = Some(Arc::clone(github) as Arc<dyn GithubServiceTrait>);
     }
     let app_state = Arc::new(app_state);
     let conversation_id = ChatConversationId::new();
@@ -83,7 +91,7 @@ async fn setup_review_workspace(
         .expect("review monitor should persist");
 
     let state = test_http_state(Arc::clone(&app_state));
-    (app_state, state, workspace)
+    (app_state, state, workspace, github)
 }
 
 fn proposal_request() -> ProposeAgentWorkspacePrReviewActionRequest {
@@ -97,10 +105,56 @@ fn proposal_request() -> ProposeAgentWorkspacePrReviewActionRequest {
     }
 }
 
+fn approve_request() -> ProposeAgentWorkspacePrReviewActionRequest {
+    ProposeAgentWorkspacePrReviewActionRequest {
+        proposed_action: "approve".to_string(),
+        summary: "No blocking findings".to_string(),
+        review_body: "Approved after reviewing the current PR head.".to_string(),
+        ..proposal_request()
+    }
+}
+
+fn current_head_sync_state() -> PrSyncState {
+    PrSyncState {
+        status: PrStatus::Open,
+        merge_state_status: None,
+        mergeable: None,
+        is_draft: false,
+        head_ref_name: "feature/review-workflow".to_string(),
+        base_ref_name: "main".to_string(),
+        head_ref_oid: Some("head-sha".to_string()),
+        base_ref_oid: Some("base-sha".to_string()),
+    }
+}
+
+async fn enable_subsequent_auto_approval(
+    app_state: &Arc<AppState>,
+    workspace: &AgentConversationWorkspace,
+) {
+    let mut monitor = app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .unwrap()
+        .expect("review monitor should exist");
+    monitor.monitor_enabled = true;
+    monitor.last_review_run_id = Some("run-1".to_string());
+    app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .unwrap();
+    app_state
+        .agent_conversation_workspace_repo
+        .mark_pr_review_first_action_resolved(&workspace.conversation_id)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn propose_pr_review_action_records_one_durable_action_notification_with_conversation_target()
 {
-    let (app_state, state, workspace) = setup_review_workspace(false).await;
+    let (app_state, state, workspace, _) = setup_review_workspace(false).await;
 
     let Json(response) = propose_agent_workspace_pr_review_action(
         State(state),
@@ -147,7 +201,10 @@ async fn propose_pr_review_action_records_one_durable_action_notification_with_c
 
 #[tokio::test]
 async fn pr_review_submit_failure_does_not_duplicate_existing_awaiting_user_notification() {
-    let (app_state, state, workspace) = setup_review_workspace(true).await;
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    github
+        .expect("GitHub mock should exist")
+        .will_return_sync_state(current_head_sync_state());
 
     let Json(response) = propose_agent_workspace_pr_review_action(
         State(state.clone()),
@@ -186,4 +243,283 @@ async fn pr_review_submit_failure_does_not_duplicate_existing_awaiting_user_noti
         .collect::<Vec<_>>();
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].dedupe_key, initial_notification.dedupe_key);
+}
+
+#[tokio::test]
+async fn first_passing_pr_review_stays_manual_even_when_auto_approve_defaults_on() {
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    let github = github.expect("GitHub mock should exist");
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_submit_pr_review("review-1", None);
+
+    let Json(response) = propose_agent_workspace_pr_review_action(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(approve_request()),
+    )
+    .await
+    .expect("first proposal should await manual review");
+
+    assert_eq!(
+        response.action.status,
+        AgentWorkspacePrReviewActionStatus::Pending.to_string()
+    );
+    assert_eq!(response.monitor.status, "awaiting_user");
+    assert!(response.monitor.auto_approve_enabled);
+    assert!(!response.monitor.first_action_resolved);
+    assert_eq!(github.submit_review_calls(), 0);
+    assert_eq!(
+        app_state
+            .notification_repo
+            .list(None, None, 50)
+            .await
+            .unwrap()
+            .notifications
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn review_pr_auto_approve_setting_persists_per_conversation() {
+    let (_app_state, state, workspace, _) = setup_review_workspace(false).await;
+
+    let Json(disabled) = update_agent_workspace_pr_review_settings(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: false,
+        }),
+    )
+    .await
+    .expect("setting should save");
+    assert!(!disabled.monitor.auto_approve_enabled);
+    assert!(!disabled.monitor.first_action_resolved);
+
+    let Json(enabled) = update_agent_workspace_pr_review_settings(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: true,
+        }),
+    )
+    .await
+    .expect("setting should update");
+    assert!(enabled.monitor.auto_approve_enabled);
+}
+
+#[tokio::test]
+async fn review_pr_auto_approve_setting_rejects_ineligible_workspaces() {
+    let (app_state, state, mut workspace, _) = setup_review_workspace(false).await;
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+
+    let (status, _) = update_agent_workspace_pr_review_settings(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: false,
+        }),
+    )
+    .await
+    .expect_err("non-Review PR workspaces cannot enable Auto Approve");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+    workspace.source_pull_request = None;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let (status, _) = update_agent_workspace_pr_review_settings(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: false,
+        }),
+    )
+    .await
+    .expect_err("Review PR workspaces require a linked pull request");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn manual_pr_review_submission_resolves_first_action_and_keeps_monitoring() {
+    let (_app_state, state, workspace, github) = setup_review_workspace(true).await;
+    let github = github.expect("GitHub mock should exist");
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_submit_pr_review("review-manual", None);
+
+    let Json(proposal) = propose_agent_workspace_pr_review_action(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(approve_request()),
+    )
+    .await
+    .expect("first review should await a manual action");
+
+    let Json(submitted) = submit_agent_workspace_pr_review_action(
+        State(state),
+        Path((workspace.conversation_id.to_string(), proposal.action.id)),
+        Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
+    )
+    .await
+    .expect("manual approval should submit");
+
+    assert_eq!(
+        submitted.action.status,
+        AgentWorkspacePrReviewActionStatus::Submitted.to_string()
+    );
+    assert_eq!(submitted.monitor.status, "watching");
+    assert!(submitted.monitor.first_action_resolved);
+    assert_eq!(github.submit_review_calls(), 1);
+}
+
+#[tokio::test]
+async fn skipped_pr_review_action_resolves_first_action_without_enabling_monitoring() {
+    let (_app_state, state, workspace, _) = setup_review_workspace(false).await;
+    let Json(proposal) = propose_agent_workspace_pr_review_action(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(proposal_request()),
+    )
+    .await
+    .expect("review action should await a manual decision");
+
+    let Json(skipped) = skip_agent_workspace_pr_review_action(
+        State(state),
+        Path((workspace.conversation_id.to_string(), proposal.action.id)),
+        Json(SkipAgentWorkspacePrReviewActionRequest {
+            reason: Some("The author will follow up manually".to_string()),
+        }),
+    )
+    .await
+    .expect("skipping should resolve the first action");
+
+    assert_eq!(
+        skipped.action.status,
+        AgentWorkspacePrReviewActionStatus::Skipped.to_string()
+    );
+    assert_eq!(skipped.monitor.status, "terminal");
+    assert!(skipped.monitor.first_action_resolved);
+}
+
+#[tokio::test]
+async fn pr_review_submission_fails_closed_when_current_head_cannot_be_verified() {
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    let github = github.expect("GitHub mock should exist");
+    let Json(proposal) = propose_agent_workspace_pr_review_action(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(approve_request()),
+    )
+    .await
+    .expect("review action should await a manual decision");
+    github.will_fail_sync_state("GitHub is temporarily unavailable");
+
+    let (status, _) = submit_agent_workspace_pr_review_action(
+        State(state),
+        Path((
+            workspace.conversation_id.to_string(),
+            proposal.action.id.clone(),
+        )),
+        Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
+    )
+    .await
+    .expect_err("submission must not trust a stale local PR head");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(github.submit_review_calls(), 0);
+    assert_eq!(
+        app_state
+            .agent_conversation_workspace_repo
+            .get_pr_review_action(&proposal.action.id)
+            .await
+            .unwrap()
+            .expect("action should remain available")
+            .status,
+        AgentWorkspacePrReviewActionStatus::Pending
+    );
+}
+
+#[tokio::test]
+async fn passing_subsequent_pr_review_auto_submits_once_without_action_notification() {
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    let github = github.expect("GitHub mock should exist");
+    enable_subsequent_auto_approval(&app_state, &workspace).await;
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_submit_pr_review(
+        "review-2",
+        Some("https://github.com/mock/review/2".to_string()),
+    );
+
+    let Json(response) = propose_agent_workspace_pr_review_action(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(approve_request()),
+    )
+    .await
+    .expect("passing subsequent proposal should auto-submit");
+
+    assert_eq!(
+        response.action.proposed_action,
+        AgentWorkspacePrReviewActionKind::Approve.to_string()
+    );
+    assert_eq!(
+        response.action.status,
+        AgentWorkspacePrReviewActionStatus::Submitted.to_string()
+    );
+    assert_eq!(response.monitor.status, "watching");
+    assert!(response.monitor.first_action_resolved);
+    assert_eq!(github.submit_review_calls(), 1);
+    assert!(app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .unwrap()
+        .notifications
+        .is_empty());
+}
+
+#[tokio::test]
+async fn failed_auto_approval_restores_manual_pending_action_and_one_notification() {
+    let (app_state, state, workspace, github) = setup_review_workspace(true).await;
+    let github = github.expect("GitHub mock should exist");
+    enable_subsequent_auto_approval(&app_state, &workspace).await;
+    github.will_return_sync_state(current_head_sync_state());
+    github.will_fail_submit_pr_review("temporary GitHub outage");
+
+    let Json(response) = propose_agent_workspace_pr_review_action(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(approve_request()),
+    )
+    .await
+    .expect("failed automatic submission should preserve a manual fallback");
+
+    assert_eq!(
+        response.action.status,
+        AgentWorkspacePrReviewActionStatus::Pending.to_string()
+    );
+    assert_eq!(response.monitor.status, "awaiting_user");
+    assert!(response
+        .monitor
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("temporary GitHub outage")));
+    assert_eq!(github.submit_review_calls(), 1);
+    assert_eq!(
+        app_state
+            .notification_repo
+            .list(None, None, 50)
+            .await
+            .unwrap()
+            .notifications
+            .len(),
+        1
+    );
 }

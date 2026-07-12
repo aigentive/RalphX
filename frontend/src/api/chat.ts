@@ -1624,6 +1624,7 @@ export const chatApi = {
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
+  setAgentWorkspacePrReviewAutoApprove,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
@@ -1967,7 +1968,9 @@ export interface AgentWorkspacePrReviewMonitor {
   prNumber: number;
   status: AgentWorkspacePrReviewMonitorStatus;
   monitorEnabled: boolean;
+  autoApproveEnabled: boolean;
   firstReviewCompleted: boolean;
+  firstActionResolved: boolean;
   lastSeenHeadSha: string | null;
   lastReviewedHeadSha: string | null;
   lastReviewRunId: string | null;
@@ -2106,6 +2109,11 @@ export interface SkipAgentWorkspacePrReviewActionResult {
   success: boolean;
   monitor: AgentWorkspacePrReviewMonitor;
   action: AgentWorkspacePrReviewAction;
+}
+
+export interface SetAgentWorkspacePrReviewAutoApproveResult {
+  success: boolean;
+  monitor: AgentWorkspacePrReviewMonitor;
 }
 
 const SendAgentMessageResponseSchema = z.object({
@@ -2253,7 +2261,9 @@ const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
     "terminal",
   ]),
   monitor_enabled: z.boolean(),
+  auto_approve_enabled: z.boolean(),
   first_review_completed: z.boolean(),
+  first_action_resolved: z.boolean(),
   last_seen_head_sha: z.string().nullable(),
   last_reviewed_head_sha: z.string().nullable(),
   last_review_run_id: z.string().nullable(),
@@ -2407,6 +2417,10 @@ const SkipAgentWorkspacePrReviewActionResponseSchema = z.object({
   success: z.boolean(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema,
   action: AgentWorkspacePrReviewActionResponseSchema,
+});
+const SetAgentWorkspacePrReviewAutoApproveResponseSchema = z.object({
+  success: z.boolean(),
+  monitor: AgentWorkspacePrReviewMonitorResponseSchema,
 });
 const WorkspaceOpenTargetResponseSchema = z.object({
   id: z.string(),
@@ -2799,7 +2813,9 @@ function transformAgentWorkspacePrReviewMonitor(
     prNumber: raw.pr_number,
     status: raw.status,
     monitorEnabled: raw.monitor_enabled,
+    autoApproveEnabled: raw.auto_approve_enabled,
     firstReviewCompleted: raw.first_review_completed,
+    firstActionResolved: raw.first_action_resolved,
     lastSeenHeadSha: raw.last_seen_head_sha,
     lastReviewedHeadSha: raw.last_reviewed_head_sha,
     lastReviewRunId: raw.last_review_run_id,
@@ -3442,6 +3458,25 @@ export async function skipAgentWorkspacePrReviewAction(
     },
   );
   return transformSkipAgentWorkspacePrReviewActionResponse(raw);
+}
+
+export async function setAgentWorkspacePrReviewAutoApprove(
+  conversationId: string,
+  autoApproveEnabled: boolean,
+): Promise<SetAgentWorkspacePrReviewAutoApproveResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-settings`,
+    SetAgentWorkspacePrReviewAutoApproveResponseSchema,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auto_approve_enabled: autoApproveEnabled }),
+    },
+  );
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspacePrReviewMonitor(raw.monitor),
+  };
 }
 
 export async function getAgentConversationWorkspaceFreshness(
