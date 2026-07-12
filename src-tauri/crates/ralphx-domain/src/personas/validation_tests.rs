@@ -1,6 +1,6 @@
 use super::validation::{
-    compute_content_hash, reject_structural_tags, validate_persona_content, PERSONA_BODY_MAX_BYTES,
-    PERSONA_BODY_MAX_LINES,
+    compose_persona_content, compute_content_hash, reject_structural_tags,
+    validate_persona_content, PERSONA_BODY_MAX_BYTES, PERSONA_BODY_MAX_LINES,
 };
 
 fn persona_content(slug: &str, body: &str) -> String {
@@ -139,4 +139,40 @@ fn validation_errors_do_not_echo_persona_body() {
         .expect_err("mismatched persona should fail");
 
     assert!(!error.to_string().contains(body));
+}
+
+#[test]
+fn persona_composer_round_trips_special_character_descriptions() {
+    let content = compose_persona_content(
+        "design-voice",
+        "Opinionated: \"product\" #1 😀",
+        "Use direct, concrete language.",
+    );
+
+    let parsed = validate_persona_content("design-voice", &content)
+        .expect("composed persona content should validate");
+
+    assert_eq!(parsed.frontmatter.name, "design-voice");
+    assert_eq!(parsed.frontmatter.kind.as_deref(), Some("persona"));
+    assert_eq!(
+        parsed.frontmatter.description,
+        "Opinionated: \"product\" #1 😀"
+    );
+    // The canonical blank line after the closing `---` stays in the parsed body.
+    assert_eq!(parsed.body, "\nUse direct, concrete language.\n");
+}
+
+#[test]
+fn persona_composer_normalizes_description_newlines_and_preserves_body_content() {
+    let body = "\nUse headings deliberately.\n\nKeep code examples short.\n";
+    let content = compose_persona_content("design-voice", "  Calm\nfocused\r\nvoice  ", body);
+
+    let parsed = validate_persona_content("design-voice", &content)
+        .expect("composed persona content should validate");
+
+    assert_eq!(parsed.frontmatter.description, "Calm focused voice");
+    assert_eq!(
+        parsed.body,
+        "\nUse headings deliberately.\n\nKeep code examples short.\n"
+    );
 }

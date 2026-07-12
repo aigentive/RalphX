@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { describe, expect, it, vi } from "vitest";
 
+import { splitPersonaBody } from "@/lib/personaContent";
+
 import { PersonasManagementSection } from "./PersonasManagementSection";
 
 const toastError = vi.hoisted(() => vi.fn());
@@ -160,7 +162,7 @@ describe("PersonasManagementSection", () => {
     expect(screen.getByRole("button", { name: "Build with agent" })).toBeInTheDocument();
   });
 
-  it("creates a draft, returns to the list, then activates it", async () => {
+  it("creates a persona from structured fields and auto-fills the slug from its name", async () => {
     const user = userEvent.setup();
     const personas = [activePersona];
     mockPersonaCommands(personas);
@@ -168,13 +170,19 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "New persona" }));
-    await user.type(screen.getByLabelText("Slug"), "new-persona");
-    await user.type(screen.getByLabelText("Persona content"), "---\nname: new-persona\n---");
+    await user.type(screen.getByLabelText("Name"), "New Persona");
+    expect(screen.getByLabelText("Slug")).toHaveValue("new-persona");
+    await user.type(screen.getByLabelText("Description"), "A crisp design voice");
+    await user.type(screen.getByLabelText("Instructions"), "Prefer concrete language.");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await screen.findByText("New Persona");
     expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
-      input: { slug: "new-persona", content: "---\nname: new-persona\n---" },
+      input: {
+        slug: "new-persona",
+        description: "A crisp design voice",
+        body: "Prefer concrete language.",
+      },
     });
 
     await user.click(screen.getByRole("button", { name: "Activate New Persona" }));
@@ -183,6 +191,63 @@ describe("PersonasManagementSection", () => {
         input: { id: "persona-new" },
       }),
     );
+  });
+
+  it("stops synchronizing the slug after it is manually edited", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "New persona" }));
+    await user.type(screen.getByLabelText("Name"), "Design Voice");
+    await user.clear(screen.getByLabelText("Slug"));
+    await user.type(screen.getByLabelText("Slug"), "custom-slug");
+    await user.type(screen.getByLabelText("Name"), " Updated");
+
+    expect(screen.getByLabelText("Slug")).toHaveValue("custom-slug");
+  });
+
+  it("sends a pasted persona document as explicit content", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "New persona" }));
+    await user.type(screen.getByLabelText("Name"), "Pasted Persona");
+    await user.type(
+      screen.getByLabelText("Instructions"),
+      "---\nname: pasted-persona\nkind: persona\ndescription: Pasted\n---\nUse the pasted document.",
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("create_persona_draft", {
+        input: {
+          slug: "pasted-persona",
+          content:
+            "---\nname: pasted-persona\nkind: persona\ndescription: Pasted\n---\nUse the pasted document.",
+        },
+      }),
+    );
+  });
+
+  it("disables save until the required structured persona fields are present", async () => {
+    const user = userEvent.setup();
+    mockPersonaCommands([activePersona]);
+    renderSection();
+
+    await screen.findByText("Reviewer Voice");
+    await user.click(screen.getByRole("button", { name: "New persona" }));
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Name"), "Ready Persona");
+    await user.type(screen.getByLabelText("Description"), "Ready to write");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Instructions"), "Write with care.");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("shows a save validation error inline and keeps the active edit form populated", async () => {
@@ -199,12 +264,12 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
-    const content = screen.getByLabelText("Persona content");
-    fireEvent.change(content, { target: { value: "<blocked-tag>" } });
+    const instructions = screen.getByLabelText("Instructions");
+    fireEvent.change(instructions, { target: { value: "<blocked-tag>" } });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText(/Save failed: body contains blocked structural tag/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Persona content")).toHaveValue("<blocked-tag>");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("<blocked-tag>");
     expect(toastError).not.toHaveBeenCalled();
   });
 
@@ -215,14 +280,20 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
-    fireEvent.change(screen.getByLabelText("Persona content"), {
+    expect(screen.getByLabelText("Description")).toHaveValue("A careful reviewer.");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Review carefully.");
+    fireEvent.change(screen.getByLabelText("Instructions"), {
       target: { value: "Updated body" },
     });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("update_persona", {
-        input: { id: "persona-active", content: "Updated body" },
+        input: {
+          id: "persona-active",
+          description: "A careful reviewer.",
+          body: "Updated body",
+        },
       }),
     );
   });
@@ -234,8 +305,8 @@ describe("PersonasManagementSection", () => {
 
     await screen.findByText("Reviewer Voice");
     await user.click(screen.getByRole("button", { name: "Edit Reviewer Voice" }));
-    await user.clear(screen.getByLabelText("Persona content"));
-    await user.type(screen.getByLabelText("Persona content"), "Unsaved revision");
+    await user.clear(screen.getByLabelText("Instructions"));
+    await user.type(screen.getByLabelText("Instructions"), "Unsaved revision");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(screen.getByText("Reviewer Voice")).toBeInTheDocument();
@@ -251,7 +322,7 @@ describe("PersonasManagementSection", () => {
     await user.click(screen.getByRole("button", { name: "Edit Terse Architect" }));
 
     expect(screen.getByText("Drafts are iterated with the builder agent")).toBeInTheDocument();
-    expect(screen.getByLabelText("Persona content")).toBeDisabled();
+    expect(screen.getByLabelText("Instructions")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
   });
 
@@ -293,5 +364,17 @@ describe("PersonasManagementSection", () => {
 
     await user.hover(archive);
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Archive Reviewer Voice");
+  });
+});
+
+describe("splitPersonaBody", () => {
+  it("strips YAML frontmatter from a persona document", () => {
+    expect(splitPersonaBody("---\nname: design-voice\n---\n\nUse concise prose.")).toBe(
+      "Use concise prose.",
+    );
+  });
+
+  it("returns content without YAML frontmatter unchanged", () => {
+    expect(splitPersonaBody("Use concise prose.")).toBe("Use concise prose.");
   });
 });

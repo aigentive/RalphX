@@ -21,6 +21,7 @@ import {
 } from "@/lib/personaErrors";
 import { useProjectStore } from "@/stores/projectStore";
 import type { Persona } from "@/types/persona";
+import { splitPersonaBody } from "@/lib/personaContent";
 
 type EditorState =
   | { kind: "create" }
@@ -66,6 +67,15 @@ function StatusChip({ status }: { status: Persona["status"] }) {
   );
 }
 
+function kebabCasePersonaName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function PersonaEditor({
   editor,
   onBack,
@@ -74,22 +84,40 @@ function PersonaEditor({
   onBack: () => void;
 }) {
   const editingDraft = editor.kind === "edit" && editor.persona.status === "draft";
+  const [name, setName] = useState("");
   const [slug, setSlug] = useState(editor.kind === "create" ? "" : editor.persona.slug);
-  const [content, setContent] = useState(
-    editor.kind === "create" ? "" : editor.persona.content,
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [description, setDescription] = useState(
+    editor.kind === "create" ? "" : editor.persona.description,
+  );
+  const [instructions, setInstructions] = useState(
+    editor.kind === "create" ? "" : splitPersonaBody(editor.persona.content),
   );
   const [saveError, setSaveError] = useState<string | null>(null);
   const createDraft = useCreatePersonaDraft();
   const updatePersona = useUpdatePersona();
   const isSaving = createDraft.isPending || updatePersona.isPending;
+  const pastedPersonaDocument = instructions.startsWith("---");
+  const requiredFieldsMissing =
+    !slug.trim() ||
+    !instructions.trim() ||
+    (!pastedPersonaDocument && !description.trim());
 
   const handleSave = async () => {
     setSaveError(null);
     try {
       if (editor.kind === "create") {
-        await createDraft.mutateAsync({ slug, content });
+        await createDraft.mutateAsync(
+          pastedPersonaDocument
+            ? { slug, content: instructions }
+            : { slug, description, body: instructions },
+        );
       } else {
-        await updatePersona.mutateAsync({ id: editor.persona.id, content });
+        await updatePersona.mutateAsync(
+          pastedPersonaDocument
+            ? { id: editor.persona.id, content: instructions }
+            : { id: editor.persona.id, description, body: instructions },
+        );
       }
       onBack();
     } catch (error) {
@@ -123,19 +151,44 @@ function PersonaEditor({
       </div>
 
       {editor.kind === "create" && (
-        <div className="space-y-1.5">
-          <Label htmlFor="persona-slug" className="text-xs text-[var(--text-secondary)]">
-            Slug
-          </Label>
-          <Input
-            id="persona-slug"
-            value={slug}
-            onChange={(event) => setSlug(event.target.value)}
-            placeholder="reviewer-voice"
-            disabled={isSaving}
-            className="settings-input max-w-md"
-          />
-        </div>
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="persona-name" className="text-xs text-[var(--text-secondary)]">
+              Name
+            </Label>
+            <Input
+              id="persona-name"
+              value={name}
+              onChange={(event) => {
+                const nextName = event.target.value;
+                setName(nextName);
+                if (!slugTouched) setSlug(kebabCasePersonaName(nextName));
+              }}
+              placeholder="Design voice"
+              disabled={isSaving}
+              className="settings-input max-w-md"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="persona-slug" className="text-xs text-[var(--text-secondary)]">
+              Slug
+            </Label>
+            <Input
+              id="persona-slug"
+              value={slug}
+              onChange={(event) => {
+                setSlugTouched(true);
+                setSlug(event.target.value);
+              }}
+              placeholder="design-voice"
+              disabled={isSaving}
+              className="settings-input max-w-md"
+            />
+            <p className="text-xs text-[var(--text-muted)]">
+              Generated from Name until you edit it directly.
+            </p>
+          </div>
+        </>
       )}
 
       {editingDraft && (
@@ -145,15 +198,29 @@ function PersonaEditor({
       )}
 
       <div className="space-y-1.5">
-        <Label htmlFor="persona-content" className="text-xs text-[var(--text-secondary)]">
-          Persona content
+        <Label htmlFor="persona-description" className="text-xs text-[var(--text-secondary)]">
+          Description
+        </Label>
+        <Input
+          id="persona-description"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          placeholder="Opinionated product-design voice"
+          disabled={editingDraft || isSaving}
+          className="settings-input max-w-md"
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="persona-instructions" className="text-xs text-[var(--text-secondary)]">
+          Instructions
         </Label>
         <textarea
-          id="persona-content"
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
+          id="persona-instructions"
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
           disabled={editingDraft || isSaving}
-          placeholder="---\nname: reviewer-voice\n---\n\nPersona instructions in Markdown"
+          placeholder="Plain Markdown. How should the agent behave, what tone should it use, and what should it avoid? No YAML needed."
           className="min-h-64 w-full resize-y rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-subtle)] focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-70"
         />
       </div>
@@ -175,7 +242,7 @@ function PersonaEditor({
           <Button
             type="button"
             onClick={() => void handleSave()}
-            disabled={isSaving || (editor.kind === "create" && (!slug.trim() || !content.trim()))}
+            disabled={isSaving || requiredFieldsMissing}
             className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]"
           >
             Save

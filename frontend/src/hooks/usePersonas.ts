@@ -20,11 +20,18 @@ export const personaKeys = {
 
 export type CreatePersonaDraftInput = {
   slug: string;
-  content: string;
+  content?: string;
+  description?: string;
+  body?: string;
   sourceSessionId?: string;
 };
 
-export type UpdatePersonaInput = { id: string; content: string };
+export type UpdatePersonaInput = {
+  id: string;
+  content?: string;
+  description?: string;
+  body?: string;
+};
 export type IngestPersonaContextInput = {
   conversationId: string;
   pickedPath: string;
@@ -54,7 +61,9 @@ export async function createPersonaDraft(
   const raw = await invoke<unknown>("create_persona_draft", {
     input: {
       slug: input.slug,
-      content: input.content,
+      ...(input.content !== undefined && { content: input.content }),
+      ...(input.description !== undefined && { description: input.description }),
+      ...(input.body !== undefined && { body: input.body }),
       ...(input.sourceSessionId !== undefined && {
         sourceSessionId: input.sourceSessionId,
       }),

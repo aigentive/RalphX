@@ -2,7 +2,7 @@ use crate::{
     personas::skill_markdown::{split_frontmatter, trusted_slug},
     AppError,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 pub const PERSONA_BODY_MAX_BYTES: usize = 10_240;
 pub const PERSONA_BODY_MAX_LINES: usize = 150;
@@ -16,11 +16,25 @@ const STRUCTURAL_TAGS: [&str; 8] = [
     "ralphx_agent_instructions",
     "agent_task_ledger_contract",
 ];
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PersonaFrontmatter {
     pub name: String,
     pub kind: Option<String>,
     pub description: String,
+}
+
+/// Compose canonical SKILL.md-shaped persona content from structured fields.
+pub fn compose_persona_content(slug: &str, description: &str, body: &str) -> String {
+    let frontmatter = PersonaFrontmatter {
+        name: slug.to_string(),
+        kind: Some("persona".to_string()),
+        description: normalize_description(description),
+    };
+    let yaml = serde_yaml::to_string(&frontmatter)
+        .expect("PersonaFrontmatter serialization should not fail");
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+
+    format!("---\n{yaml}---\n\n{}\n", body.trim())
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedPersona {
@@ -95,4 +109,13 @@ pub fn compute_content_hash(frontmatter: &str, body: &str) -> String {
 }
 fn persona_validation_error(slug: &str, reason: &str) -> AppError {
     AppError::Validation(format!("Invalid persona `{slug}`: {reason}"))
+}
+
+fn normalize_description(description: &str) -> String {
+    description
+        .trim()
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ")
 }

@@ -1,3 +1,4 @@
+use ralphx_domain::personas::validation::compose_persona_content;
 use serde::Deserialize;
 use tauri::State;
 
@@ -20,7 +21,11 @@ pub struct PersonaIdInput {
 #[serde(rename_all = "camelCase")]
 pub struct CreatePersonaDraftInput {
     pub slug: String,
-    pub content: String,
+    pub content: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
     #[serde(default)]
     pub source_session_id: Option<String>,
 }
@@ -29,17 +34,11 @@ pub struct CreatePersonaDraftInput {
 #[serde(rename_all = "camelCase")]
 pub struct UpdatePersonaInput {
     pub id: String,
-    pub content: String,
-}
-
-impl From<CreatePersonaDraftInput> for SavePersonaDraftInput {
-    fn from(input: CreatePersonaDraftInput) -> Self {
-        Self {
-            slug: input.slug,
-            content: input.content,
-            source_session_id: input.source_session_id,
-        }
-    }
+    pub content: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[tauri::command]
@@ -96,8 +95,17 @@ pub async fn create_persona_draft_for_state(
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<Persona, String> {
+    let content =
+        resolve_persona_content(&input.slug, input.content, input.description, input.body)?;
     let persona = service(state)
-        .create_draft(feature_enabled, input.into())
+        .create_draft(
+            feature_enabled,
+            SavePersonaDraftInput {
+                slug: input.slug,
+                content,
+                source_session_id: input.source_session_id,
+            },
+        )
         .await
         .map_err(to_string)?;
     emit_draft_updated(state, &persona);
@@ -118,8 +126,17 @@ pub async fn update_persona_for_state(
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<Persona, String> {
-    service(state)
-        .update_persona(feature_enabled, &persona_id(input.id)?, &input.content)
+    let id = persona_id(input.id)?;
+    let persona_service = service(state);
+    let existing = persona_service
+        .get_persona(feature_enabled, &id)
+        .await
+        .map_err(to_string)?;
+    let content =
+        resolve_persona_content(&existing.slug, input.content, input.description, input.body)?;
+
+    persona_service
+        .update_persona(feature_enabled, &id, &content)
         .await
         .map_err(to_string)
 }
@@ -201,6 +218,24 @@ fn persona_id(id: String) -> Result<PersonaId, String> {
         Err("persona id cannot be empty".to_string())
     } else {
         Ok(PersonaId::from(id))
+    }
+}
+
+fn resolve_persona_content(
+    slug: &str,
+    content: Option<String>,
+    description: Option<String>,
+    body: Option<String>,
+) -> Result<String, String> {
+    if let Some(content) = content.filter(|value| !value.trim().is_empty()) {
+        return Ok(content);
+    }
+
+    let description = description.filter(|value| !value.trim().is_empty());
+    let body = body.filter(|value| !value.trim().is_empty());
+    match (description, body) {
+        (Some(description), Some(body)) => Ok(compose_persona_content(slug, &description, &body)),
+        _ => Err("persona content or description+instructions required".to_string()),
     }
 }
 
