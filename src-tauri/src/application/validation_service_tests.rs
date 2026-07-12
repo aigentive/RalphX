@@ -1,7 +1,12 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use super::validation_service::configure_validation_shell_command_for_test;
+use super::validation_service::{
+    configure_validation_shell_command_for_test, RunTaskValidationRequest, TaskValidationService,
+    ValidationCommandRequest,
+};
+use crate::application::AppState;
+use crate::domain::entities::{Project, Task, ValidationRunStatus};
 
 struct EnvGuard {
     key: &'static str,
@@ -30,6 +35,32 @@ fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
         .iter()
         .position(|entry| entry == path.as_ref())
         .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
+}
+
+fn create_validation_git_repo() -> tempfile::TempDir {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(tmp_dir.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run_git(&["init", "-b", "main"]);
+    std::fs::write(tmp_dir.path().join("README.md"), "validation\n").unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "init"]);
+    tmp_dir
 }
 
 #[test]
@@ -63,5 +94,60 @@ fn validation_shell_command_preserves_user_shims_while_ensuring_node_bin() {
     }
     assert!(
         path_index(&path_entries, "/tmp/fake-node-bin") < path_index(&path_entries, "/usr/bin")
+    );
+}
+
+#[tokio::test]
+async fn run_task_validation_settles_run_when_command_cwd_is_invalid() {
+    let tmp_dir = create_validation_git_repo();
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Validation".to_string(),
+            tmp_dir.path().to_string_lossy().to_string(),
+        ))
+        .await
+        .unwrap();
+    let task = state
+        .task_repo
+        .create(Task::new(project.id, "Validate cwd".to_string()))
+        .await
+        .unwrap();
+
+    let result = TaskValidationService::run_task_validation(
+        &state,
+        RunTaskValidationRequest {
+            task_id: task.id.as_str().to_string(),
+            purpose: None,
+            mode: None,
+            context_type: None,
+            caller_agent: Some("ralphx-execution-worker".to_string()),
+            analysis_fingerprint: None,
+            commands: vec![ValidationCommandRequest {
+                command: "echo should-not-run".to_string(),
+                cwd: Some("missing-dir".to_string()),
+                label: None,
+                category: None,
+                reason: None,
+                related_files: Vec::new(),
+                command_ref: None,
+                source: None,
+            }],
+        },
+    )
+    .await;
+
+    assert!(result.is_err());
+    let latest = state
+        .validation_run_repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .unwrap()
+        .expect("run should be created before command validation error");
+    assert_eq!(latest.run.status, ValidationRunStatus::Error);
+    assert!(
+        latest.run.completed_at.is_some(),
+        "failed validation run must be terminal"
     );
 }

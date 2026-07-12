@@ -114,7 +114,7 @@ pub use chat_service_context::{
 pub use chat_service_errors::{
     classify_agent_error, classify_codex_stream_failure, classify_provider_error,
     parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
-    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
+    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR, VALIDATION_FAILED_ERROR_CODE,
 };
 pub use chat_service_helpers::{harness_supports_rx_native_team, harness_supports_team_mode};
 pub use chat_service_helpers::{

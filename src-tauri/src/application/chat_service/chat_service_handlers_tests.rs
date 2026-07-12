@@ -1772,11 +1772,12 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
         &runtime_errors,
         &local_tool_errors,
         Some(1),
+        false,
     )
     .expect("local Codex tool failure should produce a stream error");
     assert!(
-        matches!(stream_error, StreamError::AgentExit { .. }),
-        "local command output containing rate_limit must not classify as provider error"
+        matches!(stream_error, StreamError::LocalToolFailed { .. }),
+        "local command output containing rate_limit must not classify as provider or agent-exit error"
     );
 
     let conversation_id = ChatConversationId::new();

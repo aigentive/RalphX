@@ -267,6 +267,11 @@ pub enum StreamError {
         exit_code: Option<i32>,
         stderr: String,
     },
+    /// A local command or MCP tool failed without proving the agent process crashed.
+    LocalToolFailed { message: String },
+    /// Backend-owned validation rejected completion or a terminal local tool
+    /// failure represents validation evidence rather than an agent crash.
+    ValidationFailed { message: String },
     /// Session ID referenced in conversation not found on the Claude side.
     SessionNotFound { session_id: String },
     /// Failed to spawn the agent CLI process.
@@ -326,6 +331,8 @@ impl std::fmt::Display for StreamError {
                     write!(f, "Agent failed: {}", summarize_agent_exit_stderr(stderr))
                 }
             }
+            Self::LocalToolFailed { message } => write!(f, "Local tool failed: {}", message),
+            Self::ValidationFailed { message } => write!(f, "Validation failed: {}", message),
             Self::SessionNotFound { session_id } => {
                 write!(f, "No conversation found with session ID {}", session_id)
             }
@@ -399,6 +406,8 @@ impl StreamError {
             Self::Timeout { .. }
             | Self::ParseStall { .. }
             | Self::AgentExit { .. }
+            | Self::LocalToolFailed { .. }
+            | Self::ValidationFailed { .. }
             | Self::SessionNotFound { .. }
             | Self::ProcessSpawnFailed { .. }
             | Self::NoOutput { .. } => Some(InternalStatus::Failed),
@@ -438,18 +447,20 @@ impl StreamError {
     ///
     /// Used by `handle_stream_error()` to populate `ExecutionRecoveryMetadata` alongside
     /// the existing flat metadata writes.
-    pub fn to_execution_failure_source(
-        &self,
-    ) -> crate::domain::entities::ExecutionFailureSource {
+    pub fn to_execution_failure_source(&self) -> crate::domain::entities::ExecutionFailureSource {
         use crate::domain::entities::ExecutionFailureSource;
         match self {
             Self::Timeout { .. } => ExecutionFailureSource::TransientTimeout,
             Self::ParseStall { .. } => ExecutionFailureSource::ParseStall,
             Self::AgentExit { .. } => ExecutionFailureSource::AgentCrash,
+            Self::LocalToolFailed { .. } => ExecutionFailureSource::LocalToolFailed,
+            Self::ValidationFailed { .. } => ExecutionFailureSource::ValidationFailed,
             _ => ExecutionFailureSource::Unknown,
         }
     }
 }
+
+pub const VALIDATION_FAILED_ERROR_CODE: &str = "validation_failed";
 
 /// Classify an error string from agent stderr/result as a provider error if applicable.
 ///
@@ -577,6 +588,7 @@ pub fn classify_codex_stream_failure(
     runtime_errors: &[String],
     local_tool_errors: &[String],
     exit_code: Option<i32>,
+    completed_successfully: bool,
 ) -> Option<StreamError> {
     for message in runtime_errors {
         if let Some(provider_error) = classify_provider_error(message) {
@@ -591,20 +603,56 @@ pub fn classify_codex_stream_failure(
         }
     }
 
-    let error_message = runtime_errors
+    // A command or MCP call can fail while the agent is still actively repairing
+    // the task. Once Codex completed the turn (or RalphX accepted a completion
+    // signal), those earlier failures are diagnostics, not a failed agent run.
+    if completed_successfully {
+        return None;
+    }
+
+    let local_error_message = local_tool_errors
         .iter()
-        .chain(local_tool_errors.iter())
         .map(String::as_str)
         .filter(|message| !message.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if local_tool_errors.iter().any(|message| {
+        message
+            .to_lowercase()
+            .contains(VALIDATION_FAILED_ERROR_CODE)
+    }) {
+        return Some(StreamError::ValidationFailed {
+            message: local_error_message,
+        });
+    }
+
+    if !runtime_errors.is_empty() {
+        let error_message = runtime_errors
+            .iter()
+            .map(String::as_str)
+            .filter(|message| !message.trim().is_empty())
+            .chain((!local_error_message.is_empty()).then_some(local_error_message.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Some(StreamError::AgentExit {
+            exit_code,
+            stderr: error_message,
+        });
+    }
+
+    let error_message = runtime_errors
+        .iter()
+        .map(String::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .chain((!local_error_message.is_empty()).then_some(local_error_message.as_str()))
         .collect::<Vec<_>>()
         .join("; ");
 
     if error_message.is_empty() {
         None
     } else {
-        Some(StreamError::AgentExit {
-            exit_code,
-            stderr: error_message,
+        Some(StreamError::LocalToolFailed {
+            message: error_message,
         })
     }
 }
@@ -805,8 +853,7 @@ fn parse_claude_reset_banner(error_text: &str) -> Option<String> {
 
     let now = Utc::now().with_timezone(&timezone);
     let today = now.date_naive();
-    let candidate_today =
-        resolve_tz_local_datetime(timezone, today, hour_24, minute)?;
+    let candidate_today = resolve_tz_local_datetime(timezone, today, hour_24, minute)?;
     let candidate = if candidate_today <= now {
         let tomorrow = today.checked_add_signed(Duration::days(1))?;
         resolve_tz_local_datetime(timezone, tomorrow, hour_24, minute)?
@@ -891,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_local_command_failure_with_rate_limit_text_is_agent_exit() {
+    fn codex_local_command_failure_with_rate_limit_text_is_local_tool_failure() {
         let runtime_errors = Vec::<String>::new();
         let local_tool_errors = vec![
             "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
@@ -899,32 +946,35 @@ mod tests {
                 .to_string(),
         ];
 
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("local command failure should surface as an agent error");
+        let result =
+            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+                .expect("local command failure should surface as a local tool error");
 
         match result {
-            StreamError::AgentExit { exit_code, stderr } => {
-                assert_eq!(exit_code, Some(1));
-                assert!(stderr.contains("No such file or directory"));
-                assert!(stderr.contains("rate_limit"));
+            StreamError::LocalToolFailed { message } => {
+                assert!(message.contains("No such file or directory"));
+                assert!(message.contains("rate_limit"));
             }
-            other => panic!("expected local Codex failure to remain AgentExit, got {other:?}"),
+            other => {
+                panic!("expected local Codex failure to become LocalToolFailed, got {other:?}")
+            }
         }
     }
 
     #[test]
-    fn codex_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+    fn codex_mcp_tool_failure_with_rate_limit_text_is_local_tool_failure() {
         let runtime_errors = Vec::<String>::new();
         let local_tool_errors = vec![
             "delegate_start failed after reading provider_error category rate_limit from local metadata"
                 .to_string(),
         ];
 
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("local MCP failure should surface as an agent error");
+        let result =
+            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+                .expect("local MCP failure should surface as a local tool error");
 
         assert!(
-            matches!(result, StreamError::AgentExit { .. }),
+            matches!(result, StreamError::LocalToolFailed { .. }),
             "local MCP failures must not become provider backpressure"
         );
     }
@@ -934,8 +984,9 @@ mod tests {
         let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
         let local_tool_errors = Vec::<String>::new();
 
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("runtime provider failure should classify");
+        let result =
+            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+                .expect("runtime provider failure should classify");
 
         match result {
             StreamError::ProviderError { category, .. } => {
@@ -950,8 +1001,9 @@ mod tests {
         let runtime_errors = vec!["429".to_string(), "Usage limit exceeded".to_string()];
         let local_tool_errors = Vec::<String>::new();
 
-        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
-            .expect("split runtime provider failure should classify");
+        let result =
+            classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+                .expect("split runtime provider failure should classify");
 
         match result {
             StreamError::ProviderError { category, .. } => {
@@ -963,17 +1015,15 @@ mod tests {
 
     #[test]
     fn codex_stream_failure_without_error_text_returns_none() {
-        assert!(classify_codex_stream_failure(&[], &[], Some(0)).is_none());
+        assert!(classify_codex_stream_failure(&[], &[], Some(0), false).is_none());
     }
 
     #[test]
     fn assistant_content_rate_limit_literal_is_not_provider_error() {
-        assert!(
-            classify_provider_error_from_assistant_content(
-                "The local metadata file contains the literal rate_limit string."
-            )
-            .is_none()
-        );
+        assert!(classify_provider_error_from_assistant_content(
+            "The local metadata file contains the literal rate_limit string."
+        )
+        .is_none());
     }
 
     #[test]

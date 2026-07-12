@@ -84,11 +84,13 @@ const SUCCESSFUL_TERMINAL_STATUSES = new Set<InternalStatus>(["approved", "merge
 const FAILURE_SOURCE_LABELS: Record<string, string> = {
   transient_timeout: "transient timeout",
   agent_crash: "agent crash",
+  local_tool_failed: "local tool failure",
   parse_stall: "parse stall",
   git_isolation: "git isolation",
   wall_clock_timeout: "wall-clock timeout",
   max_retries_exceeded: "retry limit reached",
   provider_error: "provider error",
+  validation_failed: "validation failed",
 };
 
 // States that need validation before resuming (merge-related states)

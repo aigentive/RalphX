@@ -348,13 +348,21 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
       const lastError = metadata.last_agent_error;
       if (!lastError) return null;
       const errorContext: string | undefined = metadata.last_agent_error_context;
+      const failureSource: string | undefined = metadata.failure_source;
       const contextLabel =
-        errorContext === "review" ? "Reviewer"
+        failureSource === "validation_failed" ? "Validation"
+        : failureSource === "local_tool_failed" ? "Local Tool"
+        : errorContext === "review" ? "Reviewer"
         : errorContext === "execution" ? "Worker"
         : "Agent";
+      const title =
+        failureSource === "validation_failed" ? "Validation Failed"
+        : failureSource === "local_tool_failed" ? "Local Tool Failed"
+        : `${contextLabel} Error`;
       return {
         message: lastError as string,
         contextLabel,
+        title,
         errorAt: metadata.last_agent_error_at as string | undefined,
       };
     } catch {
@@ -420,7 +428,7 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
       {/* Agent Error Banner - shows last_agent_error in historical mode */}
       {isHistorical && agentError && (
         <section data-testid="agent-error-section" className="space-y-2">
-          <SectionTitle>{agentError.contextLabel} Error</SectionTitle>
+          <SectionTitle>{agentError.title}</SectionTitle>
           <DetailCard variant="warning">
             <div className="flex items-start gap-2.5">
               <AlertTriangle

@@ -2988,6 +2988,12 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         StreamError::AgentExit { .. } => {
                                             ExecutionRecoveryReasonCode::AgentExit
                                         }
+                                        StreamError::LocalToolFailed { .. } => {
+                                            ExecutionRecoveryReasonCode::LocalToolFailed
+                                        }
+                                        StreamError::ValidationFailed { .. } => {
+                                            ExecutionRecoveryReasonCode::ValidationFailed
+                                        }
                                         _ => ExecutionRecoveryReasonCode::Unknown,
                                     };
                                     let recovery_event = ExecutionRecoveryEvent::new(
@@ -3003,10 +3009,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         )
                                         .unwrap_or(None)
                                         .unwrap_or_default();
-                                    recovery.append_event_with_state(
-                                        recovery_event,
-                                        ExecutionRecoveryState::Retrying,
-                                    );
+                                    let recovery_state = if failure_source.is_transient() {
+                                        ExecutionRecoveryState::Retrying
+                                    } else {
+                                        recovery.stop_retrying = true;
+                                        ExecutionRecoveryState::Failed
+                                    };
+                                    recovery
+                                        .append_event_with_state(recovery_event, recovery_state);
                                     if let Ok(recovery_value) = serde_json::to_value(&recovery) {
                                         obj.insert(
                                             "execution_recovery".to_string(),

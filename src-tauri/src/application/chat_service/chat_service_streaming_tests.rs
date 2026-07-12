@@ -1159,7 +1159,7 @@ async fn claude_stream_usage_limit_assistant_banner_still_classifies_as_provider
 }
 
 #[tokio::test]
-async fn codex_stream_local_command_failures_are_agent_exit_not_provider_pause() {
+async fn codex_stream_local_command_failures_are_local_tool_failure_not_provider_pause() {
     let result = run_codex_stream_lines(
         &[
             r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","command":"rg rate_limit missing.rs","status":"failed","aggregated_output":"rg: missing.rs: No such file or directory\nlocal enum rate_limit","exit_code":2}}"#,
@@ -1167,33 +1167,63 @@ async fn codex_stream_local_command_failures_are_agent_exit_not_provider_pause()
         ],
     )
     .await
-    .expect_err("local command failures should surface as an agent error");
+    .expect_err("local command failures should surface as a local tool error");
 
     match result {
-        StreamError::AgentExit { stderr, .. } => {
-            assert!(stderr.contains("No such file or directory"));
-            assert!(stderr.contains("rate_limit"));
-            assert!(stderr.contains("Codex command_execution failed with exit code 7"));
+        StreamError::LocalToolFailed { message } => {
+            assert!(message.contains("No such file or directory"));
+            assert!(message.contains("rate_limit"));
+            assert!(message.contains("Codex command_execution failed with exit code 7"));
         }
-        other => panic!("expected local command failures to remain AgentExit, got {other:?}"),
+        other => panic!("expected local command failures to remain LocalToolFailed, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn codex_stream_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+async fn codex_stream_mcp_tool_failure_with_rate_limit_text_is_local_tool_failure() {
     let result = run_codex_stream_lines(
         &[r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"delegate_start","error":{"message":"delegate_start failed after reading local rate_limit metadata"}}}"#],
     )
     .await
-    .expect_err("local MCP failure should surface as an agent error");
+    .expect_err("local MCP failure should surface as a local tool error");
 
     match result {
-        StreamError::AgentExit { stderr, .. } => {
-            assert!(stderr.contains("delegate_start failed"));
-            assert!(stderr.contains("rate_limit"));
+        StreamError::LocalToolFailed { message } => {
+            assert!(message.contains("delegate_start failed"));
+            assert!(message.contains("rate_limit"));
         }
-        other => panic!("expected local MCP failure to remain AgentExit, got {other:?}"),
+        other => panic!("expected local MCP failure to remain LocalToolFailed, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn codex_stream_completion_rejection_with_validation_code_is_validation_failed() {
+    let result = run_codex_stream_lines(
+        &[r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","error":{"message":"ERROR: validation_failed\n\nDetails: Validation failed: 1 failed, 9 passed"}}}"#],
+    )
+    .await
+    .expect_err("validation rejection should surface as validation failure");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("validation_failed"));
+            assert!(message.contains("1 failed, 9 passed"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_completed_after_local_command_failure_keeps_diagnostic_non_terminal() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","status":"failed","aggregated_output":"test failed while repairing","exit_code":1}}"#,
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Repaired the failure."}}"#,
+        r#"{"type":"turn.completed"}"#,
+    ])
+    .await
+    .expect("a completed Codex turn must not become AgentExit because an earlier command failed");
+
+    assert_eq!(outcome.response_text, "Repaired the failure.");
 }
 
 #[tokio::test]

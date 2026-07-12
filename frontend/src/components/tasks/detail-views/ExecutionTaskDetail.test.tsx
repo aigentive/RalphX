@@ -528,6 +528,30 @@ describe("ExecutionTaskDetail", () => {
       ).toBe(true);
     });
 
+    it("renders validation failure metadata as validation failure in historical mode", () => {
+      const task = createTestTask({
+        internalStatus: "executing",
+        completedAt: "2026-02-15T11:00:00+00:00",
+        metadata: JSON.stringify({
+          failure_source: "validation_failed",
+          last_agent_error: "Validation failed: 1 failed, 9 passed",
+          last_agent_error_context: "execution",
+        }),
+      });
+
+      render(<ExecutionTaskDetail task={task} isHistorical={true} />, {
+        wrapper: TestWrapper,
+      });
+
+      const section = screen.getByTestId("agent-error-section");
+      expect(section).toBeInTheDocument();
+      expect(screen.getByText("Validation Failed")).toBeInTheDocument();
+      expect(screen.queryByText("Worker Error")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Validation failed: 1 failed, 9 passed")
+      ).toBeInTheDocument();
+    });
+
     it("renders team progress section with teammate role and activity", () => {
       const task = createTestTask({ internalStatus: "executing" });
       const contextKey = buildStoreKey("task_execution", task.id);
