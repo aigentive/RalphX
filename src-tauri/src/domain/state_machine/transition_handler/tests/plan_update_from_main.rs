@@ -1,6 +1,7 @@
 // Tests for update_plan_from_main — ensures plan branches are brought up-to-date
 // from main before task→plan merges to prevent false validation failures.
 
+use super::super::freshness::update_plan_for_freshness;
 use super::super::merge_coordination::{
     update_plan_from_main, update_plan_from_main_isolated, PlanUpdateResult,
 };
@@ -93,12 +94,14 @@ async fn update_plan_already_up_to_date() {
 }
 
 #[tokio::test]
-async fn update_plan_behind_main_gets_updated() {
+async fn non_pr_freshness_plan_update_uses_primary_checkout_path() {
     let (repo, plan_branch) = setup_plan_behind_main();
-    let project = make_test_project(&repo.path_string());
+    let mut project = make_test_project(&repo.path_string());
+    project.github_pr_enabled = false;
 
     let result =
-        update_plan_from_main(repo.path(), &plan_branch, "main", &project, "task-3", None).await;
+        update_plan_for_freshness(repo.path(), &plan_branch, "main", &project, "task-3", None)
+            .await;
 
     assert!(
         matches!(result, PlanUpdateResult::Updated),

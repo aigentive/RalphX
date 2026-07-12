@@ -31,6 +31,7 @@ pub(super) struct ProjectCtx<'a> {
     pub repo_path: &'a Path,
 }
 
+mod automatic_commit_policy;
 mod checkout_free_strategy;
 pub(crate) mod cleanup_helpers;
 mod commit_messages;
