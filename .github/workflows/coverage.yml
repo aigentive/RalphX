@@ -471,20 +471,6 @@ jobs:
             -E 'test(test_restart_ideation_implementation_core)' \
             --remap-path-prefix \
             | tee -a ../coverage/rust-ipc/summary.txt
-          # Agent Persona System: persona command/handler/context/recovery/IPR
-          # coverage lives in these suites (all persona tests carry "persona"
-          # in the name).
-          cargo llvm-cov nextest \
-            --profile ci \
-            --features test-utils \
-            --test suite_ipc_commands \
-            --test suite_chat_service \
-            --test suite_http_handlers \
-            --test suite_interactive_process \
-            --test suite_ideation \
-            -E 'test(persona)' \
-            --remap-path-prefix \
-            | tee -a ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
