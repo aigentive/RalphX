@@ -862,6 +862,14 @@ fn execution_recovery_reason_code_serialization() {
             ExecutionRecoveryReasonCode::IncompleteSteps,
             "incomplete_steps",
         ),
+        (
+            ExecutionRecoveryReasonCode::ValidationFailed,
+            "validation_failed",
+        ),
+        (
+            ExecutionRecoveryReasonCode::LocalToolFailed,
+            "local_tool_failed",
+        ),
         (ExecutionRecoveryReasonCode::Unknown, "unknown"),
     ];
 
@@ -900,6 +908,11 @@ fn execution_failure_source_serialization() {
             "wall_clock_timeout",
         ),
         (ExecutionFailureSource::AgentIncomplete, "agent_incomplete"),
+        (ExecutionFailureSource::LocalToolFailed, "local_tool_failed"),
+        (
+            ExecutionFailureSource::ValidationFailed,
+            "validation_failed",
+        ),
         (ExecutionFailureSource::Unknown, "unknown"),
     ];
 
@@ -921,6 +934,8 @@ fn execution_failure_source_not_transient_for_non_retryable_variants() {
     assert!(!ExecutionFailureSource::ProviderError.is_transient());
     assert!(!ExecutionFailureSource::WallClockTimeout.is_transient());
     assert!(!ExecutionFailureSource::AgentIncomplete.is_transient());
+    assert!(!ExecutionFailureSource::LocalToolFailed.is_transient());
+    assert!(!ExecutionFailureSource::ValidationFailed.is_transient());
     assert!(!ExecutionFailureSource::Unknown.is_transient());
 }
 

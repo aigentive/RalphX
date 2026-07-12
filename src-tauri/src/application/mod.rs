@@ -3,6 +3,8 @@
 
 pub mod agent_client_bundle;
 pub mod agent_conversation_archive;
+#[cfg(test)]
+mod agent_conversation_archive_tests;
 pub mod agent_conversation_fork;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_jira_issue;

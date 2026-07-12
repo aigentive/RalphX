@@ -3601,7 +3601,9 @@ async fn process_codex_stream_background<R: Runtime>(
                 }
 
                 if is_completion_tool_name(&tool_call.name) {
-                    if completion_tool_result_accepted(tool_call.result.as_ref()) {
+                    if extract_codex_error(&event).is_none()
+                        && completion_tool_result_accepted(tool_call.result.as_ref())
+                    {
                         completion_signal_tracker.mark_completion_called();
                     } else {
                         tracing::warn!(
@@ -3779,6 +3781,7 @@ async fn process_codex_stream_background<R: Runtime>(
         &runtime_errors,
         &local_tool_errors,
         status_code,
+        codex_turn_completed || completion_signal_tracker.was_called(),
     ) {
         return Err(stream_error);
     }

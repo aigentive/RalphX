@@ -2,6 +2,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 import type { AgentSidebarConversationGroup } from "@/api/chat";
 import { getQueryClient } from "@/lib/queryClient";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -66,6 +67,36 @@ export function navigateToIdeationSession(sessionId: string): void {
   // Same-project navigation: fast path.
   useUiStore.getState().setCurrentView("ideation");
   useIdeationStore.getState().setActiveSession(sessionId);
+}
+
+/**
+ * Select an Agent conversation by its durable conversation identity.
+ *
+ * Notification targets carry a conversation ID, not an ideation-session ID.
+ * Keep project switching and chat selection together so every caller opens the
+ * same conversation deterministically.
+ */
+export function navigateToAgentConversation(
+  projectId: string,
+  conversationId: string,
+): void {
+  const agentSessionState = useAgentSessionStore.getState();
+  agentSessionState.selectConversation(projectId, conversationId);
+  useChatStore
+    .getState()
+    .setActiveConversation(`project:${projectId}`, conversationId);
+
+  const activeProjectId = useProjectStore.getState().activeProjectId;
+  if (activeProjectId !== projectId) {
+    const uiState = useUiStore.getState();
+    useUiStore.setState({
+      viewByProject: { ...uiState.viewByProject, [projectId]: "agents" },
+    });
+    useProjectStore.getState().selectProject(projectId);
+    return;
+  }
+
+  useUiStore.getState().setCurrentView("agents");
 }
 
 function navigateToAgentsForIdeationSession(

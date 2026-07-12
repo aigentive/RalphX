@@ -108,7 +108,7 @@ pub async fn delete_automation_with_archive(state: &AppState, id: &AutomationId)
         if conversation.archived_at.is_some() {
             continue;
         }
-        archive_agent_conversation_for_state(&conversation.id, state)
+        archive_agent_conversation_for_state(&conversation.id, state, false)
             .await
             .map_err(|error| {
                 AppError::Infrastructure(format!(

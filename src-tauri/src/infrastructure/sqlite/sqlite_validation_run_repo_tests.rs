@@ -234,3 +234,40 @@ async fn validation_run_repo_returns_none_without_runs() {
 
     assert!(latest.is_none());
 }
+
+#[tokio::test]
+async fn validation_run_repo_marks_only_running_runs_error() {
+    let (_db, repo, task) = setup_repo().await;
+    let completed_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 2, 0).unwrap();
+
+    let mut running = validation_run(&task);
+    running.id = "running-run".to_string();
+    running.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 1, 0).unwrap();
+    repo.create_run(&running)
+        .await
+        .expect("running run should persist");
+
+    let mut passed = validation_run(&task);
+    passed.id = "passed-run".to_string();
+    passed.status = ValidationRunStatus::Passed;
+    passed.started_at = Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap();
+    passed.completed_at = Some(completed_at);
+    repo.create_run(&passed)
+        .await
+        .expect("passed run should persist");
+
+    let marked = repo
+        .mark_running_runs_error(completed_at)
+        .await
+        .expect("running runs should be marked error");
+    assert_eq!(marked, 1);
+
+    let latest = repo
+        .latest_run_with_results_for_task(&task.id)
+        .await
+        .expect("latest lookup should succeed")
+        .expect("latest run should exist");
+    assert_eq!(latest.run.id, "running-run");
+    assert_eq!(latest.run.status, ValidationRunStatus::Error);
+    assert_eq!(latest.run.completed_at, Some(completed_at));
+}

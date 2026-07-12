@@ -769,6 +769,22 @@ async fn cancelled_stream_marks_recovery_task_run_as_system_recovery() {
     );
 }
 
+#[test]
+fn stream_error_recovery_reason_code_maps_local_tool_and_validation_failures() {
+    assert_eq!(
+        stream_error_recovery_reason_code(&StreamError::LocalToolFailed {
+            message: "local tool failed".to_string(),
+        }),
+        ExecutionRecoveryReasonCode::LocalToolFailed,
+    );
+    assert_eq!(
+        stream_error_recovery_reason_code(&StreamError::ValidationFailed {
+            message: "validation failed".to_string(),
+        }),
+        ExecutionRecoveryReasonCode::ValidationFailed,
+    );
+}
+
 #[tokio::test]
 async fn cancelled_stream_marks_retrying_recovery_metadata_as_system_recovery() {
     let state = AppState::new_test();
@@ -1772,11 +1788,12 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
         &runtime_errors,
         &local_tool_errors,
         Some(1),
+        false,
     )
     .expect("local Codex tool failure should produce a stream error");
     assert!(
-        matches!(stream_error, StreamError::AgentExit { .. }),
-        "local command output containing rate_limit must not classify as provider error"
+        matches!(stream_error, StreamError::LocalToolFailed { .. }),
+        "local command output containing rate_limit must not classify as provider or agent-exit error"
     );
 
     let conversation_id = ChatConversationId::new();
