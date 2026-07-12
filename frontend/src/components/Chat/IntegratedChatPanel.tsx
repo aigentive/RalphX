@@ -101,7 +101,12 @@ import {
   useChatAttachments,
   type ChatAttachment as PendingChatAttachment,
 } from "@/hooks/useChatAttachments";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useSwitchConversationPersona } from "@/hooks/usePersonas";
 import { useIdeationStore } from "@/stores/ideationStore";
+import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
+import { extractErrorMessage } from "@/lib/errors";
+import { PERSONA_UNAVAILABLE_PREFIX } from "@/lib/personaErrors";
 import { getModelLabel } from "@/lib/model-utils";
 import { selectIsTeamActive, selectEffectiveModel } from "@/stores/chatStore";
 import {
@@ -125,6 +130,7 @@ import { TimeoutWarning } from "./TimeoutWarning";
 import { ChildSessionNavigationContext } from "./tool-widgets/ChildSessionNavigationContext";
 import { ChildSessionTranscriptModal } from "./ChildSessionTranscriptModal";
 import { cn } from "@/lib/utils";
+import { PersonaChip } from "./PersonaChip";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
@@ -137,6 +143,18 @@ type TranscriptWindowData =
       totalMessageCount?: number;
     }
   | undefined;
+
+type PersonaRetryAttempt = {
+  message: string;
+  options:
+    | {
+        projectReferences?: ComposerProjectReference[];
+        integrationReferences?: ComposerIntegrationReference[];
+        artifactReferences?: ComposerArtifactReference[];
+        teamIntent?: TeamIntent | null;
+      }
+    | undefined;
+};
 
 function transcriptWindowHasMessages(data: TranscriptWindowData): boolean {
   return (data?.totalMessageCount ?? data?.messages.length ?? 0) > 0;
@@ -308,7 +326,20 @@ export function IntegratedChatPanel({
 }: IntegratedChatPanelProps) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
+  const { data: featureFlags } = useFeatureFlags();
+  const openModal = useUiStore((s) => s.openModal);
+  const switchConversationPersona = useSwitchConversationPersona();
   const pollStartRef = useRef<number | null>(null);
+  const personaRetryAttemptRef = useRef<PersonaRetryAttempt | null>(null);
+  const [personaUnavailableError, setPersonaUnavailableError] = useState<
+    string | null
+  >(null);
+  const [isRetryingPersonaSend, setIsRetryingPersonaSend] = useState(false);
+  const handlePersonaUnavailable = useCallback((message: string) => {
+    setPersonaUnavailableError(
+      message.slice(PERSONA_UNAVAILABLE_PREFIX.length).replace(/\]$/, ""),
+    );
+  }, []);
   const [
     transcriptPaintCoverConversationId,
     setTranscriptPaintCoverConversationId,
@@ -1168,6 +1199,7 @@ export function IntegratedChatPanel({
     sendOptions,
     messageCount: messagesData.length,
     onUserMessageSent,
+    onPersonaUnavailable: handlePersonaUnavailable,
   });
 
   // Wrap handleSend to include attachment IDs, team target, and clear attachments after send.
@@ -1183,6 +1215,7 @@ export function IntegratedChatPanel({
         teamIntent?: TeamIntent | null;
       },
     ) => {
+      personaRetryAttemptRef.current = { message, options };
       const attachmentIds = attachments.map((a) => a.id);
       logger.debug("[ChatScroll] handleSend firing", {
         hasAttachments: attachmentIds.length > 0,
@@ -1215,6 +1248,34 @@ export function IntegratedChatPanel({
   const handleEditLastQueuedWrapper = () => {
     handleEditLastQueued(queuedMessages);
   };
+
+  const handleRemovePersonaAndRetry = useCallback(async () => {
+    const retryAttempt = personaRetryAttemptRef.current;
+    if (!effectiveConversationId || !retryAttempt || isRetryingPersonaSend) {
+      return;
+    }
+
+    setIsRetryingPersonaSend(true);
+    try {
+      await switchConversationPersona.mutateAsync({
+        conversationId: effectiveConversationId,
+        personaId: null,
+      });
+      setPersonaUnavailableError(null);
+      await handleSend(retryAttempt.message, retryAttempt.options);
+    } catch (error) {
+      setPersonaUnavailableError(
+        extractErrorMessage(error, "Could not remove the unavailable persona."),
+      );
+    } finally {
+      setIsRetryingPersonaSend(false);
+    }
+  }, [
+    effectiveConversationId,
+    handleSend,
+    isRetryingPersonaSend,
+    switchConversationPersona,
+  ]);
 
   // Handle stopping agent - clear streaming state
   const handleStopAgentWrapper = useCallback(async () => {
@@ -1452,6 +1513,11 @@ export function IntegratedChatPanel({
           : isSending || agentStatus === "generating"
             ? "agent"
             : "idle";
+  const showPersonaChip =
+    currentContextType === "project" &&
+    featureFlags.agentPersonas === true &&
+    activeConversationMeta?.agentMode !== "persona_builder" &&
+    effectiveConversationId !== null;
 
   // Empty state: only show when we KNOW there are no messages (not while loading)
   // Also don't show empty if conversations are loading - we might auto-select one
@@ -1635,6 +1701,17 @@ export function IntegratedChatPanel({
                 : {})}
               {...(effectiveModel !== undefined
                 ? { modelDisplay: effectiveModel }
+                : {})}
+              {...(showPersonaChip
+                ? {
+                    personaChip: (
+                      <PersonaChip
+                        conversationId={effectiveConversationId}
+                        personaId={activeConversationMeta?.personaId}
+                        isAgentRunning={isAgentRunning}
+                      />
+                    ),
+                  }
                 : {})}
             />
           )}
@@ -1903,6 +1980,21 @@ export function IntegratedChatPanel({
                         planApprovalAction: questionBannerAction,
                       })}
                     />
+                  )}
+
+                  {personaUnavailableError && (
+                    <div className="px-3 pt-3">
+                      <PersonaUnavailableNotice
+                        message={personaUnavailableError}
+                        onRemoveAndRetry={() => {
+                          void handleRemovePersonaAndRetry();
+                        }}
+                        onOpenPersonas={() =>
+                          openModal("settings", { section: "personas" })
+                        }
+                        disabled={isRetryingPersonaSend}
+                      />
+                    </div>
                   )}
 
                   {/* Chat Input — wrapper padding matches ExecutionControlBar's

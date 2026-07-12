@@ -105,6 +105,16 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(
     };
   },
 );
+const { mockFeatureFlags } = vi.hoisted(() => ({
+  mockFeatureFlags: { agentPersonas: false, activityPage: false },
+}));
+const { mockChatActions, mockSwitchConversationPersona } = vi.hoisted(() => ({
+  mockChatActions: {
+    lastOptions: null as { onPersonaUnavailable?: (message: string) => void } | null,
+    handleSend: vi.fn().mockResolvedValue(undefined),
+  },
+  mockSwitchConversationPersona: vi.fn().mockResolvedValue(undefined),
+}));
 
 // ============================================================================
 // Mocks
@@ -114,6 +124,22 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
   emit: vi.fn(),
+}));
+
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  useFeatureFlags: () => ({ data: mockFeatureFlags }),
+}));
+
+vi.mock("@/hooks/usePersonas", () => ({
+  useSwitchConversationPersona: () => ({
+    mutateAsync: mockSwitchConversationPersona,
+  }),
+}));
+
+vi.mock("./PersonaChip", () => ({
+  PersonaChip: ({ conversationId }: { conversationId: string }) => (
+    <div data-testid="persona-chip" data-conversation-id={conversationId} />
+  ),
 }));
 
 // Mock the event bus provider
@@ -241,13 +267,16 @@ vi.mock("@/hooks/useChatPanelContext", () => ({
 
 // Mock useChatActions (replaces useIntegratedChatHandlers)
 vi.mock("@/hooks/useChatActions", () => ({
-  useChatActions: () => ({
-    handleSend: vi.fn(),
+  useChatActions: (options: { onPersonaUnavailable?: (message: string) => void }) => {
+    mockChatActions.lastOptions = options;
+    return {
+    handleSend: mockChatActions.handleSend,
     handleEditLastQueued: vi.fn(),
     handleDeleteQueuedMessage: vi.fn(),
     handleEditQueuedMessage: vi.fn(),
     handleStopAgent: vi.fn(),
-  }),
+    };
+  },
 }));
 
 // Mock useChatEvents (replaces useIntegratedChatEvents)
@@ -350,6 +379,11 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 describe("IntegratedChatPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockChatActions.lastOptions = null;
+    mockChatActions.handleSend.mockResolvedValue(undefined);
+    mockSwitchConversationPersona.mockResolvedValue(undefined);
+    mockFeatureFlags.agentPersonas = false;
+    mockFeatureFlags.activityPage = false;
     mockTasks = [];
     // Reset useChat mock state to defaults (empty messages, no conversation context)
     useChatMockState.messages = [];
@@ -401,6 +435,144 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.streamingContentBlocks = [];
     mockChatPanelContext.streamingTasks = new Map();
     mockChatPanelContext.isFinalizing = false;
+  });
+
+  it("renders the persona chip only for flagged project conversations outside persona-builder mode", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    const projectPanel = render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+    expect(screen.getByTestId("persona-chip")).toHaveAttribute(
+      "data-conversation-id",
+      "conv-1",
+    );
+    projectPanel.unmount();
+
+    for (const contextType of ["ideation", "task", "merge", "review"] as const) {
+      mockChatPanelContext.currentContextType = contextType;
+      mockChatPanelContext.currentContextId = `${contextType}-1`;
+      mockChatPanelContext.storeContextKey = `${contextType}:${contextType}-1`;
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversation = {
+        id: "conv-1",
+        contextType,
+        contextId: `${contextType}-1`,
+        providerHarness: null,
+        providerSessionId: null,
+      } as typeof useChatMockState.conversation;
+      const panel = render(
+        <TestWrapper>
+          <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+        </TestWrapper>,
+      );
+      expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+      panel.unmount();
+    }
+
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "persona_builder",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+    const personaBuilderPanel = render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+    expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+    personaBuilderPanel.unmount();
+
+    mockFeatureFlags.agentPersonas = false;
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+    expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+  });
+
+  it("shows a persona-unavailable composer notice and clears the binding before one retry", async () => {
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride={null}
+          renderComposer={({ onSend }) => (
+            <button type="button" onClick={() => void onSend("retry this")}>Send</button>
+          )}
+        />
+      </TestWrapper>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(mockChatActions.handleSend).toHaveBeenCalledWith(
+        "retry this",
+        undefined,
+        undefined,
+        undefined,
+      );
+    });
+
+    act(() => {
+      mockChatActions.lastOptions?.onPersonaUnavailable?.(
+        "[Persona unavailable: Reviewer Voice was archived]",
+      );
+    });
+
+    expect(screen.getByTestId("persona-unavailable-notice")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove persona and retry" }),
+    );
+
+    await waitFor(() => {
+      expect(mockSwitchConversationPersona).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        personaId: null,
+      });
+      expect(mockChatActions.handleSend).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("task selection override", () => {
