@@ -1507,7 +1507,8 @@ function AppContent() {
                 aria-hidden={!notificationsPanelOpen}
                 style={{
                   bottom: showsExecutionFooter ? "76px" : "0px",
-                  width: "min(100vw, 400px)",
+                  width: "100vw",
+                  maxWidth: "400px",
                   backgroundColor: "var(--bg-surface)",
                   borderLeftColor: "var(--border-subtle)",
                   borderLeftStyle: "solid",
