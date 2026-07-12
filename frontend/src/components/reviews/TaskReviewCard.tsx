@@ -47,41 +47,55 @@ interface TaskReviewCardProps {
   task: Task;
   onReview?: (taskId: string) => void;
   isLoading?: boolean;
+  presentation?: "default" | "panel";
 }
 
-export function TaskReviewCard({ task, onReview, isLoading = false }: TaskReviewCardProps) {
+export function TaskReviewCard({
+  task,
+  onReview,
+  isLoading = false,
+  presentation = "default",
+}: TaskReviewCardProps) {
   const [isHovered, setIsHovered] = useState(false);
   const isAiPhase = isAiReviewPhase(task.internalStatus);
+  const panelPresentation = presentation === "panel";
 
   return (
     <Card
       data-testid={`task-review-card-${task.id}`}
       data-status={task.internalStatus}
+      data-presentation={presentation}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={cn(
-        "p-5 border transition-all duration-150 ease-out",
+        "border transition-all duration-150 ease-out",
         "bg-[var(--bg-elevated)] border-[var(--border-subtle)]",
         "rounded-[var(--radius-md)]",
-        isHovered && "shadow-[var(--shadow-xs)]",
-        isHovered && "-translate-y-[1px]",
+        panelPresentation
+          ? "min-w-0 overflow-hidden p-3 shadow-none"
+          : "p-5",
+        !panelPresentation && isHovered && "shadow-[var(--shadow-xs)]",
+        !panelPresentation && isHovered && "-translate-y-[1px]",
         isHovered && "border-[var(--border-default)]"
       )}
     >
       {/* Task Title */}
       <div
         data-testid="task-review-title"
-        className="font-semibold text-sm truncate text-[var(--text-primary)] leading-tight"
+        className={cn(
+          "font-semibold text-sm text-[var(--text-primary)] leading-tight",
+          panelPresentation ? "min-w-0 break-words line-clamp-2" : "truncate"
+        )}
       >
         {task.title}
       </div>
 
       {/* Status Row */}
-      <div className="flex flex-wrap items-center gap-2 mt-2">
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
         <Badge
           variant="outline"
           className={cn(
-            "text-xs font-medium border",
+            "max-w-full text-xs font-medium border",
             getStatusBadgeClass(task.internalStatus)
           )}
         >
@@ -89,7 +103,7 @@ export function TaskReviewCard({ task, onReview, isLoading = false }: TaskReview
         </Badge>
         <span
           data-testid="review-type-indicator"
-          className="inline-flex items-center gap-1 text-xs text-[var(--text-secondary)]"
+          className="inline-flex min-w-0 items-center gap-1 text-xs text-[var(--text-secondary)]"
         >
           {isAiPhase ? (
             <>
@@ -110,13 +124,13 @@ export function TaskReviewCard({ task, onReview, isLoading = false }: TaskReview
         <div className="mt-3">
           <div
             className={cn(
-              "p-2 rounded-[var(--radius-sm)]",
+              "min-w-0 overflow-hidden p-2 rounded-[var(--radius-sm)]",
               "bg-[var(--bg-base)]"
             )}
           >
             <p
               data-testid="task-review-description"
-              className="text-sm text-[var(--text-secondary)] italic line-clamp-2 leading-normal"
+              className="text-sm text-[var(--text-secondary)] italic line-clamp-2 leading-normal break-words"
             >
               {task.description}
             </p>
@@ -126,21 +140,24 @@ export function TaskReviewCard({ task, onReview, isLoading = false }: TaskReview
 
       {/* Action Buttons */}
       {onReview && (
-        <div className="flex flex-wrap gap-2 mt-4">
+        <div className={cn("flex min-w-0 flex-wrap gap-2", panelPresentation ? "mt-3" : "mt-4")}>
           <Button
             data-testid={`review-button-${task.id}`}
             variant="ghost"
             size="sm"
             onClick={() => onReview(task.id)}
             disabled={isLoading}
-            className="bg-[var(--accent-muted)] hover:bg-[var(--accent-primary)] hover:text-white text-[var(--accent-primary)]"
+            className={cn(
+              "bg-[var(--accent-muted)] hover:bg-[var(--accent-primary)] hover:text-white text-[var(--accent-primary)]",
+              panelPresentation && "w-full min-w-0 px-2"
+            )}
           >
             {isLoading ? (
               <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
             ) : (
               <Eye className="w-4 h-4 mr-1.5" />
             )}
-            Review
+            <span className="truncate">Review</span>
           </Button>
         </div>
       )}

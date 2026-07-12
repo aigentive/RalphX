@@ -61,10 +61,17 @@ function relativeTime(createdAt: string | undefined, now: number): string | null
 
 function useNotificationNow(isOpen: boolean): number {
   const [now, setNow] = useState(() => Date.now());
+  const wasOpen = useRef(isOpen);
 
   useEffect(() => {
-    if (!isOpen) return undefined;
-    setNow(Date.now());
+    if (!isOpen) {
+      wasOpen.current = false;
+      return undefined;
+    }
+    if (!wasOpen.current) {
+      setNow(Date.now());
+    }
+    wasOpen.current = true;
     const intervalId = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(intervalId);
   }, [isOpen]);
@@ -111,20 +118,20 @@ function AttentionItemRow({
           open();
         }
       }}
-      className="w-full rounded-md p-3 text-left outline-none hover:bg-[var(--bg-hover)]/30 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+      className="w-full min-w-0 overflow-hidden rounded-md p-3 text-left outline-none hover:bg-[var(--bg-hover)]/30 focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
       style={{
         backgroundColor: "var(--bg-elevated)", borderColor: "var(--border-subtle)",
         borderStyle: "solid", borderWidth: "1px",
       }}
     >
-      <div className="flex gap-2">
+      <div className="flex min-w-0 gap-2">
         <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color: presentation.iconColor }} />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>{item.title}</p>
-          {item.detail && <p className="mt-1 line-clamp-2 text-sm" style={{ color: "var(--text-muted)" }}>{item.detail}</p>}
-          <div className="mt-2 flex items-center justify-between gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
-            <span className="truncate">{[metaTime, projectName].filter(Boolean).join(" · ")}</span>
-            {presentation.action && <Button variant="ghost" size="sm" disabled={expired} className="h-6 shrink-0 px-2 text-xs text-[var(--accent-primary)]" onClick={(event) => {
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <p className="min-w-0 truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>{item.title}</p>
+          {item.detail && <p className="mt-1 line-clamp-2 break-words text-sm" style={{ color: "var(--text-muted)" }}>{item.detail}</p>}
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
+            <span className="min-w-0 flex-1 truncate">{[metaTime, projectName].filter(Boolean).join(" · ")}</span>
+            {presentation.action && <Button variant="ghost" size="sm" disabled={expired} className="h-6 max-w-full shrink-0 px-2 text-xs text-[var(--accent-primary)]" onClick={(event) => {
               event.stopPropagation();
               open();
             }}>{expired ? "Expired" : presentation.action}</Button>}
@@ -251,7 +258,7 @@ export function NotificationCenterPanel({ isOpen, onClose, onOpenAutomationDetai
           const review = (item.category === "review_needed" || item.category === "review_escalated") && taskId
             ? reviewTasksById[taskId] ?? awaitingReviewTasksById[taskId] ?? tasks[taskId]
             : undefined;
-          return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} /> : <AttentionItemRow key={item.id} item={item} now={now} onOpen={openItem} projectName={item.projectId ? projects[item.projectId]?.name : undefined} />;
+          return review ? <TaskReviewCard key={item.id} task={review} onReview={setSelectedReviewTaskId} presentation="panel" /> : <AttentionItemRow key={item.id} item={item} now={now} onOpen={openItem} projectName={item.projectId ? projects[item.projectId]?.name : undefined} />;
         })}</div></div>)}</div>}</>}
       </ScrollArea>
     </section>
