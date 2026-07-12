@@ -14,8 +14,11 @@ import { render as rtlRender, screen, waitFor, within } from "@testing-library/r
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SettingsDialog from "./SettingsDialog";
+import { invoke } from "@tauri-apps/api/core";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import { SETTINGS_SECTIONS } from "./settings-registry";
+
+const featureFlags = vi.hoisted(() => ({ agentPersonas: false }));
 
 // ---------------------------------------------------------------------------
 // uiStore mock
@@ -35,6 +38,10 @@ vi.mock("@/stores/uiStore", () => ({
 
 vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({ subscribe: vi.fn(() => vi.fn()) }),
+}));
+
+vi.mock("@/hooks/useFeatureFlags", () => ({
+  useFeatureFlags: () => ({ data: featureFlags }),
 }));
 
 vi.mock("./sections/GlobalExecutionSection", () => ({
@@ -75,6 +82,10 @@ vi.mock("./RepositorySettingsSection", () => ({
   ),
 }));
 
+vi.mock("./PersonasSection", () => ({
+  PersonasSection: () => <div data-testid="personas-section">Personas</div>,
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -111,6 +122,7 @@ describe("SettingsDialog", () => {
     uiState.activeModal = null;
     uiState.modalContext = undefined;
     uiState.closeModal = mockCloseModal;
+    featureFlags.agentPersonas = false;
   });
 
   // --------------------------------------------------------------------------
@@ -167,6 +179,14 @@ describe("SettingsDialog", () => {
   // Deep-link section initialization
   // --------------------------------------------------------------------------
 
+  it("registers Personas in the static General settings registry", () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "personas",
+      groupId: "general",
+      label: "Personas",
+    });
+  });
+
   describe("Section initialization via modalContext deep-link", () => {
     it("defaults to the Providers section when no modalContext.section is provided", async () => {
       uiState.activeModal = "settings";
@@ -196,6 +216,17 @@ describe("SettingsDialog", () => {
       expect(
         await screen.findByText("Execution Pipeline Agents", {}, { timeout: 5_000 })
       ).toBeInTheDocument();
+    });
+
+    it("opens the Personas section from a settings deep link when enabled", async () => {
+      uiState.activeModal = "settings";
+      uiState.modalContext = { section: "personas" };
+      featureFlags.agentPersonas = true;
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(screen.getByTestId("settings-section-loading")).toBeInTheDocument();
+      expect(screen.queryByTestId("personas-section")).not.toBeInTheDocument();
+      expect(await screen.findByTestId("personas-section")).toBeInTheDocument();
     });
 
   });
@@ -254,6 +285,17 @@ describe("SettingsDialog", () => {
       expect(screen.getByRole("button", { name: "Providers" })).toBeInTheDocument();
       expect(screen.getByTestId("settings-section-loading")).toBeInTheDocument();
       expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
+    });
+
+    it("hides the Personas navigation and content when the feature flag is off", () => {
+      uiState.activeModal = "settings";
+      uiState.modalContext = { section: "personas" };
+      featureFlags.agentPersonas = false;
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(screen.queryByRole("button", { name: "Personas" })).not.toBeInTheDocument();
+      expect(screen.queryByTestId("personas-section")).not.toBeInTheDocument();
+      expect(invoke).not.toHaveBeenCalledWith("list_personas", { input: {} });
     });
 
     it("remembers the last opened section across Settings reopens", async () => {

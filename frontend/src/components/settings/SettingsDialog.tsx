@@ -7,6 +7,7 @@ import {
 import { X } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +53,7 @@ export default function SettingsDialog({
   const activeModal = useUiStore((s) => s.activeModal);
   const modalContext = useUiStore((s) => s.modalContext);
   const closeModal = useUiStore((s) => s.closeModal);
+  const { data: featureFlags } = useFeatureFlags();
 
   const isOpen = activeModal === "settings";
 
@@ -126,6 +128,9 @@ export default function SettingsDialog({
   }, [isOpen, modalContext, setActiveSection]);
 
   const activeSectionMeta = SETTINGS_SECTIONS.find((s) => s.id === activeSection);
+  const visibleSections = SETTINGS_SECTIONS.filter(
+    (section) => section.id !== "personas" || featureFlags.agentPersonas,
+  );
 
   const disabled = isLoadingSettings || isSavingSettings;
 
@@ -180,7 +185,7 @@ export default function SettingsDialog({
           {/* Left rail — hidden below lg breakpoint */}
           <nav className="settings-nav hidden lg:flex flex-shrink-0 flex-col overflow-y-auto">
             {SETTINGS_GROUPS.map((group) => {
-              const groupSections = SETTINGS_SECTIONS.filter(
+              const groupSections = visibleSections.filter(
                 (s) => s.groupId === group.id
               );
               return (
@@ -227,7 +232,7 @@ export default function SettingsDialog({
               className="settings-input w-full focus:outline-none"
             >
               {SETTINGS_GROUPS.map((group) => {
-                const groupSections = SETTINGS_SECTIONS.filter(
+                const groupSections = visibleSections.filter(
                   (s) => s.groupId === group.id
                 );
                 return (
