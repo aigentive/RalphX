@@ -67,5 +67,25 @@ describe("persona builder MCP tools", () => {
         const { callTauri, callTauriGet } = captureCalls();
         await expect(callPersonaTool("save_persona_draft", callTauri, callTauriGet, { slug: "researcher", content: "kind: persona" }, {})).rejects.toThrow("requires the current PersonaBuilder conversation id");
     });
+    it("rejects unsupported tools and malformed draft reads before making backend calls", async () => {
+        const { callTauri, callTauriGet, getCalls, postCalls } = captureCalls();
+        await expect(callPersonaTool("unsupported_persona_tool", callTauri, callTauriGet, {}, { conversationId: "conversation-1" })).rejects.toThrow("Unsupported persona tool");
+        await expect(callPersonaTool("get_persona_draft", callTauri, callTauriGet, { draft_id: "   " }, { conversationId: "conversation-1" })).rejects.toThrow("requires a non-empty draft_id");
+        expect(postCalls).toEqual([]);
+        expect(getCalls).toEqual([]);
+    });
+    it("filters non-object save arguments while preserving trimmed caller context", async () => {
+        const { callTauri, callTauriGet, postCalls } = captureCalls();
+        await callPersonaTool("save_persona_draft", callTauri, callTauriGet, null, {
+            conversationId: "  conversation-1  ",
+        });
+        expect(postCalls).toEqual([
+            {
+                path: "save_persona_draft",
+                body: {},
+                options: { headers: { "X-RalphX-Caller-Session-Id": "conversation-1" } },
+            },
+        ]);
+    });
 });
 //# sourceMappingURL=persona-tools.test.js.map
