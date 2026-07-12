@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { tasksApi } from "@/api/tasks";
-import { navigateToIdeationSession } from "@/lib/navigation";
+import { navigateToAgentConversation, navigateToIdeationSession } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
@@ -16,7 +16,10 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
 vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
-vi.mock("@/lib/navigation", () => ({ navigateToIdeationSession: vi.fn() }));
+vi.mock("@/lib/navigation", () => ({
+  navigateToAgentConversation: vi.fn(),
+  navigateToIdeationSession: vi.fn(),
+}));
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 const target = {
@@ -159,10 +162,34 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("opens either agent conversation target and ignores a target with neither conversation id", () => {
+  it("routes an Agent conversation target to its exact project conversation", () => {
     const onClose = vi.fn();
     navigateNotification(
-      { id: "conversation-1", category: "agent_waiting", target: { kind: "agent_conversation", setupConversationId: "setup-1" } },
+      {
+        id: "conversation-1",
+        category: "agent_question",
+        target: {
+          kind: "agent_conversation",
+          projectId: "project-2",
+          conversationId: "conversation-1",
+        },
+      },
+      {} as QueryClient,
+      { onClose },
+    );
+
+    expect(navigateToAgentConversation).toHaveBeenCalledWith(
+      "project-2",
+      "conversation-1",
+    );
+    expect(navigateToIdeationSession).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the legacy setup-conversation fallback and closes malformed targets", () => {
+    const onClose = vi.fn();
+    navigateNotification(
+      { id: "conversation-legacy", category: "agent_waiting", target: { kind: "agent_conversation", setupConversationId: "setup-1" } },
       {} as QueryClient,
       { onClose },
     );

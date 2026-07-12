@@ -1525,10 +1525,11 @@ export async function spawnConversationSessionNamer(
 
 export async function archiveConversation(
   conversationId: string,
+  options: { closePullRequest: boolean },
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
     "archive_agent_conversation",
-    { conversationId },
+    { conversationId, closePullRequest: options.closePullRequest },
     ChatConversationResponseSchema,
   );
   return transformConversation(raw);
