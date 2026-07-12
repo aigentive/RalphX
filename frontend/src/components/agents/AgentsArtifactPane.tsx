@@ -2368,7 +2368,7 @@ function AgentPlanPanel({
     void confirm({
       title: "Restart implementation?",
       description:
-        "Running work will be stopped, the current task attempt will be archived, and implementation will start again from freshly created tasks.",
+        "Running work will be stopped. RalphX will close the existing PR, archive the current task attempt, reset the implementation branch and workspace to the latest base branch from origin, and create fresh tasks.",
       confirmText: "Restart Implementation",
       pendingText: "Restarting...",
       variant: "destructive",
