@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState, PrReviewFeedback,
-    PrReviewThread, PrStatus, PrSyncState,
+    PrReviewSubmissionEvent, PrReviewThread, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use ralphx_lib::{AppError, AppResult};
 
@@ -42,6 +42,7 @@ pub struct MockGithubService {
     pub find_pr_by_head_branch_calls: Arc<Mutex<u32>>,
     pub fetch_pr_detail_calls: Arc<Mutex<u32>>,
     pub fetch_pr_review_thread_calls: Arc<Mutex<u32>>,
+    pub submit_pr_review_calls: Arc<Mutex<u32>>,
     push_branch_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
@@ -52,6 +53,7 @@ pub struct MockGithubService {
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
     fetch_pr_detail_result: Arc<Mutex<Option<AppResult<PrDetail>>>>,
     fetch_pr_review_thread_result: Arc<Mutex<Option<AppResult<PrReviewThread>>>>,
+    submit_pr_review_result: Arc<Mutex<Option<AppResult<PrSubmittedReview>>>>,
 }
 
 #[allow(dead_code)]
@@ -74,6 +76,7 @@ impl MockGithubService {
             find_pr_by_head_branch_calls: Arc::new(Mutex::new(0)),
             fetch_pr_detail_calls: Arc::new(Mutex::new(0)),
             fetch_pr_review_thread_calls: Arc::new(Mutex::new(0)),
+            submit_pr_review_calls: Arc::new(Mutex::new(0)),
             push_branch_result: Arc::new(Mutex::new(None)),
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
@@ -82,6 +85,7 @@ impl MockGithubService {
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
             fetch_pr_detail_result: Arc::new(Mutex::new(None)),
             fetch_pr_review_thread_result: Arc::new(Mutex::new(None)),
+            submit_pr_review_result: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -96,6 +100,13 @@ impl MockGithubService {
             .lock()
             .unwrap()
             .push_back(Ok(state));
+    }
+
+    pub fn will_fail_sync_state(&self, message: impl Into<String>) {
+        self.sync_state_responses
+            .lock()
+            .unwrap()
+            .push_back(Err(AppError::Infrastructure(message.into())));
     }
 
     pub fn will_return_review_feedback(&self, feedback: PrReviewFeedback) {
@@ -161,6 +172,16 @@ impl MockGithubService {
             Some(Err(AppError::Infrastructure(msg.into())));
     }
 
+    pub fn will_submit_pr_review(&self, id: impl Into<String>, url: Option<String>) {
+        *self.submit_pr_review_result.lock().unwrap() =
+            Some(Ok(PrSubmittedReview { id: id.into(), url }));
+    }
+
+    pub fn will_fail_submit_pr_review(&self, msg: impl Into<String>) {
+        *self.submit_pr_review_result.lock().unwrap() =
+            Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
     // --- Convenience accessors ---
 
     pub fn check_calls(&self) -> u32 {
@@ -192,6 +213,10 @@ impl MockGithubService {
     }
     pub fn find_pr_calls(&self) -> u32 {
         *self.find_pr_by_head_branch_calls.lock().unwrap()
+    }
+
+    pub fn submit_review_calls(&self) -> u32 {
+        *self.submit_pr_review_calls.lock().unwrap()
     }
 }
 
@@ -252,6 +277,25 @@ impl GithubServiceTrait for MockGithubService {
             .unwrap()
             .take()
             .unwrap_or_else(|| Ok(PrReviewThread::empty(pr_number)))
+    }
+
+    async fn submit_pr_review(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+        _event: PrReviewSubmissionEvent,
+        _body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        *self.submit_pr_review_calls.lock().unwrap() += 1;
+        self.submit_pr_review_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Err(AppError::Infrastructure(
+                    "MockGithubService::submit_pr_review not configured".to_string(),
+                ))
+            })
     }
 
     async fn mark_pr_ready(&self, _wd: &Path, _pr_number: i64) -> AppResult<()> {

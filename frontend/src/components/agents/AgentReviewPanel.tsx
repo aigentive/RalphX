@@ -2,6 +2,7 @@ import {
   AlertCircle,
   CheckCircle2,
   GitPullRequestArrow,
+  Info,
   Loader2,
   MoreVertical,
   RefreshCw,
@@ -21,6 +22,7 @@ import type {
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -81,6 +83,10 @@ interface AgentReviewPanelProps {
   onOpenPublish?: () => void;
   onStartReview: (force: boolean) => void;
   onFixIssues: () => void;
+  isReviewPrWorkspace?: boolean;
+  autoApproveEnabled?: boolean;
+  isAutoApproveSaving?: boolean;
+  onAutoApproveChange?: (enabled: boolean) => void;
 }
 
 function reviewTargetLabel(
@@ -301,6 +307,10 @@ export function AgentReviewPanel({
   onOpenPublish,
   onStartReview,
   onFixIssues,
+  isReviewPrWorkspace = false,
+  autoApproveEnabled = true,
+  isAutoApproveSaving = false,
+  onAutoApproveChange,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
 
@@ -505,7 +515,7 @@ export function AgentReviewPanel({
     return <EmptyArtifactState title="Loading review..." />;
   }
 
-  if (!displayContext && reviewArtifact) {
+  if (!displayContext && reviewArtifact && !isReviewPrWorkspace) {
     return (
       <div className="min-h-full px-4 pb-4 pt-4">
         <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
@@ -599,6 +609,46 @@ export function AgentReviewPanel({
             }}
           >
             Review will be available after the current agent run.
+          </div>
+        )}
+
+        {isReviewPrWorkspace && (
+          <div
+            className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-3 text-xs"
+            style={{ borderColor: "var(--border-subtle)", color: "var(--text-secondary)" }}
+            data-testid="agents-review-pr-auto-approve"
+          >
+            <label className="flex min-h-8 items-center gap-2">
+                <Switch
+                  checked={autoApproveEnabled}
+                  disabled={isAutoApproveSaving || !onAutoApproveChange}
+                  {...(onAutoApproveChange
+                    ? { onCheckedChange: onAutoApproveChange }
+                    : {})}
+                aria-label="Auto Approve"
+                data-testid="agents-review-pr-auto-approve-switch"
+              />
+              <span>Auto Approve</span>
+            </label>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="About Auto Approve"
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                >
+                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[320px] text-xs leading-relaxed">
+                After you decide the first review, RalphX automatically approves
+                later re-reviews when the reviewer passes the new PR changes.
+                Comments and requested changes still wait for you.
+              </TooltipContent>
+            </Tooltip>
+            {isAutoApproveSaving && (
+              <span style={{ color: "var(--text-muted)" }}>Saving…</span>
+            )}
           </div>
         )}
       </div>
