@@ -305,6 +305,17 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor>;
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor>;
+
     async fn list_active_pr_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
@@ -387,6 +398,8 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<()> {
         Ok(())
     }
+
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool>;
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 

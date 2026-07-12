@@ -426,7 +426,9 @@ pub struct AgentWorkspacePrReviewMonitor {
     pub pr_number: i64,
     pub status: AgentWorkspacePrReviewMonitorStatus,
     pub monitor_enabled: bool,
+    pub auto_approve_enabled: bool,
     pub first_review_completed: bool,
+    pub first_action_resolved: bool,
     pub last_seen_head_sha: Option<String>,
     pub last_reviewed_head_sha: Option<String>,
     pub last_review_run_id: Option<String>,
@@ -566,7 +568,9 @@ impl AgentWorkspacePrReviewMonitor {
             pr_number,
             status: AgentWorkspacePrReviewMonitorStatus::Idle,
             monitor_enabled: false,
+            auto_approve_enabled: true,
             first_review_completed: false,
+            first_action_resolved: false,
             last_seen_head_sha: head_sha,
             last_reviewed_head_sha: None,
             last_review_run_id: None,
@@ -580,6 +584,17 @@ impl AgentWorkspacePrReviewMonitor {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn can_auto_approve(&self, action: &AgentWorkspacePrReviewAction) -> bool {
+        self.auto_approve_enabled
+            && self.first_action_resolved
+            && action.proposed_action == AgentWorkspacePrReviewActionKind::Approve
+            && action.status == AgentWorkspacePrReviewActionStatus::Pending
+            && action.created_by_run_id.is_some()
+            && self.last_review_run_id == action.created_by_run_id
+            && self.review_artifact_id.is_some()
+            && self.review_artifact_head_sha.as_deref() == Some(action.head_sha.as_str())
     }
 }
 
