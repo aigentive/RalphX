@@ -2,10 +2,11 @@ use super::*;
 
 #[test]
 fn feature_disabled_error_variant_matches() {
-    let err = AppError::FeatureDisabled("agent personas".to_string());
+    let err = AppError::FeatureDisabled("[Personas disabled: agent personas]".to_string());
 
     assert!(matches!(err, AppError::FeatureDisabled(_)));
-    assert!(err.to_string().starts_with("PERSONA_FEATURE_DISABLED:"));
+    // Bare passthrough Display so surfaced strings START with the A15 prefix.
+    assert_eq!(err.to_string(), "[Personas disabled: agent personas]");
 }
 
 #[test]

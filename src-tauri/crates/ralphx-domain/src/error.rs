@@ -21,7 +21,9 @@ pub enum AppError {
     #[error("Validation error: {0}")]
     Validation(String),
 
-    #[error("PERSONA_FEATURE_DISABLED: {0}")]
+    // Bare passthrough: constructors embed the [Personas disabled: prefix so
+    // IPC/HTTP strings start with the A15 family constant (matches PersonaUnavailable).
+    #[error("{0}")]
     FeatureDisabled(String),
 
     #[error("{0}")]

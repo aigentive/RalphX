@@ -88,6 +88,7 @@ use crate::application::git_service::{
     GitService,
 };
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
+use crate::application::personas::{PERSONA_FEATURE_DISABLED_PREFIX, PERSONA_UNAVAILABLE_PREFIX};
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits,
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
@@ -119,8 +120,8 @@ use crate::domain::entities::{
     ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
     ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
     ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
-    TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
+    IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    Task, TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
@@ -134,7 +135,7 @@ use crate::domain::services::{
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
-use crate::infrastructure::agents::claude::git_runtime_config;
+use crate::infrastructure::agents::claude::{git_runtime_config, ui_feature_flags_config};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -144,6 +145,8 @@ const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
+pub(crate) const PERSONA_SWITCH_AGENT_RUNNING_ERROR: &str =
+    "Cannot change persona while the agent is running";
 
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
     format!("{}/{}", ChatContextType::Project, conversation_id.as_str())
@@ -1096,11 +1099,25 @@ pub struct SwitchAgentConversationModeInput {
     pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
+/// Input for changing the persona binding of an existing project-backed agent conversation.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchAgentConversationPersonaInput {
+    pub conversation_id: String,
+    pub persona_id: Option<String>,
+}
+
 /// Response from switch_agent_conversation_mode command.
 #[derive(Debug, Serialize)]
 pub struct SwitchAgentConversationModeResponse {
     pub conversation: AgentConversationResponse,
     pub workspace: Option<AgentConversationWorkspaceResponse>,
+}
+
+/// Response from switch_agent_conversation_persona command.
+#[derive(Debug, Serialize)]
+pub struct SwitchAgentConversationPersonaResponse {
+    pub conversation: AgentConversationResponse,
 }
 
 /// Response from publishing a project-backed agent conversation workspace.
@@ -3093,6 +3110,101 @@ pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     let service = create_chat_service(&state, app, &execution_state, None);
     switch_agent_conversation_mode_for_state_stopping_running_agent(input, state.inner(), &service)
         .await
+}
+
+/// Switch the persona binding for a project-backed agent conversation.
+#[tauri::command]
+pub async fn switch_agent_conversation_persona<R: Runtime + 'static>(
+    input: SwitchAgentConversationPersonaInput,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle<R>,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    let service = create_chat_service(&state, app, &execution_state, None);
+    switch_agent_conversation_persona_for_state_stopping_running_agent(
+        input,
+        state.inner(),
+        &service,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_stopping_running_agent(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    chat_service: &dyn ChatService,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    if !ui_feature_flags_config().agent_personas {
+        return Err(crate::error::AppError::FeatureDisabled(format!(
+            "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
+        ))
+        .to_string());
+    }
+
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let mut conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+    if conversation.context_type != ChatContextType::Project {
+        return Err("Only project agent conversations can change persona".to_string());
+    }
+
+    let persona_id = input.persona_id.map(PersonaId::from_string);
+    if let Some(persona_id) = persona_id.as_ref() {
+        let persona = state
+            .persona_repo
+            .get_by_id(persona_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !persona.is_some_and(|persona| persona.is_bindable()) {
+            return Err(format!(
+                "{PERSONA_UNAVAILABLE_PREFIX} persona {persona_id} is not active]"
+            ));
+        }
+    }
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    if state.running_agent_registry.is_running(&running_key).await {
+        let stopped = chat_service
+            .stop_agent(ChatContextType::Project, &conversation.id.as_str())
+            .await
+            .map_err(|error| error.to_string())?;
+        tracing::info!(
+            conversation_id = %conversation.id,
+            stopped,
+            "Stopped running project agent before switching conversation persona"
+        );
+        if state.running_agent_registry.is_running(&running_key).await {
+            return Err(PERSONA_SWITCH_AGENT_RUNNING_ERROR.to_string());
+        }
+    }
+
+    state
+        .chat_conversation_repo
+        .update_persona_binding(
+            &conversation.id,
+            persona_id.as_ref().map(|persona_id| persona_id.as_str()),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    conversation.persona_id = persona_id.map(|persona_id| persona_id.to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .unwrap_or(conversation);
+
+    Ok(SwitchAgentConversationPersonaResponse {
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
+    })
 }
 
 #[doc(hidden)]

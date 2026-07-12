@@ -347,7 +347,8 @@ pub use unified_chat_commands::{
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,
-    switch_agent_conversation_mode, update_agent_conversation_coordination_mode,
+    switch_agent_conversation_mode, switch_agent_conversation_persona,
+    update_agent_conversation_coordination_mode,
     update_agent_conversation_title, update_agent_conversation_workspace_from_base,
     AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
     AgentConversationResponse, AgentConversationRuntimeIndexResponse,
@@ -363,6 +364,7 @@ pub use unified_chat_commands::{
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,
+    SwitchAgentConversationPersonaInput, SwitchAgentConversationPersonaResponse,
     UpdateAgentConversationTitleInput, UpdateAgentConversationWorkspaceFromBaseResponse,
 };
 // Plan branch commands (Phase 85 - Feature branch for plan groups)
