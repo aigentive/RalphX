@@ -2074,6 +2074,31 @@ async fn test_restart_ideation_implementation_core_uses_linked_plan_worktree_whe
 
     let state = setup_apply_test_state();
     let repo_dir = setup_git_repo_for_apply_test();
+    let origin_dir = tempfile::TempDir::new().unwrap();
+    git_ok(
+        repo_dir.path(),
+        &[
+            "init",
+            "--bare",
+            origin_dir
+                .path()
+                .to_str()
+                .expect("origin path should be utf-8"),
+        ],
+    );
+    git_ok(
+        repo_dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin_dir
+                .path()
+                .to_str()
+                .expect("origin path should be utf-8"),
+        ],
+    );
+    git_ok(repo_dir.path(), &["push", "-u", "origin", "main"]);
     let worktree_parent = tempfile::TempDir::new().unwrap();
     let mut project = Project::new(
         "Test Project".to_string(),
@@ -2182,6 +2207,12 @@ async fn test_restart_ideation_implementation_core_uses_linked_plan_worktree_whe
         ),
         plan_branch.branch_name
     );
+    git_ok(
+        repo_dir.path(),
+        &["commit", "--allow-empty", "-m", "advance origin base"],
+    );
+    git_ok(repo_dir.path(), &["push", "origin", "main"]);
+    let latest_origin_base = git_stdout(repo_dir.path(), &["rev-parse", "origin/main"]);
 
     let result = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
         .await
@@ -2204,6 +2235,127 @@ async fn test_restart_ideation_implementation_core_uses_linked_plan_worktree_whe
     assert_eq!(
         stored_workspace.linked_plan_branch_id.as_ref(),
         Some(&plan_branch.id)
+    );
+    assert_eq!(
+        git_stdout(&linked_worktree_path, &["rev-parse", "HEAD"]),
+        latest_origin_base,
+        "restart should reset the linked branch to the newest origin base revision"
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_requires_origin_base_before_archiving_tasks() {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspaceMode, ChatConversation, ExecutionPlanStatus,
+        IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
+        IdeationSession, Priority, Project, ProposalCategory, TaskProposal,
+    };
+    use ralphx_lib::error::AppError;
+
+    let state = setup_apply_test_state();
+    let repo_dir = setup_git_repo_for_apply_test();
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let mut project = Project::new(
+        "Restart base failure test".to_string(),
+        repo_dir.path().to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.project_repo.create(project).await.unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create project conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent conversation workspace");
+    let mut session = IdeationSession::new(project.id.clone());
+    session.analysis = IdeationAnalysisState {
+        base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        workspace_kind: IdeationAnalysisWorkspaceKind::IdeationWorktree,
+        workspace_path: Some(workspace.worktree_path.clone()),
+        base_commit: workspace.base_commit.clone(),
+        base_locked_at: Some(chrono::Utc::now()),
+    };
+    let session = state.ideation_session_repo.create(session).await.unwrap();
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("persist linked workspace");
+    let proposal = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session.id.clone(),
+            "Restart proposal",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .expect("proposal should be created");
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply should create the original implementation attempt");
+    let old_execution_plan_id = apply_result
+        .execution_plan_id
+        .expect("accepted session should have an execution plan");
+    let old_task_count = state
+        .task_repo
+        .count_tasks(&project.id, false, None, Some(&old_execution_plan_id))
+        .await
+        .expect("old task count should load");
+
+    let error = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should require an origin base ref");
+
+    assert!(
+        matches!(error, AppError::Validation(_) | AppError::GitOperation(_)),
+        "restart should stop at strict origin-base preflight, got {error:?}"
+    );
+    let old_plan = state
+        .execution_plan_repo
+        .get_by_id(&ralphx_lib::domain::entities::ExecutionPlanId::from_string(
+            old_execution_plan_id.clone(),
+        ))
+        .await
+        .expect("old execution plan should load")
+        .expect("old execution plan should remain");
+    assert_eq!(old_plan.status, ExecutionPlanStatus::Active);
+    assert_eq!(
+        state
+            .task_repo
+            .count_tasks(&project.id, false, None, Some(&old_execution_plan_id))
+            .await
+            .expect("old task count should still load"),
+        old_task_count,
+        "restart must not archive tasks when base preflight fails"
     );
 }
 

@@ -5462,7 +5462,10 @@ describe("AgentsArtifactPane", () => {
     let dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Restart implementation?");
     expect(dialog).toHaveTextContent(
-      "Running work will be stopped, the current task attempt will be archived",
+      "RalphX will close the existing PR",
+    );
+    expect(dialog).toHaveTextContent(
+      "reset the implementation branch and workspace to the latest base branch from origin",
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));

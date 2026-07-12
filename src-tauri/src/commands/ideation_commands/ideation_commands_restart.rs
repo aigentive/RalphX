@@ -7,8 +7,9 @@ use tauri::{Emitter, Manager, State};
 
 use crate::application::task_cleanup_service::StopMode;
 use crate::application::{
+    agent_conversation_archive::close_agent_workspace_pr_for_restart,
     agent_conversation_workspace::ensure_linked_plan_branch_agent_worktree,
-    spawn_ready_task_scheduler_if_needed, AppState, TaskCleanupService,
+    spawn_ready_task_scheduler_if_needed, AppState, GitService, TaskCleanupService,
 };
 use crate::commands::{emit_queue_changed, ExecutionState};
 use crate::domain::entities::{
@@ -160,11 +161,15 @@ pub async fn restart_ideation_implementation_core(
                 session.project_id.as_str()
             ))
         })?;
+    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        std::path::Path::new(&project.working_directory),
+        "project checkout",
+    )?;
 
     let linked_agent_workspace =
         load_linked_agent_conversation_workspace(app_state, &session_id, &session.project_id)
             .await?;
-    if let Some(workspace) = linked_agent_workspace.as_ref() {
+    let linked_plan_branch_worktree = if let Some(workspace) = linked_agent_workspace.as_ref() {
         if workspace.mode != AgentConversationWorkspaceMode::Ideation {
             return Err(AppError::Validation(
                 "Linked agent conversation workspace is not in ideation mode".to_string(),
@@ -191,8 +196,12 @@ pub async fn restart_ideation_implementation_core(
                     plan_branch_id
                 ))
             })?;
-        ensure_linked_plan_branch_agent_worktree(&project, &plan_branch).await?;
-    }
+        let worktree_path =
+            ensure_linked_plan_branch_agent_worktree(&project, &plan_branch).await?;
+        Some((plan_branch, worktree_path))
+    } else {
+        None
+    };
 
     let current_task_count = app_state
         .task_repo
@@ -261,6 +270,22 @@ pub async fn restart_ideation_implementation_core(
     } else {
         session_base_ref
     };
+    let restart_base_branch = effective_base_branch_override
+        .as_deref()
+        .or(project.base_branch.as_deref())
+        .unwrap_or("main");
+    let latest_origin_base_ref = if linked_plan_branch_worktree.is_some() {
+        Some(GitService::fetch_origin_branch_strict(&project_root, restart_base_branch).await?)
+    } else {
+        None
+    };
+
+    if let (Some(workspace), Some((plan_branch, _))) = (
+        linked_agent_workspace.as_ref(),
+        linked_plan_branch_worktree.as_ref(),
+    ) {
+        close_agent_workspace_pr_for_restart(workspace, plan_branch, app_state).await?;
+    }
 
     let mut proposal_deps: HashMap<TaskProposalId, Vec<TaskProposalId>> = HashMap::new();
     for proposal in &proposals_to_apply {
@@ -287,6 +312,14 @@ pub async fn restart_ideation_implementation_core(
             "Failed to prepare current implementation tasks for restart: {}",
             cleanup_report.errors.join("; ")
         )));
+    }
+
+    if let (Some((_, worktree_path)), Some(origin_base_ref)) = (
+        linked_plan_branch_worktree.as_ref(),
+        latest_origin_base_ref.as_deref(),
+    ) {
+        GitService::reset_hard(worktree_path, origin_base_ref).await?;
+        GitService::clean_working_tree(worktree_path).await?;
     }
 
     let session_id_str = session_id.as_str().to_string();
