@@ -22,6 +22,7 @@ coverage:
           - "!src-tauri/src/application/app_setup.rs"
           - "!src-tauri/src/application/runtime_wiring.rs"
           - "!src-tauri/src/application/startup_background.rs"
+          - "!src-tauri/src/application/startup_cleanup.rs"
           - "!src-tauri/src/application/startup_pipeline.rs"
           - "!src-tauri/src/application/startup_pipeline_launch.rs"
           - "!src-tauri/src/application/startup_transition_factory.rs"

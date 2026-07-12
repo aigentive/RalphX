@@ -460,6 +460,56 @@ fn test_codex_mcp_tool_failure_with_rate_limit_text_is_local_tool_failure() {
 }
 
 #[test]
+fn test_codex_validation_failure_code_is_validation_failed() {
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors =
+        vec!["execute_run_task_validation rejected completion: validation_failed".to_string()];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("validation rejection should classify");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("execute_run_task_validation"));
+            assert!(message.contains("validation_failed"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_codex_completed_turn_ignores_prior_validation_diagnostics() {
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors =
+        vec!["first validation attempt failed with validation_failed before repair".to_string()];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(0), true);
+
+    assert!(
+        result.is_none(),
+        "successful completion must not be reclassified from earlier validation diagnostics"
+    );
+}
+
+#[test]
+fn test_codex_runtime_error_with_local_diagnostics_is_agent_exit() {
+    let runtime_errors = vec!["codex runtime process exited".to_string()];
+    let local_tool_errors = vec!["latest local tool stderr".to_string()];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1), false)
+        .expect("runtime process failure should classify");
+
+    match result {
+        StreamError::AgentExit { exit_code, stderr } => {
+            assert_eq!(exit_code, Some(1));
+            assert!(stderr.contains("codex runtime process exited"));
+            assert!(stderr.contains("latest local tool stderr"));
+        }
+        other => panic!("expected agent exit, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_codex_runtime_rate_limit_error_still_classifies_as_provider_error() {
     let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
     let local_tool_errors = Vec::<String>::new();
@@ -1712,6 +1762,33 @@ fn to_execution_failure_source_agent_exit_maps_to_agent_crash() {
     assert_eq!(
         err.to_execution_failure_source(),
         ExecutionFailureSource::AgentCrash
+    );
+}
+
+#[test]
+fn to_execution_failure_source_local_tool_failed_maps_to_local_tool_failed() {
+    let err = StreamError::LocalToolFailed {
+        message: "local command failed".into(),
+    };
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::LocalToolFailed
+    );
+    assert_eq!(err.to_string(), "Local tool failed: local command failed");
+}
+
+#[test]
+fn to_execution_failure_source_validation_failed_maps_to_validation_failed() {
+    let err = StreamError::ValidationFailed {
+        message: "validation rejected completion".into(),
+    };
+    assert_eq!(
+        err.to_execution_failure_source(),
+        ExecutionFailureSource::ValidationFailed
+    );
+    assert_eq!(
+        err.to_string(),
+        "Validation failed: validation rejected completion"
     );
 }
 
