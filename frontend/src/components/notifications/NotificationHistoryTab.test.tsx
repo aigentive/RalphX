@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -110,6 +110,38 @@ describe("NotificationHistoryTab", () => {
     fireEvent.click(screen.getByTestId("notification-history-row-notification-1"));
     expect(onOpen).toHaveBeenCalledWith(notification);
     expect(markRead).toHaveBeenCalledWith("notification-1");
+  });
+
+  it("keeps long history rows readable and openable inside a narrow drawer", () => {
+    const longTitle = "Task failed while reconciling extremely-long-worktree-name-without-natural-breaks-and-a-long-agent-title";
+    const longBody = "The latest worker attempt reported a very long detail line with commit identifiers, branch names, and recovery context that still needs to be readable.";
+    const longNotification = {
+      ...notification,
+      id: "notification-long",
+      createdAt: "2026-07-08T08:00:00Z",
+      title: longTitle,
+      body: longBody,
+    };
+    const onOpen = vi.fn();
+    vi.mocked(useNotificationHistory).mockReturnValue({
+      data: { pages: [{ notifications: [longNotification] }] }, isLoading: false, hasNextPage: false,
+      isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn(), isError: false,
+    } as ReturnType<typeof useNotificationHistory>);
+
+    render(<div style={{ width: 260 }}><TooltipProvider><NotificationHistoryTab active now={new Date("2026-07-10T10:00:00Z").getTime()} onOpen={onOpen} /></TooltipProvider></div>);
+    act(() => { vi.runAllTimers(); });
+
+    const row = screen.getByTestId("notification-history-row-notification-long");
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeVisible();
+    expect(screen.getByLabelText("Refresh notification history")).toBeVisible();
+    expect(row).toHaveClass("grid", "overflow-hidden");
+    expect(within(row).getByText(longTitle)).toBeVisible();
+    expect(within(row).getByText(longBody)).toBeVisible();
+    expect(within(row).getByText("2d")).toBeVisible();
+
+    fireEvent.click(row);
+    expect(onOpen).toHaveBeenCalledWith(longNotification);
+    expect(markRead).toHaveBeenCalledWith("notification-long");
   });
 
   it("renders a retryable history load error instead of its empty state", () => {
