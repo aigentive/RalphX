@@ -7031,6 +7031,22 @@ mod tests {
     async fn failed_pr_review_submit_keeps_action_pending_for_retry() {
         let mut app_state = AppState::new_test();
         let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+            sync_state: PrSyncState {
+                status: PrStatus::Open,
+                merge_state_status: None,
+                mergeable: None,
+                is_draft: false,
+                head_ref_name: "feature/review-workflow".to_string(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: Some("head-sha".to_string()),
+                base_ref_oid: None,
+            },
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        }));
         github.will_fail_submit_pr_review("network unavailable");
         app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
         let app_state = Arc::new(app_state);
