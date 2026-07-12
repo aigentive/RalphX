@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
   mockChatApi,
+  mockArchiveConversation,
   mockGetAgentConversationRuntimeStatuses,
   mockGetAgentRunningStates,
   mockGetConversationSummary,
@@ -215,6 +216,22 @@ describe("mockListAgentSidebarConversations", () => {
     expect(archivedOnly.groups[0].rows.map((row) => row.conversation.id)).toEqual([
       "archive",
     ]);
+  });
+});
+
+describe("mockArchiveConversation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("archives the conversation when the caller explicitly declines PR closure", async () => {
+    seedMockConversation(conversation("archive-target", "Archive target"), []);
+
+    const archived = await mockArchiveConversation("archive-target", {
+      closePullRequest: false,
+    });
+
+    expect(archived.archivedAt).not.toBeNull();
   });
 });
 

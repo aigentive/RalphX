@@ -1337,12 +1337,37 @@ describe("chat api", () => {
       archived_at: "2026-01-24T10:01:00Z",
     });
 
-    const result = await archiveConversation("c-archive");
+    const result = await archiveConversation("c-archive", { closePullRequest: false });
 
     expect(mockInvoke).toHaveBeenCalledWith("archive_agent_conversation", {
       conversationId: "c-archive",
+      closePullRequest: false,
     });
     expect(result.archivedAt).toBe("2026-01-24T10:01:00Z");
+  });
+
+  it("passes explicit PR closure intent when archiving", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "c-archive-close-pr",
+      context_type: "project",
+      context_id: "p1",
+      claude_session_id: null,
+      provider_session_id: null,
+      provider_harness: null,
+      title: "Close PR",
+      message_count: 1,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+      archived_at: "2026-01-24T10:01:00Z",
+    });
+
+    await archiveConversation("c-archive-close-pr", { closePullRequest: true });
+
+    expect(mockInvoke).toHaveBeenCalledWith("archive_agent_conversation", {
+      conversationId: "c-archive-close-pr",
+      closePullRequest: true,
+    });
   });
 
   it("restores conversation", async () => {
