@@ -96,7 +96,7 @@ describe("Project switch effect — App.tsx integration", () => {
     expect(useUiStore.getState().selectedTaskId).toBeNull();
   });
 
-  it("restores selected task detail when switching back to a saved graph route", () => {
+  it("restores selected task detail in Agents when switching back to a saved graph route", () => {
     useUiStore.setState({
       currentView: "kanban",
       viewByProject: { "project-b": "graph" },
@@ -106,7 +106,7 @@ describe("Project switch effect — App.tsx integration", () => {
     simulateProjectSwitch("project-a", "project-b");
 
     const state = useUiStore.getState();
-    expect(state.currentView).toBe("graph");
+    expect(state.currentView).toBe("agents");
     expect(state.selectedTaskId).toBe("task-b");
     expect(state.graphSelection).toEqual({ kind: "task", id: "task-b" });
   });

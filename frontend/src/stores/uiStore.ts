@@ -570,9 +570,10 @@ export const useUiStore = create<UiState & UiActions>()(
 
     setCurrentView: (view) =>
       set((state) => {
+        const normalizedView = normalizeMainView(view);
         const safeView =
-          view === "ticketing" || isViewEnabled(view, state.featureFlags)
-            ? view
+          normalizedView === "ticketing" || isViewEnabled(normalizedView, state.featureFlags)
+            ? normalizedView
             : DEFAULT_PROJECT_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
@@ -888,7 +889,7 @@ export const useUiStore = create<UiState & UiActions>()(
       set((state) => {
         // SAVE phase — skip if oldProjectId is null (first load)
         if (oldProjectId) {
-          state.viewByProject[oldProjectId] = state.currentView;
+          state.viewByProject[oldProjectId] = normalizeMainView(state.currentView);
           state.sessionByProject[oldProjectId] = useIdeationStore.getState().activeSessionId;
           state.selectedTaskByProject[oldProjectId] = state.selectedTaskId;
         }
@@ -898,8 +899,9 @@ export const useUiStore = create<UiState & UiActions>()(
 
         // RESTORE phase — resolve view, fallback ephemeral views to the default project view
         let restoredView: ViewType = preserveCurrentView
-          ? state.currentView
+          ? normalizeMainView(state.currentView)
           : state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
+        restoredView = normalizeMainView(restoredView);
         const restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
         // Guard against stale localStorage values ("settings" was removed from ViewType)
         if ((restoredView as string) === "settings" || restoredView === "team") {
