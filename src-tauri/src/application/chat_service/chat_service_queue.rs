@@ -491,6 +491,7 @@ struct QueuedAgentIdentity {
 struct QueuedProjectAgentContext {
     identity: QueuedAgentIdentity,
     workspace: Option<AgentConversationWorkspace>,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -552,8 +553,9 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
     QueuedProjectAgentContext {
-        identity: queued_agent_identity_for_mode(mode),
+        identity: queued_agent_identity_for_mode(mode.clone()),
         workspace,
+        effective_mode: mode,
     }
 }
 
@@ -1371,6 +1373,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.project_repo)
             });
+            let persona_ingest_app_data_dir = app_handle.as_ref().and_then(|handle| {
+                handle
+                    .try_state::<AppState>()
+                    .map(|app_state| app_state.app_paths.app_data_dir().to_path_buf())
+            });
             let atlassian_integration_service = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
@@ -1488,10 +1495,14 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_agent_context.workspace.as_ref(),
             );
             let filesystem_read_roots = if let Some(project_repo) = project_repo {
+                let conversation_id_for_roots = conversation_id.as_str();
                 chat_service_context::resolve_mcp_filesystem_read_roots(
                     project_id,
                     project_repo,
                     working_directory,
+                    queued_agent_context.effective_mode,
+                    Some(&conversation_id_for_roots),
+                    persona_ingest_app_data_dir.as_deref(),
                 )
                 .await
             } else {

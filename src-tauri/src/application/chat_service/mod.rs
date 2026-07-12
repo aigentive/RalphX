@@ -115,7 +115,8 @@ pub use chat_service_context::{
     build_command, build_command_for_harness, build_initial_prompt, build_resume_command,
     build_resume_command_for_harness, build_resume_initial_prompt, format_attachments_for_agent,
     format_session_history, get_entity_status_for_resume, is_text_file,
-    provider_resume_mode_for_session_under, resolve_working_directory, ProviderResumeMode,
+    provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
+    resolve_working_directory, ProviderResumeMode,
 };
 pub use chat_service_errors::{
     classify_agent_error, classify_codex_stream_failure, classify_provider_error,
@@ -676,12 +677,19 @@ pub(super) fn persona_resolve_flags_for_conversation(
     }
 }
 
+/// Returns whether this conversation uses the PersonaBuilder ingest-only runtime mode.
+pub fn is_persona_builder_conversation(
+    agent_mode: Option<AgentConversationWorkspaceMode>,
+) -> bool {
+    agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+}
+
 /// PersonaBuilder never reads roots outside its live draft ingest session.
 pub fn persona_builder_requires_live_draft_session(
     agent_mode: Option<AgentConversationWorkspaceMode>,
     has_live_draft_session: bool,
 ) -> bool {
-    agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder) && !has_live_draft_session
+    is_persona_builder_conversation(agent_mode) && !has_live_draft_session
 }
 
 fn plan_mode_runtime_message(
@@ -3440,10 +3448,20 @@ impl<R: Runtime> AppChatService<R> {
         let agent_workspace_prompt_context = self
             .agent_workspace_prompt_context_for_send(context_type, conversation)
             .await?;
+        let persona_ingest_app_data_dir: Option<std::path::PathBuf> =
+            self.app_handle.as_ref().and_then(|handle| {
+                handle
+                    .try_state::<AppState>()
+                    .map(|state| state.app_paths.app_data_dir().to_path_buf())
+            });
+        let conversation_id_for_roots = conversation.id.as_str();
         let filesystem_read_roots = chat_service_context::resolve_mcp_filesystem_read_roots(
             project_id,
             Arc::clone(&self.project_repo),
             working_directory,
+            conversation.agent_mode,
+            Some(&conversation_id_for_roots),
+            persona_ingest_app_data_dir.as_deref(),
         )
         .await;
         let native_persona_injection_skipped_reason =

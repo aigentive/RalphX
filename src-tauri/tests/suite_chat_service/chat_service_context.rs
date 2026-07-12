@@ -5,7 +5,11 @@ use ralphx_lib::application::chat_service::{
     finalize_assistant_message_for_test, finalize_structured_assistant_message_for_test,
     format_attachments_for_agent, format_session_history, get_entity_status_for_resume,
     is_text_file, persona_builder_requires_live_draft_session,
-    provider_resume_mode_for_session_under, resolve_working_directory, ProviderResumeMode,
+    provider_resume_mode_for_session_under, resolve_mcp_filesystem_read_roots,
+    resolve_working_directory, ProviderResumeMode,
+};
+use ralphx_lib::application::persona_ingest::{
+    persona_ingest_conversation_path, persona_ingest_storage_path,
 };
 use ralphx_lib::application::persona_resolver::{resolve_persona_for_send, PersonaResolveFlags};
 use ralphx_lib::application::AppState;
@@ -117,6 +121,282 @@ fn persona_builder_send_without_live_draft_session_resolves_zero_read_roots_and_
             false
         ),
         "existing modes must remain inert until PersonaBuilder is introduced"
+    );
+}
+
+async fn persona_read_root_fixture() -> (
+    TempDir,
+    Arc<MemoryProjectRepository>,
+    ProjectId,
+    PathBuf,
+    PathBuf,
+) {
+    let root = tempfile::tempdir_in(std::env::current_dir().expect("current workspace"))
+        .expect("persona read-root fixture");
+    let project_directory = root.path().join("project");
+    let working_directory = root.path().join("agent-workspace");
+    fs::create_dir_all(&project_directory).expect("create project directory");
+    fs::create_dir_all(&working_directory).expect("create working directory");
+
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let project_id = ProjectId::from_string("persona-read-root-project".to_string());
+    let mut project = Project::new(
+        "Persona read roots".to_string(),
+        project_directory.to_string_lossy().to_string(),
+    );
+    project.id = project_id.clone();
+    project_repo
+        .create(project)
+        .await
+        .expect("seed project read root");
+
+    (
+        root,
+        project_repo,
+        project_id,
+        project_directory,
+        working_directory,
+    )
+}
+
+#[tokio::test]
+async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    let app_data_dir = root.path().join("app-data");
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &conversation.id.as_str(),
+    );
+    write_file(&ingest_root.join("content"), "approved ingest text");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        conversation.agent_mode,
+        Some(&conversation.id.as_str()),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![ingest_root.clone()]);
+    assert!(
+        !roots.contains(&project_directory),
+        "PersonaBuilder must not expose the project working directory"
+    );
+
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_command(
+            Path::new("/fake/claude"),
+            &repo_plugin_dir(),
+            &conversation,
+            "read ingest context",
+            None,
+            &working_directory,
+            None,
+            Some(project_id.as_str()),
+            &roots,
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("PersonaBuilder command should build");
+
+    // Read roots travel as --filesystem-read-root args inside the generated
+    // MCP config (mcp_runtime_context), not as a command env var. The config
+    // may be inline or a temp-file path, so resolve the JSON either way.
+    let command_args = {
+        let raw = final_spawnable_command(&command);
+        let args = command.get_args_for_test();
+        let mcp_config = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .and_then(|i| args.get(i + 1))
+            .map(|value| {
+                if value.trim_start().starts_with('{') {
+                    value.clone()
+                } else {
+                    std::fs::read_to_string(value).unwrap_or_default()
+                }
+            })
+            .unwrap_or_default();
+        format!("{raw}\n{mcp_config}")
+    };
+    assert!(
+        command_args.contains("--filesystem-read-root"),
+        "MCP config must carry a filesystem read root"
+    );
+    assert!(
+        command_args.contains(ingest_root.to_string_lossy().as_ref()),
+        "MCP read roots must include the ingest store"
+    );
+    assert!(
+        !command_args.contains(project_directory.to_string_lossy().as_ref()),
+        "MCP read roots must exclude the project working directory"
+    );
+}
+
+#[tokio::test]
+async fn persona_builder_without_ingest_session_resolves_zero_roots() {
+    let (root, project_repo, project_id, _project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let app_data_dir = root.path().join("app-data");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        Arc::clone(&project_repo) as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-no-ingest"),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert!(
+        roots.is_empty(),
+        "missing PersonaBuilder ingest destination must provide no MCP read roots"
+    );
+
+    let empty_ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        "persona-builder-no-ingest",
+    );
+    fs::create_dir_all(&empty_ingest_root).expect("create empty ingest destination");
+    let roots = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some("persona-builder-no-ingest"),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+
+    assert!(
+        roots.is_empty(),
+        "empty PersonaBuilder ingest destination must provide no MCP read roots"
+    );
+}
+
+#[tokio::test]
+async fn non_persona_modes_keep_project_read_root_behavior() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::Chat),
+        Some("non-persona-conversation"),
+        Some(root.path().join("app-data").as_path()),
+    )
+    .await;
+
+    assert_eq!(roots, vec![project_directory]);
+}
+
+#[tokio::test]
+async fn queued_flush_uses_persona_builder_read_roots() {
+    let (root, project_repo, project_id, project_directory, working_directory) =
+        persona_read_root_fixture().await;
+    let conversation_id = ChatConversationId::from_string("queued-persona-builder".to_string());
+    let app_data_dir = root.path().join("app-data");
+    let ingest_root = persona_ingest_conversation_path(
+        &persona_ingest_storage_path(&app_data_dir),
+        &conversation_id.as_str(),
+    );
+    write_file(&ingest_root.join("content"), "queued ingest text");
+
+    let roots = resolve_mcp_filesystem_read_roots(
+        Some(project_id.as_str()),
+        project_repo as Arc<dyn ProjectRepository>,
+        &working_directory,
+        Some(AgentConversationWorkspaceMode::PersonaBuilder),
+        Some(&conversation_id.as_str()),
+        Some(app_data_dir.as_path()),
+    )
+    .await;
+    let command = with_claude_spawn_allowed_in_tests(|| async {
+        build_resume_command(
+            Path::new("/fake/claude"),
+            &repo_plugin_dir(),
+            ChatContextType::Project,
+            project_id.as_str(),
+            "queued ingest follow-up",
+            Some("ralphx-persona-extractor"),
+            None,
+            None,
+            &working_directory,
+            "queued-persona-session",
+            Some(project_id.as_str()),
+            &roots,
+            Some(conversation_id.as_str().to_string()),
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            empty_delegated_session_repo(),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            None,
+            None,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("queued PersonaBuilder resume command should build");
+
+    // Same transport as the fresh path: --filesystem-read-root args in the
+    // generated MCP config. The resume builder may pass the config inline or
+    // as a temp-file path, so resolve the JSON either way.
+    let command_args = {
+        let raw = final_spawnable_command(&command);
+        let args = command.get_args_for_test();
+        let mcp_config = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .and_then(|i| args.get(i + 1))
+            .map(|value| {
+                if value.trim_start().starts_with('{') {
+                    value.clone()
+                } else {
+                    std::fs::read_to_string(value).unwrap_or_default()
+                }
+            })
+            .unwrap_or_default();
+        format!("{raw}\n{mcp_config}")
+    };
+    assert!(
+        command_args.contains("--filesystem-read-root"),
+        "queued MCP config must carry a filesystem read root"
+    );
+    assert!(
+        command_args.contains(ingest_root.to_string_lossy().as_ref()),
+        "queued MCP read roots must include the ingest store"
+    );
+    assert!(
+        !command_args.contains(project_directory.to_string_lossy().as_ref()),
+        "queued MCP read roots must exclude the project working directory"
     );
 }
 
