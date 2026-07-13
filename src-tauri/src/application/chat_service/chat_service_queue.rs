@@ -18,12 +18,13 @@ use super::chat_service_types::{
 };
 use super::has_meaningful_output;
 use super::{
-    coordination_mode_enables_team, team_intent_for_persisted_coordination_mode, ChatService,
-    SendMessageOptions,
+    coordination_mode_enables_team, persona_resolve_flags_for_conversation,
+    team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
 };
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
@@ -31,7 +32,7 @@ use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
     ChatContextType, ChatConversationId, ChatMessageId, CoordinationMode, IdeationSessionId,
-    InternalStatus, MessageRole, ProjectId, SessionPurpose, TaskId, TeamIntent,
+    InternalStatus, MessageRole, PersonaDirective, ProjectId, SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
@@ -394,6 +395,8 @@ fn provider_switch_send_options_for_queued_message(
         metadata: queued_msg.metadata_override.clone(),
         created_at: queued_persisted_created_at(queued_msg),
         harness_override: queued_msg.harness_override,
+        agent_name_override: queued_msg.agent_name_override.clone(),
+        persona_directive: queued_msg.persona_directive.clone(),
         model_override: queued_msg.model_override.clone(),
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
@@ -488,6 +491,7 @@ struct QueuedAgentIdentity {
 struct QueuedProjectAgentContext {
     identity: QueuedAgentIdentity,
     workspace: Option<AgentConversationWorkspace>,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -549,9 +553,63 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
     QueuedProjectAgentContext {
-        identity: queued_agent_identity_for_mode(mode),
+        identity: queued_agent_identity_for_mode(mode.clone()),
         workspace,
+        effective_mode: mode,
     }
+}
+
+async fn resolve_queue_resume_persona<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    feature_enabled: bool,
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+    directive: &PersonaDirective,
+    agent_name_override_set: bool,
+) -> Result<Option<crate::application::persona_prompt::ResolvedPersona>, String> {
+    if !feature_enabled {
+        return Ok(None);
+    }
+
+    let Some(handle) = app_handle else {
+        return Ok(None);
+    };
+    let Some(app_state) = handle.try_state::<AppState>() else {
+        return Ok(None);
+    };
+    let conversation = app_state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| format!("Persona conversation lookup failed: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "Persona conversation {} was not found",
+                conversation_id.as_str()
+            )
+        })?;
+    let workspace_mode = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
+        .map(|workspace| workspace.mode);
+
+    resolve_persona_for_send(
+        &conversation,
+        directive,
+        persona_resolve_flags_for_conversation(
+            feature_enabled,
+            false,
+            agent_name_override_set,
+            context_type,
+            &conversation,
+            workspace_mode,
+        ),
+        Arc::clone(&app_state.persona_repo),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn fail_queued_agent_run(
@@ -651,6 +709,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     queue_context_id: &str,
     conversation_id: ChatConversationId,
     session_id: &str,
+    persona_feature_enabled: bool,
     message_queue: &Arc<MessageQueue>,
     queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -860,6 +919,42 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_msg.id,
                 queued_msg.content.len()
             );
+
+            let resolved_persona = match resolve_queue_resume_persona(
+                app_handle.as_ref(),
+                persona_feature_enabled,
+                context_type,
+                &conversation_id,
+                &queued_msg.persona_directive,
+                queued_msg.agent_name_override.is_some(),
+            )
+            .await
+            {
+                Ok(persona) => persona,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        %context_type,
+                        context_id,
+                        "queue resume persona resolution blocked spawn"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            };
 
             // Emit queue sent event (removes from frontend optimistic UI)
             if let Some(ref handle) = app_handle {
@@ -1278,6 +1373,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.project_repo)
             });
+            let persona_ingest_app_data_dir = app_handle.as_ref().and_then(|handle| {
+                handle
+                    .try_state::<AppState>()
+                    .map(|app_state| app_state.app_paths.app_data_dir().to_path_buf())
+            });
             let atlassian_integration_service = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
@@ -1395,15 +1495,20 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_agent_context.workspace.as_ref(),
             );
             let filesystem_read_roots = if let Some(project_repo) = project_repo {
+                let conversation_id_for_roots = conversation_id.as_str();
                 chat_service_context::resolve_mcp_filesystem_read_roots(
                     project_id,
                     project_repo,
                     working_directory,
+                    queued_agent_context.effective_mode,
+                    Some(&conversation_id_for_roots),
+                    persona_ingest_app_data_dir.as_deref(),
                 )
                 .await
             } else {
                 Vec::new()
             };
+            let persona_for_attribution = resolved_persona.clone();
 
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
@@ -1413,6 +1518,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 context_type,
                 context_id,
                 &runtime_content,
+                resolved_persona,
                 queued_agent_context.identity.agent_name,
                 queued_agent_context.identity.agent_profile,
                 working_directory,
@@ -1470,6 +1576,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     };
                 }
             };
+            let persona_injected = provider_spawnable.spawnable.persona_injected();
+            let persona_injection_skipped_reason = provider_spawnable
+                .spawnable
+                .persona_injection_skipped_reason();
             let provider_env = match queue_provider_decision(
                 app_handle.as_ref(),
                 &agent_provider_settings_repo,
@@ -1510,6 +1620,17 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
             match spawnable.spawn().await {
                 Ok(child) => {
+                    super::record_persona_run_attribution(
+                        agent_run_repo,
+                        app_handle.as_ref(),
+                        &conversation_id,
+                        &queued_run_id,
+                        harness,
+                        persona_for_attribution.as_ref(),
+                        persona_injected,
+                        persona_injection_skipped_reason,
+                    )
+                    .await;
                     if let Some(pid) = child.id() {
                         if let Err(error) = running_agent_registry
                             .update_agent_process(
@@ -1951,6 +2072,8 @@ mod tests {
         message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
         message.created_at_override = Some("2026-06-12T12:00:00Z".to_string());
         message.harness_override = Some(AgentHarnessKind::Codex);
+        message.agent_name_override = Some("ralphx-queued-agent".to_string());
+        message.persona_directive = crate::domain::entities::PersonaDirective::Suppress;
         message.model_override = Some("gpt-5.5".to_string());
         message.logical_effort_override = Some(LogicalEffort::High);
         message.composer_project_references = vec![ComposerProjectReference {
@@ -1993,6 +2116,14 @@ mod tests {
             Some("2026-06-12T12:00:00+00:00")
         );
         assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(
+            options.agent_name_override.as_deref(),
+            Some("ralphx-queued-agent")
+        );
+        assert_eq!(
+            options.persona_directive,
+            crate::domain::entities::PersonaDirective::Suppress
+        );
         assert_eq!(options.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(options.conversation_id_override, Some(conversation_id));
         assert_eq!(options.logical_effort_override, Some(LogicalEffort::High));
@@ -2102,6 +2233,8 @@ mod tests {
             None,
             None,
             Some(AgentHarnessKind::Codex),
+            None,
+            crate::domain::entities::PersonaDirective::Inherit,
             Some("gpt-5.5".to_string()),
             Some(crate::domain::agents::LogicalEffort::High),
             Some("fast".to_string()),
@@ -2119,6 +2252,7 @@ mod tests {
             "session-queued-switch",
             ChatConversationId::new(),
             "claude-session-old",
+            false,
             &message_queue,
             None,
             None,

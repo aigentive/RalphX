@@ -455,6 +455,25 @@ fn automation_run_start_request_trims_optional_fields_and_rejects_invalid_values
 }
 
 #[test]
+fn automation_run_mode_rejects_persona_builder() {
+    let automation = automation("automation-persona-builder");
+    let run = run(automation.id.clone());
+    let mut request = AutomationRunStartRequest::from_automation_run(
+        &automation,
+        &run,
+        crate::domain::entities::ChatConversationId::from_string(
+            "66666666-6666-4666-8666-666666666666",
+        ),
+    );
+    request.run_mode = "persona_builder".to_string();
+
+    assert!(matches!(
+        request.into_start_input().unwrap_err(),
+        AppError::Validation(message) if message.contains("PersonaBuilder")
+    ));
+}
+
+#[test]
 fn automation_run_start_request_drops_source_pr_after_run_one() {
     let mut automation = automation("automation-1");
     automation.base_display_name = Some("Source PR #42".to_string());

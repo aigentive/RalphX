@@ -25,15 +25,19 @@ export function resolveConversationAgentMode(
   return conversation.agentMode ?? workspace?.mode ?? "chat";
 }
 
-export function isWorkspaceModeLocked(workspace: AgentConversationWorkspace | null): boolean {
+export function isConversationModeLocked(
+  conversation: AgentConversation,
+  workspace: AgentConversationWorkspace | null,
+): boolean {
+  const mode = resolveConversationAgentMode(conversation, workspace);
+  if (mode === "automation" || mode === "persona_builder") {
+    return true;
+  }
   if (!workspace) {
     return false;
   }
   if (workspace.modeSwitchLocked !== undefined) {
     return workspace.modeSwitchLocked;
-  }
-  if (workspace.mode === "automation") {
-    return true;
   }
   return Boolean(workspace.linkedIdeationSessionId || workspace.linkedPlanBranchId);
 }

@@ -20,8 +20,9 @@ use crate::domain::repositories::{
     ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -226,6 +227,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub task_repo: Arc<dyn TaskRepository>,
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    pub persona_repo: Option<Arc<dyn PersonaRepository>>,
     pub delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub message_queue: Arc<MessageQueue>,
@@ -285,6 +287,7 @@ impl ChatRuntimeFactoryDeps {
             task_repo,
             task_dependency_repo,
             ideation_session_repo,
+            persona_repo: None,
             delegated_session_repo: None,
             activity_event_repo,
             message_queue,
@@ -311,6 +314,11 @@ impl ChatRuntimeFactoryDeps {
             linear_integration_service: None,
             granola_integration_service: None,
         }
+    }
+
+    pub(crate) fn with_persona_repo(mut self, repo: Arc<dyn PersonaRepository>) -> Self {
+        self.persona_repo = Some(repo);
+        self
     }
 
     pub(crate) fn with_execution_settings_repo(
@@ -551,6 +559,7 @@ impl ChatRuntimeFactoryDeps {
         .with_queued_message_repo(Arc::clone(&state.queued_message_repo))
         .with_notification_service(state.notification_service())
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
+        .with_persona_repo(Arc::clone(&state.persona_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
             Some(Arc::clone(&state.agent_lane_settings_repo)),
@@ -611,6 +620,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
         Arc::clone(&deps.memory_event_repo),
     );
 
+    if let Some(repo) = deps.persona_repo.as_ref() {
+        service = service.with_persona_repo(Arc::clone(repo));
+    }
     if let Some(state) = execution_state {
         service = service.with_execution_state(state);
     }
@@ -735,6 +747,10 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
     );
     service
 }
+
+#[cfg(test)]
+#[path = "runtime_factory_tests.rs"]
+mod runtime_factory_tests;
 
 pub(crate) fn build_transition_service_from_deps(
     app_handle: Option<AppHandle>,

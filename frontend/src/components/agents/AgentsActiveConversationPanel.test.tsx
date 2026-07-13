@@ -12,6 +12,7 @@ import {
   type AgentConversationWorkspaceFreshness,
   type ForkAgentConversationResult,
 } from "@/api/chat";
+import { PersonaChip } from "@/components/Chat/PersonaChip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -33,6 +34,10 @@ const {
   confirmVerificationMock,
   composerQuestionModeRef,
   composerAgentStatusRef,
+  composerPersonaControlRef,
+  agentPersonasEnabledRef,
+  personaQueryMock,
+  switchPersonaMock,
   eventSubscribers,
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
@@ -58,6 +63,10 @@ const {
   confirmVerificationMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
   composerAgentStatusRef: { current: "idle" },
+  composerPersonaControlRef: { current: undefined as ReactNode },
+  agentPersonasEnabledRef: { current: false },
+  personaQueryMock: vi.fn(),
+  switchPersonaMock: vi.fn(),
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
   listAgentTaskListTasksMock: vi.fn(),
   listAgentTaskListsMock: vi.fn(),
@@ -84,6 +93,14 @@ vi.mock("sonner", () => ({
     info: toastInfoMock,
     success: toastSuccessMock,
   },
+}));
+
+vi.mock("@/hooks/usePersonas", () => ({
+  usePersonas: () => personaQueryMock(),
+  useSwitchConversationPersona: () => ({
+    isPending: false,
+    mutateAsync: switchPersonaMock,
+  }),
 }));
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
@@ -287,6 +304,9 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         attachmentsUploading: false,
         ...(composerQuestionModeRef.current !== undefined
           ? { questionMode: composerQuestionModeRef.current }
+          : {}),
+        ...(agentPersonasEnabledRef.current && composerPersonaControlRef.current !== undefined
+          ? { personaControl: composerPersonaControlRef.current }
           : {}),
       })}
     </div>
@@ -553,6 +573,8 @@ vi.mock("./AgentComposerSurface", () => ({
     sendDisabledReason,
     onSend,
     onForkSession,
+    dataTestId,
+    personaControl,
   }: {
     provider: {
       value: string;
@@ -584,8 +606,10 @@ vi.mock("./AgentComposerSurface", () => ({
     sendDisabledReason?: string | null;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
+    dataTestId?: string;
+    personaControl?: ReactNode;
   }) => (
-    <div>
+    <div data-testid={dataTestId}>
       <div data-testid="workspace-provider-value">{provider.value}</div>
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
@@ -638,6 +662,7 @@ vi.mock("./AgentComposerSurface", () => ({
           Team
         </button>
       )}
+      {personaControl}
       <button
         type="button"
         data-testid="change-workspace-provider"
@@ -960,14 +985,29 @@ function renderPanel(
     terminalUnavailableReason: null,
     ...overrides,
   };
-  render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
         <AgentsActiveConversationPanel {...props} />
       </TooltipProvider>
     </QueryClientProvider>,
   );
-  return props;
+  return {
+    props,
+    rerenderPanel: (
+      nextOverrides: Partial<
+        ComponentProps<typeof AgentsActiveConversationPanel>
+      > = {},
+    ) => {
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider delayDuration={0}>
+            <AgentsActiveConversationPanel {...props} {...nextOverrides} />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    },
+  };
 }
 
 function setPlanArtifactVisible(conversationId = "conversation-1") {
@@ -987,6 +1027,21 @@ describe("AgentsActiveConversationPanel", () => {
     useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
     composerQuestionModeRef.current = undefined;
     composerAgentStatusRef.current = "idle";
+    composerPersonaControlRef.current = undefined;
+    agentPersonasEnabledRef.current = false;
+    personaQueryMock.mockReturnValue({
+      data: [
+        {
+          id: "persona-1",
+          slug: "design-voice",
+          name: "Design Voice",
+          status: "active",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+    switchPersonaMock.mockResolvedValue(undefined);
     getSessionPlanMock.mockResolvedValue(null);
     getPlanComplexityAssessmentMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
@@ -1031,6 +1086,119 @@ describe("AgentsActiveConversationPanel", () => {
     });
     finalizeAutomationMock.mockResolvedValue({ id: "automation-1", status: "active" });
     triggerAutomationRunNowMock.mockResolvedValue({ scheduled: true, reason: null });
+  });
+
+  it("renders the bound persona control supplied by the Chat surface in the Agents composer", () => {
+    agentPersonasEnabledRef.current = true;
+    composerPersonaControlRef.current = (
+      <PersonaChip
+        conversationId="conversation-1"
+        personaId="persona-1"
+        isAgentRunning={false}
+        lastRunPersonaId="persona-1"
+        lastRunPersonaSlug="design-voice"
+        lastRunPersonaInjected
+      />
+    );
+
+    renderPanel();
+
+    const composer = screen.getByTestId("agents-conversation-composer");
+    expect(
+      within(composer).getByRole("button", {
+        name: "Switch conversation persona",
+      }),
+    ).toHaveTextContent("design-voice");
+  });
+
+  it("renders the mapped not-applied persona affordance in the Agents composer", async () => {
+    agentPersonasEnabledRef.current = true;
+    composerPersonaControlRef.current = (
+      <PersonaChip
+        conversationId="conversation-1"
+        personaId="persona-1"
+        isAgentRunning={false}
+        lastRunPersonaId="persona-1"
+        lastRunPersonaSlug="design-voice"
+        lastRunPersonaInjected={false}
+        lastRunPersonaSkippedReason="native_agent_flag"
+      />
+    );
+
+    renderPanel();
+
+    const composer = screen.getByTestId("agents-conversation-composer");
+    const trigger = within(composer).getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("design-voice not applied");
+
+    fireEvent.pointerMove(trigger);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "Native agent mode does not support personas",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the no-persona control supplied by the Chat surface in the Agents composer", () => {
+    agentPersonasEnabledRef.current = true;
+    composerPersonaControlRef.current = (
+      <PersonaChip
+        conversationId="conversation-1"
+        personaId={null}
+        isAgentRunning={false}
+      />
+    );
+
+    renderPanel();
+
+    const composer = screen.getByTestId("agents-conversation-composer");
+    expect(
+      within(composer).getByRole("button", {
+        name: "Switch conversation persona",
+      }),
+    ).toHaveTextContent("No persona");
+  });
+
+  it("renders no persona element when the Chat surface feature flag gate is off", () => {
+    composerPersonaControlRef.current = (
+      <PersonaChip
+        conversationId="conversation-1"
+        personaId="persona-1"
+        isAgentRunning={false}
+      />
+    );
+
+    renderPanel();
+
+    const composer = screen.getByTestId("agents-conversation-composer");
+    expect(
+      within(composer).queryByRole("button", {
+        name: "Switch conversation persona",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+  });
+
+  it("keeps an unchanged persona control from rerendering during unrelated panel updates", () => {
+    const CountingPersonaControl = vi.fn(({ slug }: { slug: string }) => (
+      <span>{slug}</span>
+    ));
+
+    agentPersonasEnabledRef.current = true;
+    composerPersonaControlRef.current = (
+      <CountingPersonaControl slug="design-voice" />
+    );
+    const { rerenderPanel } = renderPanel();
+    expect(CountingPersonaControl).toHaveBeenCalledOnce();
+
+    composerPersonaControlRef.current = (
+      <CountingPersonaControl slug="design-voice" />
+    );
+    rerenderPanel({ publishingConversationId: "another-conversation" });
+
+    expect(CountingPersonaControl).toHaveBeenCalledOnce();
   });
 
   it("normalizes workspace runtime and forwards provider-supported capabilities", () => {

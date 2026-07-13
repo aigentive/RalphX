@@ -24,6 +24,7 @@ import { ideationApi } from "@/api/ideation";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
@@ -76,6 +77,8 @@ interface UseChatActionsProps {
     result: SendAgentMessageResult;
     composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>) | undefined;
+  /** Receives persona binding failures for inline, recoverable composer UI. */
+  onPersonaUnavailable?: ((message: string) => void) | undefined;
 }
 
 // ============================================================================
@@ -94,6 +97,7 @@ export function useChatActions({
   messageCount = 0,
   sendOptions,
   onUserMessageSent,
+  onPersonaUnavailable,
 }: UseChatActionsProps) {
   const queryClient = useQueryClient();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -105,11 +109,16 @@ export function useChatActions({
   const backendQueueContextId = queueContextId ?? contextId;
 
   const reportSendFailure = useCallback((err: unknown) => {
+    const message = extractErrorMessage(err, "The agent runtime could not start.");
+    if (isPersonaUnavailableError(message)) {
+      onPersonaUnavailable?.(message);
+      return;
+    }
     toast.error("Failed to send message", {
-      description: extractErrorMessage(err, "The agent runtime could not start."),
+      description: message,
       duration: 10000,
     });
-  }, []);
+  }, [onPersonaUnavailable]);
 
   const queueAcceptedMessage = useCallback(
     (content: string, queuedMessageId: string, attachmentIds?: string[]) => {

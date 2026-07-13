@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use ralphx_lib::application::agent_conversation_start_service::{
@@ -19,7 +20,7 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, Artifact, ArtifactType,
     Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
     ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionFlow, Project, ProjectId,
+    IdeationSessionFlow, Persona, PersonaId, PersonaStatus, Project, ProjectId, TaskId,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -99,6 +100,7 @@ fn service_start_input(
         conversation_id: conversation_id.map(ChatConversationId::as_str),
         parent_conversation_id: None,
         title: None,
+        persona_id: None,
         provider_harness: None,
         model_override: None,
         logical_effort: None,
@@ -116,6 +118,107 @@ fn service_start_input(
     }
 }
 
+struct CapturingFakeClaude {
+    _path_guard: super::support::env::EnvVarGuard,
+    _capture_guard: super::support::env::EnvVarGuard,
+    _temp_dir: tempfile::TempDir,
+    capture_path: PathBuf,
+    cli_path: PathBuf,
+}
+
+impl CapturingFakeClaude {
+    fn new() -> Self {
+        let temp_dir = tempfile::tempdir().expect("fake CLI directory should be created");
+        let capture_path = temp_dir.path().join("captured-prompt.txt");
+        let cli_path = temp_dir.path().join("claude");
+        std::fs::write(
+            &cli_path,
+            r#"#!/bin/sh
+printf '%s\n' "$@" >> "$RALPHX_PERSONA_START_CAPTURE_PATH"
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "--append-system-prompt-file" ]; then
+    cat "$argument" >> "$RALPHX_PERSONA_START_CAPTURE_PATH"
+  fi
+  previous="$argument"
+done
+"#,
+        )
+        .expect("fake CLI should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&cli_path)
+                .expect("fake CLI metadata should load")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&cli_path, permissions)
+                .expect("fake CLI should be executable");
+        }
+
+        Self {
+            _path_guard: super::support::env::prepend_to_path(temp_dir.path()),
+            _capture_guard: super::support::env::EnvVarGuard::set(
+                "RALPHX_PERSONA_START_CAPTURE_PATH",
+                capture_path.clone(),
+            ),
+            _temp_dir: temp_dir,
+            capture_path,
+            cli_path,
+        }
+    }
+
+    /// Waits for a real send spawn. The harness probes the pinned binary with
+    /// `--version`/`--help` first, so "file is non-empty" is not enough — poll
+    /// until a send-shaped invocation (composed system prompt) lands, then
+    /// return everything captured so far. On timeout, returns whatever was
+    /// captured so assertions produce a useful diff instead of a hang.
+    async fn captured_prompt(&self) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let captured = std::fs::read_to_string(&self.capture_path).unwrap_or_default();
+            if captured.contains("--append-system-prompt") {
+                // One more settle poll so the prompt-file `cat` finishes.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                return std::fs::read_to_string(&self.capture_path).unwrap_or(captured);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return captured;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+}
+
+fn enable_personas_for_test() -> super::support::env::EnvVarGuard {
+    super::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "true")
+}
+
+async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Persona {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(id),
+        slug: format!("{id}-slug"),
+        name: format!("{id} name"),
+        description: "start service persona fixture".to_string(),
+        content: "Use the requested project voice.".to_string(),
+        status,
+        version: 1,
+        content_hash: format!("{id}-hash"),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("persona fixture should persist");
+    persona
+}
+
 async fn start_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     input: StartAgentConversationInput,
@@ -131,6 +234,297 @@ async fn start_with_app(
     })
     .start(input)
     .await
+}
+
+#[tokio::test]
+async fn start_agent_conversation_rejects_persona_builder_mode() {
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let app = build_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+    let project_id = ProjectId::from_string("project-persona-builder-rejected".to_string());
+
+    let error = start_with_app(
+        &app,
+        service_start_input(
+            &project_id,
+            "reserved mode must not start generically",
+            "persona_builder",
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect_err("generic start must reject PersonaBuilder before any project or workspace work");
+
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn start_with_persona_persists_binding_and_first_send_includes_persona_block() {
+    let _persona_feature = enable_personas_for_test();
+    let _allow_spawn =
+        super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(&state, "project-start-persona", temp.path(), temp.path()).await;
+    let persona = seed_persona(&state, "start-persona", PersonaStatus::Active).await;
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+    let mut input = service_start_input(
+        &project.id,
+        "Start with a persona",
+        "chat",
+        None,
+        None,
+        None,
+        None,
+    );
+    input.persona_id = Some(persona.id.as_str().to_string());
+    input.provider_harness = Some("claude".to_string());
+
+    let started = start_with_app(&app, input)
+        .await
+        .expect("persona-bound conversation should start");
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&started.conversation.id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("conversation should persist");
+    assert_eq!(stored.persona_id.as_deref(), Some(persona.id.as_str()));
+
+    assert!(
+        fake_cli
+            .captured_prompt()
+            .await
+            .contains("<ralphx_agent_persona>"),
+        "the start-path override must not suppress the explicit first-send persona"
+    );
+}
+
+#[tokio::test]
+async fn start_input_persona_id_rejected_for_non_project_context() {
+    let _persona_feature = enable_personas_for_test();
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-start-persona-non-project",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let persona = seed_persona(&state, "non-project-persona", PersonaStatus::Active).await;
+    let task_conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_task(TaskId::from_string(
+            "task-start-persona-non-project".to_string(),
+        )))
+        .await
+        .expect("task conversation fixture should persist");
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+    let mut input = service_start_input(
+        &project.id,
+        "Do not bind on a task conversation",
+        "chat",
+        None,
+        None,
+        Some(&task_conversation.id),
+        None,
+    );
+    input.persona_id = Some(persona.id.as_str().to_string());
+
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("persona input must reject non-Project conversations");
+    assert!(
+        error.contains("Persona bindings require Project conversation context"),
+        "unexpected typed context rejection: {error}"
+    );
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&task_conversation.id)
+        .await
+        .expect("task conversation lookup should succeed")
+        .expect("task conversation should remain");
+    assert!(stored.persona_id.is_none());
+}
+
+#[tokio::test]
+async fn start_with_persona_flag_off_fails_before_creating_conversation_or_workspace() {
+    let _persona_feature =
+        super::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "false");
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-start-persona-flag-off",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let persona = seed_persona(&state, "feature-off-persona", PersonaStatus::Active).await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+    let mut input = service_start_input(
+        &project.id,
+        "Do not create an edit workspace when personas are disabled",
+        "edit",
+        None,
+        None,
+        None,
+        None,
+    );
+    input.persona_id = Some(persona.id.as_str().to_string());
+
+    let error = start_with_app(&app, input)
+        .await
+        .expect_err("persona feature flag must be enforced before setup side effects");
+
+    assert!(
+        error.contains("[Personas disabled:"),
+        "unexpected error: {error}"
+    );
+    assert!(app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_context(ChatContextType::Project, project.id.as_str())
+        .await
+        .expect("conversation lookup should succeed")
+        .is_empty());
+    assert!(app
+        .state::<AppState>()
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&project.id)
+        .await
+        .expect("workspace lookup should succeed")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn start_with_draft_or_archived_persona_fails_closed_without_binding() {
+    let _persona_feature = enable_personas_for_test();
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-start-persona-inactive",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    for status in [PersonaStatus::Draft, PersonaStatus::Archived] {
+        let persona = seed_persona(
+            app.state::<AppState>().inner(),
+            &format!("inactive-start-persona-{status}"),
+            status,
+        )
+        .await;
+        let conversation = app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project.id.clone()))
+            .await
+            .expect("seeded conversation should persist");
+        let mut input = service_start_input(
+            &project.id,
+            "Reject inactive persona",
+            "chat",
+            None,
+            None,
+            Some(&conversation.id),
+            None,
+        );
+        input.persona_id = Some(persona.id.as_str().to_string());
+
+        let error = start_with_app(&app, input)
+            .await
+            .expect_err("draft and archived personas must fail closed");
+        assert!(
+            error.contains("[Persona unavailable:"),
+            "unexpected inactive persona error: {error}"
+        );
+        let stored = app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("conversation lookup should succeed")
+            .expect("conversation should remain");
+        assert!(stored.persona_id.is_none());
+    }
+}
+
+#[tokio::test]
+async fn start_without_persona_id_unchanged() {
+    let _persona_feature = enable_personas_for_test();
+    let _allow_spawn =
+        super::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    let fake_cli = CapturingFakeClaude::new();
+    ralphx_lib::testing::seed_available_harness_probes_for_test_at(
+        fake_cli.cli_path.to_str().expect("utf8 fake CLI path"),
+    );
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-start-without-persona",
+        temp.path(),
+        temp.path(),
+    )
+    .await;
+    let app = build_app(state, Arc::new(ExecutionState::new()));
+
+    let mut input = service_start_input(
+        &project.id,
+        "Start without a persona",
+        "chat",
+        None,
+        None,
+        None,
+        None,
+    );
+    input.provider_harness = Some("claude".to_string());
+    let started = start_with_app(&app, input)
+        .await
+        .expect("persona-free conversation should start");
+    let stored = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&started.conversation.id)
+        .await
+        .expect("conversation lookup should succeed")
+        .expect("conversation should persist");
+    assert!(stored.persona_id.is_none());
+    assert!(
+        !fake_cli
+            .captured_prompt()
+            .await
+            .contains("<ralphx_agent_persona>"),
+        "persona-free starts must keep the prior prompt shape"
+    );
 }
 
 #[tokio::test]

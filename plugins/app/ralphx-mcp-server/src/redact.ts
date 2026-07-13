@@ -15,6 +15,12 @@ import { fileURLToPath } from "node:url";
 
 const TRACE_SUBDIR = "mcp-proxy";
 const TRACE_DISABLED = "(disabled)";
+const PERSONA_LOG_REDACTION = "***PERSONA_ARGS_REDACTED***";
+
+export const ARG_REDACTED_TOOLS = new Set([
+  "save_persona_draft",
+  "get_persona_draft",
+]);
 
 interface RedactPattern {
   regex: RegExp;
@@ -61,6 +67,18 @@ export function redactSecrets(input: string): string {
     result = result.replace(regex, replacement);
   }
   return result;
+}
+
+export function redactToolArgsForLog(toolName: string, args: unknown): unknown {
+  return isPersonaTool(toolName) ? PERSONA_LOG_REDACTION : args;
+}
+
+export function redactToolResultForLog(toolName: string, result: unknown): unknown {
+  return isPersonaTool(toolName) ? PERSONA_LOG_REDACTION : result;
+}
+
+function isPersonaTool(toolName: string): boolean {
+  return ARG_REDACTED_TOOLS.has(toolName) || toolName.startsWith("persona_");
 }
 
 /**

@@ -900,6 +900,67 @@ fn ticketing_dashboard_after_env(value: Option<&str>) -> bool {
     cfg.ui_feature_flags.ticketing_dashboard
 }
 
+fn agent_personas_after_env(value: Option<&str>) -> bool {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_AGENT_PERSONAS" => value.map(str::to_string),
+        _ => None,
+    });
+    cfg.ui_feature_flags.agent_personas
+}
+
+#[test]
+fn runtime_config_env_override_agent_personas_true_and_false() {
+    assert!(agent_personas_after_env(Some("true")));
+    assert!(agent_personas_after_env(Some("1")));
+    assert!(!agent_personas_after_env(Some("false")));
+    assert!(!agent_personas_after_env(None));
+}
+
+#[test]
+fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("false".to_string()),
+        _ => None,
+    });
+    assert!(
+        !cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
+}
+
 #[test]
 fn test_ui_ticketing_dashboard_default_is_false() {
     use crate::infrastructure::agents::claude::UiFeatureFlagsConfig;

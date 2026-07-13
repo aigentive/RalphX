@@ -34,6 +34,9 @@ mod sqlite_chat_attachment_repo_tests;
 pub mod sqlite_chat_conversation_repo;
 #[cfg(test)]
 mod sqlite_chat_conversation_repo_tests;
+pub mod sqlite_persona_repo;
+#[cfg(test)]
+mod sqlite_persona_repo_tests;
 pub mod sqlite_chat_message_repo;
 #[cfg(test)]
 mod sqlite_chat_message_repo_tests;
@@ -98,6 +101,7 @@ pub mod sqlite_task_proposal_repo;
 pub mod sqlite_task_qa_repo;
 pub mod sqlite_task_repo;
 pub mod sqlite_task_step_repo;
+pub mod sqlite_ui_feature_flag_overrides_repo;
 pub mod sqlite_team_message_repo;
 #[cfg(test)]
 mod sqlite_team_message_repo_tests;
@@ -142,6 +146,7 @@ pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSe
 pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRunRepository};
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
+pub use sqlite_persona_repo::SqlitePersonaRepository;
 pub use sqlite_chat_message_repo::SqliteChatMessageRepository;
 pub use sqlite_chat_timeline_repo::SqliteChatTimelineRepository;
 pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
@@ -186,6 +191,7 @@ pub use sqlite_task_proposal_repo::SqliteTaskProposalRepository;
 pub use sqlite_task_qa_repo::SqliteTaskQARepository;
 pub use sqlite_task_repo::SqliteTaskRepository;
 pub use sqlite_task_step_repo::SqliteTaskStepRepository;
+pub use sqlite_ui_feature_flag_overrides_repo::SqliteUiFeatureFlagOverridesRepository;
 pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
 pub use sqlite_team_session_repo::SqliteTeamSessionRepository;
 pub use sqlite_ticket_canonical_branch_repo::SqliteTicketCanonicalBranchRepository;

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
     InterruptedConversation,
@@ -119,6 +120,18 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         let mut runs = self.runs.write().await;
         if let Some(run) = runs.get_mut(id) {
             run.apply_attribution(attribution);
+        }
+        Ok(())
+    }
+
+    async fn set_persona_attribution(
+        &self,
+        id: &AgentRunId,
+        attribution: PersonaRunAttribution,
+    ) -> AppResult<()> {
+        let mut runs = self.runs.write().await;
+        if let Some(run) = runs.get_mut(id) {
+            run.apply_persona_attribution(attribution);
         }
         Ok(())
     }

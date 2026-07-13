@@ -77,7 +77,17 @@ pub mod notification_service;
 mod notification_service_tests;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
+pub mod personas;
+pub mod persona_ingest;
+pub mod persona_prompt;
+pub mod persona_resolver;
 pub mod permission_state;
+#[cfg(test)]
+mod persona_ingest_tests;
+#[cfg(test)]
+mod persona_prompt_tests;
+#[cfg(test)]
+mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
