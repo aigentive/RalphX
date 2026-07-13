@@ -298,6 +298,8 @@ mod agent_conversation_archive_restart_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
+mod agent_conversation_workspace_restart_tests;
+#[cfg(test)]
 mod agent_issue_report_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;

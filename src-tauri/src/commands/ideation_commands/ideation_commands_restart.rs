@@ -8,7 +8,7 @@ use tauri::{Emitter, Manager, State};
 use crate::application::task_cleanup_service::StopMode;
 use crate::application::{
     agent_conversation_archive::close_agent_workspace_pr_for_restart,
-    agent_conversation_workspace::ensure_linked_plan_branch_agent_worktree,
+    agent_conversation_workspace::relocate_linked_plan_branch_agent_worktree_for_restart,
     spawn_ready_task_scheduler_if_needed, AppState, GitService, TaskCleanupService,
 };
 use crate::commands::{emit_queue_changed, ExecutionState};
@@ -196,8 +196,12 @@ pub async fn restart_ideation_implementation_core(
                     plan_branch_id
                 ))
             })?;
-        let worktree_path =
-            ensure_linked_plan_branch_agent_worktree(&project, &plan_branch).await?;
+        let worktree_path = relocate_linked_plan_branch_agent_worktree_for_restart(
+            &project,
+            workspace,
+            &plan_branch,
+        )
+        .await?;
         Some((plan_branch, worktree_path))
     } else {
         None

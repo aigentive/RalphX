@@ -1,5 +1,6 @@
 use super::git_cmd;
 use super::*;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 impl GitService {
     // =========================================================================
@@ -166,6 +167,41 @@ impl GitService {
             }
             // Always prune stale git metadata regardless of path existence
             let _ = git_cmd::run(&["worktree", "prune"], repo).await;
+        }
+
+        Ok(())
+    }
+
+    /// Move an owned worktree to a new, validated location.
+    pub async fn move_worktree(repo: &Path, worktree: &Path, destination: &Path) -> AppResult<()> {
+        let repo = validate_absolute_non_root_path(repo, "project checkout")?;
+        let worktree = validate_absolute_non_root_path(worktree, "worktree")?;
+        let destination = validate_absolute_non_root_path(destination, "worktree destination")?;
+        let parent = destination
+            .parent()
+            .expect("validated non-root worktree destination has a parent");
+        validate_absolute_non_root_path(parent, "worktree parent")?;
+        // codeql[rust/path-injection]
+        std::fs::create_dir_all(parent)
+            .map_err(|error| AppError::GitOperation(error.to_string()))?;
+
+        let output = git_cmd::run(
+            &[
+                "worktree",
+                "move",
+                worktree.to_str().unwrap_or_default(),
+                destination.to_str().unwrap_or_default(),
+            ],
+            &repo,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "Failed to move worktree from '{}' to '{}': {}",
+                worktree.display(),
+                destination.display(),
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
 
         Ok(())
