@@ -67,12 +67,12 @@ import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
   getAgentWorkspaceEffectiveBaseLabel,
-  hasPublishedWorkspacePr,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 import {
   AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   agentWorkspaceKeys,
+  canInspectAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
 
 const HEADER_ARTIFACT_TABS: Array<{
@@ -706,7 +706,7 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
       }),
     enabled:
       !terminalStatus &&
-      (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),
+      canInspectAgentWorkspaceFreshness(workspace),
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const isBaseBlocked = freshness?.baseStatus === "blocked";

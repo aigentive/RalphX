@@ -170,7 +170,7 @@ export function canInspectAgentWorkspaceBaseFreshness(
   }
 
   if (workspace.mode === "plan") {
-    return workspace.status !== "missing";
+    return false;
   }
 
   if (isAgentWorkspacePublishSurfaceMode(workspace)) {
