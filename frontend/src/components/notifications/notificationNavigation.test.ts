@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { tasksApi } from "@/api/tasks";
-import { navigateToAgentConversation, navigateToIdeationSession } from "@/lib/navigation";
+import {
+  navigateToAgentConversation,
+  navigateToAgentPlan,
+  navigateToIdeationSession,
+} from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
@@ -18,6 +22,7 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
 vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
+  navigateToAgentPlan: vi.fn(),
   navigateToIdeationSession: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
@@ -185,6 +190,34 @@ describe("navigateNotification", () => {
     expect(navigateToIdeationSession).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it.each(["plan_approval", "team_plan_approval"] as const)(
+    "opens %s targets in the conversation Plan artifact",
+    (category) => {
+      const onClose = vi.fn();
+
+      navigateNotification(
+        {
+          id: `${category}-1`,
+          category,
+          target: {
+            kind: "agent_conversation",
+            projectId: "project-2",
+            conversationId: "conversation-1",
+          },
+        },
+        {} as QueryClient,
+        { onClose },
+      );
+
+      expect(navigateToAgentPlan).toHaveBeenCalledWith(
+        "project-2",
+        "conversation-1",
+      );
+      expect(navigateToAgentConversation).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledOnce();
+    },
+  );
 
   it("keeps the legacy setup-conversation fallback and closes malformed targets", () => {
     const onClose = vi.fn();
