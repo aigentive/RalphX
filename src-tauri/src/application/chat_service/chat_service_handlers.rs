@@ -2288,6 +2288,23 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             context_id,
             "Stream cancelled — skipping error recovery and fallback transitions"
         );
+        if effective_harness == AgentHarnessKind::Codex {
+            if let Err(error) = conversation_repo
+                .clear_provider_session_ref(&conversation_id)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    %error,
+                    "Failed to clear provider session after an incomplete Codex turn was cancelled"
+                );
+            } else {
+                tracing::info!(
+                    conversation_id = conversation_id.as_str(),
+                    "Cleared provider session after an incomplete Codex turn was cancelled"
+                );
+            }
+        }
         mark_cancelled_stream_as_cancelled(
             agent_run_repo,
             agent_run_id,

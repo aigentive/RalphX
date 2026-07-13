@@ -3446,6 +3446,97 @@ async fn cancelled_incomplete_codex_turn_clears_provider_session_before_next_sen
 }
 
 #[tokio::test]
+async fn cancelled_incomplete_claude_turn_preserves_provider_session_for_continuation() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "continuable-claude-session".to_string(),
+    });
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("insert Claude conversation");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        "run-id-incomplete-claude-turn",
+        "message-id-incomplete-claude-turn",
+        &event_ctx,
+        Some("continuable-claude-session"),
+        AgentHarnessKind::Claude,
+        false,
+        None,
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        std::path::Path::new("/tmp/claude"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("load Claude conversation")
+        .expect("Claude conversation remains present");
+    assert_eq!(
+        stored
+            .provider_session_ref()
+            .map(|session_ref| session_ref.provider_session_id),
+        Some("continuable-claude-session".to_string()),
+        "Claude cancellation keeps its provider continuation semantics"
+    );
+}
+
+#[tokio::test]
 async fn test_handle_stream_error_cancelled_preserves_terminal_system_run_status() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
