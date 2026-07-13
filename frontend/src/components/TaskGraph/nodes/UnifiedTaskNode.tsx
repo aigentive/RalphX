@@ -7,7 +7,7 @@ import { memo } from "react";
 import type { NodeProps, Node } from "@xyflow/react";
 import { TaskNode, type TaskNodeData, type TaskNodeType } from "./TaskNode";
 import { TaskNodeCompact, type TaskNodeCompactType } from "./TaskNodeCompact";
-import type { NodeMode } from "../controls/GraphControls";
+import type { NodeMode } from "../controls/graph-controls";
 
 export type UnifiedTaskNodeData = TaskNodeData & {
   nodeMode?: NodeMode;

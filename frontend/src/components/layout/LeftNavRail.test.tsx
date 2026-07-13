@@ -189,10 +189,29 @@ describe("LeftNavRail", () => {
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-ticketing"));
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-github"));
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-granola"));
-    // Primary views like Agents/Kanban are NOT inside the Dashboard group.
+    // Primary views like Agents/Automations are NOT inside the Dashboard group.
     expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-agents"));
-    expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-kanban"));
     expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-automations"));
+  });
+
+  it("keeps only Agents task workflows in the primary rail with contiguous shortcuts", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    const agents = screen.getByTestId("nav-agents");
+    const automations = screen.getByTestId("nav-automations");
+    const insights = screen.getByTestId("nav-insights");
+
+    expect(agents).toHaveTextContent("Agents");
+    expect(screen.getByText("⌘1")).toBeInTheDocument();
+    expect(automations).toHaveTextContent("Automations");
+    expect(screen.getByText("⌘2")).toBeInTheDocument();
+    expect(insights).toHaveTextContent("Insights");
+    expect(screen.getByText("⌘3")).toBeInTheDocument();
+    expect(agents.compareDocumentPosition(automations)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(automations.compareDocumentPosition(insights)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByTestId("nav-ideation")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-graph")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-kanban")).not.toBeInTheDocument();
   });
 
   it("renders the dashboard items in a group labeled Dashboard", () => {
@@ -215,13 +234,13 @@ describe("LeftNavRail", () => {
       />,
     );
 
-    const kanbanButton = screen.getByTestId("nav-kanban");
-    fireEvent.pointerEnter(kanbanButton);
-    expect(onViewWarmUp).toHaveBeenCalledWith("kanban");
+    const insightsButton = screen.getByTestId("nav-insights");
+    fireEvent.pointerEnter(insightsButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("insights");
 
     onViewWarmUp.mockClear();
-    fireEvent.focus(kanbanButton);
-    expect(onViewWarmUp).toHaveBeenCalledWith("kanban");
+    fireEvent.focus(insightsButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("insights");
 
     onViewWarmUp.mockClear();
     const automationsButton = screen.getByTestId("nav-automations");

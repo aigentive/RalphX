@@ -87,23 +87,30 @@ describe("Navigation store state", () => {
       expect(state.currentView).toBe("agents");
     });
 
-    it("switches to ideation view", () => {
+    it("normalizes deprecated ideation view to Agents", () => {
       useUiStore.getState().setCurrentView("ideation");
-      expect(useUiStore.getState().currentView).toBe("ideation");
+      expect(useUiStore.getState().currentView).toBe("agents");
     });
 
-    it("switches back to kanban view", () => {
+    it("normalizes deprecated kanban view to Agents", () => {
       useUiStore.getState().setCurrentView("ideation");
       useUiStore.getState().setCurrentView("kanban");
-      expect(useUiStore.getState().currentView).toBe("kanban");
+      expect(useUiStore.getState().currentView).toBe("agents");
     });
 
-    it("supports all view types", () => {
-      const views = ["kanban", "ideation", "activity", "github", "granola", "task_detail"] as const;
+    it("supports live view types and normalizes deprecated standalone values", () => {
+      const cases = [
+        ["kanban", "agents"],
+        ["ideation", "agents"],
+        ["activity", "activity"],
+        ["github", "github"],
+        ["granola", "granola"],
+        ["task_detail", "task_detail"],
+      ] as const;
 
-      for (const view of views) {
+      for (const [view, expected] of cases) {
         useUiStore.getState().setCurrentView(view);
-        expect(useUiStore.getState().currentView).toBe(view);
+        expect(useUiStore.getState().currentView).toBe(expected);
       }
     });
   });
@@ -178,24 +185,24 @@ describe("View rendering logic", () => {
     expect(useUiStore.getState().currentView).toBe("agents");
   });
 
-  it("can switch to ideation view", () => {
+  it("normalizes ideation view to Agents", () => {
     useUiStore.getState().setCurrentView("ideation");
-    expect(useUiStore.getState().currentView).toBe("ideation");
+    expect(useUiStore.getState().currentView).toBe("agents");
   });
 
-  it("setCurrentView updates currentView correctly", () => {
-    const views: Array<"kanban" | "ideation" | "activity" | "github" | "granola" | "task_detail"> = [
-      "ideation",
-      "kanban",
-      "activity",
-      "github",
-      "granola",
-      "task_detail",
-    ];
+  it("setCurrentView updates currentView with deprecated view normalization", () => {
+    const cases = [
+      ["ideation", "agents"],
+      ["kanban", "agents"],
+      ["activity", "activity"],
+      ["github", "github"],
+      ["granola", "granola"],
+      ["task_detail", "task_detail"],
+    ] as const;
 
-    for (const view of views) {
+    for (const [view, expected] of cases) {
       useUiStore.getState().setCurrentView(view);
-      expect(useUiStore.getState().currentView).toBe(view);
+      expect(useUiStore.getState().currentView).toBe(expected);
     }
   });
 });
@@ -270,7 +277,7 @@ describe("Navigation integration contracts", () => {
     });
 
     // Both should reflect their respective states
-    expect(useUiStore.getState().currentView).toBe("ideation");
+    expect(useUiStore.getState().currentView).toBe("agents");
     expect(useChatStore.getState().context.view).toBe("ideation");
     expect(useChatStore.getState().context.projectId).toBe("test-project");
   });

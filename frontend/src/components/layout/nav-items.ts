@@ -1,14 +1,11 @@
 /**
- * Shared nav item config used by the top-bar Navigation and the left-rail nav.
- * Order matches main navigation shortcut map: ⌘1 through ⌘5.
+ * Shared nav item config used by the main app navigation surfaces.
+ * Numbered shortcuts are derived from this order by the app keyboard handler.
  */
 
 import {
   Activity,
   Briefcase,
-  GitBranch,
-  LayoutGrid,
-  Lightbulb,
   Puzzle,
   Ticket,
   TrendingUp,
@@ -36,30 +33,10 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     visible: () => true,
   },
   {
-    view: "ideation",
-    label: "Ideation",
-    icon: Lightbulb,
-    shortcut: "⌘2",
-    visible: (flags) => flags.ideationPage,
-  },
-  {
-    view: "graph",
-    label: "Graph",
-    icon: GitBranch,
-    shortcut: "⌘3",
-    visible: () => true,
-  },
-  {
-    view: "kanban",
-    label: "Kanban",
-    icon: LayoutGrid,
-    shortcut: "⌘4",
-    visible: () => true,
-  },
-  {
     view: "automations",
     label: "Automations",
     icon: Workflow,
+    shortcut: "⌘2",
     visible: (flags) => flags.automationsPage,
   },
   {
@@ -84,7 +61,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     view: "insights",
     label: "Insights",
     icon: TrendingUp,
-    shortcut: "⌘5",
+    shortcut: "⌘3",
     visible: () => true,
   },
   {

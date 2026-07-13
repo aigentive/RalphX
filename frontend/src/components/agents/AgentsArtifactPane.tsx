@@ -3037,7 +3037,7 @@ function TaskArtifactSurface({
         <LazyTaskGraphView
           projectId={projectId}
           ideationSessionId={sessionId}
-          hideCanvasControls
+          hidePlanSelector
           onTaskSelect={handleTaskSelect}
         />
       </Suspense>

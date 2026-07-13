@@ -7,7 +7,9 @@ use super::types::{
     TimelineEvent, TimelineEventType, TimelineEventsResponse,
 };
 use crate::application::AppState;
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_task;
 use crate::domain::entities::{InternalStatus, ProjectId, TaskId};
+use crate::domain::execution::ExecutionTaskAgentWorkspace;
 use tauri::State;
 
 /// List tasks for a project with pagination support
@@ -114,6 +116,47 @@ pub async fn get_task(
         .await
         .map(|opt| opt.map(TaskResponse::from))
         .map_err(|e| e.to_string())
+}
+
+/// Resolve the Agent conversation workspace that owns a task, if one exists.
+///
+/// This keeps compatibility navigation for historical task links on the same
+/// workspace-selection path used by execution and merge surfaces.
+#[tauri::command]
+pub async fn get_task_agent_workspace(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    get_task_agent_workspace_for_app_state(task_id, state.inner()).await
+}
+
+#[doc(hidden)]
+pub(crate) async fn get_task_agent_workspace_for_app_state(
+    task_id: String,
+    state: &AppState,
+) -> Result<Option<ExecutionTaskAgentWorkspace>, String> {
+    let task_id = TaskId::from_string(task_id);
+    let Some(task) = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let plan_branches = state
+        .plan_branch_repo
+        .get_by_project_id(&task.project_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let workspaces = state
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&task.project_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    resolve_agent_workspace_target_for_task(state, &task, &plan_branches, &workspaces).await
 }
 
 /// Get the count of archived tasks for a project

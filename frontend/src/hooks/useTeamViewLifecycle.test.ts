@@ -114,7 +114,7 @@ describe("useTeamViewLifecycle", () => {
     });
 
     expect(useUiStore.getState().currentView).toBe("team");
-    expect(useUiStore.getState().previousView).toBe("kanban");
+    expect(useUiStore.getState().previousView).toBe("agents");
   });
 
   // --------------------------------------------------------------------------
@@ -166,12 +166,12 @@ describe("useTeamViewLifecycle", () => {
     });
     expect(useUiStore.getState().currentView).toBe("team");
 
-    // Disband → restore kanban
+    // Disband -> restore the normalized Agents view
     act(() => {
       fireEvent("team:disbanded", makePayload());
     });
 
-    expect(useUiStore.getState().currentView).toBe("kanban");
+    expect(useUiStore.getState().currentView).toBe("agents");
     expect(useUiStore.getState().previousView).toBeNull();
   });
 
@@ -209,7 +209,7 @@ describe("useTeamViewLifecycle", () => {
     });
     expect(useUiStore.getState().currentView).toBe("team");
 
-    // User manually navigates to graph
+    // User manually navigates to deprecated graph, which normalizes to Agents
     useUiStore.getState().setCurrentView("graph");
 
     // Disband → should NOT restore since user isn't on team view
@@ -217,7 +217,7 @@ describe("useTeamViewLifecycle", () => {
       fireEvent("team:disbanded", makePayload());
     });
 
-    expect(useUiStore.getState().currentView).toBe("graph");
+    expect(useUiStore.getState().currentView).toBe("agents");
   });
 
   // --------------------------------------------------------------------------
@@ -235,8 +235,8 @@ describe("useTeamViewLifecycle", () => {
       });
     });
 
-    // Should remain on kanban — event didn't match
-    expect(useUiStore.getState().currentView).toBe("kanban");
+    // Should remain on normalized Agents — event didn't match
+    expect(useUiStore.getState().currentView).toBe("agents");
     expect(useUiStore.getState().previousView).toBeNull();
   });
 });

@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { buildProposalPreview } from "@/lib/proposal-text";
 import type { TaskProposal } from "@/types/ideation";
-import { PRIORITY_CONFIG } from "./PlanningView.constants";
+import { PRIORITY_CONFIG } from "./proposalPriority";
 
 // ============================================================================
 // Types

@@ -219,7 +219,7 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("selects a project and returns to kanban only when a project id exists", () => {
+  it("selects a project and returns to Agents only when a project id exists", () => {
     const onClose = vi.fn();
     navigateNotification(
       { id: "project-1", category: "info", target: { kind: "project", projectId: "project-1" } },
@@ -234,7 +234,7 @@ describe("navigateNotification", () => {
 
     expect(selectProject).toHaveBeenCalledTimes(1);
     expect(selectProject).toHaveBeenCalledWith("project-1");
-    expect(setCurrentView).toHaveBeenCalledWith("kanban");
+    expect(setCurrentView).toHaveBeenCalledWith("agents");
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 

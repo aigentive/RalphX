@@ -7,9 +7,7 @@
  *   - No task chat available: FloatingTimeline at fixed 320px
  *   - Task chat available: IntegratedChatPanel with resizable width
  *
- * Key difference from KanbanSplitLayout:
- * - Kanban: hides the right panel when no selected-task agent chat is available
- * - Graph: Right panel always visible, content switches (timeline ↔ chat)
+ * The right panel stays visible and switches between timeline and chat content.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";

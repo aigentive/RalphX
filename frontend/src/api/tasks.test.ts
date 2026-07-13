@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { tasksApi } from "./tasks";
 
-describe("tasksApi execution-plan controls", () => {
+describe("tasksApi", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
   });
@@ -89,6 +89,24 @@ describe("tasksApi execution-plan controls", () => {
         sessionId: "session-1",
         executionPlanId: "exec-plan-3",
       },
+    });
+  });
+
+  it("resolves a task's owning Agent conversation workspace", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      title: "Task owner",
+    });
+
+    await expect(tasksApi.resolveAgentWorkspace("task-1")).resolves.toEqual({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      title: "Task owner",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_task_agent_workspace", {
+      taskId: "task-1",
     });
   });
 });
