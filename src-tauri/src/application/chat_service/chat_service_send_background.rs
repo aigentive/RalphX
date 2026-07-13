@@ -304,8 +304,10 @@ pub(crate) fn should_recover_silent_completion(
     cancellation_requested: bool,
     has_session_for_queue: bool,
 ) -> bool {
-    context_type == ChatContextType::Project
-        && has_session_for_queue
+    matches!(
+        context_type,
+        ChatContextType::Project | ChatContextType::Ideation
+    ) && has_session_for_queue
         && turns_finalized == 0
         && !silent_interactive_exit
         && !cancellation_requested
