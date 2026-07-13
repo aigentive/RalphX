@@ -552,6 +552,7 @@ pub fn start_teammate_stream<R: Runtime>(
                                     tool_use_id,
                                     result,
                                     parent_tool_use_id,
+                                    is_error: _,
                                 } => {
                                     let result_preview = build_live_tool_result_preview_for_tool_id(
                                         &processor.tool_calls,

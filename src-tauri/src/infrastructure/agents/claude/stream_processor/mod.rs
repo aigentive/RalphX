@@ -423,7 +423,7 @@ impl StreamProcessor {
                     if let UserContent::ToolResult {
                         tool_use_id,
                         content,
-                        is_error: _,
+                        is_error,
                     } = content
                     {
                         // Check if this is a Task tool_result by finding the matching tool_call
@@ -512,6 +512,7 @@ impl StreamProcessor {
                         events.push(StreamEvent::ToolResultReceived {
                             tool_use_id: tool_use_id.clone(),
                             result: content.clone(),
+                            is_error,
                             parent_tool_use_id: parent_tool_use_id.clone(),
                         });
 
