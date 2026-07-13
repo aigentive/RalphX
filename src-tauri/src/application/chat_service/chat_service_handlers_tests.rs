@@ -3359,6 +3359,93 @@ async fn test_handle_stream_error_cancelled_false_completion_takes_agent_stopped
 }
 
 #[tokio::test]
+async fn cancelled_incomplete_codex_turn_clears_provider_session_before_next_send() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "incomplete-codex-thread".to_string(),
+    });
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed Codex conversation");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        "run-id-incomplete-codex-turn",
+        "message-id-incomplete-codex-turn",
+        &event_ctx,
+        Some("incomplete-codex-thread"),
+        AgentHarnessKind::Codex,
+        false,
+        None,
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("load Codex conversation")
+        .expect("Codex conversation remains present");
+    assert!(
+        stored.provider_session_ref().is_none(),
+        "a cancelled Codex turn without terminal proof must not be resumed"
+    );
+}
+
+#[tokio::test]
 async fn test_handle_stream_error_cancelled_preserves_terminal_system_run_status() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
