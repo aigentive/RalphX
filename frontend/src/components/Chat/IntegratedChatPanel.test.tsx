@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -570,6 +570,52 @@ describe("IntegratedChatPanel", () => {
     expect(chips).toHaveLength(2);
     expect(chips[0]).toHaveTextContent("design-voice");
     expect(chips[1]).toHaveTextContent("design-voice");
+  });
+
+  it("supplies personaControl to a host-owned composer (Agents workspace surface)", () => {
+    // Regression: the Agents workspace renders its own composer via renderComposer
+    // and hides the session toolbar, so the ONLY way the persona can be visible
+    // there is if the panel hands personaControl to the render prop.
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    let receivedPersonaControl: React.ReactNode | undefined;
+    const hostComposer = (props: IntegratedChatComposerRenderProps) => {
+      receivedPersonaControl = props.personaControl;
+      return (
+        <div data-testid="host-composer">{props.personaControl}</div>
+      );
+    };
+
+    const panel = render(
+      <TestWrapper>
+        <IntegratedChatPanel
+          projectId="project-1"
+          selectedTaskIdOverride={null}
+          hideSessionToolbar
+          renderComposer={hostComposer}
+        />
+      </TestWrapper>,
+    );
+
+    expect(receivedPersonaControl).toBeDefined();
+    const host = screen.getByTestId("host-composer");
+    expect(within(host).getByTestId("persona-chip")).toHaveAttribute(
+      "data-conversation-id",
+      "conv-1",
+    );
+    panel.unmount();
   });
 
   it("passes a skipped last-run attribution to the composer confirmation", () => {

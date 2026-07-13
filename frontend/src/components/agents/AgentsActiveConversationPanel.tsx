@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   CheckCircle2,
   Clock,
@@ -149,6 +158,41 @@ import {
 } from "./agentWorkspaceQueries";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
+
+interface MemoizedPersonaControlProps {
+  control: ReactNode;
+}
+
+function arePersonaControlsEqual(
+  previous: MemoizedPersonaControlProps,
+  next: MemoizedPersonaControlProps,
+): boolean {
+  const previousControl = previous.control;
+  const nextControl = next.control;
+  if (previousControl === nextControl) return true;
+  if (
+    !isValidElement<Record<string, unknown>>(previousControl) ||
+    !isValidElement<Record<string, unknown>>(nextControl) ||
+    previousControl.type !== nextControl.type ||
+    previousControl.key !== nextControl.key
+  ) {
+    return false;
+  }
+
+  const previousProps = previousControl.props;
+  const nextProps = nextControl.props;
+  const previousKeys = Object.keys(previousProps);
+  return (
+    previousKeys.length === Object.keys(nextProps).length &&
+    previousKeys.every((key) => Object.is(previousProps[key], nextProps[key]))
+  );
+}
+
+const MemoizedPersonaControl = memo(function MemoizedPersonaControl({
+  control,
+}: MemoizedPersonaControlProps) {
+  return control;
+}, arePersonaControlsEqual);
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
 const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
@@ -2707,6 +2751,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               selectedConversationId,
                             testId: "agents-conversation-team",
                           },
+                        }
+                      : {})}
+                    {...(composerProps.personaControl !== undefined
+                      ? {
+                          personaControl: (
+                            <MemoizedPersonaControl
+                              control={composerProps.personaControl}
+                            />
+                          ),
                         }
                       : {})}
                     {...(composerProps.value !== undefined
