@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IdeationSession } from "@/types/ideation";
 import {
   navigateToAgentConversation,
+  navigateToAgentPlan,
   navigateToAgentTask,
   navigateToIdeationSession,
 } from "./navigation";
@@ -148,6 +149,20 @@ describe("navigateToAgentConversation", () => {
   it("selects the exact conversation and shows Agents", () => {
     navigateToAgentConversation(PROJECT_A, CONVERSATION_A);
 
+    expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+    expect(setActiveConversationMock).toHaveBeenCalledWith(
+      `project:${PROJECT_A}`,
+      CONVERSATION_A,
+    );
+    expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+  });
+});
+
+describe("navigateToAgentPlan", () => {
+  it("opens the exact conversation's Plan artifact", () => {
+    navigateToAgentPlan(PROJECT_A, CONVERSATION_A);
+
+    expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
     expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
     expect(setActiveConversationMock).toHaveBeenCalledWith(
       `project:${PROJECT_A}`,

@@ -31,6 +31,15 @@ export function navigateToAgentConversation(
   navigateToAgentsProject(projectId);
 }
 
+/** Opens an Agent conversation's Plan artifact. */
+export function navigateToAgentPlan(
+  projectId: string,
+  conversationId: string,
+): void {
+  useAgentSessionStore.getState().setArtifactTab(conversationId, "plan");
+  navigateToAgentConversation(projectId, conversationId);
+}
+
 /** Opens an Agent conversation's Tasks artifact at a specific task and view mode. */
 export function navigateToAgentTask(
   projectId: string,
@@ -59,10 +68,10 @@ function navigateToAgentsForIdeationSession(
     useProjectStore.getState().activeProjectId;
 
   if (linkedConversation) {
-    useAgentSessionStore
-      .getState()
-      .setArtifactTab(linkedConversation.conversationId, "plan");
-    navigateToAgentConversation(projectId ?? linkedConversation.projectId, linkedConversation.conversationId);
+    navigateToAgentPlan(
+      projectId ?? linkedConversation.projectId,
+      linkedConversation.conversationId,
+    );
     return;
   }
 
