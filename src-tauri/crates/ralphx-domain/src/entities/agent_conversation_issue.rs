@@ -236,6 +236,14 @@ pub fn canonicalize_agent_conversation_issue(
             "package-lock-drift",
         );
     }
+    if is_rails_test_database_setup(&text) {
+        return known_identity(
+            "setup",
+            "project",
+            "rails-test-database",
+            "schema-unavailable",
+        );
+    }
     if text.contains("cargo clippy") || text.contains(" clippy ") || text.contains("clippy:") {
         return known_identity(
             "validation",
@@ -339,6 +347,33 @@ fn is_package_lock_drift(text: &str) -> bool {
         && (text.contains("ralphx-plugin")
             || text.contains("ralphx-mcp-server")
             || text.contains("mcp"))
+}
+
+fn is_rails_test_database_setup(text: &str) -> bool {
+    let rails_or_spec = text.contains("rails")
+        || text.contains("rspec")
+        || text.contains("db:schema:load")
+        || text.contains("database.yml");
+    let test_database = text.contains("test database")
+        || text.contains("test db")
+        || text.contains("task worktree");
+    let schema_failure = text.contains("pending migration")
+        || text.contains("pending migrations")
+        || text.contains("schema")
+        || text.contains("pg::undefinedtable")
+        || text.contains("relation ")
+        || text.contains("table");
+    let setup_failure = text.contains("missing")
+        || text.contains("unavailable")
+        || text.contains("cannot run")
+        || text.contains("blocked")
+        || text.contains("fails")
+        || text.contains("does not exist");
+
+    rails_or_spec
+        && (test_database || text.contains("db:schema:load"))
+        && schema_failure
+        && setup_failure
 }
 
 fn has_environment_failure_signal(text: &str) -> bool {
