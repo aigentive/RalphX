@@ -10,8 +10,8 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
-    ChatConversationId, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Project,
-    SessionPurpose,
+    ChatConversationId, DelegatedSession, DelegatedSessionId, IdeationAnalysisBaseRefKind,
+    IdeationSession, Project, SessionPurpose,
 };
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
@@ -30,6 +30,13 @@ fn repo_root() -> PathBuf {
         .parent()
         .expect("src-tauri has a repo-root parent")
         .to_path_buf()
+}
+
+fn canonical_path_string(path: impl AsRef<Path>) -> String {
+    fs::canonicalize(path)
+        .expect("test path should exist")
+        .display()
+        .to_string()
 }
 
 fn codex_cli_env_lock() -> &'static Mutex<()> {
@@ -93,7 +100,11 @@ fi
 
 if [ "$1" = "exec" ]; then
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
+if [ "$RALPHX_TEST_DELEGATE_CWD" = "1" ]; then
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$(pwd)"
+else
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
+fi
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}'
 exit 0
 fi
@@ -119,6 +130,33 @@ fn build_state(app_state: Arc<AppState>) -> HttpServerState {
         team_service,
         delegation_service: Default::default(),
     }
+}
+
+async fn wait_for_delegate_completion(
+    state: &HttpServerState,
+    job_id: &str,
+) -> DelegationJobSnapshot {
+    for _ in 0..40 {
+        let snapshot = wait_delegate(
+            State(state.clone()),
+            Json(DelegateWaitRequest {
+                job_id: job_id.to_string(),
+                include_delegated_status: Some(false),
+                include_child_status: None,
+                include_messages: None,
+                message_limit: None,
+            }),
+        )
+        .await
+        .expect("wait delegate")
+        .0;
+        if snapshot.status != "running" {
+            return snapshot;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    panic!("delegation job should settle")
 }
 
 #[test]
@@ -421,6 +459,8 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
     let _env_lock = codex_cli_env_lock().lock().await;
     let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
     let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let _working_directory_guard =
+        crate::support::env::EnvVarGuard::set("RALPHX_TEST_DELEGATE_CWD", "1");
     let worktree_parent = TempDir::new().expect("worktree parent");
     let app_state = Arc::new(AppState::new_sqlite_test());
     let state = build_state(app_state);
@@ -478,6 +518,228 @@ async fn test_delegate_start_from_project_agent_workspace_without_parent_session
     assert_eq!(delegated.parent_context_id, project.id.as_str());
     assert_eq!(delegated.project_id, project.id);
     assert_eq!(delegated.harness, AgentHarnessKind::Codex);
+
+    let completed = wait_for_delegate_completion(&state, &start.job_id).await;
+    let expected_working_directory = canonical_path_string(&_workspace.worktree_path);
+    assert_eq!(
+        completed.content.as_deref(),
+        Some(expected_working_directory.as_str()),
+        "an Agent-conversation delegate must launch in its authoritative workspace"
+    );
+}
+
+#[tokio::test]
+async fn test_delegate_start_from_project_conversation_without_workspace_uses_project_root() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let _working_directory_guard =
+        crate::support::env::EnvVarGuard::set("RALPHX_TEST_DELEGATE_CWD", "1");
+    let project_root = TempDir::new().expect("project root");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Project root delegation".to_string(),
+            project_root.path().display().to_string(),
+        ))
+        .await
+        .unwrap();
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+
+    let start = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the project root.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    let completed = wait_for_delegate_completion(&state, &start.job_id).await;
+    let expected_working_directory = canonical_path_string(project_root.path());
+    assert_eq!(
+        completed.content.as_deref(),
+        Some(expected_working_directory.as_str())
+    );
+}
+
+#[tokio::test]
+async fn test_nested_delegate_start_inherits_current_delegated_workspace() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let _working_directory_guard =
+        crate::support::env::EnvVarGuard::set("RALPHX_TEST_DELEGATE_CWD", "1");
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let (project, conversation, workspace) =
+        create_project_agent_workspace(&state, worktree_parent.path()).await;
+
+    let first = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: Some(conversation.id.as_str()),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect this workspace.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    let first_completed = wait_for_delegate_completion(&state, &first.job_id).await;
+    let expected_working_directory = canonical_path_string(&workspace.worktree_path);
+    assert_eq!(
+        first_completed.content.as_deref(),
+        Some(expected_working_directory.as_str())
+    );
+
+    let nested = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-explorer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("delegation".to_string()),
+            caller_context_id: Some(first.delegated_session_id.clone()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: first.delegated_conversation_id.clone(),
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the inherited workspace.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    let nested_completed = wait_for_delegate_completion(&state, &nested.job_id).await;
+    assert_eq!(
+        nested_completed.content.as_deref(),
+        Some(expected_working_directory.as_str()),
+        "nested delegation must retain the current delegated workspace"
+    );
+}
+
+#[tokio::test]
+async fn test_nested_delegate_start_rejects_missing_authoritative_workspace_before_creating_child()
+{
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let project_root = TempDir::new().expect("project root");
+    let project = state
+        .app_state
+        .project_repo
+        .create(Project::new(
+            "Missing delegated workspace".to_string(),
+            project_root.path().display().to_string(),
+        ))
+        .await
+        .unwrap();
+    let parent = state
+        .app_state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id.clone(),
+            "project",
+            project.id.as_str(),
+            "ralphx-general-explorer",
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .unwrap();
+
+    let error = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-explorer".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("delegation".to_string()),
+            caller_context_id: Some(parent.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Do not spawn.".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect_err("missing delegated workspace must fail closed");
+    assert_eq!(error.0, axum::http::StatusCode::CONFLICT);
+
+    let children = state
+        .app_state
+        .delegated_session_repo
+        .get_by_parent_context("delegation", parent.id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        children.is_empty(),
+        "rejected delegation must not create a child session"
+    );
 }
 
 #[tokio::test]

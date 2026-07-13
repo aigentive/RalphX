@@ -5,7 +5,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path_for_send;
+use crate::application::agent_conversation_workspace::{
+    resolve_agent_conversation_project_workspace_dir, resolve_agent_conversation_workspace_path_for_send,
+};
 use crate::application::agent_lane_resolution::{
     resolve_agent_spawn_settings, resolve_agent_subagent_harness,
 };
@@ -161,6 +163,7 @@ async fn resolve_delegated_session_id(
     );
     session.parent_turn_id = req.parent_turn_id.clone();
     session.parent_message_id = req.parent_message_id.clone();
+    session.working_directory = Some(parent.working_directory.display().to_string());
     session.title = req.title.clone();
     let created = state
         .app_state
@@ -512,7 +515,16 @@ async fn resolve_nested_delegation_parent(
         })?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Caller delegated session not found"))?;
     let project = load_project_by_id(state, &session.project_id).await?;
-    let working_directory = validate_project_working_directory(&project)?;
+    let working_directory = session
+        .working_directory
+        .as_deref()
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::CONFLICT,
+                "Delegated session has no authoritative working directory",
+            )
+        })
+        .and_then(|path| validate_delegated_session_working_directory(&project, path))?;
 
     Ok(ResolvedDelegateParent {
         context_type: ChatContextType::Delegation,
@@ -522,6 +534,52 @@ async fn resolve_nested_delegation_parent(
         parent_conversation_id,
         inherited_harness: Some(session.harness),
     })
+}
+
+fn validate_delegated_session_working_directory(
+    project: &Project,
+    working_directory: &str,
+) -> Result<PathBuf, JsonError> {
+    let candidate = validate_absolute_non_root_path(
+        &PathBuf::from(working_directory),
+        "delegated session working directory",
+    )
+    .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))?;
+    let project_root = validate_project_working_directory(project)?;
+    let canonical_candidate = std::fs::canonicalize(&candidate).map_err(|error| {
+        json_error(
+            StatusCode::CONFLICT,
+            format!("Delegated session working directory is unavailable: {error}"),
+        )
+    })?;
+    let canonical_project_root = std::fs::canonicalize(&project_root).map_err(|error| {
+        json_error(
+            StatusCode::CONFLICT,
+            format!("Project working directory is unavailable: {error}"),
+        )
+    })?;
+    if canonical_candidate == canonical_project_root {
+        return Ok(candidate);
+    }
+
+    let workspace_root = resolve_agent_conversation_project_workspace_dir(project)
+        .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))?;
+    let canonical_workspace_root = std::fs::canonicalize(&workspace_root).map_err(|error| {
+        json_error(
+            StatusCode::CONFLICT,
+            format!("Delegated workspace root is unavailable: {error}"),
+        )
+    })?;
+    if !canonical_candidate.starts_with(&canonical_workspace_root)
+        || !canonical_candidate.join(".git").exists()
+    {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Delegated session working directory is outside the validated project workspace",
+        ));
+    }
+
+    Ok(candidate)
 }
 
 async fn resolve_delegate_parent(
@@ -1247,6 +1305,7 @@ pub(crate) async fn start_delegate_impl(
                 approval_policy_override: approval_policy.clone(),
                 sandbox_mode_override: sandbox_mode.clone(),
                 is_external_mcp: true,
+                working_directory_override: Some(parent.working_directory.clone()),
                 ..Default::default()
             },
         )
