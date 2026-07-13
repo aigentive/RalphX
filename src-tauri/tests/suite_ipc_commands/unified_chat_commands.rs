@@ -2491,7 +2491,7 @@ mod ipc_contract {
         let state = AppState::new_test();
         let conversation_id =
             ChatConversationId::from_string("91919191-9191-9191-9191-919191919191");
-        let mut workspace = sqlite_workspace(conversation_id.clone());
+        let mut workspace = sqlite_workspace(conversation_id);
         workspace.mode = AgentConversationWorkspaceMode::Plan;
         workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
             "planning-session-1".to_string(),
