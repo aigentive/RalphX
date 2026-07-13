@@ -1816,9 +1816,32 @@ impl ConversationRuntimeAttribution {
             && self.service_tier.is_none()
             && self.persona_run_id.is_none()
     }
+
+    fn apply_persona_from(&mut self, attribution: Self) {
+        self.persona_run_id = attribution.persona_run_id;
+        self.persona_id = attribution.persona_id;
+        self.persona_slug = attribution.persona_slug;
+        self.persona_version = attribution.persona_version;
+        self.persona_content_hash = attribution.persona_content_hash;
+        self.persona_injected = attribution.persona_injected;
+        self.persona_skipped_reason = attribution.persona_skipped_reason;
+    }
 }
 
 fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAttribution> {
+    let proven_skipped_reason = run
+        .persona_skipped_reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty());
+    let persona_injected = match run.persona_injected {
+        Some(true) => Some(true),
+        Some(false) if proven_skipped_reason.is_some() => Some(false),
+        Some(false) | None => None,
+    };
+    let persona_skipped_reason = match persona_injected {
+        Some(false) => proven_skipped_reason.map(str::to_string),
+        Some(true) | None => None,
+    };
     let attribution = ConversationRuntimeAttribution {
         logical_model: run.logical_model.clone(),
         effective_model_id: run.effective_model_id.clone(),
@@ -1830,10 +1853,17 @@ fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAtt
         persona_slug: run.persona_slug.clone(),
         persona_version: run.persona_version,
         persona_content_hash: run.persona_content_hash.clone(),
-        persona_injected: run.persona_injected,
-        persona_skipped_reason: run.persona_skipped_reason.clone(),
+        persona_injected,
+        persona_skipped_reason,
     };
     (!attribution.is_empty()).then_some(attribution)
+}
+
+fn run_executed_for_runtime_attribution(run: &AgentRun) -> bool {
+    match run.status {
+        AgentRunStatus::Running | AgentRunStatus::Completed | AgentRunStatus::Failed => true,
+        AgentRunStatus::Cancelled => false,
+    }
 }
 
 fn runtime_attribution_from_message(
@@ -1885,8 +1915,23 @@ async fn latest_conversation_runtime_attribution(
             })
         })
         .collect();
-    if let Some(attribution) = runs.iter().find_map(runtime_attribution_from_run) {
-        return Ok((Some(attribution), persona_runs));
+    let mut attribution = runs
+        .iter()
+        .filter(|run| run_executed_for_runtime_attribution(run))
+        .find_map(runtime_attribution_from_run);
+    let persona_attribution = runs
+        .iter()
+        .filter(|run| run_executed_for_runtime_attribution(run))
+        .filter(|run| run.persona_id.is_some())
+        .find_map(runtime_attribution_from_run);
+    if let Some(persona_attribution) = persona_attribution {
+        match attribution.as_mut() {
+            Some(attribution) => attribution.apply_persona_from(persona_attribution),
+            None => attribution = Some(persona_attribution),
+        }
+    }
+    if attribution.is_some() {
+        return Ok((attribution, persona_runs));
     }
 
     let messages = state

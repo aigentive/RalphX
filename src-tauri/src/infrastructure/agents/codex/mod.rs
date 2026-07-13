@@ -413,11 +413,48 @@ pub fn compose_codex_prompt_for_profile(
     agent_profile: Option<&str>,
     persona_block: Option<&str>,
 ) -> String {
+    compose_codex_prompt_for_profile_with_outcome(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        persona_block,
+    )
+    .prompt
+}
+
+/// Body-free attribution outcome paired with the composed Codex prompt.
+pub struct CodexPromptComposition {
+    /// Prompt delivered to the Codex CLI.
+    pub prompt: String,
+    /// Whether the resolved persona overlay is present in `prompt`.
+    pub persona_injected: bool,
+    /// Body-free reason when a requested persona overlay could not be composed.
+    pub persona_injection_skipped_reason: Option<&'static str>,
+}
+
+/// Compose a Codex prompt and report the actual persona overlay outcome.
+pub fn compose_codex_prompt_for_profile_with_outcome(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+) -> CodexPromptComposition {
     let Some(plugin_dir) = plugin_dir else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block
+                .map(|_| "codex_plugin_dir_unavailable"),
+        };
     };
     let Some(agent_name) = agent_name else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block.map(|_| "codex_agent_unavailable"),
+        };
     };
 
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
@@ -428,8 +465,14 @@ pub fn compose_codex_prompt_for_profile(
         agent_profile,
     );
     let Some(system_prompt) = system_prompt else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block
+                .map(|_| "codex_agent_prompt_unavailable"),
+        };
     };
+    let persona_injected = persona_block.is_some();
     let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, agent_name, agent_profile);
@@ -455,9 +498,13 @@ pub fn compose_codex_prompt_for_profile(
         None => system_prompt,
     };
 
-    format!(
-        "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
-    )
+    CodexPromptComposition {
+        prompt: format!(
+            "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
+        ),
+        persona_injected,
+        persona_injection_skipped_reason: None,
+    }
 }
 
 pub fn normalize_codex_exec_output(raw_stdout: &str) -> String {
@@ -1060,13 +1107,34 @@ fn write_codex_prompt_debug_artifact(
     })?;
 
     let path = crate::utils::runtime_log_paths::codex_prompt_debug_file(mode);
-    fs::write(&path, prompt).map_err(|error| {
+    fs::write(&path, redact_persona_from_codex_prompt(prompt)).map_err(|error| {
         format!(
             "Failed to write Codex prompt log artifact {}: {error}",
             path.display()
         )
     })?;
     Ok(path)
+}
+
+fn redact_persona_from_codex_prompt(prompt: &str) -> String {
+    const OPEN: &str = "<ralphx_agent_persona>";
+    const CLOSE: &str = "</ralphx_agent_persona>";
+    const REDACTED: &str = "<ralphx_agent_persona>[redacted]</ralphx_agent_persona>";
+
+    let mut remaining = prompt;
+    let mut redacted = String::with_capacity(prompt.len());
+    while let Some(start) = remaining.find(OPEN) {
+        redacted.push_str(&remaining[..start]);
+        let persona_and_rest = &remaining[start + OPEN.len()..];
+        let Some(end) = persona_and_rest.find(CLOSE) else {
+            redacted.push_str(REDACTED);
+            return redacted;
+        };
+        redacted.push_str(REDACTED);
+        remaining = &persona_and_rest[end + CLOSE.len()..];
+    }
+    redacted.push_str(remaining);
+    redacted
 }
 
 fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {

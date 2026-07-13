@@ -26,10 +26,13 @@ use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::{
     mcp_agent_type, ContentBlockItem, SpawnableCommand, ToolCall,
 };
+use crate::infrastructure::agents::codex::{
+    compose_codex_prompt_for_profile_with_outcome, CodexPromptComposition,
+};
 use crate::infrastructure::agents::{
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
-    build_spawnable_codex_resume_command, compose_codex_prompt_for_profile, CodexCliCapabilities,
-    CodexExecCliConfig, McpRuntimeContext,
+    build_spawnable_codex_resume_command, CodexCliCapabilities, CodexExecCliConfig,
+    McpRuntimeContext,
 };
 use crate::utils::truncate_str;
 
@@ -79,6 +82,16 @@ pub struct ProviderSpawnableCommand {
 impl ProviderSpawnableCommand {
     pub fn apply_provider_env(&mut self, provider_env: &HashMap<String, String>) {
         apply_provider_env_vars(&mut self.spawnable, provider_env);
+    }
+
+    #[doc(hidden)]
+    pub fn persona_injected(&self) -> bool {
+        self.spawnable.persona_injected()
+    }
+
+    #[doc(hidden)]
+    pub fn persona_injection_skipped_reason(&self) -> Option<&'static str> {
+        self.spawnable.persona_injection_skipped_reason()
     }
 }
 
@@ -563,7 +576,6 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessLaunchRequest<'_>,
     ) -> Result<ResolvedChatHarnessLaunch, String> {
-        let persona_requested = request.persona.is_some();
         match self {
             Self::Claude { cli_path } => {
                 let spawnable = build_interactive_command(
@@ -675,7 +687,7 @@ impl ResolvedChatHarnessCli {
 
                 Ok(ResolvedChatHarnessLaunch::Background {
                     cli_path,
-                    spawnable: spawnable.with_persona_injection_outcome(persona_requested, None),
+                    spawnable,
                 })
             }
         }
@@ -2683,7 +2695,11 @@ pub async fn build_codex_command(
         "chat_service.build_codex_command phase completed"
     );
     let prompt_compose_started = Instant::now();
-    let prompt = compose_codex_prompt_for_profile(
+    let CodexPromptComposition {
+        prompt,
+        persona_injected,
+        persona_injection_skipped_reason,
+    } = compose_codex_prompt_for_profile_with_outcome(
         &format!("{}{}", initial_prompt, attachment_context),
         Some(plugin_dir),
         Some(agent_name),
@@ -2736,7 +2752,8 @@ pub async fn build_codex_command(
 
     let spawnable_build_started = Instant::now();
     let mut spawnable =
-        build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;
+        build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?
+            .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason);
     tracing::info!(
         context_type = %conversation.context_type,
         context_id = %conversation.context_id,
@@ -3677,7 +3694,11 @@ pub async fn build_codex_resume_command(
                 resume_prompt,
                 attachment_context_override.unwrap_or_default()
             );
-            let prompt = compose_codex_prompt_for_profile(
+            let CodexPromptComposition {
+                prompt,
+                persona_injected,
+                persona_injection_skipped_reason,
+            } = compose_codex_prompt_for_profile_with_outcome(
                 &resume_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
@@ -3691,7 +3712,8 @@ pub async fn build_codex_resume_command(
                 &prompt,
                 capabilities,
                 &codex_config,
-            )?;
+            )?
+            .with_persona_injection_outcome(persona_injected, persona_injection_skipped_reason);
 
             apply_ralphx_env_vars(
                 &mut spawnable,
@@ -3742,7 +3764,11 @@ pub async fn build_codex_resume_command(
                 attachment_context_override.unwrap_or_default()
             );
 
-            let prompt = compose_codex_prompt_for_profile(
+            let CodexPromptComposition {
+                prompt,
+                persona_injected,
+                persona_injection_skipped_reason,
+            } = compose_codex_prompt_for_profile_with_outcome(
                 &recovery_prompt,
                 Some(plugin_dir),
                 Some(agent_name),
@@ -3750,7 +3776,11 @@ pub async fn build_codex_resume_command(
                 persona_block,
             );
             let mut spawnable =
-                build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;
+                build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?
+                    .with_persona_injection_outcome(
+                        persona_injected,
+                        persona_injection_skipped_reason,
+                    );
 
             apply_ralphx_env_vars(
                 &mut spawnable,

@@ -596,7 +596,8 @@ fn registered_persona_metadata(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn record_persona_run_attribution<R: Runtime>(
+#[doc(hidden)]
+pub async fn record_persona_run_attribution<R: Runtime>(
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     app_handle: Option<&AppHandle<R>>,
     conversation_id: &ChatConversationId,
@@ -609,6 +610,45 @@ pub(super) async fn record_persona_run_attribution<R: Runtime>(
     let Some(persona) = persona else {
         return;
     };
+    let agent_run_id = AgentRunId::from_string(run_id);
+    match agent_run_repo.get_by_id(&agent_run_id).await {
+        Ok(Some(run)) if run.status == AgentRunStatus::Running => {}
+        Ok(Some(run)) => {
+            tracing::info!(
+                conversation_id = %conversation_id,
+                run_id = %run.id,
+                status = %run.status,
+                persona_id = %persona.id,
+                persona_slug = %persona.slug,
+                "Skipping persona attribution because the run is no longer active"
+            );
+            return;
+        }
+        Ok(None) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                run_id,
+                "Skipping persona attribution because the run no longer exists"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                run_id,
+                error = %error,
+                "Skipping persona attribution because run status is unknown"
+            );
+            return;
+        }
+    }
+    let skipped_reason = if injected {
+        None
+    } else {
+        skipped_reason
+            .filter(|reason| !reason.trim().is_empty())
+            .or(Some("unknown"))
+    };
     let attribution = PersonaRunAttribution {
         persona_id: persona.id.to_string(),
         persona_slug: persona.slug.clone(),
@@ -618,7 +658,7 @@ pub(super) async fn record_persona_run_attribution<R: Runtime>(
         skipped_reason: skipped_reason.map(str::to_string),
     };
     if let Err(error) = agent_run_repo
-        .set_persona_attribution(&AgentRunId::from_string(run_id), attribution)
+        .set_persona_attribution(&agent_run_id, attribution)
         .await
     {
         tracing::warn!(

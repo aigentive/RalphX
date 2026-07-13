@@ -127,11 +127,52 @@ describe("PersonaChip", () => {
       name: "Switch conversation persona",
     });
     expect(trigger).toHaveTextContent("reviewer");
+    expect(trigger).not.toHaveTextContent("not applied");
+    expect(
+      trigger.querySelector("svg.lucide-triangle-alert"),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
     expect(
       screen.getByRole("menu", { name: "Conversation persona" }),
     ).toBeInTheDocument();
+  });
+
+  it("treats a reason-less false persona attribution as unknown", async () => {
+    renderChip({
+      lastRunPersonaId: "reviewer",
+      lastRunPersonaSlug: "reviewer",
+      lastRunPersonaInjected: false,
+      lastRunPersonaSkippedReason: null,
+    });
+
+    const trigger = screen.getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("reviewer");
+    expect(trigger).not.toHaveTextContent("not applied");
+    expect(
+      trigger.querySelector("svg.lucide-triangle-alert"),
+    ).not.toBeInTheDocument();
+    fireEvent.pointerMove(trigger);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "Applies to this conversation only — not to delegated, subagent, or pipeline work in v1.",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a bound persona with absent run attribution without warning", () => {
+    renderChip();
+
+    const trigger = screen.getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("reviewer");
+    expect(trigger).not.toHaveTextContent("not applied");
+    expect(
+      trigger.querySelector("svg.lucide-triangle-alert"),
+    ).not.toBeInTheDocument();
   });
 
   it("warns when the bound persona was not applied to the last run", async () => {

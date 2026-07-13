@@ -921,6 +921,59 @@ async fn codex_fresh_command_forwards_a_resolved_persona_block() {
         spawnable_prompt(&command.spawnable).contains("<ralphx_agent_persona>"),
         "the Codex fresh prompt must retain the resolved persona block"
     );
+    assert!(command.persona_injected());
+    assert_eq!(command.persona_injection_skipped_reason(), None);
+}
+
+#[tokio::test]
+async fn persona_codex_command_reports_reasoned_skip_when_agent_prompt_is_missing() {
+    let (conversation, persona) = bound_project_persona().await;
+    let home = tempfile::tempdir().expect("provider home");
+    let cli_temp = tempfile::tempdir().expect("codex cli tempdir");
+    let cli_path = make_fake_codex_cli(&cli_temp);
+    let plugin_dir = cli_temp.path().join("plugins").join("app");
+    fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build")).expect("create plugin dir");
+    write_file(
+        &plugin_dir.join("ralphx-mcp-server/build/index.js"),
+        "// fake mcp server",
+    );
+
+    let command = with_provider_state_home_override(home.path(), || async {
+        build_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "fresh codex persona fallback",
+            Some(persona),
+            cli_temp.path(),
+            None,
+            Some(conversation.context_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+    })
+    .await
+    .expect("codex fallback command should build");
+
+    assert!(!command.persona_injected());
+    assert_eq!(
+        command.persona_injection_skipped_reason(),
+        Some("codex_agent_prompt_unavailable")
+    );
+    assert!(!spawnable_prompt(&command.spawnable).contains("<ralphx_agent_persona>"));
 }
 
 #[tokio::test]
@@ -2422,10 +2475,13 @@ async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
         spawnable_prompt(&result.spawnable).contains("<ralphx_agent_persona>"),
         "the Codex recovery prompt must retain the resolved persona block"
     );
+    assert!(result.persona_injected());
+    assert_eq!(result.persona_injection_skipped_reason(), None);
 }
 
 #[tokio::test]
-async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
+async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injection() {
+    let (_, persona) = bound_project_persona().await;
     let home = make_codex_home_with_session("session-123");
     let cli_temp = tempfile::tempdir().expect("tempdir");
     let cli_path = make_fake_codex_cli(&cli_temp);
@@ -2447,6 +2503,18 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             .join("agents/ralphx-plan-verifier/codex/agent.yaml"),
         "runtime_features:\n  shell_tool: false\n",
     );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/agent.yaml"),
+        "name: ralphx-chat-project\nrole: project_chat\n",
+    );
+    write_file(
+        &cli_temp
+            .path()
+            .join("agents/ralphx-chat-project/codex/prompt.md"),
+        "You are the RalphX project chat agent.",
+    );
     let working_dir = cli_temp.path().to_path_buf();
 
     let result = with_provider_state_home_override(home.path(), || async {
@@ -2457,7 +2525,7 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             ChatContextType::Project,
             "project-1",
             "continue",
-            None,
+            Some(persona),
             None,
             None,
             &working_dir,
@@ -2492,6 +2560,12 @@ async fn codex_resume_command_uses_resume_subcommand_when_session_exists() {
             .any(|window| window == ["exec", "resume", "session-123"]),
         "existing Codex session should use exec resume: {args:?}"
     );
+    assert!(
+        spawnable_prompt(&result.spawnable).contains("<ralphx_agent_persona>"),
+        "the queued Codex resume prompt must retain the resolved persona block"
+    );
+    assert!(result.persona_injected());
+    assert_eq!(result.persona_injection_skipped_reason(), None);
 }
 
 #[tokio::test]

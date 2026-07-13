@@ -8,7 +8,14 @@ const PERSONA_SKIPPED_REASON_COPY: Record<string, string> = {
     "The agent's prompt could not be found, so the persona was not applied",
   prompt_composition_fallback_native_agent:
     "The agent fell back to a built-in prompt, so the persona was not applied",
+  codex_plugin_dir_unavailable:
+    "The Codex agent configuration was unavailable, so the persona was not applied",
+  codex_agent_unavailable:
+    "The Codex agent identity was unavailable, so the persona was not applied",
+  codex_agent_prompt_unavailable:
+    "The Codex agent prompt was unavailable, so the persona was not applied",
   persona_not_injected: "The persona could not be applied to this run",
+  unknown: "The persona could not be applied to this run",
 };
 
 const DEFAULT_PERSONA_SKIPPED_REASON =

@@ -64,7 +64,8 @@ export function PersonaChip({
   const lastRunDidNotApplyBoundPersona =
     personaId != null &&
     lastRunPersonaId === personaId &&
-    lastRunPersonaInjected === false;
+    lastRunPersonaInjected === false &&
+    (lastRunPersonaSkippedReason?.trim().length ?? 0) > 0;
   const displaySlug =
     (lastRunPersonaId === personaId ? lastRunPersonaSlug : null) ??
     selectedPersona?.slug ??

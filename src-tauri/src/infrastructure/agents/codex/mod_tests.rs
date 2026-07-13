@@ -1,15 +1,48 @@
 use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
-    compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn,
-    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models,
-    parse_codex_model_catalog_capabilities, probe_codex_cli, resolve_codex_cli_from_candidates,
+    compose_codex_prompt, compose_codex_prompt_for_profile,
+    compose_codex_prompt_for_profile_with_outcome, configure_spawn, parse_codex_fast_mode_feature,
+    parse_codex_fast_mode_supported_models, parse_codex_model_catalog_capabilities,
+    probe_codex_cli, redact_persona_from_codex_prompt, resolve_codex_cli_from_candidates,
     CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
 };
+
 use crate::domain::agents::LogicalEffort;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+
+#[test]
+fn persona_codex_prompt_outcome_is_reasoned_when_agent_prompt_is_unavailable() {
+    let composition = compose_codex_prompt_for_profile_with_outcome(
+        "User prompt",
+        None,
+        Some("ralphx-chat-project"),
+        None,
+        Some("<ralphx_agent_persona>secret</ralphx_agent_persona>"),
+    );
+
+    assert_eq!(composition.prompt, "User prompt");
+    assert!(!composition.persona_injected);
+    assert_eq!(
+        composition.persona_injection_skipped_reason,
+        Some("codex_plugin_dir_unavailable")
+    );
+}
+
+#[test]
+fn persona_codex_debug_prompt_redaction_removes_body() {
+    let redacted = redact_persona_from_codex_prompt(
+        "before<ralphx_agent_persona>SECRET_PERSONA_BODY</ralphx_agent_persona>after",
+    );
+
+    assert_eq!(
+        redacted,
+        "before<ralphx_agent_persona>[redacted]</ralphx_agent_persona>after"
+    );
+    assert!(!redacted.contains("SECRET_PERSONA_BODY"));
+}
 
 struct EnvGuard {
     key: &'static str,
