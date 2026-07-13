@@ -25,6 +25,7 @@ use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
     AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
 };
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
     "A new workspace branch has been created automatically.";
@@ -1247,6 +1248,46 @@ pub async fn ensure_linked_plan_branch_agent_worktree(
     )
     .await?;
     Ok(workspace_path)
+}
+
+/// Move the known conversation worktree into the linked-plan location for restart.
+///
+/// The conversation worktree is the expected owner of the implementation branch
+/// immediately after plan application. Other callers must continue to reject a
+/// matching branch checked out at an unknown path.
+pub(crate) async fn relocate_linked_plan_branch_agent_worktree_for_restart(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    plan_branch: &PlanBranch,
+) -> AppResult<PathBuf> {
+    validate_workspace_linked_plan_branch(project, workspace, plan_branch)?;
+    let linked_worktree_path =
+        resolve_linked_plan_branch_agent_worktree_path(project, plan_branch)?;
+    if linked_worktree_path.exists() {
+        return ensure_linked_plan_branch_agent_worktree(project, plan_branch).await;
+    }
+
+    let conversation_worktree_path =
+        resolve_agent_conversation_workspace_path_from_record(project, workspace)?;
+    let checked_out = GitService::get_current_branch(&conversation_worktree_path).await?;
+    if checked_out != plan_branch.branch_name {
+        return Err(AppError::Validation(format!(
+            "Owned agent conversation worktree {} is checked out at '{}' instead of '{}'",
+            conversation_worktree_path.display(),
+            checked_out,
+            plan_branch.branch_name
+        )));
+    }
+
+    let project_path = Path::new(&project.working_directory);
+    let project_root = validate_absolute_non_root_path(project_path, "project checkout")?;
+    GitService::move_worktree(
+        &project_root,
+        &conversation_worktree_path,
+        &linked_worktree_path,
+    )
+    .await?;
+    Ok(linked_worktree_path)
 }
 
 pub fn resolve_linked_plan_branch_agent_worktree_path(
