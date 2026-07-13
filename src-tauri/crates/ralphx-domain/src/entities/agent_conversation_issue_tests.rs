@@ -100,6 +100,33 @@ fn validation_and_prerequisite_classes_are_project_scoped() {
 }
 
 #[test]
+fn rails_test_database_setup_dedupes_across_agent_wording() {
+    let worker = identity(
+        "Rails test DB schema setup blocks focused RSpec validation",
+        "Focused RSpec validation cannot run because config/database.yml is missing and db:schema:load fails.",
+        Some("PG::UndefinedTable: relation failed_messages_seq does not exist at db/schema.rb"),
+        None,
+        Some("task-a"),
+    );
+    let project_chat = identity(
+        "Fix test DB/schema setup for Printspeak task worktrees",
+        "Repair the Rails test database so task worktrees can run specs.",
+        Some("RSpec is blocked by 219 pending migrations and a missing failed_messages_seq table."),
+        None,
+        Some("task-b"),
+    );
+
+    assert_eq!(
+        worker.fingerprint,
+        "v1:setup:project:rails-test-database:schema-unavailable"
+    );
+    assert_eq!(project_chat.fingerprint, worker.fingerprint);
+    assert_eq!(worker.scope_kind, "project");
+    assert_eq!(worker.scope_subject, "rails-test-database");
+    assert!(worker.candidate_match_eligible);
+}
+
+#[test]
 fn scope_drift_stays_task_scoped() {
     let first = canonicalize_agent_conversation_issue(&AgentConversationIssueCanonicalInput {
         issue_kind: "plan_drift",
