@@ -5148,6 +5148,19 @@ async fn get_agent_conversation_workspace_freshness_cached(
     ),
     String,
 > {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            )
+        })?;
+    ensure_agent_workspace_supports_freshness(&workspace)?;
+
     let phase_started_at = Instant::now();
     if let Some(response) = cached_agent_workspace_freshness(conversation_id, freshness_scope) {
         log_agent_workspace_freshness_phase(
@@ -5245,13 +5258,6 @@ async fn get_agent_conversation_workspace_local_freshness(
         );
     }
 
-    if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err(
-            "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
-                .to_string(),
-        );
-    }
-
     let phase_started_at = Instant::now();
     resolve_agent_conversation_workspace_path_for_send(project, workspace)
         .map_err(|e| e.to_string())?;
@@ -5270,6 +5276,22 @@ async fn get_agent_conversation_workspace_local_freshness(
             workspace.branch_name.clone(),
             workspace.base_commit.clone(),
         ),
+    )
+}
+
+fn ensure_agent_workspace_supports_freshness(
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    if workspace.mode == AgentConversationWorkspaceMode::Edit
+        || (workspace.mode == AgentConversationWorkspaceMode::Ideation
+            && workspace.linked_plan_branch_id.is_some())
+    {
+        return Ok(());
+    }
+
+    Err(
+        "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
+            .to_string(),
     )
 }
 
@@ -5296,6 +5318,7 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         "workspace_read",
         phase_started_at,
     );
+    ensure_agent_workspace_supports_freshness(&workspace)?;
     let phase_started_at = Instant::now();
     let mut workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
         .await
@@ -5389,13 +5412,6 @@ async fn get_agent_conversation_workspace_freshness_for_state(
             ),
         );
     }
-    if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err(
-            "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
-                .to_string(),
-        );
-    }
-
     let (worktree_path, base_resolution) = tokio::join!(
         resolve_valid_agent_conversation_workspace_path(&project, &workspace),
         resolve_workspace_base(&project, &workspace),

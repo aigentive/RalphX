@@ -2534,6 +2534,65 @@ mod ipc_contract {
     }
 
     #[tokio::test]
+    async fn ipc_contract_workspace_freshness_rejects_plan_mode_with_stale_edit_cache() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "freshness-plan-mode-stale-cache",
+            true,
+            Some(43),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("edit freshness should seed the cache");
+
+        let mut workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        app.state::<AppState>()
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("Plan workspace should persist without cache invalidation");
+
+        let error = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect_err("cached edit freshness must not authorize Plan mode");
+
+        assert!(error.contains("Only edit workspaces and ideation workspaces"));
+        let persisted = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should remain persisted");
+        assert_eq!(
+            persisted.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+    }
+
+    #[tokio::test]
     async fn ipc_contract_workspace_response_recovers_stale_needs_agent_publish_lock() {
         let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
             "workspace-stale-repair-response",
