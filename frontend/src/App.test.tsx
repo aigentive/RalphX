@@ -1145,7 +1145,9 @@ describe("App", () => {
     const shell = screen.getByTestId("notifications-panel-shell");
     expect(shell.getAttribute("style")).toContain("width: 100vw");
     expect(shell.getAttribute("style")).toContain("max-width: 400px");
+    expect(shell.getAttribute("style")).toContain("bottom: 0px");
     expect(shell.className).not.toContain("w-[400px]");
+    expect(shell.className).not.toContain("invisible");
     expect(shell.getAttribute("style")).toContain(
       "background-color: var(--bg-surface)"
     );
@@ -1170,17 +1172,20 @@ describe("App", () => {
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("notifications-panel-shell")).toHaveAttribute(
+    const shell = screen.getByTestId("notifications-panel-shell");
+    expect(shell).toHaveAttribute(
       "aria-hidden",
       "false",
     );
+    expect(shell.className).not.toContain("invisible");
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("notifications-panel-shell")).toHaveAttribute(
+    expect(shell).toHaveAttribute(
       "aria-hidden",
       "true",
     );
+    expect(shell.className).toContain("invisible");
   });
 
   it("closes the notification center from the outside dismissal layer", async () => {
