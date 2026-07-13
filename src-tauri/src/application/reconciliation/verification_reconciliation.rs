@@ -1011,7 +1011,21 @@ pub(crate) async fn reconcile_verification_on_child_complete<R: Runtime>(
     };
 
     // Load the authoritative verification snapshot for this generation.
-    let snapshot = load_effective_verification_view(repo, &parent).await;
+    let mut snapshot = load_effective_verification_view(repo, &parent).await;
+
+    if let Some(run) = snapshot.as_mut() {
+        if has_authoritative_zero_blocking_round(run) {
+            run.status = VerificationStatus::Verified;
+            run.in_progress = false;
+            run.convergence_reason = Some("zero_blocking".to_string());
+            tracing::info!(
+                parent_id = %parent_id.as_str(),
+                child_id = %child_id.as_str(),
+                current_round = run.current_round,
+                "Repairing stale verification summary from authoritative zero-blocking round"
+            );
+        }
+    }
 
     if let Some(run) = snapshot.as_ref() {
         if has_pending_unreported_round(run) {
@@ -1431,6 +1445,17 @@ fn has_pending_unreported_round(run: &VerificationRunSnapshot) -> bool {
             .rounds
             .iter()
             .any(|round| round.round == run.current_round)
+}
+
+fn has_authoritative_zero_blocking_round(run: &VerificationRunSnapshot) -> bool {
+    run.current_round >= 2
+        && run.current_gaps.is_empty()
+        && run.rounds.iter().any(|round| {
+            round.round == run.current_round
+                && round.gap_score == 0
+                && round.gaps.is_empty()
+                && !round.parse_failed
+        })
 }
 
 async fn effective_verification_in_progress(
