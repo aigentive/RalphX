@@ -137,8 +137,25 @@ vi.mock("@/hooks/usePersonas", () => ({
 }));
 
 vi.mock("./PersonaChip", () => ({
-  PersonaChip: ({ conversationId }: { conversationId: string }) => (
-    <div data-testid="persona-chip" data-conversation-id={conversationId} />
+  PersonaChip: ({
+    conversationId,
+    lastRunPersonaSlug,
+    lastRunPersonaInjected,
+    lastRunPersonaSkippedReason,
+  }: {
+    conversationId: string;
+    lastRunPersonaSlug?: string | null;
+    lastRunPersonaInjected?: boolean | null;
+    lastRunPersonaSkippedReason?: string | null;
+  }) => (
+    <div
+      data-testid="persona-chip"
+      data-conversation-id={conversationId}
+      data-skipped-reason={lastRunPersonaSkippedReason ?? undefined}
+    >
+      {lastRunPersonaSlug ?? "No persona"}
+      {lastRunPersonaInjected === false ? " not applied" : ""}
+    </div>
   ),
 }));
 
@@ -457,10 +474,12 @@ describe("IntegratedChatPanel", () => {
         <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
       </TestWrapper>,
     );
-    expect(screen.getByTestId("persona-chip")).toHaveAttribute(
-      "data-conversation-id",
-      "conv-1",
-    );
+    const projectPersonaChips = screen.getAllByTestId("persona-chip");
+    expect(projectPersonaChips).toHaveLength(2);
+    for (const chip of projectPersonaChips) {
+      expect(chip).toHaveAttribute("data-conversation-id", "conv-1");
+      expect(chip).toHaveTextContent("No persona");
+    }
     projectPanel.unmount();
 
     for (const contextType of ["ideation", "task", "merge", "review"] as const) {
@@ -518,6 +537,77 @@ describe("IntegratedChatPanel", () => {
       </TestWrapper>,
     );
     expect(screen.queryByTestId("persona-chip")).not.toBeInTheDocument();
+  });
+
+  it("keeps the header and composer persona confirmations on the same attribution", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      personaId: "persona-1",
+      lastRunPersonaRunId: "run-1",
+      lastRunPersonaId: "persona-1",
+      lastRunPersonaSlug: "design-voice",
+      lastRunPersonaVersion: 1,
+      lastRunPersonaInjected: true,
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+
+    const chips = screen.getAllByTestId("persona-chip");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("design-voice");
+    expect(chips[1]).toHaveTextContent("design-voice");
+  });
+
+  it("passes a skipped last-run attribution to the composer confirmation", () => {
+    mockFeatureFlags.agentPersonas = true;
+    mockChatPanelContext.storeContextKey = "project:project-1";
+    mockChatPanelContext.currentContextType = "project";
+    mockChatPanelContext.currentContextId = "project-1";
+    mockChatPanelContext.activeConversationId = "conv-1";
+    useChatMockState.conversation = {
+      id: "conv-1",
+      contextType: "project",
+      contextId: "project-1",
+      agentMode: "chat",
+      personaId: "persona-1",
+      lastRunPersonaRunId: "run-1",
+      lastRunPersonaId: "persona-1",
+      lastRunPersonaSlug: "design-voice",
+      lastRunPersonaVersion: 1,
+      lastRunPersonaInjected: false,
+      lastRunPersonaSkippedReason: "native_agent_flag",
+      providerHarness: null,
+      providerSessionId: null,
+    } as typeof useChatMockState.conversation;
+
+    render(
+      <TestWrapper>
+        <IntegratedChatPanel projectId="project-1" selectedTaskIdOverride={null} />
+      </TestWrapper>,
+    );
+
+    const composerChip = screen
+      .getByTestId("chat-input-persona-control")
+      .querySelector('[data-testid="persona-chip"]');
+    expect(composerChip).toHaveTextContent("design-voice not applied");
+    expect(composerChip).toHaveAttribute(
+      "data-skipped-reason",
+      "native_agent_flag",
+    );
   });
 
   it("shows a persona-unavailable composer notice and clears the binding before one retry", async () => {

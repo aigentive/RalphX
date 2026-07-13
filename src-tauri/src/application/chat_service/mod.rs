@@ -669,7 +669,8 @@ pub(super) async fn record_persona_run_attribution<R: Runtime>(
     }
 }
 
-fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'static str {
+#[doc(hidden)]
+pub fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'static str {
     match mode {
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
@@ -681,7 +682,8 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
     }
 }
 
-fn agent_profile_for_conversation_mode(
+#[doc(hidden)]
+pub fn agent_profile_for_conversation_mode(
     mode: AgentConversationWorkspaceMode,
 ) -> Option<&'static str> {
     match mode {

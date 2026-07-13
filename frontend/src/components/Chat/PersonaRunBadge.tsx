@@ -7,10 +7,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const SKIPPED_REASON_COPY: Record<string, string> = {
-  native_agent_flag: "Native agent mode does not support personas",
-  persona_not_injected: "The persona could not be applied to this run",
-};
+import { getPersonaSkippedReasonCopy } from "./personaSkippedReason";
 
 export interface PersonaRunBadgeProps {
   enabled: boolean;
@@ -34,8 +31,7 @@ export function PersonaRunBadge({
   const applied = personaInjected;
   const tooltip = applied
     ? `${personaSlug}${personaVersion == null ? "" : ` · v${personaVersion}`} — applied to this run`
-    : (skippedReason && SKIPPED_REASON_COPY[skippedReason]) ??
-      "The persona could not be applied to this run";
+    : getPersonaSkippedReasonCopy(skippedReason);
 
   return (
     <TooltipProvider>

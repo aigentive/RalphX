@@ -112,8 +112,46 @@ describe("PersonaChip", () => {
   it("uses the generic label when no active persona is bound", () => {
     renderChip({ personaId: null });
 
-    expect(screen.getByRole("button", { name: "Switch conversation persona" })).toHaveTextContent("Persona");
+    expect(screen.getByRole("button", { name: "Switch conversation persona" })).toHaveTextContent("No persona");
     expect(screen.getByRole("button", { name: "Switch conversation persona" })).not.toHaveTextContent("Reviewer Voice");
+  });
+
+  it("shows the applied persona slug and opens the existing switcher", () => {
+    renderChip({
+      lastRunPersonaId: "reviewer",
+      lastRunPersonaSlug: "reviewer",
+      lastRunPersonaInjected: true,
+    });
+
+    const trigger = screen.getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("reviewer");
+
+    fireEvent.click(trigger);
+    expect(
+      screen.getByRole("menu", { name: "Conversation persona" }),
+    ).toBeInTheDocument();
+  });
+
+  it("warns when the bound persona was not applied to the last run", async () => {
+    renderChip({
+      lastRunPersonaId: "reviewer",
+      lastRunPersonaSlug: "reviewer",
+      lastRunPersonaInjected: false,
+      lastRunPersonaSkippedReason: "native_agent_flag",
+    });
+
+    const trigger = screen.getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("reviewer not applied");
+    fireEvent.pointerMove(trigger);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "Native agent mode does not support personas",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("renders an archived bound persona slug from the last run and never its raw id", async () => {
@@ -153,7 +191,7 @@ describe("PersonaChip", () => {
     const trigger = screen.getByRole("button", {
       name: "Switch conversation persona",
     });
-    expect(trigger).toHaveTextContent("Persona");
+    expect(trigger).toHaveTextContent("No persona");
     expect(trigger).not.toHaveTextContent("archived");
     expect(trigger).not.toHaveTextContent("stale-run-persona");
   });

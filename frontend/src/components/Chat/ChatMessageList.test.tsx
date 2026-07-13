@@ -874,6 +874,7 @@ describe("ChatMessageList controller integration", () => {
       errorMessage: null,
       modelId: null,
       modelLabel: null,
+      personaId: "persona-design-voice",
       personaSlug: "design-voice",
       personaVersion: 2,
       personaInjected: false,
@@ -924,6 +925,7 @@ describe("ChatMessageList controller integration", () => {
       personaRuns: [
         {
           id: "run-persona-older",
+          personaId: "persona-careful-reviewer",
           personaSlug: "careful-reviewer",
           personaVersion: 1,
           personaInjected: true,

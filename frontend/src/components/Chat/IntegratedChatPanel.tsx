@@ -297,6 +297,8 @@ export interface IntegratedChatComposerRenderProps {
   effectiveModel?: { id: string; label: string } | undefined;
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
+  /** Conversation persona confirmation for host-owned composer surfaces. */
+  personaControl?: React.ReactNode;
 }
 
 export function IntegratedChatPanel({
@@ -1138,6 +1140,7 @@ export function IntegratedChatPanel({
     }
     return {
       id: activeConversationMeta.lastRunPersonaRunId,
+      personaId: activeConversationMeta.lastRunPersonaId ?? null,
       personaSlug: activeConversationMeta.lastRunPersonaSlug,
       personaVersion: activeConversationMeta.lastRunPersonaVersion ?? null,
       personaInjected: activeConversationMeta.lastRunPersonaInjected,
@@ -1544,6 +1547,26 @@ export function IntegratedChatPanel({
     featureFlags.agentPersonas === true &&
     activeConversationMeta?.agentMode !== "persona_builder" &&
     effectiveConversationId !== null;
+  const personaChip =
+    showPersonaChip && effectiveConversationId ? (
+      <PersonaChip
+        conversationId={effectiveConversationId}
+        personaId={activeConversationMeta?.personaId}
+        isAgentRunning={isAgentRunning}
+        lastRunPersonaId={
+          personaAttributedRun?.personaId ??
+          activeConversationMeta?.lastRunPersonaId ??
+          null
+        }
+        lastRunPersonaSlug={personaAttributedRun?.personaSlug ?? null}
+        lastRunPersonaInjected={
+          personaAttributedRun?.personaInjected ?? null
+        }
+        lastRunPersonaSkippedReason={
+          personaAttributedRun?.personaSkippedReason ?? null
+        }
+      />
+    ) : undefined;
 
   // Empty state: only show when we KNOW there are no messages (not while loading)
   // Also don't show empty if conversations are loading - we might auto-select one
@@ -1728,21 +1751,9 @@ export function IntegratedChatPanel({
               {...(effectiveModel !== undefined
                 ? { modelDisplay: effectiveModel }
                 : {})}
-              {...(showPersonaChip
+              {...(personaChip !== undefined
                 ? {
-                    personaChip: (
-                      <PersonaChip
-                        conversationId={effectiveConversationId}
-                        personaId={activeConversationMeta?.personaId}
-                        isAgentRunning={isAgentRunning}
-                        lastRunPersonaId={
-                          activeConversationMeta?.lastRunPersonaId ?? null
-                        }
-                        lastRunPersonaSlug={
-                          personaAttributedRun?.personaSlug ?? null
-                        }
-                      />
-                    ),
+                    personaChip,
                   }
                 : {})}
             />
@@ -2061,6 +2072,9 @@ export function IntegratedChatPanel({
                           activeConversationMeta?.providerHarness ??
                           fallbackProviderHarness ??
                           null,
+                        ...(personaChip !== undefined
+                          ? { personaControl: personaChip }
+                          : {}),
                         ...(activeQuestion
                           ? {
                               value: questionInputValue,
@@ -2124,6 +2138,9 @@ export function IntegratedChatPanel({
                         attachments={attachments}
                         onFilesSelected={uploadFiles}
                         onRemoveAttachment={removeAttachment}
+                        {...(personaChip !== undefined
+                          ? { personaControl: personaChip }
+                          : {})}
                       />
                     )}
                   </div>

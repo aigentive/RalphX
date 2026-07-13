@@ -455,6 +455,7 @@ function senderGroupPart(value: string | null | undefined) {
 export type PersonaAttributedRun = Pick<
   AgentRun,
   | "id"
+  | "personaId"
   | "personaSlug"
   | "personaVersion"
   | "personaInjected"

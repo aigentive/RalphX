@@ -183,7 +183,9 @@ async fn send_persona_attribution_fixture(
     let cli_path = temp.path().join("fake-claude");
     fs::write(
         &cli_path,
-        "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"session_id\":\"persona-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}'\n",
+        // Drain stdin before exiting: the send path writes the prompt to the
+        // child's stdin, and a CLI that exits first gets EPIPE on Linux (CI).
+        "#!/bin/sh\ncat > /dev/null 2>&1\nprintf '%s\\n' '{\"type\":\"result\",\"session_id\":\"persona-session\",\"is_error\":false,\"result\":\"ok\",\"cost_usd\":0.0}'\n",
     )
     .expect("write persona attribution fake CLI");
     let mut permissions = fs::metadata(&cli_path).unwrap().permissions();

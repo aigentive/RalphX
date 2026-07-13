@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { Check, ChevronDown, CircleDot, X } from "lucide-react";
+import { Check, ChevronDown, CircleDot, TriangleAlert, X } from "lucide-react";
 
 import {
   Popover,
@@ -17,6 +17,8 @@ import { usePersonas, useSwitchConversationPersona } from "@/hooks/usePersonas";
 import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
+import { getPersonaSkippedReasonCopy } from "./personaSkippedReason";
+
 const PERSONA_SCOPE_TOOLTIP =
   "Applies to this conversation only — not to delegated, subagent, or pipeline work in v1.";
 const RUNNING_SWITCH_CONFIRMATION =
@@ -28,6 +30,8 @@ export interface PersonaChipProps {
   isAgentRunning: boolean;
   lastRunPersonaId?: string | null;
   lastRunPersonaSlug?: string | null;
+  lastRunPersonaInjected?: boolean | null;
+  lastRunPersonaSkippedReason?: string | null;
 }
 
 export function PersonaChip({
@@ -36,6 +40,8 @@ export function PersonaChip({
   isAgentRunning,
   lastRunPersonaId,
   lastRunPersonaSlug,
+  lastRunPersonaInjected,
+  lastRunPersonaSkippedReason,
 }: PersonaChipProps) {
   const { data: personas = [], isLoading } = usePersonas();
   const switchPersona = useSwitchConversationPersona();
@@ -55,9 +61,19 @@ export function PersonaChip({
       ? (lastRunPersonaId === personaId ? lastRunPersonaSlug : null) ??
         boundPersona.slug
       : null;
-  const chipTooltip = archivedPersonaSlug
-    ? `${archivedPersonaSlug} is archived. It remains attributed to the last run.`
-    : PERSONA_SCOPE_TOOLTIP;
+  const lastRunDidNotApplyBoundPersona =
+    personaId != null &&
+    lastRunPersonaId === personaId &&
+    lastRunPersonaInjected === false;
+  const displaySlug =
+    (lastRunPersonaId === personaId ? lastRunPersonaSlug : null) ??
+    selectedPersona?.slug ??
+    archivedPersonaSlug;
+  const chipTooltip = lastRunDidNotApplyBoundPersona
+    ? getPersonaSkippedReasonCopy(lastRunPersonaSkippedReason)
+    : archivedPersonaSlug
+      ? `${archivedPersonaSlug} is archived. It remains attributed to the last run.`
+      : PERSONA_SCOPE_TOOLTIP;
 
   const selectPersona = useCallback(
     async (nextPersonaId: string | null) => {
@@ -104,14 +120,28 @@ export function PersonaChip({
                   className={cn(
                     "inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--accent-primary)] hover:text-[var(--text-primary)]",
                     selectedPersona && "text-[var(--text-primary)]",
+                    lastRunDidNotApplyBoundPersona &&
+                      "border-[var(--status-warning)] text-[var(--status-warning)]",
                   )}
                 >
-                  <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
+                  {lastRunDidNotApplyBoundPersona ? (
+                    <TriangleAlert
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
                   <span className="max-w-36 truncate">
-                    {selectedPersona?.name ??
-                      (archivedPersonaSlug
-                        ? `${archivedPersonaSlug} (archived)`
-                        : "Persona")}
+                    {displaySlug
+                      ? `${displaySlug}${
+                          lastRunDidNotApplyBoundPersona
+                            ? " not applied"
+                            : archivedPersonaSlug
+                              ? " (archived)"
+                              : ""
+                        }`
+                      : "No persona"}
                   </span>
                   <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
