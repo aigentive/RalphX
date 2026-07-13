@@ -1210,10 +1210,7 @@ function AppContent() {
             </div>
         </div>
 
-          {/* Notification center keeps a hidden light frame after first open.
-              bottomOffset 76 when ExecutionControlBar is visible below this
-              panel, 0 elsewhere so the panel fills
-              the viewport instead of leaving a ~84px void. */}
+          {/* Notification center keeps a visually hidden light frame after first open. */}
           {shouldRenderNotificationPanel && (
             <>
               {notificationsPanelOpen && (
@@ -1225,19 +1222,19 @@ function AppContent() {
                   data-testid="notifications-panel-backdrop"
                   onClick={closeNotificationsPanel}
                   style={{
-                    bottom: showsExecutionFooter ? "76px" : "0px",
+                    bottom: "0px",
                   }}
                 />
               )}
               <div
                 className={cn(
                   "fixed top-12 right-0 z-50 flex flex-col border-l",
-                  !notificationsPanelOpen && "pointer-events-none",
+                  !notificationsPanelOpen && "pointer-events-none invisible",
                 )}
                 data-testid="notifications-panel-shell"
                 aria-hidden={!notificationsPanelOpen}
                 style={{
-                  bottom: showsExecutionFooter ? "76px" : "0px",
+                  bottom: "0px",
                   width: "100vw",
                   maxWidth: "400px",
                   backgroundColor: "var(--bg-surface)",
