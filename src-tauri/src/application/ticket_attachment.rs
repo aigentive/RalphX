@@ -138,7 +138,7 @@ impl TicketAttachmentDescriptor {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketAttachmentSourceHandle {
     provider: TicketAttachmentProvider,
     ticket_id: String,
@@ -266,10 +266,7 @@ impl TicketAttachmentListResult {
             });
         }
         Ok(Self {
-            attachments: items
-                .iter()
-                .map(|item| item.descriptor.clone())
-                .collect(),
+            attachments: items.iter().map(|item| item.descriptor.clone()).collect(),
             items,
         })
     }
@@ -338,6 +335,40 @@ pub trait TicketAttachmentContentStore: Send + Sync {
         file_name: &str,
         bytes: &BoundedTicketAttachmentBytes,
     ) -> Result<TicketAttachmentContentLocation, TicketAttachmentError>;
+}
+
+pub async fn fetch_ticket_attachment_content(
+    reader: &dyn TicketAttachmentProviderReader,
+    store: &dyn TicketAttachmentContentStore,
+    provider: TicketAttachmentProvider,
+    ticket_id: &str,
+    pointer: &TicketAttachmentContentPointer,
+) -> Result<TicketAttachmentFetchResult, TicketAttachmentError> {
+    let list_result = reader.list_attachments(provider, ticket_id).await?;
+    let item = list_result
+        .matching_item(pointer)
+        .ok_or(TicketAttachmentError::PointerNotFound)?;
+
+    if !item.content_fetch_supported {
+        return Err(TicketAttachmentError::UnsupportedContentFetch);
+    }
+
+    if let Some(declared_size_bytes) = item.descriptor.declared_size_bytes {
+        ensure_ticket_attachment_content_size(declared_size_bytes)?;
+    }
+
+    let bytes = reader
+        .fetch_attachment(&item.source, MAX_TICKET_ATTACHMENT_CONTENT_BYTES)
+        .await?;
+    let bounded = BoundedTicketAttachmentBytes::new(bytes.into_bytes())?;
+    let location = store
+        .persist_content(&item.source, &item.descriptor.file_name, &bounded)
+        .await?;
+
+    Ok(TicketAttachmentFetchResult {
+        descriptor: item.descriptor.clone(),
+        location: Some(location),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
