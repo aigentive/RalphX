@@ -220,17 +220,81 @@ impl TicketAttachmentContentLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketAttachmentFetchResult {
     pub descriptor: TicketAttachmentDescriptor,
-    pub bytes: BoundedTicketAttachmentBytes,
     pub location: Option<TicketAttachmentContentLocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketAttachmentProviderItem {
+    pub descriptor: TicketAttachmentDescriptor,
+    pub source: TicketAttachmentSourceHandle,
+    pub content_fetch_supported: bool,
+}
+
+impl TicketAttachmentProviderItem {
+    pub fn new(
+        descriptor: TicketAttachmentDescriptor,
+        source: TicketAttachmentSourceHandle,
+        content_fetch_supported: bool,
+    ) -> Self {
+        Self {
+            descriptor,
+            source,
+            content_fetch_supported,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketAttachmentListResult {
     pub attachments: Vec<TicketAttachmentDescriptor>,
+    pub(crate) items: Vec<TicketAttachmentProviderItem>,
 }
 
 impl TicketAttachmentListResult {
     pub fn new(
+        attachments: Vec<TicketAttachmentDescriptor>,
+    ) -> Result<Self, TicketAttachmentError> {
+        Self::descriptors_only(attachments)
+    }
+
+    pub fn from_items(
+        items: Vec<TicketAttachmentProviderItem>,
+    ) -> Result<Self, TicketAttachmentError> {
+        if items.len() > MAX_TICKET_ATTACHMENT_LIST_ITEMS {
+            return Err(TicketAttachmentError::TooManyAttachments {
+                max: MAX_TICKET_ATTACHMENT_LIST_ITEMS,
+            });
+        }
+        Ok(Self {
+            attachments: items
+                .iter()
+                .map(|item| item.descriptor.clone())
+                .collect(),
+            items,
+        })
+    }
+
+    pub fn matching_item(
+        &self,
+        pointer: &TicketAttachmentContentPointer,
+    ) -> Option<&TicketAttachmentProviderItem> {
+        self.items
+            .iter()
+            .find(|item| item.descriptor.content_pointer.id() == pointer.id())
+    }
+}
+
+impl From<TicketAttachmentDescriptor> for TicketAttachmentListResult {
+    fn from(descriptor: TicketAttachmentDescriptor) -> Self {
+        Self {
+            attachments: vec![descriptor],
+            items: Vec::new(),
+        }
+    }
+}
+
+impl TicketAttachmentListResult {
+    pub fn descriptors_only(
         attachments: Vec<TicketAttachmentDescriptor>,
     ) -> Result<Self, TicketAttachmentError> {
         if attachments.len() > MAX_TICKET_ATTACHMENT_LIST_ITEMS {
@@ -238,7 +302,10 @@ impl TicketAttachmentListResult {
                 max: MAX_TICKET_ATTACHMENT_LIST_ITEMS,
             });
         }
-        Ok(Self { attachments })
+        Ok(Self {
+            attachments,
+            items: Vec::new(),
+        })
     }
 }
 
@@ -264,6 +331,13 @@ pub trait TicketAttachmentContentStore: Send + Sync {
         source: &TicketAttachmentSourceHandle,
         file_name: &str,
     ) -> Result<TicketAttachmentContentLocation, TicketAttachmentError>;
+
+    async fn persist_content(
+        &self,
+        source: &TicketAttachmentSourceHandle,
+        file_name: &str,
+        bytes: &BoundedTicketAttachmentBytes,
+    ) -> Result<TicketAttachmentContentLocation, TicketAttachmentError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -278,10 +352,20 @@ pub enum TicketAttachmentError {
     ContentTooLarge { max: usize },
     #[error("ticket attachment list exceeds {max} items")]
     TooManyAttachments { max: usize },
+    #[error("ticket attachment provider is unsupported")]
+    UnsupportedProvider,
+    #[error("ticket attachment content fetch is unsupported")]
+    UnsupportedContentFetch,
+    #[error("ticket attachment pointer was not found")]
+    PointerNotFound,
     #[error("ticket attachment storage path escaped the runtime root")]
     PathEscapedRoot,
     #[error("ticket attachment runtime storage root is unavailable")]
     StorageRootUnavailable,
+    #[error("ticket attachment runtime storage write failed")]
+    StorageWriteFailed,
+    #[error("ticket attachment provider request failed")]
+    ProviderRequestFailed,
 }
 
 pub fn ensure_ticket_attachment_content_size(size: u64) -> Result<(), TicketAttachmentError> {
