@@ -709,6 +709,53 @@ describe("AutomationDetailView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("matches timeline card and marker highlights to the run outcome", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [
+        run({ id: "run-success", runIndex: 3, status: "merged", judgeState: "done" }),
+        run({
+          id: "run-progress",
+          runIndex: 2,
+          status: "running",
+          judgeState: "none",
+          finishedAt: null,
+        }),
+        run({
+          id: "run-failed",
+          runIndex: 1,
+          status: "agent_failed",
+          judgeState: "failed",
+          errorDetail: "Agent exited before publishing",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const successCard = screen.getByTestId("automation-run-run-success-card");
+    expect(successCard.style.backgroundColor).toBe("var(--status-success-muted)");
+    expect(successCard.style.borderColor).toBe("var(--status-success-border)");
+    expect(screen.getByTestId("automation-run-run-success-marker").style.backgroundColor).toBe(
+      "var(--status-success)",
+    );
+
+    const progressCard = screen.getByTestId("automation-run-run-progress-card");
+    expect(progressCard.style.backgroundColor).toBe("var(--accent-muted)");
+    expect(progressCard.style.borderColor).toBe("var(--accent-border)");
+    expect(screen.getByTestId("automation-run-run-progress-marker").style.backgroundColor).toBe(
+      "var(--accent-primary)",
+    );
+
+    const failedCard = screen.getByTestId("automation-run-run-failed-card");
+    expect(failedCard.style.backgroundColor).toBe("var(--bg-hover)");
+    expect(failedCard.style.borderColor).toBe("var(--border-default)");
+    expect(screen.getByTestId("automation-run-run-failed-marker").style.backgroundColor).toBe(
+      "var(--text-muted)",
+    );
+  });
+
   it("does not show a timeline phase chip when no goal item is in progress", async () => {
     renderDetail({
       automation: automation({
