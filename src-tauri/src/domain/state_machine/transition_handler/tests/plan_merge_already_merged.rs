@@ -33,12 +33,16 @@ fn make_services_with_tracked_chat(
     project_repo: Arc<MemoryProjectRepository>,
 ) -> (Arc<MockChatService>, TaskServices) {
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)

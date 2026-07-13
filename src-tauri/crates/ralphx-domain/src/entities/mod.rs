@@ -18,6 +18,9 @@ mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
 pub mod chat_timeline;
+pub mod branch_update;
+#[cfg(test)]
+mod branch_update_tests;
 pub mod delegated_session;
 pub mod event_type;
 pub mod execution_plan;
@@ -37,6 +40,8 @@ pub mod research;
 pub mod review;
 pub mod review_issue;
 pub mod status;
+#[cfg(test)]
+mod status_tests;
 pub mod task;
 pub mod task_context;
 pub mod task_metadata;
@@ -125,6 +130,13 @@ pub use chat_conversation::{
 pub use chat_timeline::{
     ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
     ChatTimelinePage,
+};
+pub use branch_update::{
+    BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
+    BranchUpdateFailureKind, BranchUpdateFailurePolicy, BranchUpdateOperation,
+    BranchUpdateOperationId, BranchUpdatePhase, BranchUpdateWorkspaceOwnership,
+    GitMutationClaim, GitMutationKind, GitTargetIdentity, GitTargetIdentityError,
+    GitTargetLease, GitTargetLeaseError, GitTargetLeaseOwner, GitTargetLeaseOwnerKind,
 };
 pub use delegated_session::{DelegatedSession, DelegatedSessionId};
 pub use event_type::{EventType, ParseEventTypeError};

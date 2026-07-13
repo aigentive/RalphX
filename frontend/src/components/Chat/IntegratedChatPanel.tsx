@@ -237,7 +237,7 @@ interface IntegratedChatPanelProps {
   selectedTaskIdOverride?: string | null | undefined;
   /** Force task chat runtime mode when selected task status alone is not deterministic. */
   taskRuntimeContextTypeOverride?:
-    "task_execution" | "review" | "merge" | undefined;
+    "task_execution" | "review" | "merge" | "branch_update" | undefined;
   /** Force a specific store key for externally-owned queue/running state. */
   storeContextKeyOverride?: string | undefined;
   /** Override the backend process/queue context id used for recovery, stop, and queued-message edits. */

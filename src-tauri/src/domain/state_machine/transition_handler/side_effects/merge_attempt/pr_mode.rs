@@ -2,6 +2,10 @@ use super::super::super::merge_helpers::restore_github_auto_merge_after_pr_corre
 use super::*;
 use crate::application::publish_resilience::push_publish_branch;
 use crate::domain::entities::plan_branch::PrPushStatus;
+use crate::domain::entities::task_metadata::{
+    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    MergeRecoverySource, MergeRecoveryState,
+};
 use crate::domain::services::{PlanPrPublisher, PrReviewState};
 use crate::domain::state_machine::transition_handler::{
     draft_plan_pr_description_for_write, merge_outcome_handler::classify_merge_failure_source,

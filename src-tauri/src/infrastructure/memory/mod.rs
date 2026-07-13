@@ -22,6 +22,7 @@ mod memory_automation_repo_tests;
 pub mod memory_artifact_bucket_repo;
 pub mod memory_artifact_flow_repo;
 pub mod memory_artifact_repo;
+pub mod memory_branch_update_repo;
 pub mod memory_atlassian_integration_settings_repo;
 pub mod memory_chat_attachment_repo;
 pub mod memory_chat_conversation_repo;
@@ -98,6 +99,7 @@ pub use memory_automation_repo::{MemoryAutomationRepository, MemoryAutomationRun
 pub use memory_artifact_bucket_repo::MemoryArtifactBucketRepository;
 pub use memory_artifact_flow_repo::MemoryArtifactFlowRepository;
 pub use memory_artifact_repo::MemoryArtifactRepository;
+pub use memory_branch_update_repo::MemoryBranchUpdateRepository;
 pub use memory_atlassian_integration_settings_repo::MemoryAtlassianIntegrationSettingsRepository;
 pub use memory_chat_attachment_repo::MemoryChatAttachmentRepository;
 pub use memory_chat_conversation_repo::MemoryChatConversationRepository;

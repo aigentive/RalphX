@@ -216,6 +216,55 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         pr_fix_review_publish_resumer,
     } = deps;
 
+    let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
+    match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(Arc::clone(
+        &app_state.branch_update_repo,
+    ))
+    .await
+    {
+        Ok(outcomes) => {
+            let repair_count = outcomes
+                .iter()
+                .filter(|outcome| {
+                    matches!(
+                        outcome,
+                        crate::application::git_mutation_recovery::GitMutationRecoveryOutcome::NeedsRepair { .. }
+                    )
+                })
+                .count();
+            tracing::info!(
+                recovered_claims = outcomes.len().saturating_sub(repair_count),
+                fenced_for_repair = repair_count,
+                "Startup Git mutation authority recovery completed"
+            );
+        }
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "Startup Git mutation recovery failed; durable claims remain fenced"
+            );
+        }
+    }
+    startup_phase_completed("git_mutation_authority_recovery", phase_started_at);
+
+    let phase_started_at = startup_phase_started("branch_update_run_binding_recovery");
+    match crate::application::git_mutation_recovery::recover_terminal_branch_update_run_bindings(
+        Arc::clone(&app_state.branch_update_repo),
+        Arc::clone(&agent_run_repo),
+    )
+    .await
+    {
+        Ok(recovered) => tracing::info!(
+            recovered,
+            "Startup terminal branch-update run binding recovery completed"
+        ),
+        Err(error) => tracing::error!(
+            error = %error,
+            "Startup branch-update run binding recovery failed closed"
+        ),
+    }
+    startup_phase_completed("branch_update_run_binding_recovery", phase_started_at);
+
     let phase_started_at = startup_phase_started("git_auth_preflight");
     let startup_git_preflight =
         crate::application::startup_git_auth_preflight::run_startup_git_auth_preflight_with_notifications(
@@ -566,6 +615,78 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     let startup_ideation_recovery_claims = runner.run().await;
     startup_phase_completed("startup_job_runner", phase_started_at);
 
+    let phase_started_at = startup_phase_started("branch_update_post_process_recovery");
+    match crate::application::git_mutation_recovery::recover_terminal_branch_update_run_bindings(
+        Arc::clone(&app_state.branch_update_repo),
+        Arc::clone(&agent_run_repo),
+    )
+    .await
+    {
+        Ok(recovered) => tracing::info!(
+            recovered,
+            "Post-process branch-update run binding recovery completed"
+        ),
+        Err(error) => tracing::error!(
+            error = %error,
+            "Post-process branch-update run binding recovery failed closed"
+        ),
+    }
+    if !active_git_startup_blocked {
+        match crate::application::git_mutation_recovery::recover_branch_update_continuations(
+            Arc::clone(&app_state.branch_update_repo),
+            Arc::clone(&task_repo),
+            Arc::clone(&project_repo),
+        )
+        .await
+        {
+            Ok(outcomes) => {
+                let needs_repair = outcomes
+                    .iter()
+                    .filter(|outcome| {
+                        matches!(
+                            outcome,
+                            crate::application::git_mutation_recovery::BranchUpdateContinuationRecoveryOutcome::NeedsRepair { .. }
+                        )
+                    })
+                    .count();
+                tracing::info!(
+                    completed = outcomes.len().saturating_sub(needs_repair),
+                    needs_repair,
+                    "Startup branch-update continuation recovery completed"
+                );
+            }
+            Err(error) => tracing::error!(
+                error = %error,
+                "Startup branch-update continuation recovery failed closed"
+            ),
+        }
+    }
+    for operation in app_state
+        .branch_update_repo
+        .list_active_operations()
+        .await?
+    {
+        if operation.phase != crate::domain::entities::BranchUpdatePhase::Resolving
+            || operation.agent_run_id.is_some()
+            || operation.conversation_id.is_some()
+        {
+            continue;
+        }
+        let Some(task) = task_repo.get_by_id(&operation.task_id).await? else {
+            continue;
+        };
+        if matches!(
+            task.internal_status,
+            crate::domain::entities::InternalStatus::UpdatingPlanBranch
+                | crate::domain::entities::InternalStatus::UpdatingTaskBranch
+        ) {
+            transition_service
+                .execute_entry_actions(&task.id, &task, task.internal_status)
+                .await;
+        }
+    }
+    startup_phase_completed("branch_update_post_process_recovery", phase_started_at);
+
     let phase_started_at = startup_phase_started("workspace_review_startup_reconciliation");
     match crate::application::agent_workspace_review::reconcile_interrupted_agent_workspace_reviews_on_startup(
         Arc::clone(&agent_conversation_workspace_repo),
@@ -694,6 +815,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             execution_state: Arc::clone(&execution_state),
             execution_settings_repo: Arc::clone(&execution_settings_repo),
             plan_branch_repo: Arc::clone(&plan_branch_repo),
+            branch_update_repo: Arc::clone(&app_state.branch_update_repo),
             pr_poller_registry: Arc::clone(&pr_poller_registry),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             review_repo: Arc::clone(&review_repo),

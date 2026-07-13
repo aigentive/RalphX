@@ -269,6 +269,7 @@ fn execution_lane_for_context(
         }
         ChatContextType::Review => Some(AgentLane::ExecutionReviewer),
         ChatContextType::Merge => Some(AgentLane::ExecutionMerger),
+        ChatContextType::BranchUpdate => Some(AgentLane::ExecutionBranchUpdater),
         ChatContextType::Ideation
         | ChatContextType::Delegation
         | ChatContextType::Task

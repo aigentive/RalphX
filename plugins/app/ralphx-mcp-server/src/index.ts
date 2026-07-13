@@ -260,6 +260,10 @@ function validateTaskScope(
     "report_incomplete",
     "complete_merge",
     "get_merge_target",
+    "get_branch_update_context",
+    "complete_branch_update",
+    "report_branch_update_conflict",
+    "report_branch_update_incomplete",
     // Issue tools (worker + reviewer agents)
     "get_task_issues",
     "get_issue_progress",
@@ -757,6 +761,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === "get_merge_target") {
       const { task_id } = args as { task_id: string };
       result = await callTauriGet(`git/tasks/${task_id}/merge-target`);
+    } else if (name === "get_branch_update_context") {
+      const { task_id } = args as { task_id: string };
+      result = await callTauriGet(`branch-updates/tasks/${task_id}/context`, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
+    } else if (name === "complete_branch_update") {
+      const { task_id } = args as { task_id: string };
+      result = await callTauri(`branch-updates/tasks/${task_id}/complete`, {}, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
+    } else if (name === "report_branch_update_conflict") {
+      const { task_id, conflict_files, reason, diagnostic_info } = args as {
+        task_id: string;
+        conflict_files: string[];
+        reason: string;
+        diagnostic_info?: string;
+      };
+      result = await callTauri(`branch-updates/tasks/${task_id}/report-conflict`, {
+        conflict_files,
+        reason,
+        diagnostic_info,
+      }, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
+    } else if (name === "report_branch_update_incomplete") {
+      const { task_id, reason, diagnostic_info } = args as {
+        task_id: string;
+        reason: string;
+        diagnostic_info?: string;
+      };
+      result = await callTauri(`branch-updates/tasks/${task_id}/report-incomplete`, {
+        reason,
+        diagnostic_info,
+      }, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
     } else if (name === "get_task_issues") {
       // GET /api/task_issues/:task_id?status=<filter>
       const { task_id, status_filter } = args as { task_id: string; status_filter?: string };

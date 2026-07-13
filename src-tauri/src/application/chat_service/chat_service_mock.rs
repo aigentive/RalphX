@@ -337,6 +337,9 @@ impl ChatService for MockChatService {
             ChatContextType::Merge => {
                 ChatConversation::new_merge(TaskId::from_string(context_id.to_string()))
             }
+            ChatContextType::BranchUpdate => {
+                ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
+            }
         };
 
         self.conversations.lock().await.push(conv.clone());

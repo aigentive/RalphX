@@ -59,6 +59,9 @@ pub enum AppError {
     #[error("Review worktree missing: worktree directory does not exist")]
     ReviewWorktreeMissing,
 
+    #[error("Review worktree contains unresolved conflict markers")]
+    ReviewWorktreeConflictMarkers,
+
     #[error("Duplicate pull request: branch already has an open PR")]
     DuplicatePr,
 

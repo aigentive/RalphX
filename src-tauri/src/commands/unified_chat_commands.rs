@@ -9907,16 +9907,18 @@ fn task_lifecycle(
         | InternalStatus::PendingMerge
         | InternalStatus::ReviewPassed
         | InternalStatus::Approved => AgentConversationRuntimeLifecycle::Queued,
-        InternalStatus::Blocked | InternalStatus::MergeConflict => {
-            AgentConversationRuntimeLifecycle::Blocked
-        }
+        InternalStatus::Blocked
+        | InternalStatus::MergeConflict
+        | InternalStatus::BranchUpdateBlocked => AgentConversationRuntimeLifecycle::Blocked,
         InternalStatus::Executing
         | InternalStatus::QaRefining
         | InternalStatus::QaTesting
         | InternalStatus::Reviewing
         | InternalStatus::ReExecuting
         | InternalStatus::Merging
-        | InternalStatus::WaitingOnPr => AgentConversationRuntimeLifecycle::Running,
+        | InternalStatus::WaitingOnPr
+        | InternalStatus::UpdatingPlanBranch
+        | InternalStatus::UpdatingTaskBranch => AgentConversationRuntimeLifecycle::Running,
         InternalStatus::RevisionNeeded => AgentConversationRuntimeLifecycle::Blocked,
         InternalStatus::Merged => AgentConversationRuntimeLifecycle::Completed,
         InternalStatus::Failed | InternalStatus::QaFailed | InternalStatus::MergeIncomplete => {
@@ -10258,6 +10260,9 @@ pub async fn create_agent_conversation(
         }
         ChatContextType::Merge => {
             ChatConversation::new_merge(TaskId::from_string(input.context_id.clone()))
+        }
+        ChatContextType::BranchUpdate => {
+            ChatConversation::new_branch_update(TaskId::from_string(input.context_id.clone()))
         }
     };
     conversation.set_coordination_mode(coordination_mode);

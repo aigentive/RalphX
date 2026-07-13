@@ -6,6 +6,10 @@
 //! - A configurable timeout (from `git_runtime_config()`) to prevent hung processes.
 //! - Configurable retry attempts with backoff for known transient errors.
 use crate::domain::entities::MergeFailureSource;
+use crate::domain::entities::{GitMutationKind, GitTargetIdentity, GitTargetLeaseOwner};
+use crate::domain::repositories::{
+    BeginGitMutation, BranchUpdateRepository, CompleteGitMutation, GitAuthorityCasOutcome,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::{apply_git_subprocess_env, is_git_auth_failure_text};
@@ -14,6 +18,7 @@ use std::panic::Location;
 use std::path::Path;
 use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::{Semaphore, SemaphorePermit};
@@ -36,6 +41,51 @@ tokio::task_local! {
 pub(crate) enum GitCommandLane {
     Foreground,
     Background,
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthorizedGitMutation {
+    repository: Arc<dyn BranchUpdateRepository>,
+    identity: GitTargetIdentity,
+    owner: GitTargetLeaseOwner,
+    fencing_epoch: u64,
+    claim_id: String,
+    kind: GitMutationKind,
+}
+
+impl AuthorizedGitMutation {
+    /// Materialize a non-serializable mutation guard from the current durable
+    /// lease. The subsequent begin-mutation CAS revalidates this snapshot at
+    /// the exact effect boundary.
+    pub(crate) async fn from_current_lease(
+        repository: Arc<dyn BranchUpdateRepository>,
+        identity: GitTargetIdentity,
+        owner: GitTargetLeaseOwner,
+        fencing_epoch: u64,
+        claim_id: String,
+        kind: GitMutationKind,
+    ) -> AppResult<Self> {
+        let lease = repository
+            .get_target_lease(&identity)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation("Git mutation target has no durable lease".to_string())
+            })?;
+        if lease.is_released() || lease.owner() != &owner || lease.fencing_epoch() != fencing_epoch
+        {
+            return Err(AppError::Validation(
+                "Git mutation target lease is stale or owned by another workflow".to_string(),
+            ));
+        }
+        Ok(Self {
+            repository,
+            identity,
+            owner,
+            fencing_epoch,
+            claim_id,
+            kind,
+        })
+    }
 }
 
 impl GitCommandLane {
@@ -293,6 +343,177 @@ pub(crate) fn run<'a>(
     cwd: &'a Path,
 ) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
     run_in_lane(args, cwd, GitCommandLane::Foreground)
+}
+
+/// Run a mutating Git command under durable target authority.
+///
+/// The mutation claim is persisted before spawn, the child process group is
+/// bound immediately after spawn, and the claim is cleared only after the
+/// process group has exited (or has been terminated on timeout).
+pub(crate) async fn run_authorized_mutation(
+    args: &[&str],
+    cwd: &Path,
+    authority: AuthorizedGitMutation,
+) -> AppResult<Output> {
+    match authority
+        .repository
+        .begin_git_mutation(BeginGitMutation {
+            identity: authority.identity.clone(),
+            owner: authority.owner.clone(),
+            fencing_epoch: authority.fencing_epoch,
+            claim_id: authority.claim_id.clone(),
+            kind: authority.kind,
+        })
+        .await?
+    {
+        GitAuthorityCasOutcome::Applied { .. } => {}
+        outcome => {
+            return Err(AppError::Validation(format!(
+                "Git mutation authority rejected before spawn: {outcome:?}"
+            )))
+        }
+    }
+
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let lane = current_git_command_lane(GitCommandLane::Foreground);
+    let _admission = match acquire_git_admission(lane, "run_authorized_mutation", &args, cwd).await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            let _ = authority
+                .repository
+                .complete_git_mutation(CompleteGitMutation {
+                    identity: authority.identity,
+                    owner: authority.owner,
+                    fencing_epoch: authority.fencing_epoch,
+                    claim_id: authority.claim_id,
+                })
+                .await;
+            return Err(error);
+        }
+    };
+    let mut command = build_git_command(&args, cwd, &[]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = authority
+                .repository
+                .complete_git_mutation(CompleteGitMutation {
+                    identity: authority.identity,
+                    owner: authority.owner,
+                    fencing_epoch: authority.fencing_epoch,
+                    claim_id: authority.claim_id,
+                })
+                .await;
+            return Err(AppError::GitOperation(format!(
+                "git {} failed to spawn: {error}",
+                args.join(" ")
+            )));
+        }
+    };
+    let Some(process_group_id) = child.id().map(i64::from) else {
+        let _ = child.kill().await;
+        let _ = authority
+            .repository
+            .complete_git_mutation(CompleteGitMutation {
+                identity: authority.identity,
+                owner: authority.owner,
+                fencing_epoch: authority.fencing_epoch,
+                claim_id: authority.claim_id,
+            })
+            .await;
+        return Err(AppError::GitOperation(
+            "spawned Git process has no process id".to_string(),
+        ));
+    };
+    let bound = authority
+        .repository
+        .bind_git_process_group(
+            &authority.identity,
+            &authority.owner,
+            authority.fencing_epoch,
+            &authority.claim_id,
+            process_group_id,
+        )
+        .await;
+    let bound = match bound {
+        Ok(bound) => bound,
+        Err(error) => {
+            #[cfg(unix)]
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(process_group_id as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+            let _ = child.kill().await;
+            return Err(error);
+        }
+    };
+    if !matches!(bound, GitAuthorityCasOutcome::Applied { .. }) {
+        #[cfg(unix)]
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(process_group_id as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = child.kill().await;
+        return Err(AppError::Validation(format!(
+            "Git mutation authority changed after spawn: {bound:?}"
+        )));
+    }
+
+    let timeout_secs = git_runtime_config().cmd_timeout_secs;
+    let result = timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await;
+    #[cfg(unix)]
+    if result.is_err() && !terminate_and_confirm_process_group_exit(process_group_id).await {
+        return Err(AppError::GitOperation(format!(
+            "git command timed out after {timeout_secs}s and its process group is still alive; durable mutation authority remains fenced"
+        )));
+    }
+    let output = match result {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(AppError::GitOperation(format!(
+            "git {} failed: {error}",
+            args.join(" ")
+        ))),
+        Err(_) => Err(AppError::GitOperation(format!(
+            "git command timed out after {timeout_secs}s"
+        ))),
+    };
+    let completion = authority
+        .repository
+        .complete_git_mutation(CompleteGitMutation {
+            identity: authority.identity,
+            owner: authority.owner,
+            fencing_epoch: authority.fencing_epoch,
+            claim_id: authority.claim_id,
+        })
+        .await?;
+    if !matches!(completion, GitAuthorityCasOutcome::Applied { .. }) {
+        return Err(AppError::Validation(format!(
+            "Git mutation completion lost authority: {completion:?}"
+        )));
+    }
+    output
+}
+
+#[cfg(unix)]
+async fn terminate_and_confirm_process_group_exit(process_group_id: i64) -> bool {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+
+    let group = Pid::from_raw(process_group_id as i32);
+    let _ = killpg(group, Signal::SIGKILL);
+    for _ in 0..50 {
+        if killpg(group, None).is_err() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
 }
 
 /// Run a git command in the background lane.

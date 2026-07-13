@@ -20,6 +20,7 @@ pub mod artifact_bucket_repository;
 pub mod artifact_flow_repository;
 pub mod artifact_repository;
 pub mod automation_repository;
+pub mod branch_update_repository;
 pub mod automation_run_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
@@ -88,6 +89,15 @@ pub use artifact_flow_repository::ArtifactFlowRepository;
 pub use artifact_repository::{ArtifactRepository, ArtifactVersionSummary};
 pub use automation_repository::{
     AutomationConfigPatch, AutomationRepository, AutomationSettingsPatch,
+};
+pub use branch_update_repository::{
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
+    BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
+    BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
+    CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
+    MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
+    SettleBranchUpdateProgrammatic, StopBranchUpdate, TransferBranchUpdateTargetLease,
+    UnbindBranchUpdateRun,
 };
 pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;

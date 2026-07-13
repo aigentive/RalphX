@@ -56,12 +56,6 @@ import { statusTint, withAlpha } from "@/lib/theme-colors";
 import { useTaskStateHistory } from "@/hooks/useReviews";
 import { useTaskStateTransitions } from "@/hooks/useTaskStateTransitions";
 
-const FRESHNESS_BANNER_COPY: Record<string, string> = {
-  executing: "Stale branches detected when starting execution. Task will resume execution after resolution.",
-  re_executing: "Stale branches detected when re-entering execution. Task will resume execution after resolution.",
-  reviewing: "Stale branches detected when starting review. Task will resume review after resolution.",
-};
-
 interface MergingTaskDetailProps {
   task: Task;
   isHistorical?: boolean;
@@ -497,18 +491,6 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
     }
   }, [task.metadata]);
 
-  // Parse freshness_origin_state from task metadata — present when task entered Merging due to stale branches
-  const freshnessOriginState = useMemo(() => {
-    if (!task.metadata) return null;
-    try {
-      const parsed = typeof task.metadata === "string" ? JSON.parse(task.metadata) : task.metadata;
-      const origin = parsed?.freshness_origin_state;
-      return typeof origin === "string" ? origin : null;
-    } catch {
-      return null;
-    }
-  }, [task.metadata]);
-
   // Live validation events (only meaningful during active pending_merge)
   const liveSteps = useMergeValidationEvents(task.id);
 
@@ -662,16 +644,6 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
     <>
     {renderBody(
       <>
-      {/* Freshness Context Banner — shown when task entered Merging due to stale branch detection */}
-      {freshnessOriginState !== null && FRESHNESS_BANNER_COPY[freshnessOriginState] !== undefined && (
-        <div className="px-4 py-3 bg-status-info/10 border-b border-status-info/20 flex items-center gap-2">
-          <Info className="w-4 h-4 text-status-info shrink-0" />
-          <span className="text-sm text-status-info">
-            {FRESHNESS_BANNER_COPY[freshnessOriginState]}
-          </span>
-        </div>
-      )}
-
       {/* Status Banner */}
       <StatusBanner
         icon={

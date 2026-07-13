@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::application::chat_service::{AppChatService, StreamingStateCache};
+use crate::application::chat_service::{AppChatService, ChatService, StreamingStateCache};
 use crate::application::notification_service::NotificationService;
 use crate::application::{
     AgentClientBundle, AppState, AtlassianIntegrationService, GranolaIntegrationService,
@@ -16,13 +16,13 @@ use crate::domain::repositories::{
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
     AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    AutomationRunRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    AutomationRunRepository, BranchUpdateRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -32,6 +32,7 @@ use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
 #[derive(Clone)]
 pub(crate) struct RuntimeFactoryDeps {
     pub task_repo: Arc<dyn TaskRepository>,
+    pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
     pub artifact_repo: Arc<dyn ArtifactRepository>,
@@ -77,6 +78,7 @@ impl RuntimeFactoryDeps {
     ) -> Self {
         Self {
             task_repo,
+            branch_update_repo: None,
             task_dependency_repo,
             project_repo,
             artifact_repo,
@@ -106,6 +108,14 @@ impl RuntimeFactoryDeps {
 
     pub(crate) fn with_agent_clients(mut self, agent_clients: Option<AgentClientBundle>) -> Self {
         self.agent_clients = agent_clients;
+        self
+    }
+
+    pub(crate) fn with_branch_update_repo(
+        mut self,
+        repository: Arc<dyn BranchUpdateRepository>,
+    ) -> Self {
+        self.branch_update_repo = Some(repository);
         self
     }
 
@@ -182,6 +192,7 @@ impl RuntimeFactoryDeps {
             Arc::clone(&state.memory_event_repo),
         )
         .with_agent_clients(Some(state.agent_client_bundle()))
+        .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_execution_plan_repo(Arc::clone(&state.execution_plan_repo))
         .with_review_repo(Arc::clone(&state.review_repo))
         .with_runtime_support(
@@ -247,6 +258,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub agent_conversation_granola_note_repo:
         Option<Arc<dyn AgentConversationGranolaNoteRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
@@ -305,6 +317,7 @@ impl ChatRuntimeFactoryDeps {
             agent_conversation_linear_issue_repo: None,
             agent_conversation_granola_note_repo: None,
             plan_branch_repo: None,
+            branch_update_repo: None,
             task_proposal_repo: None,
             task_step_repo: None,
             review_repo: None,
@@ -413,6 +426,11 @@ impl ChatRuntimeFactoryDeps {
 
     pub(crate) fn with_plan_branch_repo(mut self, repo: Arc<dyn PlanBranchRepository>) -> Self {
         self.plan_branch_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.branch_update_repo = Some(repo);
         self
     }
 
@@ -560,6 +578,7 @@ impl ChatRuntimeFactoryDeps {
         .with_notification_service(state.notification_service())
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
         .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
             Some(Arc::clone(&state.agent_lane_settings_repo)),
@@ -667,6 +686,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.plan_branch_repo.as_ref() {
         service = service.with_plan_branch_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.branch_update_repo.as_ref() {
+        service.set_branch_update_repo(Arc::clone(repo));
     }
     if let Some(repo) = deps.task_proposal_repo.as_ref() {
         service = service.with_task_proposal_repo(Arc::clone(repo));
@@ -795,6 +817,9 @@ pub(crate) fn build_transition_service_from_deps(
 
     if let Some(repo) = deps.review_repo.as_ref() {
         service = service.with_review_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.branch_update_repo.as_ref() {
+        service = service.with_branch_update_repo(Arc::clone(repo));
     }
     if let Some(repo) = deps.agent_conversation_workspace_repo.as_ref() {
         service = service.with_agent_conversation_workspace_repo(Arc::clone(repo));

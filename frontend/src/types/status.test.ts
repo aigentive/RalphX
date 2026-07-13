@@ -15,8 +15,8 @@ import type { StatusCounts } from "./status";
 import type { InternalStatus } from "./status";
 
 describe("InternalStatusSchema", () => {
-  it("should have exactly 25 status values", () => {
-    expect(INTERNAL_STATUS_VALUES.length).toBe(25);
+  it("should have exactly 28 status values", () => {
+    expect(INTERNAL_STATUS_VALUES.length).toBe(28);
   });
 
   it("should parse all valid status values", () => {
@@ -33,6 +33,9 @@ describe("InternalStatusSchema", () => {
       "revision_needed",
       "approved",
       "waiting_on_pr",
+      "updating_plan_branch",
+      "updating_task_branch",
+      "branch_update_blocked",
       "failed",
       "cancelled",
     ];
@@ -76,8 +79,8 @@ describe("Status Categories", () => {
     expect(IDLE_STATUSES).toContain("blocked");
   });
 
-  it("should have 13 active statuses", () => {
-    expect(ACTIVE_STATUSES.length).toBe(13);
+  it("should have 16 active statuses", () => {
+    expect(ACTIVE_STATUSES.length).toBe(16);
     expect(ACTIVE_STATUSES).toContain("executing");
     expect(ACTIVE_STATUSES).toContain("re_executing");
     expect(ACTIVE_STATUSES).toContain("qa_refining");
@@ -91,6 +94,9 @@ describe("Status Categories", () => {
     expect(ACTIVE_STATUSES).toContain("merging");
     expect(ACTIVE_STATUSES).toContain("waiting_on_pr");
     expect(ACTIVE_STATUSES).toContain("merge_incomplete");
+    expect(ACTIVE_STATUSES).toContain("updating_plan_branch");
+    expect(ACTIVE_STATUSES).toContain("updating_task_branch");
+    expect(ACTIVE_STATUSES).toContain("branch_update_blocked");
   });
 
   it("should have 5 terminal statuses", () => {
@@ -123,7 +129,7 @@ describe("Status Categories", () => {
     }
   });
 
-  it("should cover all 23 statuses between categories plus qa_passed and qa_failed", () => {
+  it("should categorize all statuses except paused and merge_conflict exactly once", () => {
     const allCategorized = [
       ...IDLE_STATUSES,
       ...ACTIVE_STATUSES,
@@ -131,7 +137,8 @@ describe("Status Categories", () => {
       "qa_passed",
       "qa_failed",
     ];
-    expect(allCategorized.length).toBe(23);
+    expect(allCategorized.length).toBe(26);
+    expect(new Set(allCategorized).size).toBe(26);
   });
 });
 
@@ -208,6 +215,8 @@ describe("categorizeStatus", () => {
     expect(categorizeStatus("paused")).toBe("active");
     expect(categorizeStatus("qa_passed")).toBe("active");
     expect(categorizeStatus("merge_conflict")).toBe("active");
+    expect(categorizeStatus("updating_plan_branch")).toBe("active");
+    expect(categorizeStatus("branch_update_blocked")).toBe("active");
   });
 });
 

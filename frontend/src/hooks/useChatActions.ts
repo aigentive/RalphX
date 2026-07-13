@@ -157,7 +157,11 @@ export function useChatActions({
         // Agent side-panels use context-specific conversations. Review and merge must
         // bypass the generic task-detail mutation so steering messages reach the
         // active reviewer/merger process instead of a plain task chat.
-        if (contextType === "review" || contextType === "merge") {
+        if (
+          contextType === "review" ||
+          contextType === "merge" ||
+          contextType === "branch_update"
+        ) {
           const agentContextId = selectedTaskId ?? contextId;
           setSending(storeContextKey, true);
           try {

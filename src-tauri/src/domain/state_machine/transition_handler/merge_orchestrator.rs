@@ -66,17 +66,17 @@ impl<'a> super::TransitionHandler<'a> {
         tracing::info!(
             task_id = task_id.as_str(),
             context,
-            "PR branch publication conflict routed to merger"
+            "PR branch publication conflict routed to branch updater"
         );
         if let Some(transition_service) = &self.machine.context.services.transition_service {
             transition_service
-                .execute_entry_actions(task_id, task, InternalStatus::Merging)
+                .execute_entry_actions(task_id, task, task.internal_status)
                 .await;
         } else {
             tracing::warn!(
                 task_id = task_id.as_str(),
                 context,
-                "PR branch publication conflict routed but transition_service is unavailable to start merger"
+                "PR branch publication conflict routed but transition_service is unavailable to start branch updater"
             );
         }
         true

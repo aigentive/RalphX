@@ -211,6 +211,7 @@ impl AgenticClientSpawner {
             "qa-tester" => AgentRole::QaTester,
             "reviewer" | "ralphx-reviewer" | "ralphx-execution-reviewer" => AgentRole::Reviewer,
             "merger" | "ralphx-merger" | "ralphx-execution-merger" => AgentRole::Reviewer,
+            "branch-updater" | "ralphx-execution-branch-updater" => AgentRole::Reviewer,
             other => AgentRole::Custom(other.to_string()),
         }
     }
@@ -383,6 +384,7 @@ impl AgenticClientSpawner {
             }
             "reviewer" | "ralphx-execution-reviewer" => Some("review"),
             "merger" | "ralphx-execution-merger" => Some("merge"),
+            "branch-updater" | "ralphx-execution-branch-updater" => Some("branch_update"),
             "qa-prep" => Some("qa_prep"),
             "qa-refiner" => Some("qa_refine"),
             "qa-tester" => Some("qa_test"),
@@ -400,6 +402,9 @@ impl AgenticClientSpawner {
             "qa-refiner" | "qa-tester" => Some(ChatContextType::TaskExecution),
             "reviewer" | "ralphx-execution-reviewer" => Some(ChatContextType::Review),
             "merger" | "ralphx-execution-merger" => Some(ChatContextType::Merge),
+            "branch-updater" | "ralphx-execution-branch-updater" => {
+                Some(ChatContextType::BranchUpdate)
+            }
             _ => None,
         }
     }

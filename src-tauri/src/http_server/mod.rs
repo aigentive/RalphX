@@ -378,6 +378,22 @@ pub async fn start_http_server(
         // Git merge endpoints (merger agent)
         .route("/api/git/tasks/:id/complete-merge", post(complete_merge))
         .route(
+            "/api/branch-updates/tasks/:id/context",
+            get(get_branch_update_context),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/complete",
+            post(complete_branch_update),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/report-conflict",
+            post(report_branch_update_conflict),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/report-incomplete",
+            post(report_branch_update_incomplete),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/complete-repair",
             post(complete_agent_workspace_repair),
         )

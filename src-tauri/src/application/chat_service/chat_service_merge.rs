@@ -230,6 +230,14 @@ fn build_pr_sync_services_for_auto_complete(
 ) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(task_repo)),
+        branch_update_repo: app_state.map(|state| Arc::clone(&state.branch_update_repo)),
+        branch_update_workflow: app_state.map(|state| {
+            Arc::new(
+                crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+                    Arc::new(state.build_chat_service()),
+                ),
+            ) as Arc<dyn crate::domain::state_machine::services::BranchUpdateWorkflow>
+        }),
         plan_branch_repo: plan_branch_repo.clone(),
         pr_creation_guard: app_state
             .map(|state| Arc::clone(&state.pr_poller_registry.pr_creation_guard)),
@@ -1136,10 +1144,10 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         {
             tracing::info!(
                 task_id = ctx.task_id_str,
-                "attempt_merge_auto_complete: PR branch publication conflict routed to merger"
+                "attempt_merge_auto_complete: PR branch publication conflict routed to branch updater"
             );
             let ts = ctx.build_transition_service();
-            ts.execute_entry_actions(&ctx.task_id, task, InternalStatus::Merging)
+            ts.execute_entry_actions(&ctx.task_id, task, task.internal_status)
                 .await;
             return;
         }

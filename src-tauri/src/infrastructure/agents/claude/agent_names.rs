@@ -41,6 +41,7 @@ pub const SHORT_ORCHESTRATOR: &str = "ralphx-execution-orchestrator";
 pub const SHORT_DEEP_RESEARCHER: &str = "ralphx-research-deep-researcher";
 pub const SHORT_PROJECT_ANALYZER: &str = "ralphx-project-analyzer";
 pub const SHORT_MERGER: &str = "ralphx-execution-merger";
+pub const SHORT_BRANCH_UPDATER: &str = "ralphx-execution-branch-updater";
 pub const SHORT_MEMORY_MAINTAINER: &str = "ralphx-memory-maintainer";
 pub const SHORT_MEMORY_CAPTURE: &str = "ralphx-memory-capture";
 
@@ -131,6 +132,7 @@ pub const AGENT_REVIEWER: &str = "ralphx:ralphx-execution-reviewer";
 
 /// Merger agent (ChatContextType::Merge)
 pub const AGENT_MERGER: &str = "ralphx:ralphx-execution-merger";
+pub const AGENT_BRANCH_UPDATER: &str = "ralphx:ralphx-execution-branch-updater";
 
 /// Review-chat agent (ChatContextType::Review when status = "review_passed")
 pub const AGENT_REVIEW_CHAT: &str = "ralphx:ralphx-review-chat";

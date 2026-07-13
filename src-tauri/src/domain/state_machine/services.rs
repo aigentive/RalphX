@@ -3,7 +3,46 @@
 // during state transitions. Actual implementations are provided in Phase 4+.
 
 use async_trait::async_trait;
-use ralphx_domain::entities::{EventType, InternalStatus, ProjectId, Task};
+use ralphx_domain::entities::{BranchUpdateOperation, EventType, InternalStatus, ProjectId, Task};
+use ralphx_domain::repositories::{BranchUpdateRepository, TaskRepository};
+use std::path::Path;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchUpdateWorkflowOutcome {
+    Completed { destination: InternalStatus },
+    ContinuationPending,
+    NeedsAgent,
+    Blocked,
+}
+
+#[async_trait]
+pub trait BranchUpdateWorkflow: Send + Sync {
+    async fn execute_programmatic(
+        &self,
+        repository: Arc<dyn BranchUpdateRepository>,
+        task_repository: Arc<dyn TaskRepository>,
+        repo_path: &Path,
+        operation: &BranchUpdateOperation,
+        update_status: InternalStatus,
+        fencing_epoch: u64,
+    ) -> crate::error::AppResult<BranchUpdateWorkflowOutcome>;
+
+    async fn publish_post_merge(
+        &self,
+        repository: Arc<dyn BranchUpdateRepository>,
+        repo_path: &Path,
+        operation: &BranchUpdateOperation,
+        update_status: InternalStatus,
+    ) -> crate::error::AppResult<InternalStatus>;
+
+    async fn start_resolver(
+        &self,
+        task_id: &str,
+        prompt: &str,
+        workspace: &Path,
+    ) -> crate::error::AppResult<()>;
+}
 
 /// Trait for spawning and managing AI agents.
 ///

@@ -85,14 +85,14 @@ fn should_upgrade_legacy_codex_lane(
         | AgentLane::ExecutionWorker
         | AgentLane::ExecutionReviewer
         | AgentLane::ExecutionReexecutor
-        | AgentLane::ExecutionMerger => &[
+        | AgentLane::ExecutionMerger
+        | AgentLane::ExecutionBranchUpdater => &[
             (Some("on-request"), Some("workspace-write")),
             (Some("never"), Some("workspace-write")),
         ],
-        AgentLane::IdeationSubagent | AgentLane::IdeationVerifierSubagent => &[
-            (None, None),
-            (Some("never"), Some("workspace-write")),
-        ],
+        AgentLane::IdeationSubagent | AgentLane::IdeationVerifierSubagent => {
+            &[(None, None), (Some("never"), Some("workspace-write"))]
+        }
     };
 
     legacy_pairs.iter().any(|(approval, sandbox)| {

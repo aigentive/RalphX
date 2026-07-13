@@ -166,6 +166,11 @@ const CROSS_HARNESS_IDEATION_DELEGATE_AGENTS: &[(&str, &str, &str)] = &[
 ];
 
 const CROSS_HARNESS_EXECUTION_AGENTS: &[(&str, &str, &str)] = &[
+    (
+        "ralphx-execution-branch-updater",
+        "branch-updater",
+        "branch-updater",
+    ),
     ("ralphx-execution-reviewer", "reviewer", "reviewer"),
     ("ralphx-execution-merger", "merger", "merger"),
 ];

@@ -151,9 +151,14 @@ impl TaskRepository for SqliteTaskRepository {
         let task = task.clone();
         self.db
             .run(move |conn| {
-                conn.execute(
+                let rows_affected = conn.execute(
                     "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, task_branch_base_ref = ?17, task_branch_base_sha = ?18, worktree_path = ?19, merge_commit_sha = ?20, metadata = ?21, merge_pipeline_active = ?22
-                     WHERE id = ?1",
+                     WHERE id = ?1 AND (
+                        internal_status = ?7 OR NOT EXISTS (
+                            SELECT 1 FROM branch_update_operations
+                            WHERE task_id = ?1 AND settled_at IS NULL
+                        )
+                     )",
                     rusqlite::params![
                         task.id.as_str(),
                         task.project_id.as_str(),
@@ -179,6 +184,12 @@ impl TaskRepository for SqliteTaskRepository {
                         task.merge_pipeline_active,
                     ],
                 )?;
+                if rows_affected == 0 {
+                    return Err(AppError::Validation(format!(
+                        "task {} status is owned by an active branch update",
+                        task.id.as_str()
+                    )));
+                }
                 Ok(())
             })
             .await
@@ -194,7 +205,12 @@ impl TaskRepository for SqliteTaskRepository {
             .run(move |conn| {
                 let rows_affected = conn.execute(
                     "UPDATE tasks SET project_id = ?2, category = ?3, title = ?4, description = ?5, priority = ?6, internal_status = ?7, source_proposal_id = ?8, plan_artifact_id = ?9, ideation_session_id = ?10, execution_plan_id = ?11, updated_at = ?12, started_at = ?13, completed_at = ?14, blocked_reason = ?15, task_branch = ?16, task_branch_base_ref = ?17, task_branch_base_sha = ?18, worktree_path = ?19, merge_commit_sha = ?20, metadata = ?21, merge_pipeline_active = ?22
-                     WHERE id = ?1 AND internal_status = ?23",
+                     WHERE id = ?1 AND internal_status = ?23 AND (
+                        internal_status = ?7 OR NOT EXISTS (
+                            SELECT 1 FROM branch_update_operations
+                            WHERE task_id = ?1 AND settled_at IS NULL
+                        )
+                     )",
                     rusqlite::params![
                         task.id.as_str(),
                         task.project_id.as_str(),

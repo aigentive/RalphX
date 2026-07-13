@@ -16,6 +16,8 @@ process_mapping:
     history: ralphx-review-history
   merge:
     default: ralphx-execution-merger
+  branch_update:
+    default: ralphx-execution-branch-updater
   qa_prep:
     default: ralphx-qa-prep
   qa_refine:

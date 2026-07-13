@@ -3,7 +3,7 @@ import type { InternalStatus } from "./status";
 
 export type TaskRuntimeHistoryContextType = Extract<
   ContextType,
-  "task_execution" | "review" | "merge"
+  "task_execution" | "review" | "merge" | "branch_update"
 >;
 
 export interface TaskHistoryState {

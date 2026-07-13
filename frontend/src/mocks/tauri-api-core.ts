@@ -484,6 +484,7 @@ const mockAgentLanes = [
   "execution_reviewer",
   "execution_reexecutor",
   "execution_merger",
+  "execution_branch_updater",
 ] as const;
 
 function mockAgentLaneSettings(projectId: string | null) {
@@ -2091,6 +2092,27 @@ const commandHandlers: Record<
       project_id: task.projectId,
       blocked_reason: task.blockedReason,
     }));
+  },
+  retry_branch_update: async (args) => {
+    const task = await mockTasksApi.retryBranchUpdate(args.taskId as string);
+    return {
+      id: task.id,
+      project_id: task.projectId,
+      category: task.category,
+      title: task.title,
+      description: task.description,
+      internal_status: task.internalStatus,
+      priority: task.priority,
+      needs_review_point: task.needsReviewPoint,
+      created_at: task.createdAt,
+      updated_at: task.updatedAt,
+      started_at: task.startedAt,
+      completed_at: task.completedAt,
+      archived_at: task.archivedAt,
+      blocked_reason: task.blockedReason,
+      task_branch: task.taskBranch ?? null,
+      metadata: task.metadata ?? null,
+    };
   },
 
   // Chat commands

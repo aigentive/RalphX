@@ -71,6 +71,7 @@ pub(crate) use merge_helpers::{
     classify_commit_hook_failure_text, clear_github_auto_merge_correction_marker_for_terminal_pr,
     clear_main_merge_deferred_metadata, clear_merge_deferred_metadata,
     commit_hook_failure_fingerprint, commit_hook_repeat_count, compute_merge_worktree_path,
+    compute_plan_update_worktree_path,
     create_draft_pr_if_needed, draft_plan_pr_description_for_write, extract_commit_hook_merge_error,
     get_trigger_origin, has_branch_missing_metadata, has_main_merge_deferred_metadata,
     has_merge_deferred_metadata, is_commit_hook_merge_error_text, is_main_merge_deferred_timed_out,
@@ -78,6 +79,7 @@ pub(crate) use merge_helpers::{
     is_pr_branch_publication_conflict_routed_error, is_repeated_commit_hook_failure,
     merge_metadata_into, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
     publish_plan_branch_pr_after_freshness_update, resolve_plan_branch_pr_base,
+    resolve_task_plan_branch_record,
     restore_task_worktree, set_conflict_metadata, set_source_conflict_resolved,
     sync_plan_branch_pr_after_regular_task_merge, sync_plan_branch_pr_if_needed,
     task_has_commit_hook_merge_failure, task_has_pr_branch_publication_conflict,
@@ -183,20 +185,45 @@ impl<'a> TransitionHandler<'a> {
                             return TransitionResult::Success(failed_state);
                         }
                     } else if matches!(e, crate::error::AppError::BranchFreshnessConflict) {
-                        tracing::warn!(
-                            task_id = %self.machine.context.task_id,
-                            state = ?new_state,
-                            "BranchFreshnessConflict detected, routing to Merging via BranchFreshnessConflict event"
-                        );
-                        let freshness_event = crate::domain::state_machine::events::TaskEvent::BranchFreshnessConflict;
-                        let freshness_response =
-                            self.machine.dispatch(&new_state, &freshness_event);
-                        if let Response::Transition(merging_state) = freshness_response {
-                            self.on_exit(&new_state, &merging_state).await;
-                            if let Err(e) = self.on_enter(&merging_state).await {
-                                tracing::error!(error = %e, "on_enter failed for Merging state after freshness conflict");
+                        let update_state = if let Some(task_repo) =
+                            self.machine.context.services.task_repo.as_ref()
+                        {
+                            match task_repo
+                                .get_by_id(&TaskId::from_string(
+                                    self.machine.context.task_id.clone(),
+                                ))
+                                .await
+                            {
+                                Ok(Some(task))
+                                    if task.internal_status
+                                        == crate::domain::entities::InternalStatus::UpdatingPlanBranch =>
+                                {
+                                    Some(State::UpdatingPlanBranch)
+                                }
+                                Ok(Some(task))
+                                    if task.internal_status
+                                        == crate::domain::entities::InternalStatus::UpdatingTaskBranch =>
+                                {
+                                    Some(State::UpdatingTaskBranch)
+                                }
+                                _ => None,
                             }
-                            return TransitionResult::Success(merging_state);
+                        } else {
+                            None
+                        };
+                        if let Some(update_state) = update_state {
+                            tracing::info!(
+                                task_id = %self.machine.context.task_id,
+                                state = ?update_state,
+                                "Freshness conflict activated a dedicated branch update"
+                            );
+                            if let Err(error) = self.on_enter(&update_state).await {
+                                tracing::error!(
+                                    error = %error,
+                                    "Branch updater failed to start after durable activation"
+                                );
+                            }
+                            return TransitionResult::Success(update_state);
                         }
                     }
                 }

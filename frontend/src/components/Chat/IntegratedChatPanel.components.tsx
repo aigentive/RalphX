@@ -290,6 +290,7 @@ interface PreviousRunBannerProps {
 export function PreviousRunBanner({ agentRunStatus, contextType }: PreviousRunBannerProps) {
   const contextLabel = contextType === "merge" ? "merge agent"
     : contextType === "review" ? "reviewer"
+    : contextType === "branch_update" ? "branch updater"
     : "worker";
 
   const statusLabel = agentRunStatus === "failed" ? "failed"

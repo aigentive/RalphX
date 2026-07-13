@@ -185,6 +185,21 @@ const STATUS_CONFIG: Record<
     bg: "var(--status-warning-muted)",
     text: "var(--status-warning)",
   },
+  updating_plan_branch: {
+    label: "Updating Plan Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  updating_task_branch: {
+    label: "Updating Task Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  branch_update_blocked: {
+    label: "Branch Update Blocked",
+    bg: "var(--status-warning-muted)",
+    text: "var(--status-warning)",
+  },
   merged: {
     label: "Merged",
     bg: "var(--status-success-muted)",
@@ -389,6 +404,8 @@ export function AgentsTaskDetailOverlay({
         ? "Review"
         : historyState?.contextType === "merge"
           ? "Merge"
+          : historyState?.contextType === "branch_update"
+            ? "Branch Update"
           : null;
   const historyStageLabel =
     historyContextLabel && historyState?.attemptIndex

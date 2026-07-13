@@ -471,3 +471,110 @@ async fn test_timeout_drops_future_cleanly() {
     assert!(result.is_ok(), "git --version should complete within 30s");
     assert!(result.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn authorized_mutation_persists_process_authority_until_git_exits() {
+    use crate::application::GitService;
+    use crate::domain::entities::{
+        BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
+        BranchUpdateOperation, BranchUpdateWorkspaceOwnership, GitMutationKind,
+        GitTargetLeaseOwner, InternalStatus,
+    };
+    use crate::domain::repositories::{
+        BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
+    };
+    use crate::infrastructure::sqlite::SqliteBranchUpdateRepository;
+    use crate::testing::SqliteTestDb;
+    use chrono::Utc;
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Arc;
+
+    let repository = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repository.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+    fs::write(repository.path().join("README.md"), "test").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "initial"]);
+
+    let db = SqliteTestDb::new("authorized-git-mutation");
+    let project = db.seed_project("project");
+    let task = db.seed_task(project.id, "task");
+    let repository_impl = Arc::new(SqliteBranchUpdateRepository::from_shared(db.shared_conn()));
+    let identity = GitService::canonical_target_identity(repository.path(), "target")
+        .await
+        .unwrap();
+    let operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::PlanBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "authorized-history",
+        "main",
+        "target",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        identity.clone(),
+        Utc::now(),
+    );
+    let owner = GitTargetLeaseOwner::branch_update(task.id.as_str(), operation.id.as_str());
+    let BranchUpdateActivationOutcome::Applied { fencing_epoch, .. } = repository_impl
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "test".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("activation should apply");
+    };
+
+    let output = run_authorized_mutation(
+        &["update-ref", "refs/heads/target", "HEAD"],
+        repository.path(),
+        AuthorizedGitMutation::from_current_lease(
+            repository_impl.clone(),
+            identity.clone(),
+            owner,
+            fencing_epoch,
+            "authorized-claim".into(),
+            GitMutationKind::Merge,
+        )
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(output.status.success());
+    assert!(
+        GitService::ref_exists(repository.path(), "refs/heads/target")
+            .await
+            .unwrap()
+    );
+    assert!(repository_impl
+        .list_in_flight_mutations()
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repository_impl
+        .get_target_lease(&identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .active_mutation()
+        .is_none());
+}

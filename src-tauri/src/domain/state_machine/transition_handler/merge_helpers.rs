@@ -22,15 +22,14 @@ use crate::domain::entities::{
     TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    ArtifactRepository, IdeationSessionRepository, PlanBranchRepository, TaskRepository,
+    ArtifactRepository, BranchUpdateRepository, IdeationSessionRepository, PlanBranchRepository,
+    TaskRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
 };
 use crate::domain::state_machine::context::TaskServices;
-use crate::domain::state_machine::transition_handler::merge_coordination::{
-    update_plan_from_main_isolated, PlanUpdateResult,
-};
+use crate::domain::state_machine::services::BranchUpdateWorkflow;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 
@@ -761,7 +760,7 @@ pub(crate) fn compute_rebase_worktree_path(project: &Project, task_id: &str) -> 
 /// Convention: `{worktree_parent}/{slug}/source-update-{task_id}`
 /// This is a short-lived worktree used only to bring the feature/task branch up-to-date
 /// with its target branch before the actual merge runs.
-pub(super) fn compute_source_update_worktree_path(project: &Project, task_id: &str) -> String {
+pub(crate) fn compute_source_update_worktree_path(project: &Project, task_id: &str) -> String {
     let worktree_parent = project
         .worktree_parent_directory
         .as_deref()
@@ -1591,14 +1590,10 @@ fn remote_tracking_ref_for_plan_branch(branch: &str) -> String {
     }
 }
 
-fn publication_repair_key(pb: &PlanBranch) -> String {
-    format!("pr-publish-{}", pb.id.as_str())
-}
-
 async fn repair_non_fast_forward_pr_branch_publication(
     project: &Project,
     pb: &PlanBranch,
-    github: &Arc<dyn GithubServiceTrait>,
+    _github: &Arc<dyn GithubServiceTrait>,
 ) -> AppResult<PrBranchPublicationOutcome> {
     let repo_path = Path::new(&project.working_directory);
     let remote_ref = remote_tracking_ref_for_plan_branch(&pb.branch_name);
@@ -1627,72 +1622,28 @@ async fn repair_non_fast_forward_pr_branch_publication(
             ))
         })?;
 
-    let remote_contains_local =
-        GitService::is_commit_on_branch(repo_path, &local_sha, &remote_ref).await?;
-    let local_contains_remote =
-        GitService::is_commit_on_branch(repo_path, &remote_sha, &pb.branch_name).await?;
-
-    if remote_contains_local {
-        tracing::info!(
-            branch = %pb.branch_name,
-            remote_ref = %remote_ref,
-            local_sha = %local_sha,
-            "PR branch publication repair: remote already contains local branch head"
-        );
+    if local_sha == remote_sha {
+        return Ok(PrBranchPublicationOutcome::Published);
     }
 
-    if !local_contains_remote {
-        tracing::info!(
-            branch = %pb.branch_name,
-            remote_ref = %remote_ref,
-            remote_sha = %remote_sha,
-            "PR branch publication repair: local plan branch is missing remote PR branch commits"
-        );
-        match update_plan_from_main_isolated(
-            repo_path,
-            &pb.branch_name,
-            &remote_ref,
-            project,
-            &publication_repair_key(pb),
-            None,
-        )
-        .await
-        {
-            PlanUpdateResult::AlreadyUpToDate | PlanUpdateResult::Updated => {}
-            PlanUpdateResult::NotPlanBranch => {
-                return Err(AppError::GitOperation(format!(
-                    "PR branch publication repair refused to update {} from itself",
-                    pb.branch_name
-                )));
-            }
-            PlanUpdateResult::Conflicts { conflict_files } => {
-                return Ok(PrBranchPublicationOutcome::Conflict(
-                    PrBranchPublicationConflict {
-                        branch_name: pb.branch_name.clone(),
-                        remote_ref,
-                        conflict_files,
-                        pr_number: pb.pr_number,
-                    },
-                ));
-            }
-            PlanUpdateResult::Error(message) => {
-                return Err(AppError::GitOperation(format!(
-                    "PR branch publication repair failed while incorporating {} into {}: {}",
-                    remote_ref, pb.branch_name, message
-                )));
-            }
-        }
-    }
-
-    push_publish_branch(github, repo_path, &pb.branch_name)
-        .await
-        .map_err(|error| {
-            AppError::GitOperation(format!(
-                "PR branch publication retry failed for {} after non-fast-forward repair: {}",
-                pb.branch_name, error
-            ))
-        })?;
-    Ok(PrBranchPublicationOutcome::Published)
+    // Observation only. The old helper merged and pushed here before durable
+    // branch-update authority existed. Return the exact source/target pair so
+    // the dedicated workflow owns every local mutation and the later push.
+    tracing::info!(
+        branch = %pb.branch_name,
+        remote_ref = %remote_ref,
+        local_sha = %local_sha,
+        remote_sha = %remote_sha,
+        "PR branch publication repair requires dedicated branch-update authority"
+    );
+    Ok(PrBranchPublicationOutcome::Conflict(
+        PrBranchPublicationConflict {
+            branch_name: pb.branch_name.clone(),
+            remote_ref,
+            conflict_files: Vec::new(),
+            pr_number: pb.pr_number,
+        },
+    ))
 }
 
 /// Publish and refresh an existing PR branch after a PR freshness update.
@@ -1815,6 +1766,8 @@ pub(crate) async fn draft_plan_pr_description_for_write(
 #[derive(Clone, Default)]
 pub(crate) struct PlanBranchPrSyncServices {
     pub task_repo: Option<Arc<dyn TaskRepository>>,
+    pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+    pub branch_update_workflow: Option<Arc<dyn BranchUpdateWorkflow>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub pr_creation_guard: Option<Arc<dashmap::DashMap<PlanBranchId, ()>>>,
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
@@ -1827,6 +1780,8 @@ impl PlanBranchPrSyncServices {
     pub(crate) fn from_task_services(services: &TaskServices) -> Self {
         Self {
             task_repo: services.task_repo.clone(),
+            branch_update_repo: services.branch_update_repo.clone(),
+            branch_update_workflow: services.branch_update_workflow.clone(),
             plan_branch_repo: services.plan_branch_repo.clone(),
             pr_creation_guard: services.pr_creation_guard.clone(),
             github_service: services.github_service.clone(),

@@ -28,6 +28,9 @@ pub mod sqlite_atlassian_integration_settings_repo;
 pub mod sqlite_automation_repo;
 #[cfg(test)]
 mod sqlite_automation_repo_tests;
+pub mod sqlite_branch_update_repo;
+#[cfg(test)]
+mod sqlite_branch_update_repo_tests;
 pub mod sqlite_chat_attachment_repo;
 #[cfg(test)]
 mod sqlite_chat_attachment_repo_tests;
@@ -144,6 +147,7 @@ pub use sqlite_artifact_flow_repo::SqliteArtifactFlowRepository;
 pub use sqlite_artifact_repo::SqliteArtifactRepository;
 pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSettingsRepository;
 pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRunRepository};
+pub use sqlite_branch_update_repo::SqliteBranchUpdateRepository;
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
 pub use sqlite_persona_repo::SqlitePersonaRepository;

@@ -418,6 +418,9 @@ mod v20260712153932_agent_workspace_pr_review_auto_approve;
 mod v20260712153932_agent_workspace_pr_review_auto_approve_tests;
 mod v20260712155425_ui_feature_flag_overrides;
 mod v20260712162657_persona_builder_agent_mode;
+mod v20260712190416_branch_update_authority;
+#[cfg(test)]
+mod v20260712190416_branch_update_authority_tests;
 mod v20260713063349_persona_run_attribution;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
@@ -1493,6 +1496,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260712162657,
         name: "persona_builder_agent_mode",
         migrate: v20260712162657_persona_builder_agent_mode::migrate,
+    },
+    Migration {
+        version: 20260712190416,
+        name: "branch_update_authority",
+        migrate: v20260712190416_branch_update_authority::migrate,
     },
     Migration {
         version: 20260713063349,

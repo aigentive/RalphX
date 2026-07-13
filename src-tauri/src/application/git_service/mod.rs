@@ -12,6 +12,7 @@ mod branch;
 pub mod checkout_free;
 mod commit;
 pub(crate) mod git_cmd;
+mod identity;
 mod merge;
 mod query;
 mod rebase;
