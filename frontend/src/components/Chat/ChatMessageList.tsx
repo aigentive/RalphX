@@ -921,6 +921,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const conversationAgentRunningRef = useRef(isAgentRunning);
     const scrollerElRef = useRef<HTMLElement | null>(null);
     const scrollerResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const lastRenderedRowResizeObserverRef = useRef<ResizeObserver | null>(null);
+    const lastRenderedRowHeightRef = useRef<number | null>(null);
     const previousTotalListHeightRef = useRef<number>(-1);
     const previousFirstItemIndexRef = useRef({ conversationId, index: firstItemIndex });
     const timestampJumpKeyRef = useRef<string | null>(null);
@@ -992,6 +994,38 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         ...scrollControllerDeps,
       }),
     );
+
+    const disconnectLastRenderedRowResizeObserver = useCallback(() => {
+      lastRenderedRowResizeObserverRef.current?.disconnect();
+      lastRenderedRowResizeObserverRef.current = null;
+      lastRenderedRowHeightRef.current = null;
+    }, []);
+
+    const handleLastRenderedRowRef = useCallback((element: HTMLDivElement | null) => {
+      disconnectLastRenderedRowResizeObserver();
+      if (!element || typeof ResizeObserver === "undefined") {
+        return;
+      }
+
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries.find(({ target }) => target === element);
+        if (!entry) {
+          return;
+        }
+
+        const previousHeight = lastRenderedRowHeightRef.current;
+        const nextHeight = entry.contentRect.height;
+        lastRenderedRowHeightRef.current = nextHeight;
+        if (
+          previousHeight !== null
+          && nextHeight > previousHeight + VISUAL_BOTTOM_EPSILON_PX
+        ) {
+          scrollController.notifyContentGrowth();
+        }
+      });
+      observer.observe(element);
+      lastRenderedRowResizeObserverRef.current = observer;
+    }, [disconnectLastRenderedRowResizeObserver, scrollController]);
 
     const toggleToolCallGroup = useCallback((groupKey: string, toggleElement?: HTMLElement | null) => {
       scrollController?.captureAnchor(toggleElement ?? undefined);
@@ -1481,7 +1515,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     useEffect(() => () => {
       scrollController.detach();
       disconnectScrollerResizeObserver();
-    }, [disconnectScrollerResizeObserver, scrollController]);
+      disconnectLastRenderedRowResizeObserver();
+    }, [
+      disconnectLastRenderedRowResizeObserver,
+      disconnectScrollerResizeObserver,
+      scrollController,
+    ]);
 
     useEffect(() => {
       previousTotalListHeightRef.current = -1;
@@ -1806,6 +1845,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             providerSessionId={providerSessionId}
             expandedToolGroupKeys={expandedToolGroupKeys}
             contentWidthClassName={contentWidthClassName}
+            rowRef={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
             onToggleToolCallGroup={toggleToolCallGroup}
             renderStreamingToolCallBlock={renderStreamingToolCallBlock}
           />
@@ -1850,6 +1890,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             agentRun={agentRun}
             personaRuns={personaRuns}
             agentPersonasEnabled={agentPersonasEnabled}
+            rowRef={
+              isLastVisibleTimelineItem && !isExpandedToolCallGroup
+                ? handleLastRenderedRowRef
+                : undefined
+            }
           />
         )
         : null;
@@ -1880,6 +1925,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
       const messageRow = (
         <div
+          ref={isLastVisibleTimelineItem ? handleLastRenderedRowRef : undefined}
           className="px-3 w-full"
           data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
           style={contentContainerStyle}
@@ -1938,6 +1984,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       firstItemIndex,
       footerContent,
       getTeammateInfo,
+      handleLastRenderedRowRef,
       lastVisibleTimelineIndex,
       providerHarness,
       providerSessionId,
