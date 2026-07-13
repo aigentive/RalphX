@@ -2691,14 +2691,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Redact secrets from error string before propagating to non-tracing sinks
     let redacted_error = redact(error);
 
-    // AgentExit where the work is actually complete: the agent called
+    // A late agent-exit or local-tool diagnostic where the work is actually complete: the agent called
     // execution_complete successfully, green validation was cached for the
     // current attempt/HEAD, and the provider process exited before the normal
     // success finalizer ran. Treat this as a successful execution completion
     // before the generic failure path can persist stale stderr or emit
     // agent:error.
     if context_type == ChatContextType::TaskExecution
-        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
+        && matches!(
+            stream_error,
+            Some(StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. })
+        )
     {
         if let Some(ref exec_state) = execution_state {
             let task_id = TaskId::from_string(context_id.to_string());
@@ -3218,15 +3221,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         }
                     }
 
-                    // AgentExit where the work is actually complete → agent called
+                    // Late agent-exit/local-tool diagnostics where the work is actually complete → agent called
                     // execution_complete successfully but exited with signal (code=None).
                     // Override to PendingReview only when a current-attempt, HEAD-matched green
                     // validation cache proves completion. Completed steps alone are not enough:
                     // a failed agent can mark steps done before leaving uncommitted or invalid
                     // working-tree changes behind.
                     let target_status = if target_status == InternalStatus::Failed
-                        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
-                    {
+                        && matches!(
+                            stream_error,
+                            Some(
+                                StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. }
+                            )
+                        ) {
                         let validation_complete = if let Some(episode_entered_at) =
                             episode_entered_at
                         {
@@ -3242,7 +3249,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 task_id = task_id.as_str(),
                                 all_steps_done,
                                 validation_complete,
-                                "AgentExit with current green validation cache — overriding Failed → PendingReview"
+                                "Late execution diagnostic with current green validation cache — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {
