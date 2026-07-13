@@ -5,6 +5,7 @@ import { requestAutomationRunOpen } from "@/components/automations/automationRun
 import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
+  navigateToAgentPlan,
   navigateToIdeationSession,
 } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
@@ -71,7 +72,11 @@ export async function navigateNotification(
   }
   if (target.kind === "agent_conversation") {
     if (target.projectId && target.conversationId) {
-      navigateToAgentConversation(target.projectId, target.conversationId);
+      if (item.category === "plan_approval" || item.category === "team_plan_approval") {
+        navigateToAgentPlan(target.projectId, target.conversationId);
+      } else {
+        navigateToAgentConversation(target.projectId, target.conversationId);
+      }
       options.onClose?.();
       return true;
     } else if (target.setupConversationId) {
