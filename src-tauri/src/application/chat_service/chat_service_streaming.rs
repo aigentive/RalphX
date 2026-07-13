@@ -1847,27 +1847,6 @@ pub async fn process_stream_background<R: Runtime>(
                         mut tool_call,
                         parent_tool_use_id,
                     } => {
-                        if is_completion_tool_name(&tool_call.name) {
-                            if completion_tool_result_accepted(tool_call.result.as_ref()) {
-                                completion_signal_tracker.mark_completion_called();
-                                tracing::info!(
-                                    conversation_id = %conversation_id_str,
-                                    context_id,
-                                    tool_name = %tool_call.name,
-                                    grace_secs = completion_grace_duration.as_secs(),
-                                    "Completion tool accepted, entering shutdown grace period"
-                                );
-                            } else {
-                                tracing::warn!(
-                                    conversation_id = %conversation_id_str,
-                                    context_id,
-                                    tool_name = %tool_call.name,
-                                    result = ?tool_call.result,
-                                    "Completion tool returned an error; not entering shutdown grace period"
-                                );
-                            }
-                        }
-
                         // Capture old file content for Edit/Write tool calls
                         let name_lower = tool_call.name.to_lowercase();
                         if name_lower == "edit" || name_lower == "write" {
@@ -2026,7 +2005,29 @@ pub async fn process_stream_background<R: Runtime>(
                             "TurnComplete: finalizing assistant message for interactive turn"
                         );
 
-                        if processor.result_is_error {
+                        let accepted_completion_diagnostic = if processor.result_is_error
+                            && completion_signal_tracker.was_called()
+                        {
+                            let error_msg = if !processor.result_errors.is_empty() {
+                                processor.result_errors.join("; ")
+                            } else if !processor.response_text.trim().is_empty() {
+                                processor.response_text.trim().to_string()
+                            } else {
+                                "Agent failed during execution".to_string()
+                            };
+                            super::chat_service_errors::classify_provider_error(&error_msg)
+                                .is_none()
+                        } else {
+                            false
+                        };
+
+                        if accepted_completion_diagnostic {
+                            tracing::warn!(
+                                conversation_id = %conversation_id_str,
+                                ?session_id,
+                                "TurnComplete carried a non-provider error after accepted completion; treating it as post-completion diagnostic noise"
+                            );
+                        } else if processor.result_is_error {
                             tracing::warn!(
                                 conversation_id = %conversation_id_str,
                                 ?session_id,
@@ -2675,8 +2676,36 @@ pub async fn process_stream_background<R: Runtime>(
                     StreamEvent::ToolResultReceived {
                         tool_use_id,
                         result,
+                        is_error,
                         parent_tool_use_id,
                     } => {
+                        if let Some(tool_call) = processor
+                            .tool_calls
+                            .iter()
+                            .find(|tool_call| tool_call.id.as_deref() == Some(&tool_use_id))
+                        {
+                            if is_completion_tool_name(&tool_call.name) {
+                                if !is_error && completion_tool_result_accepted(Some(&result)) {
+                                    completion_signal_tracker.mark_completion_called();
+                                    tracing::info!(
+                                        conversation_id = %conversation_id_str,
+                                        context_id,
+                                        tool_name = %tool_call.name,
+                                        grace_secs = completion_grace_duration.as_secs(),
+                                        "Completion tool result accepted, entering shutdown grace period"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        conversation_id = %conversation_id_str,
+                                        context_id,
+                                        tool_name = %tool_call.name,
+                                        result = ?result,
+                                        "Completion tool result rejected; not entering shutdown grace period"
+                                    );
+                                }
+                            }
+                        }
+
                         let result_preview = build_live_tool_result_preview_for_tool_id(
                             &processor.tool_calls,
                             Some(&conversation_id_str),
@@ -3211,10 +3240,19 @@ pub async fn process_stream_background<R: Runtime>(
         {
             return Err(provider_err);
         }
-        return Err(StreamError::AgentExit {
-            exit_code: status.code(),
-            stderr: error_msg,
-        });
+        if completion_signal_tracker.was_called() {
+            tracing::warn!(
+                conversation_id = %conversation_id_str,
+                context_id,
+                error = %error_msg,
+                "Agent result reported a non-provider error after accepted completion; treating it as post-completion diagnostic noise"
+            );
+        } else {
+            return Err(StreamError::AgentExit {
+                exit_code: status.code(),
+                stderr: error_msg,
+            });
+        }
     }
 
     if !status.success()
@@ -3600,7 +3638,9 @@ async fn process_codex_stream_background<R: Runtime>(
                     }
                 }
 
-                if is_completion_tool_name(&tool_call.name) {
+                if snapshot.phase == CodexToolCallPhase::Completed
+                    && is_completion_tool_name(&tool_call.name)
+                {
                     if extract_codex_error(&event).is_none()
                         && completion_tool_result_accepted(tool_call.result.as_ref())
                     {
