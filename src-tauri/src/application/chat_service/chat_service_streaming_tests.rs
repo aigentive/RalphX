@@ -1258,6 +1258,7 @@ async fn claude_stream_success_result_completes_interactive_turn() {
 async fn claude_stream_accepted_completion_tool_enters_grace_path() {
     let outcome = run_claude_stream_lines(&[
         r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":true},"is_error":false}]}}"#,
         r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
     ])
     .await
@@ -1277,6 +1278,19 @@ async fn claude_stream_accepted_completion_suppresses_late_agent_exit() {
     .expect("accepted completion must outrank a later agent-exit diagnostic");
 
     assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
+async fn claude_stream_rejected_completion_remains_failed() {
+    let result = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":false},"is_error":true}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["validation_failed"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect_err("a rejected completion result must remain a failed run");
+
+    assert!(matches!(result, StreamError::AgentExit { .. }));
 }
 
 #[tokio::test]
