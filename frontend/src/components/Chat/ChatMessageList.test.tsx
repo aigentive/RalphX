@@ -24,10 +24,26 @@ vi.mock("@/hooks/useMessageAttachments", () => ({
 }));
 
 vi.mock("./MessageItem", () => ({
-  MessageItem: ({ content, children }: { content: string; children?: React.ReactNode }) => (
-    <article data-chat-message-item="true">{content}{children}</article>
+  MessageItem: ({
+    content,
+    children,
+    createdAt,
+    hideMeta,
+  }: {
+    content: string;
+    children?: React.ReactNode;
+    createdAt: string;
+    hideMeta?: boolean;
+  }) => (
+    <article data-chat-message-item="true">
+      {content}
+      {children}
+      {!hideMeta && <footer data-testid="message-meta">{createdAt}</footer>}
+    </article>
   ),
-  MessageMeta: () => null,
+  MessageMeta: ({ createdAt }: { createdAt: string }) => (
+    <footer data-testid="message-meta">{createdAt}</footer>
+  ),
 }));
 
 vi.mock("./TextBubble", () => ({
@@ -410,6 +426,81 @@ describe("ChatMessageList controller integration", () => {
     flushAnimationFrames();
 
     expect(scrollWrites).not.toHaveBeenCalled();
+  });
+
+  it("keeps the timestamp and message actions reachable when the last row grows after returning to bottom", () => {
+    const resizeObservers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Set<Element>;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly record: (typeof resizeObservers)[number];
+
+        constructor(callback: ResizeObserverCallback) {
+          this.record = { callback, targets: new Set() };
+          resizeObservers.push(this.record);
+        }
+
+        disconnect(): void {
+          this.record.targets.clear();
+        }
+
+        observe(target: Element): void {
+          this.record.targets.add(target);
+        }
+
+        unobserve(target: Element): void {
+          this.record.targets.delete(target);
+        }
+      },
+    );
+    renderList();
+    const scroller = primeAtBottom();
+    const lastMeta = screen.getAllByTestId("message-meta").at(-1);
+    const lastRow = lastMeta?.closest('[data-chat-last-rendered-row="true"]');
+    expect(lastRow).toBeInstanceOf(HTMLElement);
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    fireEvent.click(screen.getByTestId("chat-scroll-to-bottom-button"));
+    flushAnimationFrames();
+    expect(scroller.scrollTop).toBe(500);
+
+    const lastRowObserver = resizeObservers.find(({ targets }) =>
+      lastRow ? targets.has(lastRow) : false,
+    );
+    expect(lastRowObserver).toBeDefined();
+    const notifyLastRowHeight = (height: number) => {
+      lastRowObserver?.callback(
+        [{ contentRect: { height }, target: lastRow } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    };
+    act(() => notifyLastRowHeight(100));
+    scrollWrites.mockClear();
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_024, scrollTop: 500 });
+    act(() => notifyLastRowHeight(124));
+    flushAnimationFrames();
+
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 524 }));
+    expect(scroller.scrollTop).toBe(524);
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_024, scrollTop: 200 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_048, scrollTop: 200 });
+    act(() => notifyLastRowHeight(148));
+    flushAnimationFrames();
+
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(200);
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
   });
 
   it("leaves controller follow state untouched for a prepend epoch", () => {
