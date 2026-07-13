@@ -31,6 +31,15 @@ export function navigateToAgentConversation(
   navigateToAgentsProject(projectId);
 }
 
+/** Opens an Agent conversation with its Plan artifact selected. */
+export function navigateToAgentPlanConversation(
+  projectId: string,
+  conversationId: string,
+): void {
+  useAgentSessionStore.getState().setArtifactTab(conversationId, "plan");
+  navigateToAgentConversation(projectId, conversationId);
+}
+
 /** Opens an Agent conversation's Tasks artifact at a specific task and view mode. */
 export function navigateToAgentTask(
   projectId: string,

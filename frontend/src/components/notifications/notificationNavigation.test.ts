@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { tasksApi } from "@/api/tasks";
-import { navigateToAgentConversation, navigateToIdeationSession } from "@/lib/navigation";
+import {
+  navigateToAgentConversation,
+  navigateToAgentPlanConversation,
+  navigateToIdeationSession,
+} from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
@@ -18,6 +22,7 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
 vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
 vi.mock("@/lib/navigation", () => ({
   navigateToAgentConversation: vi.fn(),
+  navigateToAgentPlanConversation: vi.fn(),
   navigateToIdeationSession: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
@@ -185,6 +190,34 @@ describe("navigateNotification", () => {
     expect(navigateToIdeationSession).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it.each(["plan_approval", "team_plan_approval"] as const)(
+    "routes a %s Agent conversation target to its Plan artifact and closes the drawer",
+    (category) => {
+      const onClose = vi.fn();
+      navigateNotification(
+        {
+          id: `${category}-conversation-1`,
+          category,
+          target: {
+            kind: "agent_conversation",
+            projectId: "project-2",
+            conversationId: "conversation-1",
+          },
+        },
+        {} as QueryClient,
+        { onClose },
+      );
+
+      expect(navigateToAgentPlanConversation).toHaveBeenCalledWith(
+        "project-2",
+        "conversation-1",
+      );
+      expect(navigateToAgentConversation).not.toHaveBeenCalled();
+      expect(navigateToIdeationSession).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledOnce();
+    },
+  );
 
   it("keeps the legacy setup-conversation fallback and closes malformed targets", () => {
     const onClose = vi.fn();

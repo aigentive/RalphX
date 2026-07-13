@@ -5,6 +5,7 @@ import { requestAutomationRunOpen } from "@/components/automations/automationRun
 import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
+  navigateToAgentPlanConversation,
   navigateToIdeationSession,
 } from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
@@ -16,6 +17,11 @@ const AUTOMATION_NOTIFICATION_TAB_HINTS = {
   automation_run_failed: "automation",
   automation_run_completed: "pr",
 } as const;
+
+const PLAN_AGENT_CONVERSATION_CATEGORIES = new Set<NotificationCategory>([
+  "plan_approval",
+  "team_plan_approval",
+]);
 
 function permissionRequestId(id: string): string {
   return id.replace(/^(?:permission|perm):/, "");
@@ -71,7 +77,11 @@ export async function navigateNotification(
   }
   if (target.kind === "agent_conversation") {
     if (target.projectId && target.conversationId) {
-      navigateToAgentConversation(target.projectId, target.conversationId);
+      if (PLAN_AGENT_CONVERSATION_CATEGORIES.has(item.category)) {
+        navigateToAgentPlanConversation(target.projectId, target.conversationId);
+      } else {
+        navigateToAgentConversation(target.projectId, target.conversationId);
+      }
       options.onClose?.();
       return true;
     } else if (target.setupConversationId) {
