@@ -353,6 +353,26 @@ describe("AgentsView", () => {
     );
   });
 
+  it("does not request freshness for a published Plan-mode workspace", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        publicationPrNumber: 42,
+        publicationPrStatus: "open",
+      })
+    );
+
+    renderAgentsView();
+    const row = selectSidebarConversationRow();
+    fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalled()
+    );
+    expect(getAgentConversationWorkspaceFreshnessMock).not.toHaveBeenCalled();
+  });
+
   it("does not hydrate attached ideation session data for edit conversations", async () => {
     const agentConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(agentConversation);

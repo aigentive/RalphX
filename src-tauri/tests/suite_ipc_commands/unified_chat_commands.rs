@@ -2487,6 +2487,53 @@ mod ipc_contract {
     }
 
     #[tokio::test]
+    async fn ipc_contract_workspace_freshness_rejects_plan_mode_without_repair_mutation() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("91919191-9191-9191-9191-919191919191");
+        let mut workspace = sqlite_workspace(conversation_id.clone());
+        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
+            "planning-session-1".to_string(),
+        ));
+        workspace.publication_pr_number = Some(42);
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.worktree_path = "/missing/plan-mode-workspace".to_string();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let error = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect_err("Plan-mode freshness should be rejected");
+
+        assert!(error.contains("Only edit workspaces and ideation workspaces"));
+        let persisted = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should remain persisted");
+        assert_eq!(
+            persisted.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+        assert_eq!(persisted.publication_pr_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
     async fn ipc_contract_workspace_response_recovers_stale_needs_agent_publish_lock() {
         let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
             "workspace-stale-repair-response",
