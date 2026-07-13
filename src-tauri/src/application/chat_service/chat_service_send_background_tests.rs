@@ -1139,7 +1139,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
             crate::domain::agents::AgentHarnessKind::Claude,
             "session-spawn-fails",
             "session-spawn-fails",
-            conversation_id,
+            conversation_id.clone(),
             "session-cli",
             false,
             &message_queue,
@@ -1195,7 +1195,7 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn queue_processing_success_registers_pid_and_completes_continuation_run() {
+async fn queue_persona_resume_attributes_the_continuation_run() {
     use crate::domain::agents::AgentHarnessKind;
 
     let state = AppState::new_test();
@@ -1209,11 +1209,47 @@ async fn queue_processing_success_registers_pid_and_completes_continuation_run()
     let activity_event_repo = Arc::clone(&state.activity_event_repo);
     let task_repo = Arc::clone(&state.task_repo);
     let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+    let persona = Persona {
+        id: PersonaId::from("queue-persona"),
+        slug: "queue-persona".to_string(),
+        name: "Queue Persona".to_string(),
+        description: "queue attribution fixture".to_string(),
+        content: "SECRET_QUEUE_PERSONA_BODY".to_string(),
+        status: PersonaStatus::Active,
+        version: 3,
+        content_hash: "queue-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed queue persona");
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.persona_id = Some(persona.id.to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("seed queue conversation");
+    let conversation_id = conversation.id;
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
     let app_handle = app.handle().clone();
+    let applied_events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let captured_events = Arc::clone(&applied_events);
+    let _listener = app.listen("persona:injection_skipped", move |event| {
+        captured_events
+            .lock()
+            .expect("capture queue persona event")
+            .push(serde_json::from_str(event.payload()).expect("parse queue persona event"));
+    });
     let temp = tempfile::tempdir().expect("tempdir");
     let cli_path = temp.path().join("fake-claude");
     std::fs::write(
@@ -1233,21 +1269,20 @@ EOF
     std::fs::set_permissions(&cli_path, permissions).expect("mark fake cli executable");
 
     message_queue.queue(
-        ChatContextType::Ideation,
-        "session-success",
+        ChatContextType::Project,
+        conversation_id.as_str(),
         "Queued message".to_string(),
     );
 
-    let conversation_id = ChatConversationId::new();
     let outcome =
         super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
-            ChatContextType::Ideation,
+            ChatContextType::Project,
             AgentHarnessKind::Claude,
-            "session-success",
-            "session-success",
-            conversation_id,
+            project_id.as_str(),
+            &conversation_id.as_str(),
+            conversation_id.clone(),
             "session-cli",
-            false,
+            true,
             &message_queue,
             None,
             None,
@@ -1266,7 +1301,7 @@ EOF
             None,
             None,
             Some(app_handle),
-            None,
+            Some(project_id.as_str()),
             None,
             false,
             tokio_util::sync::CancellationToken::new(),
@@ -1289,11 +1324,35 @@ EOF
     assert_eq!(queued_run.status, AgentRunStatus::Completed);
     assert_eq!(queued_run.run_chain_id.as_deref(), Some("chain-queued"));
     assert_eq!(queued_run.parent_run_id.as_deref(), Some("parent-run"));
+    assert_eq!(queued_run.persona_id.as_deref(), Some("queue-persona"));
+    assert_eq!(queued_run.persona_slug.as_deref(), Some("queue-persona"));
+    assert_eq!(queued_run.persona_version, Some(3));
+    // This unit fixture has no canonical `agents/` tree, so the spawn cannot
+    // resolve an agent prompt and injection is skipped. What it proves is that
+    // the queue continuation path records attribution AT ALL (it previously
+    // recorded nothing). The injected=true path is pinned against the real send
+    // path in tests/suite_chat_service/persona_feature_flag.rs.
+    assert_eq!(queued_run.persona_injected, Some(false));
+    assert_eq!(
+        queued_run.persona_skipped_reason.as_deref(),
+        Some("agent_prompt_not_found_native_agent")
+    );
+    assert!(!serde_json::to_string(&queued_run)
+        .expect("serialize queued run")
+        .contains("SECRET_QUEUE_PERSONA_BODY"));
+    {
+        // Injection is skipped in this fixture (no canonical agents tree), so the
+        // queue path must emit the body-free skip event for the continuation run.
+        let events = applied_events.lock().expect("read queue persona events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["run_id"], queued_run_id);
+        assert!(!events[0].to_string().contains("SECRET_QUEUE_PERSONA_BODY"));
+    }
     assert!(
         running_agent_registry
             .get(&RunningAgentKey::new(
-                ChatContextType::Ideation.to_string(),
-                "session-success"
+                ChatContextType::Project.to_string(),
+                conversation_id.as_str()
             ))
             .await
             .is_none(),

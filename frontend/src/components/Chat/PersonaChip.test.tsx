@@ -6,16 +6,18 @@ import { PersonaChip } from "./PersonaChip";
 
 const mockMutateAsync = vi.fn();
 const mockConfirm = vi.fn();
+const mockPersonaQuery = vi.fn(() => ({
+  data: [
+    { id: "reviewer", slug: "reviewer", name: "Reviewer Voice", status: "active" },
+    { id: "architect", slug: "architect", name: "Terse Architect", status: "active" },
+    { id: "75b56f7e-d80a-4648-835c-c5b10a8b6df7", slug: "design-voice", name: "Archived Voice", status: "archived" },
+  ],
+  isLoading: false,
+  isError: false,
+}));
 
 vi.mock("@/hooks/usePersonas", () => ({
-  usePersonas: () => ({
-    data: [
-      { id: "reviewer", name: "Reviewer Voice", status: "active" },
-      { id: "architect", name: "Terse Architect", status: "active" },
-      { id: "archived", name: "Archived Voice", status: "archived" },
-    ],
-    isLoading: false,
-  }),
+  usePersonas: () => mockPersonaQuery(),
   useSwitchConversationPersona: () => ({ mutateAsync: mockMutateAsync }),
 }));
 
@@ -43,6 +45,15 @@ function renderChip(props: Partial<React.ComponentProps<typeof PersonaChip>> = {
 describe("PersonaChip", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPersonaQuery.mockReturnValue({
+      data: [
+        { id: "reviewer", slug: "reviewer", name: "Reviewer Voice", status: "active" },
+        { id: "architect", slug: "architect", name: "Terse Architect", status: "active" },
+        { id: "75b56f7e-d80a-4648-835c-c5b10a8b6df7", slug: "design-voice", name: "Archived Voice", status: "archived" },
+      ],
+      isLoading: false,
+      isError: false,
+    });
     mockMutateAsync.mockResolvedValue(undefined);
     mockConfirm.mockResolvedValue(true);
   });
@@ -103,6 +114,48 @@ describe("PersonaChip", () => {
 
     expect(screen.getByRole("button", { name: "Switch conversation persona" })).toHaveTextContent("Persona");
     expect(screen.getByRole("button", { name: "Switch conversation persona" })).not.toHaveTextContent("Reviewer Voice");
+  });
+
+  it("renders an archived bound persona slug from the last run and never its raw id", async () => {
+    const archivedPersonaId = "75b56f7e-d80a-4648-835c-c5b10a8b6df7";
+    renderChip({
+      personaId: archivedPersonaId,
+      lastRunPersonaId: archivedPersonaId,
+      lastRunPersonaSlug: "design-voice",
+    });
+
+    const trigger = screen.getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("design-voice (archived)");
+    // The raw persona id must never leak into the label.
+    expect(trigger).not.toHaveTextContent(archivedPersonaId);
+    fireEvent.pointerMove(trigger);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "design-voice is archived. It remains attributed to the last run.",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not fabricate archived state while persona reads are unknown", () => {
+    mockPersonaQuery.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: true,
+    });
+
+    renderChip({
+      personaId: "reviewer",
+      lastRunPersonaSlug: "stale-run-persona",
+    });
+
+    const trigger = screen.getByRole("button", {
+      name: "Switch conversation persona",
+    });
+    expect(trigger).toHaveTextContent("Persona");
+    expect(trigger).not.toHaveTextContent("archived");
+    expect(trigger).not.toHaveTextContent("stale-run-persona");
   });
 
   it("keeps the picker open and reports a failed persona switch", async () => {

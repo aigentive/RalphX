@@ -2449,6 +2449,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(artifact_repo),
                     Some(Arc::clone(ideation_session_repo)),
                     task_proposal_repo.clone(),
+                    Arc::clone(agent_run_repo),
+                    agent_run_id,
                     agent_provider_settings_repo.as_ref().map(Arc::clone),
                     persona_feature_enabled,
                     agent_name_override_set,
@@ -2497,6 +2499,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             agent_name_override_set,
                         )
                         .await;
+                        let retry_persona_for_attribution = retry_persona
+                            .as_ref()
+                            .ok()
+                            .and_then(|persona| persona.clone());
 
                         let retry_provider_spawnable = match retry_persona {
                             Ok(persona) => {
@@ -2557,7 +2563,21 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         .await;
 
                         if let Some(spawnable) = retry_spawnable {
+                            let persona_injected = spawnable.persona_injected();
+                            let persona_injection_skipped_reason =
+                                spawnable.persona_injection_skipped_reason();
                             if let Ok(retry_child) = spawnable.spawn().await {
+                                super::record_persona_run_attribution(
+                                    agent_run_repo,
+                                    app_handle.as_ref(),
+                                    &conversation_id,
+                                    agent_run_id,
+                                    recovery_harness,
+                                    retry_persona_for_attribution.as_ref(),
+                                    persona_injected,
+                                    persona_injection_skipped_reason,
+                                )
+                                .await;
                                 super::chat_service_send_background::spawn_send_message_background(
                                     build_recovery_retry_background_context(
                                         retry_child,

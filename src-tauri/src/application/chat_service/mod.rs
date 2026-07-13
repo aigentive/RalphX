@@ -60,6 +60,7 @@ use crate::application::AtlassianIntegrationService;
 use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort, DEFAULT_AGENT_HARNESS};
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink,
@@ -591,6 +592,80 @@ fn registered_persona_metadata(
             Some(persona.content_hash.clone()),
         ),
         None => (None, None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn record_persona_run_attribution<R: Runtime>(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    app_handle: Option<&AppHandle<R>>,
+    conversation_id: &ChatConversationId,
+    run_id: &str,
+    harness: AgentHarnessKind,
+    persona: Option<&ResolvedPersona>,
+    injected: bool,
+    skipped_reason: Option<&'static str>,
+) {
+    let Some(persona) = persona else {
+        return;
+    };
+    let attribution = PersonaRunAttribution {
+        persona_id: persona.id.to_string(),
+        persona_slug: persona.slug.clone(),
+        persona_version: persona.version,
+        persona_content_hash: persona.content_hash.clone(),
+        injected,
+        skipped_reason: skipped_reason.map(str::to_string),
+    };
+    if let Err(error) = agent_run_repo
+        .set_persona_attribution(&AgentRunId::from_string(run_id), attribution)
+        .await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            run_id,
+            persona_id = %persona.id,
+            persona_slug = %persona.slug,
+            persona_version = persona.version,
+            persona_content_hash = %persona.content_hash,
+            persona_injected = injected,
+            error = %error,
+            "Failed to persist persona run attribution"
+        );
+    }
+
+    let event = if injected {
+        let delivery = match harness {
+            AgentHarnessKind::Codex => "codex_prompt_overlay",
+            _ => "append_system_prompt_file",
+        };
+        tracing::info!(
+            conversation_id = %conversation_id,
+            run_id,
+            persona_id = %persona.id,
+            persona_slug = %persona.slug,
+            persona_version = persona.version,
+            persona_content_hash = %persona.content_hash,
+            persona_injected = true,
+            delivery,
+            "Persona applied to agent run"
+        );
+        Some(("persona:applied", None))
+    } else {
+        skipped_reason.map(|reason| ("persona:injection_skipped", Some(reason)))
+    };
+    if let (Some(handle), Some((event_name, reason))) = (app_handle, event) {
+        let _ = handle.emit(
+            event_name,
+            serde_json::json!({
+                "conversation_id": conversation_id.as_str(),
+                "run_id": run_id,
+                "persona_id": persona.id.to_string(),
+                "persona_slug": persona.slug,
+                "version": persona.version,
+                "reason": reason,
+            }),
+        );
     }
 }
 
@@ -3509,7 +3584,6 @@ impl<R: Runtime> AppChatService<R> {
                 persona.is_some(),
             );
         let persona_for_metadata = persona.clone();
-        let persona_id = persona.as_ref().map(|persona| persona.id.to_string());
         let build_plan_started = Instant::now();
         let mut launch_plan = chat_service_context::build_launch_plan_for_harness_with_persona(
             effective_harness,
@@ -3568,16 +3642,6 @@ impl<R: Runtime> AppChatService<R> {
         );
         let (registered_persona_id, registered_persona_content_hash) =
             registered_persona_metadata(effective_resolved, false);
-        if let (Some(reason), Some(persona_id)) = (persona_injection_skipped_reason, persona_id) {
-            self.emit_event(
-                "persona:injection_skipped",
-                serde_json::json!({
-                    "conversation_id": conversation.id.as_str(),
-                    "persona_id": persona_id,
-                    "reason": reason,
-                }),
-            );
-        }
         tracing::info!(
             %context_type,
             context_id,
@@ -3609,6 +3673,18 @@ impl<R: Runtime> AppChatService<R> {
             pid = ?launched.child.id(),
             "chat_service.send_message harness spawn ok"
         );
+
+        record_persona_run_attribution(
+            &self.agent_run_repo,
+            self.app_handle.as_ref(),
+            &conversation.id,
+            agent_run_id,
+            effective_harness,
+            persona_for_metadata.as_ref(),
+            persona_injected,
+            persona_injection_skipped_reason,
+        )
+        .await;
 
         if let Some(child_stdin) = launched.child_stdin {
             let ipr_register_started = Instant::now();

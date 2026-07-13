@@ -69,7 +69,10 @@ import { ChatSessionChips } from "./ChatSessionChips";
 import { ConversationSelector } from "./ConversationSelector";
 import { QueuedMessageList } from "./QueuedMessageList";
 import { ChatInput, type QuestionMode } from "./ChatInput";
-import { ChatMessageList } from "./ChatMessageList";
+import {
+  ChatMessageList,
+  type PersonaAttributedRun,
+} from "./ChatMessageList";
 import {
   EmptyState,
   LoadingState,
@@ -103,6 +106,7 @@ import {
 } from "@/hooks/useChatAttachments";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSwitchConversationPersona } from "@/hooks/usePersonas";
+import { usePersonaRunEvents } from "@/hooks/usePersonaRunEvents";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { extractErrorMessage } from "@/lib/errors";
@@ -478,6 +482,7 @@ export function IntegratedChatPanel({
     overrideAgentRunId: taskHistoryState?.agentRunId,
     isVisible,
   });
+  usePersonaRunEvents(activeConversationId);
   const agentProcessContextId =
     agentProcessContextIdOverride ?? currentContextId;
   useQueuedMessagesHydration({
@@ -1119,6 +1124,27 @@ export function IntegratedChatPanel({
     conversationsData,
     effectiveConversationId,
   ]);
+  const personaAttributedRun = useMemo<PersonaAttributedRun | null>(() => {
+    if (agentRunQuery.data) {
+      return agentRunQuery.data;
+    }
+    if (
+      isAgentRunning ||
+      !activeConversationMeta?.lastRunPersonaRunId ||
+      !activeConversationMeta.lastRunPersonaSlug ||
+      activeConversationMeta.lastRunPersonaInjected == null
+    ) {
+      return null;
+    }
+    return {
+      id: activeConversationMeta.lastRunPersonaRunId,
+      personaSlug: activeConversationMeta.lastRunPersonaSlug,
+      personaVersion: activeConversationMeta.lastRunPersonaVersion ?? null,
+      personaInjected: activeConversationMeta.lastRunPersonaInjected,
+      personaSkippedReason:
+        activeConversationMeta.lastRunPersonaSkippedReason ?? null,
+    };
+  }, [agentRunQuery.data, activeConversationMeta, isAgentRunning]);
 
   // Memoize messagesData to avoid dependency chain issues in useEffect hooks
   // No time-based filtering needed - we switch context types based on historical state
@@ -1709,6 +1735,12 @@ export function IntegratedChatPanel({
                         conversationId={effectiveConversationId}
                         personaId={activeConversationMeta?.personaId}
                         isAgentRunning={isAgentRunning}
+                        lastRunPersonaId={
+                          activeConversationMeta?.lastRunPersonaId ?? null
+                        }
+                        lastRunPersonaSlug={
+                          personaAttributedRun?.personaSlug ?? null
+                        }
                       />
                     ),
                   }
@@ -1811,6 +1843,9 @@ export function IntegratedChatPanel({
                 providerSessionId={
                   activeConversationMeta?.providerSessionId ?? null
                 }
+                agentRun={personaAttributedRun}
+                personaRuns={activeConversationMeta?.personaRuns ?? []}
+                agentPersonasEnabled={featureFlags.agentPersonas === true}
                 contentWidthClassName={contentWidthClassName}
                 topInsetClassName={transcriptTopInsetClassName}
                 hasOlderMessages={

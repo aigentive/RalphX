@@ -2265,6 +2265,12 @@ fn test_agent_run_status_response_serializes_model_present() {
         error_message: None,
         model_id: Some("claude-sonnet-4-6".to_string()),
         model_label: Some("Sonnet 4.6".to_string()),
+        persona_id: None,
+        persona_slug: None,
+        persona_version: None,
+        persona_content_hash: None,
+        persona_injected: None,
+        persona_skipped_reason: None,
     };
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains(r#""model_id":"claude-sonnet-4-6""#));
@@ -2282,10 +2288,42 @@ fn test_agent_run_status_response_serializes_model_absent() {
         error_message: None,
         model_id: None,
         model_label: None,
+        persona_id: None,
+        persona_slug: None,
+        persona_version: None,
+        persona_content_hash: None,
+        persona_injected: None,
+        persona_skipped_reason: None,
     };
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains(r#""model_id":null"#));
     assert!(json.contains(r#""model_label":null"#));
+}
+
+#[test]
+fn persona_agent_run_status_response_serializes_attribution_without_body() {
+    let response = AgentRunStatusResponse {
+        id: "run-persona".to_string(),
+        conversation_id: "conv-persona".to_string(),
+        status: "running".to_string(),
+        started_at: "2026-07-13T06:19:00Z".to_string(),
+        completed_at: None,
+        error_message: None,
+        model_id: Some("gpt-5.5".to_string()),
+        model_label: Some("GPT-5.5".to_string()),
+        persona_id: Some("persona-design-voice".to_string()),
+        persona_slug: Some("design-voice".to_string()),
+        persona_version: Some(2),
+        persona_content_hash: Some("persona-hash".to_string()),
+        persona_injected: Some(true),
+        persona_skipped_reason: None,
+    };
+
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains(r#""persona_slug":"design-voice""#));
+    assert!(json.contains(r#""persona_version":2"#));
+    assert!(json.contains(r#""persona_injected":true"#));
+    assert!(!json.contains("SECRET_PERSONA_BODY_SENTINEL"));
 }
 
 // ── IPC contract tests ─────────────────────────────────────────────────────────

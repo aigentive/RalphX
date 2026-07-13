@@ -95,6 +95,7 @@ export interface ChatMessageResponse {
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
+  runId?: string | null;
   createdAt: string;
 }
 
@@ -659,6 +660,27 @@ const ChatConversationResponseSchema = z.object({
   service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
   persona_id: z.string().nullable().optional(),
+  last_run_persona_run_id: z.string().nullable().optional(),
+  last_run_persona_id: z.string().nullable().optional(),
+  last_run_persona_slug: z.string().nullable().optional(),
+  last_run_persona_version: z.number().int().nullable().optional(),
+  last_run_persona_content_hash: z.string().nullable().optional(),
+  last_run_persona_injected: z.boolean().nullable().optional(),
+  last_run_persona_skipped_reason: z.string().nullable().optional(),
+  persona_runs: z
+    .array(
+      z.object({
+        run_id: z.string(),
+        persona_id: z.string(),
+        persona_slug: z.string(),
+        persona_version: z.number().int(),
+        persona_content_hash: z.string(),
+        injected: z.boolean(),
+        skipped_reason: z.string().nullable().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
   coordination_mode: CoordinationModeSchema.optional().default("solo"),
   automation_id: z.string().nullable().optional(),
   automation_run_id: z.string().nullable().optional(),
@@ -688,6 +710,12 @@ const AgentRunResponseSchema = z.object({
   error_message: z.string().nullable(),
   model_id: z.string().nullable().optional(),
   model_label: z.string().nullable().optional(),
+  persona_id: z.string().nullable().optional(),
+  persona_slug: z.string().nullable().optional(),
+  persona_version: z.number().int().nullable().optional(),
+  persona_content_hash: z.string().nullable().optional(),
+  persona_injected: z.boolean().nullable().optional(),
+  persona_skipped_reason: z.string().nullable().optional(),
 });
 
 type RawConversation = z.infer<typeof ChatConversationResponseSchema>;
@@ -717,6 +745,23 @@ function transformConversation(raw: RawConversation): ChatConversation {
     serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
     personaId: raw.persona_id ?? null,
+    lastRunPersonaRunId: raw.last_run_persona_run_id ?? null,
+    lastRunPersonaId: raw.last_run_persona_id ?? null,
+    lastRunPersonaSlug: raw.last_run_persona_slug ?? null,
+    lastRunPersonaVersion: raw.last_run_persona_version ?? null,
+    lastRunPersonaContentHash: raw.last_run_persona_content_hash ?? null,
+    lastRunPersonaInjected: raw.last_run_persona_injected ?? null,
+    lastRunPersonaSkippedReason:
+      raw.last_run_persona_skipped_reason ?? null,
+    personaRuns: raw.persona_runs.map((run) => ({
+      id: run.run_id,
+      personaId: run.persona_id,
+      personaSlug: run.persona_slug,
+      personaVersion: run.persona_version,
+      personaContentHash: run.persona_content_hash,
+      personaInjected: run.injected,
+      personaSkippedReason: run.skipped_reason ?? null,
+    })),
     coordinationMode: raw.coordination_mode ?? "solo",
     automationId: raw.automation_id ?? null,
     automationRunId: raw.automation_run_id ?? null,
@@ -1048,6 +1093,12 @@ function transformAgentRun(raw: RawAgentRun): AgentRun {
     errorMessage: raw.error_message,
     modelId: raw.model_id ?? null,
     modelLabel: raw.model_label ?? null,
+    personaId: raw.persona_id ?? null,
+    personaSlug: raw.persona_slug ?? null,
+    personaVersion: raw.persona_version ?? null,
+    personaContentHash: raw.persona_content_hash ?? null,
+    personaInjected: raw.persona_injected ?? null,
+    personaSkippedReason: raw.persona_skipped_reason ?? null,
   };
 }
 
@@ -1228,6 +1279,7 @@ function transformTimelineItem(
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
+    runId: raw.run_id ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,
     parentMessageId: raw.message_id ?? null,

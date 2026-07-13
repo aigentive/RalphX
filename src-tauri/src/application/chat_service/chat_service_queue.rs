@@ -1508,6 +1508,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             } else {
                 Vec::new()
             };
+            let persona_for_attribution = resolved_persona.clone();
 
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
@@ -1575,6 +1576,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     };
                 }
             };
+            let persona_injected = provider_spawnable.spawnable.persona_injected();
+            let persona_injection_skipped_reason = provider_spawnable
+                .spawnable
+                .persona_injection_skipped_reason();
             let provider_env = match queue_provider_decision(
                 app_handle.as_ref(),
                 &agent_provider_settings_repo,
@@ -1615,6 +1620,17 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
             match spawnable.spawn().await {
                 Ok(child) => {
+                    super::record_persona_run_attribution(
+                        agent_run_repo,
+                        app_handle.as_ref(),
+                        &conversation_id,
+                        &queued_run_id,
+                        harness,
+                        persona_for_attribution.as_ref(),
+                        persona_injected,
+                        persona_injection_skipped_reason,
+                    )
+                    .await;
                     if let Some(pid) = child.id() {
                         if let Err(error) = running_agent_registry
                             .update_agent_process(

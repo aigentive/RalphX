@@ -23,12 +23,41 @@ vi.mock("@/hooks/useMessageAttachments", () => ({
   useMessageAttachments: (...args: unknown[]) => messageAttachments(...args),
 }));
 
-vi.mock("./MessageItem", () => ({
-  MessageItem: ({ content, children }: { content: string; children?: React.ReactNode }) => (
-    <article data-chat-message-item="true">{content}{children}</article>
-  ),
-  MessageMeta: () => null,
-}));
+vi.mock("./MessageItem", async () => {
+  const { PersonaRunBadge } = await import("./PersonaRunBadge");
+  return {
+    MessageItem: ({
+      content,
+      children,
+      agentPersonasEnabled,
+      personaSlug,
+      personaVersion,
+      personaInjected,
+      personaSkippedReason,
+    }: {
+      content: string;
+      children?: React.ReactNode;
+      agentPersonasEnabled?: boolean;
+      personaSlug?: string | null;
+      personaVersion?: number | null;
+      personaInjected?: boolean | null;
+      personaSkippedReason?: string | null;
+    }) => (
+      <article data-chat-message-item="true">
+        {content}
+        {children}
+        <PersonaRunBadge
+          enabled={agentPersonasEnabled ?? false}
+          personaSlug={personaSlug ?? null}
+          personaVersion={personaVersion ?? null}
+          personaInjected={personaInjected ?? null}
+          skippedReason={personaSkippedReason ?? null}
+        />
+      </article>
+    ),
+    MessageMeta: () => null,
+  };
+});
 
 vi.mock("./TextBubble", () => ({
   TextBubble: ({ text }: { text: string }) => <span>{text}</span>,
@@ -784,6 +813,127 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByText("Second tool call")).toBeInTheDocument();
     expect(harness.scrollToIndex).toHaveBeenCalledWith(
       expect.objectContaining({ index: 2, align: "end" }),
+    );
+  });
+
+  it("renders applied persona attribution on the matching transcript run boundary", async () => {
+    renderList({
+      messages: [
+        {
+          id: "assistant-run-message",
+          role: "assistant",
+          content: "Applied persona response",
+          createdAt: "2026-07-13T06:19:00.000Z",
+          runId: "run-persona",
+          providerHarness: "codex",
+        },
+      ],
+      agentPersonasEnabled: true,
+      agentRun: {
+        id: "run-persona",
+        conversationId: "conversation-a",
+        status: "running",
+        startedAt: "2026-07-13T06:19:00.000Z",
+        completedAt: null,
+        errorMessage: null,
+        modelId: null,
+        modelLabel: null,
+        personaSlug: "design-voice",
+        personaVersion: 2,
+        personaInjected: true,
+      },
+    });
+
+    const badge = screen.getByTestId("persona-run-badge");
+    expect(badge).toHaveTextContent("design-voice");
+    fireEvent.pointerMove(badge);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "design-voice · v2 — applied to this run",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render persona attribution for another run or when the flag is off", () => {
+    const assistantMessages: ChatMessageData[] = [
+      {
+        id: "assistant-run-message",
+        role: "assistant",
+        content: "No matching persona badge",
+        createdAt: "2026-07-13T06:19:00.000Z",
+        runId: "older-run",
+        providerHarness: "claude",
+      },
+    ];
+    const agentRun = {
+      id: "run-persona",
+      conversationId: "conversation-a",
+      status: "running" as const,
+      startedAt: "2026-07-13T06:19:00.000Z",
+      completedAt: null,
+      errorMessage: null,
+      modelId: null,
+      modelLabel: null,
+      personaSlug: "design-voice",
+      personaVersion: 2,
+      personaInjected: false,
+      personaSkippedReason: "persona_not_injected",
+    };
+    const { rerender } = renderList({
+      messages: assistantMessages,
+      agentPersonasEnabled: true,
+      agentRun,
+    });
+    expect(screen.queryByTestId("persona-run-badge")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[{ ...assistantMessages[0]!, runId: "run-persona" }]}
+        agentPersonasEnabled={false}
+        agentRun={agentRun}
+      />,
+    );
+    expect(screen.queryByTestId("persona-run-badge")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[{ ...assistantMessages[0]!, runId: "run-persona" }]}
+        agentPersonasEnabled
+        agentRun={agentRun}
+      />,
+    );
+    expect(screen.getByTestId("persona-run-badge")).toHaveTextContent(
+      "design-voice not applied",
+    );
+  });
+
+  it("renders body-free attribution for older persisted transcript runs", () => {
+    renderList({
+      messages: [
+        {
+          id: "older-assistant-run",
+          role: "assistant",
+          content: "Older attributed response",
+          createdAt: "2026-07-13T06:18:00.000Z",
+          runId: "run-persona-older",
+        },
+      ],
+      agentPersonasEnabled: true,
+      personaRuns: [
+        {
+          id: "run-persona-older",
+          personaSlug: "careful-reviewer",
+          personaVersion: 1,
+          personaInjected: true,
+          personaSkippedReason: null,
+        },
+      ],
+    });
+
+    expect(screen.getByTestId("persona-run-badge")).toHaveTextContent(
+      "careful-reviewer",
     );
   });
 

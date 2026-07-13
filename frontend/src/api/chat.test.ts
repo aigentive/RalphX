@@ -552,6 +552,59 @@ describe("chat api", () => {
     expect(result[0]?.personaId).toBe("persona-1");
   });
 
+  it("transforms body-free persona attribution from the latest conversation run", async () => {
+    mockInvoke.mockResolvedValue([
+      {
+        ...planSeedConversationResponse(),
+        persona_id: "persona-1",
+        last_run_persona_run_id: "run-persona-1",
+        last_run_persona_id: "persona-1",
+        last_run_persona_slug: "design-voice",
+        last_run_persona_version: 2,
+        last_run_persona_content_hash: "persona-hash",
+        last_run_persona_injected: false,
+        last_run_persona_skipped_reason: "native_agent_flag",
+        persona_runs: [
+          {
+            run_id: "run-persona-1",
+            persona_id: "persona-1",
+            persona_slug: "design-voice",
+            persona_version: 2,
+            persona_content_hash: "persona-hash",
+            injected: false,
+            skipped_reason: "native_agent_flag",
+          },
+        ],
+      },
+    ]);
+
+    const result = await listConversations("project", "p1");
+
+    expect(result[0]).toMatchObject({
+      lastRunPersonaRunId: "run-persona-1",
+      lastRunPersonaId: "persona-1",
+      lastRunPersonaSlug: "design-voice",
+      lastRunPersonaVersion: 2,
+      lastRunPersonaContentHash: "persona-hash",
+      lastRunPersonaInjected: false,
+      lastRunPersonaSkippedReason: "native_agent_flag",
+      personaRuns: [
+        {
+          id: "run-persona-1",
+          personaId: "persona-1",
+          personaSlug: "design-voice",
+          personaVersion: 2,
+          personaContentHash: "persona-hash",
+          personaInjected: false,
+          personaSkippedReason: "native_agent_flag",
+        },
+      ],
+    });
+    expect(JSON.stringify(result[0])).not.toContain(
+      "SECRET_PERSONA_BODY_SENTINEL",
+    );
+  });
+
   it("lists paginated conversations with server-side search", async () => {
     mockInvoke.mockResolvedValue({
       conversations: [
@@ -1426,6 +1479,34 @@ describe("chat api", () => {
     mockInvoke.mockResolvedValue(null);
     const result = await getAgentRunStatus("c1");
     expect(result).toBeNull();
+  });
+
+  it("transforms body-free persona attribution on an agent run", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "run-1",
+      conversation_id: "c1",
+      status: "running",
+      started_at: "2026-07-13T06:19:00Z",
+      completed_at: null,
+      error_message: null,
+      model_id: "gpt-5.5",
+      model_label: "GPT-5.5",
+      persona_id: "persona-design-voice",
+      persona_slug: "design-voice",
+      persona_version: 2,
+      persona_content_hash: "persona-hash",
+      persona_injected: false,
+      persona_skipped_reason: "native_agent_flag",
+    });
+
+    await expect(getAgentRunStatus("c1")).resolves.toMatchObject({
+      personaId: "persona-design-voice",
+      personaSlug: "design-voice",
+      personaVersion: 2,
+      personaContentHash: "persona-hash",
+      personaInjected: false,
+      personaSkippedReason: "native_agent_flag",
+    });
   });
 
   it("lists agent conversation workspaces for a project", async () => {

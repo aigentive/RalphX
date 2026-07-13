@@ -15,11 +15,12 @@ use ralphx_lib::application::chat_service::{
 };
 use ralphx_lib::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, IdeationSessionId,
-    MessageRole, Persona, PersonaDirective, PersonaId, PersonaStatus, ProjectId, TaskId,
+    AgentRun, AgentRunId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    IdeationSessionId, MessageRole, Persona, PersonaDirective, PersonaId, PersonaStatus, ProjectId,
+    TaskId,
 };
 use ralphx_lib::domain::repositories::{
-    ChatConversationRepository, ChatMessageRepository, PersonaRepository,
+    AgentRunRepository, ChatConversationRepository, ChatMessageRepository, PersonaRepository,
 };
 use ralphx_lib::infrastructure::memory::{
     MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
@@ -232,6 +233,11 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
     let conversation_repo = Arc::clone(&state.chat_conversation_repo);
     let attachment_repo = Arc::clone(&state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&state.artifact_repo);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let run = AgentRun::new(conversation_id);
+    let run_id = run.id;
+    let run_id_string = run_id.as_str();
+    agent_run_repo.create(run).await.expect("seed recovery run");
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -273,6 +279,8 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
             artifact_repo,
             None,
             None,
+            Arc::clone(&agent_run_repo),
+            &run_id_string,
             None,
             true,
             false,
@@ -289,6 +297,23 @@ async fn recovery_resolves_persona_from_conversation_row_before_build() {
         persona_marker.exists(),
         "the production recovery command must contain <ralphx_agent_persona>"
     );
+    let attributed = agent_run_repo
+        .get_by_id(&run_id)
+        .await
+        .expect("read recovery attribution")
+        .expect("recovery run exists");
+    assert_eq!(
+        attributed.persona_id.as_deref(),
+        Some("recovery-bound-persona")
+    );
+    assert_eq!(
+        attributed.persona_slug.as_deref(),
+        Some("recovery-bound-persona")
+    );
+    assert_eq!(attributed.persona_injected, Some(true));
+    assert!(!serde_json::to_string(&attributed)
+        .expect("serialize recovery attribution")
+        .contains("Use the recovery persona voice."));
 }
 
 #[cfg(unix)]
@@ -317,6 +342,9 @@ async fn recovery_with_persona_feature_off_rebuilds_without_reading_bound_person
     let conversation_repo = Arc::clone(&state.chat_conversation_repo);
     let attachment_repo = Arc::clone(&state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&state.artifact_repo);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let run_id = AgentRunId::new();
+    let run_id_string = run_id.as_str();
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -358,6 +386,8 @@ async fn recovery_with_persona_feature_off_rebuilds_without_reading_bound_person
             artifact_repo,
             None,
             None,
+            agent_run_repo,
+            &run_id_string,
             None,
             false,
             false,
@@ -402,6 +432,9 @@ async fn recovery_with_persona_repo_error_fails_closed() {
     let conversation_repo = Arc::clone(&state.chat_conversation_repo);
     let attachment_repo = Arc::clone(&state.chat_attachment_repo);
     let artifact_repo = Arc::clone(&state.artifact_repo);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let run_id = AgentRunId::new();
+    let run_id_string = run_id.as_str();
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -440,6 +473,8 @@ async fn recovery_with_persona_repo_error_fails_closed() {
             artifact_repo,
             None,
             None,
+            agent_run_repo,
+            &run_id_string,
             None,
             true,
             false,

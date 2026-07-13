@@ -3088,7 +3088,7 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 }
 
 #[tokio::test]
-async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_runtime_repos() {
+async fn handle_stream_error_persona_recovery_attributes_retry_run() {
     let _env = EnvVarGuard::set("ENABLE_SESSION_RECOVERY", "true");
     let state = AppState::new_test();
     let mut provider_settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
@@ -3112,6 +3112,26 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         .expect("seed project");
 
     let mut conversation = ChatConversation::new_project(project_id.clone());
+    let persona = Persona {
+        id: PersonaId::from("handler-recovery-persona"),
+        slug: "handler-recovery-persona".to_string(),
+        name: "Handler Recovery Persona".to_string(),
+        description: "handler recovery attribution fixture".to_string(),
+        content: "SECRET_HANDLER_RECOVERY_PERSONA_BODY".to_string(),
+        status: PersonaStatus::Active,
+        version: 5,
+        content_hash: "handler-recovery-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed recovery persona");
+    conversation.persona_id = Some(persona.id.to_string());
     conversation.set_provider_session_ref(ProviderSessionRef {
         harness: AgentHarnessKind::Claude,
         provider_session_id: "old-session".to_string(),
@@ -3160,7 +3180,7 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         Some("old-session"),
         AgentHarnessKind::Claude,
         false,
-        false,
+        true,
         false,
         Some("retry after stale session"),
         Some(&conversation),
@@ -3205,6 +3225,25 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         recovery_spawned,
         "successful stale-session recovery must spawn a retry instead of falling through"
     );
+    let attributed = state
+        .agent_run_repo
+        .get_by_id(&agent_run.id)
+        .await
+        .expect("read handler recovery run")
+        .expect("handler recovery run exists");
+    assert_eq!(
+        attributed.persona_id.as_deref(),
+        Some("handler-recovery-persona")
+    );
+    // Unit fixture has no canonical agents tree, so the retry spawn cannot inject;
+    // what this pins is that the retry path records attribution at all (it did not
+    // before). injected=true is pinned against the real send path in
+    // tests/suite_chat_service/persona_feature_flag.rs.
+    assert_eq!(attributed.persona_injected, Some(false));
+    assert!(attributed.persona_skipped_reason.is_some());
+    assert!(!serde_json::to_string(&attributed)
+        .expect("serialize handler recovery attribution")
+        .contains("SECRET_HANDLER_RECOVERY_PERSONA_BODY"));
 }
 
 #[tokio::test]

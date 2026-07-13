@@ -26,12 +26,16 @@ export interface PersonaChipProps {
   conversationId: string;
   personaId: string | null | undefined;
   isAgentRunning: boolean;
+  lastRunPersonaId?: string | null;
+  lastRunPersonaSlug?: string | null;
 }
 
 export function PersonaChip({
   conversationId,
   personaId,
   isAgentRunning,
+  lastRunPersonaId,
+  lastRunPersonaSlug,
 }: PersonaChipProps) {
   const { data: personas = [], isLoading } = usePersonas();
   const switchPersona = useSwitchConversationPersona();
@@ -43,9 +47,17 @@ export function PersonaChip({
     () => personas.filter((persona) => persona.status === "active"),
     [personas],
   );
-  const selectedPersona = activePersonas.find(
-    (persona) => persona.id === personaId,
-  );
+  const boundPersona = personas.find((persona) => persona.id === personaId);
+  const selectedPersona =
+    boundPersona?.status === "active" ? boundPersona : undefined;
+  const archivedPersonaSlug =
+    boundPersona?.status === "archived"
+      ? (lastRunPersonaId === personaId ? lastRunPersonaSlug : null) ??
+        boundPersona.slug
+      : null;
+  const chipTooltip = archivedPersonaSlug
+    ? `${archivedPersonaSlug} is archived. It remains attributed to the last run.`
+    : PERSONA_SCOPE_TOOLTIP;
 
   const selectPersona = useCallback(
     async (nextPersonaId: string | null) => {
@@ -96,13 +108,16 @@ export function PersonaChip({
                 >
                   <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
                   <span className="max-w-36 truncate">
-                    {selectedPersona?.name ?? "Persona"}
+                    {selectedPersona?.name ??
+                      (archivedPersonaSlug
+                        ? `${archivedPersonaSlug} (archived)`
+                        : "Persona")}
                   </span>
                   <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </PopoverTrigger>
             </TooltipTrigger>
-            <TooltipContent>{PERSONA_SCOPE_TOOLTIP}</TooltipContent>
+            <TooltipContent>{chipTooltip}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
         <PopoverContent align="end" className="w-64 p-1.5">

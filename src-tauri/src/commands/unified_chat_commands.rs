@@ -1700,6 +1700,14 @@ pub struct AgentConversationResponse {
     pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
     pub persona_id: Option<String>,
+    pub last_run_persona_run_id: Option<String>,
+    pub last_run_persona_id: Option<String>,
+    pub last_run_persona_slug: Option<String>,
+    pub last_run_persona_version: Option<i64>,
+    pub last_run_persona_content_hash: Option<String>,
+    pub last_run_persona_injected: Option<bool>,
+    pub last_run_persona_skipped_reason: Option<String>,
+    pub persona_runs: Vec<PersonaRunAttributionResponse>,
     pub coordination_mode: String,
     pub automation_id: Option<String>,
     pub automation_run_id: Option<String>,
@@ -1733,6 +1741,14 @@ impl From<ChatConversation> for AgentConversationResponse {
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
             persona_id: c.persona_id,
+            last_run_persona_run_id: None,
+            last_run_persona_id: None,
+            last_run_persona_slug: None,
+            last_run_persona_version: None,
+            last_run_persona_content_hash: None,
+            last_run_persona_injected: None,
+            last_run_persona_skipped_reason: None,
+            persona_runs: Vec::new(),
             coordination_mode: c.coordination_mode.to_string(),
             automation_id: c.automation_id.map(|id| id.as_str().to_string()),
             automation_run_id: c.automation_run_id.map(|id| id.as_str().to_string()),
@@ -1747,6 +1763,17 @@ impl From<ChatConversation> for AgentConversationResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PersonaRunAttributionResponse {
+    pub run_id: String,
+    pub persona_id: String,
+    pub persona_slug: String,
+    pub persona_version: i64,
+    pub persona_content_hash: String,
+    pub injected: bool,
+    pub skipped_reason: Option<String>,
+}
+
 impl AgentConversationResponse {
     fn apply_runtime_attribution(&mut self, attribution: ConversationRuntimeAttribution) {
         self.logical_model = attribution.logical_model;
@@ -1754,6 +1781,13 @@ impl AgentConversationResponse {
         self.logical_effort = attribution.logical_effort.map(|value| value.to_string());
         self.effective_effort = attribution.effective_effort;
         self.service_tier = attribution.service_tier;
+        self.last_run_persona_run_id = attribution.persona_run_id;
+        self.last_run_persona_id = attribution.persona_id;
+        self.last_run_persona_slug = attribution.persona_slug;
+        self.last_run_persona_version = attribution.persona_version;
+        self.last_run_persona_content_hash = attribution.persona_content_hash;
+        self.last_run_persona_injected = attribution.persona_injected;
+        self.last_run_persona_skipped_reason = attribution.persona_skipped_reason;
     }
 }
 
@@ -1764,6 +1798,13 @@ struct ConversationRuntimeAttribution {
     logical_effort: Option<LogicalEffort>,
     effective_effort: Option<String>,
     service_tier: Option<String>,
+    persona_run_id: Option<String>,
+    persona_id: Option<String>,
+    persona_slug: Option<String>,
+    persona_version: Option<i64>,
+    persona_content_hash: Option<String>,
+    persona_injected: Option<bool>,
+    persona_skipped_reason: Option<String>,
 }
 
 impl ConversationRuntimeAttribution {
@@ -1773,6 +1814,7 @@ impl ConversationRuntimeAttribution {
             && self.logical_effort.is_none()
             && self.effective_effort.is_none()
             && self.service_tier.is_none()
+            && self.persona_run_id.is_none()
     }
 }
 
@@ -1783,6 +1825,13 @@ fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAtt
         logical_effort: run.logical_effort,
         effective_effort: run.effective_effort.clone(),
         service_tier: run.service_tier.clone(),
+        persona_run_id: run.persona_id.as_ref().map(|_| run.id.as_str()),
+        persona_id: run.persona_id.clone(),
+        persona_slug: run.persona_slug.clone(),
+        persona_version: run.persona_version,
+        persona_content_hash: run.persona_content_hash.clone(),
+        persona_injected: run.persona_injected,
+        persona_skipped_reason: run.persona_skipped_reason.clone(),
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -1796,6 +1845,13 @@ fn runtime_attribution_from_message(
         logical_effort: message.logical_effort,
         effective_effort: message.effective_effort.clone(),
         service_tier: None,
+        persona_run_id: None,
+        persona_id: None,
+        persona_slug: None,
+        persona_version: None,
+        persona_content_hash: None,
+        persona_injected: None,
+        persona_skipped_reason: None,
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -1803,14 +1859,34 @@ fn runtime_attribution_from_message(
 async fn latest_conversation_runtime_attribution(
     state: &AppState,
     conversation_id: &ChatConversationId,
-) -> Result<Option<ConversationRuntimeAttribution>, String> {
+) -> Result<
+    (
+        Option<ConversationRuntimeAttribution>,
+        Vec<PersonaRunAttributionResponse>,
+    ),
+    String,
+> {
     let runs = state
         .agent_run_repo
         .get_by_conversation(conversation_id)
         .await
         .map_err(|error| error.to_string())?;
+    let persona_runs = runs
+        .iter()
+        .filter_map(|run| {
+            Some(PersonaRunAttributionResponse {
+                run_id: run.id.as_str(),
+                persona_id: run.persona_id.clone()?,
+                persona_slug: run.persona_slug.clone()?,
+                persona_version: run.persona_version?,
+                persona_content_hash: run.persona_content_hash.clone()?,
+                injected: run.persona_injected?,
+                skipped_reason: run.persona_skipped_reason.clone(),
+            })
+        })
+        .collect();
     if let Some(attribution) = runs.iter().find_map(runtime_attribution_from_run) {
-        return Ok(Some(attribution));
+        return Ok((Some(attribution), persona_runs));
     }
 
     let messages = state
@@ -1818,7 +1894,10 @@ async fn latest_conversation_runtime_attribution(
         .get_recent_by_conversation_paginated(conversation_id, 200, 0)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(messages.iter().find_map(runtime_attribution_from_message))
+    Ok((
+        messages.iter().find_map(runtime_attribution_from_message),
+        persona_runs,
+    ))
 }
 
 pub(crate) async fn agent_conversation_response_for_state(
@@ -1827,9 +1906,10 @@ pub(crate) async fn agent_conversation_response_for_state(
 ) -> Result<AgentConversationResponse, String> {
     let conversation_id = conversation.id;
     let mut response = AgentConversationResponse::from(conversation);
-    if let Some(attribution) =
-        latest_conversation_runtime_attribution(state, &conversation_id).await?
-    {
+    let (attribution, persona_runs) =
+        latest_conversation_runtime_attribution(state, &conversation_id).await?;
+    response.persona_runs = persona_runs;
+    if let Some(attribution) = attribution {
         response.apply_runtime_attribution(attribution);
     }
     Ok(response)
@@ -2097,6 +2177,12 @@ pub struct AgentRunStatusResponse {
     pub error_message: Option<String>,
     pub model_id: Option<String>,
     pub model_label: Option<String>,
+    pub persona_id: Option<String>,
+    pub persona_slug: Option<String>,
+    pub persona_version: Option<i64>,
+    pub persona_content_hash: Option<String>,
+    pub persona_injected: Option<bool>,
+    pub persona_skipped_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8423,6 +8509,12 @@ pub async fn get_agent_run_status_unified(
         error_message: run.error_message,
         model_id,
         model_label,
+        persona_id: run.persona_id,
+        persona_slug: run.persona_slug,
+        persona_version: run.persona_version,
+        persona_content_hash: run.persona_content_hash,
+        persona_injected: run.persona_injected,
+        persona_skipped_reason: run.persona_skipped_reason,
     }))
 }
 

@@ -24,9 +24,9 @@ use crate::domain::entities::{
     ChatContextType, ChatConversation, ChatConversationId, PersonaDirective,
 };
 use crate::domain::repositories::{
-    AgentProviderSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, IdeationSessionRepository,
-    TaskProposalRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    IdeationSessionRepository, TaskProposalRepository,
 };
 use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,
@@ -168,6 +168,8 @@ pub async fn attempt_session_recovery<R: Runtime>(
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    agent_run_id: &str,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     persona_feature_enabled: bool,
     agent_name_override_set: bool,
@@ -300,6 +302,8 @@ pub async fn attempt_session_recovery<R: Runtime>(
         None
     };
 
+    let persona_for_attribution = resolved_persona.clone();
+
     // 4. Spawn fresh provider session with history
     let provider_spawnable = match chat_service_context::build_command_for_harness(
         harness,
@@ -335,6 +339,10 @@ pub async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
+    let persona_injected = provider_spawnable.spawnable.persona_injected();
+    let persona_injection_skipped_reason = provider_spawnable
+        .spawnable
+        .persona_injection_skipped_reason();
     let provider_env = match session_recovery_provider_decision(
         app_handle,
         &agent_provider_settings_repo,
@@ -363,6 +371,17 @@ pub async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
+    super::record_persona_run_attribution(
+        &agent_run_repo,
+        app_handle,
+        conversation_id,
+        agent_run_id,
+        harness,
+        persona_for_attribution.as_ref(),
+        persona_injected,
+        persona_injection_skipped_reason,
+    )
+    .await;
 
     // 5. Process stream to capture new session ID
     let outcome = match process_stream_background::<tauri::Wry>(

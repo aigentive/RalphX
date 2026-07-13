@@ -418,6 +418,7 @@ mod v20260712153932_agent_workspace_pr_review_auto_approve;
 mod v20260712153932_agent_workspace_pr_review_auto_approve_tests;
 mod v20260712155425_ui_feature_flag_overrides;
 mod v20260712162657_persona_builder_agent_mode;
+mod v20260713063349_persona_run_attribution;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -428,6 +429,8 @@ mod v20260711151804_personas_tests;
 mod v20260712155425_ui_feature_flag_overrides_tests;
 #[cfg(test)]
 mod v20260712162657_persona_builder_agent_mode_tests;
+#[cfg(test)]
+mod v20260713063349_persona_run_attribution_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -536,7 +539,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260712162657;
+pub const SCHEMA_VERSION: i64 = 20260713063349;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1490,6 +1493,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260712162657,
         name: "persona_builder_agent_mode",
         migrate: v20260712162657_persona_builder_agent_mode::migrate,
+    },
+    Migration {
+        version: 20260713063349,
+        name: "persona_run_attribution",
+        migrate: v20260713063349_persona_run_attribution::migrate,
     },
 ];
 
