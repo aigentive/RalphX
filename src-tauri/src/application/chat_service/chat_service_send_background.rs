@@ -17,7 +17,7 @@ use super::chat_service_types::{
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
 use crate::application::notification_service::NotificationService;
@@ -112,6 +112,8 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub run_chain_id: Option<String>,
     // Run metadata
     pub is_retry_attempt: bool,
+    pub persona_feature_enabled: bool,
+    pub agent_name_override_set: bool,
     pub user_message_content: Option<String>,
     pub turn_metadata: Option<String>,
     pub conversation: Option<ChatConversation>,
@@ -127,6 +129,9 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub streaming_state_cache: StreamingStateCache,
     // Interactive process registry for stdin cleanup on process exit
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    // Entry identity captured at registration; prevents an old stream exit from
+    // deleting a newer process that replaced the same context key.
+    pub interactive_process_token: Option<InteractiveProcessToken>,
     // Verification child process registry for PID-based cleanup after reconciliation
     pub verification_child_registry:
         Option<Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>>,
@@ -909,6 +914,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             app_handle,
             run_chain_id,
             is_retry_attempt,
+            persona_feature_enabled,
+            agent_name_override_set,
             user_message_content,
             turn_metadata,
             conversation,
@@ -920,6 +927,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             team_service,
             streaming_state_cache,
             interactive_process_registry,
+            interactive_process_token,
             verification_child_registry,
         } = ctx;
         let BackgroundRunRepos {
@@ -1080,7 +1088,18 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 &runtime_context_id,
             );
 
-            ipr.remove(&ipr_key).await;
+            let removed = match interactive_process_token {
+                Some(token) => ipr.remove_if_token(&ipr_key, token).await,
+                None => ipr.remove(&ipr_key).await,
+            };
+            if removed.is_none() {
+                tracing::debug!(
+                    %context_type,
+                    context_id = %context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "[IPR_REMOVE] Stream exit preserved newer interactive process"
+                );
+            }
             if team_still_active {
                 tracing::info!(
                     %context_type,
@@ -1805,6 +1824,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &runtime_context_id,
                         conversation_id,
                         sess_id,
+                        persona_feature_enabled,
                         &message_queue,
                         queued_message_repo,
                         agent_provider_settings_repo.as_ref().map(Arc::clone),
@@ -1943,6 +1963,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     stored_session_id.as_deref(),
                     harness,
                     is_retry_attempt,
+                    persona_feature_enabled,
+                    agent_name_override_set,
                     user_message_content.as_deref(),
                     conversation.as_ref(),
                     resolved_project_id.clone(),
@@ -2019,6 +2041,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 &runtime_context_id,
                                 conversation_id,
                                 session_id,
+                                persona_feature_enabled,
                                 &message_queue,
                                 queued_message_repo,
                                 agent_provider_settings_repo.as_ref().map(Arc::clone),

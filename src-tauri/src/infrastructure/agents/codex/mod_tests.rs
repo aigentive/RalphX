@@ -1,15 +1,48 @@
 use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
-    compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn,
-    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models,
-    parse_codex_model_catalog_capabilities, probe_codex_cli, resolve_codex_cli_from_candidates,
+    compose_codex_prompt, compose_codex_prompt_for_profile,
+    compose_codex_prompt_for_profile_with_outcome, configure_spawn, parse_codex_fast_mode_feature,
+    parse_codex_fast_mode_supported_models, parse_codex_model_catalog_capabilities,
+    probe_codex_cli, redact_persona_from_codex_prompt, resolve_codex_cli_from_candidates,
     CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
 };
+
 use crate::domain::agents::LogicalEffort;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+
+#[test]
+fn persona_codex_prompt_outcome_is_reasoned_when_agent_prompt_is_unavailable() {
+    let composition = compose_codex_prompt_for_profile_with_outcome(
+        "User prompt",
+        None,
+        Some("ralphx-chat-project"),
+        None,
+        Some("<ralphx_agent_persona>secret</ralphx_agent_persona>"),
+    );
+
+    assert_eq!(composition.prompt, "User prompt");
+    assert!(!composition.persona_injected);
+    assert_eq!(
+        composition.persona_injection_skipped_reason,
+        Some("codex_plugin_dir_unavailable")
+    );
+}
+
+#[test]
+fn persona_codex_debug_prompt_redaction_removes_body() {
+    let redacted = redact_persona_from_codex_prompt(
+        "before<ralphx_agent_persona>SECRET_PERSONA_BODY</ralphx_agent_persona>after",
+    );
+
+    assert_eq!(
+        redacted,
+        "before<ralphx_agent_persona>[redacted]</ralphx_agent_persona>after"
+    );
+    assert!(!redacted.contains("SECRET_PERSONA_BODY"));
+}
 
 struct EnvGuard {
     key: &'static str,
@@ -1248,6 +1281,7 @@ fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
         Some(&plugin_dir),
         Some("ralphx-ideation"),
         Some("plan"),
+        None,
     );
 
     assert!(prompt.contains("<agent_runtime_profile>"));
@@ -1259,6 +1293,53 @@ fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
         compose_codex_prompt("Create a plan", Some(&plugin_dir), Some("ralphx-ideation"));
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
     assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
+}
+
+#[test]
+fn codex_prompt_orders_persona_before_skills_and_runtime_profile_inside_ralphx_agent_instructions()
+{
+    let root = project_root();
+    let plugin_dir = root.join("plugins/app");
+    let persona = "<ralphx_agent_persona>Persona voice</ralphx_agent_persona>";
+    let prompt = compose_codex_prompt_for_profile(
+        "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+        Some("plan"),
+        Some(persona),
+    );
+
+    let instructions = prompt
+        .find("<ralphx_agent_instructions>")
+        .expect("agent instructions");
+    let persona = prompt.find(persona).expect("persona block");
+    // The live profile prompt mentions these tags in prose, so anchor on the
+    // APPENDED blocks (last occurrence), not the first prose mention.
+    let skills = prompt
+        .rfind("<ralphx_internal_skills>")
+        .expect("internal skills");
+    let runtime_profile = prompt
+        .rfind("<agent_runtime_profile>")
+        .expect("runtime profile");
+
+    assert!(instructions < persona && persona < skills && skills < runtime_profile);
+}
+
+#[test]
+fn compose_codex_prompt_for_profile_without_persona_is_byte_identical_to_today() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins/app");
+    let wrapper = compose_codex_prompt("Create a plan", Some(&plugin_dir), Some("ralphx-ideation"));
+    let threaded = compose_codex_prompt_for_profile(
+        "Create a plan",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+        None,
+        None,
+    );
+
+    assert_eq!(threaded, wrapper);
+    assert!(!threaded.contains("<ralphx_agent_persona>"));
 }
 
 #[test]

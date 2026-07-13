@@ -3,8 +3,8 @@
 
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId, CoordinationMode,
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, ChatContextType,
+    ChatConversation, ChatConversationId, CoordinationMode,
 };
 use crate::domain::repositories::ChatConversationRepository;
 use crate::infrastructure::sqlite::SqliteChatConversationRepository;
@@ -29,6 +29,7 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        persona_id: None,
         coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,
@@ -46,6 +47,146 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         attribution_backfill_completed_at: None,
         attribution_backfill_error_summary: None,
     }
+}
+
+#[tokio::test]
+async fn update_persona_binding_sets_and_clears() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-persona-binding");
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_persona_binding(&conversation.id, Some("persona-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .persona_id
+            .as_deref(),
+        Some("persona-1")
+    );
+
+    repo.update_persona_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .persona_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn persona_id_round_trips_through_all_select_paths() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-persona-selects");
+    conversation.persona_id = Some("persona-select-paths".to_string());
+    conversation.automation_id = Some(AutomationId::from_string("automation-persona-selects"));
+    conversation.claude_session_id = Some("claude-persona-selects".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    let checks = vec![
+        repo.get_by_id(&conversation.id).await.unwrap().unwrap(),
+        repo.get_by_context(ChatContextType::Project, "project-persona-selects")
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.get_by_context_filtered(ChatContextType::Project, "project-persona-selects", true)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.get_by_context_page_filtered(
+            ChatContextType::Project,
+            "project-persona-selects",
+            true,
+            false,
+            0,
+            10,
+            None,
+        )
+        .await
+        .unwrap()
+        .conversations
+        .pop()
+        .unwrap(),
+        repo.get_active_for_context(ChatContextType::Project, "project-persona-selects")
+            .await
+            .unwrap()
+            .unwrap(),
+        repo.list_by_automation_id(conversation.automation_id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.list_recent_resumable_by_context_type(ChatContextType::Project, 10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+        repo.list_needing_attribution_backfill(10)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap(),
+    ];
+
+    for selected in checks {
+        assert_eq!(selected.persona_id.as_deref(), Some("persona-select-paths"));
+    }
+}
+
+#[tokio::test]
+async fn update_agent_mode_preserves_persona_id() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let mut conversation = make_conversation(ChatContextType::Project, "project-persona-mode");
+    conversation.persona_id = Some("persona-mode".to_string());
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_agent_mode(&conversation.id, Some(AgentConversationWorkspaceMode::Chat))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .persona_id
+            .as_deref(),
+        Some("persona-mode")
+    );
+}
+
+#[tokio::test]
+async fn poisoned_persona_id_column_read_fails_closed() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    let conversation = make_conversation(ChatContextType::Project, "project-persona-poison");
+    repo.create(conversation.clone()).await.unwrap();
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations SET persona_id = X'FF' WHERE id = ?1",
+            [conversation.id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let error = repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect_err("BLOB persona IDs must not degrade to None");
+
+    assert!(matches!(error, crate::error::AppError::Database(_)));
 }
 
 // --- create ---
@@ -86,6 +227,7 @@ async fn test_create_preserves_optional_fields() {
         upstream_provider: Some("anthropic".to_string()),
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
+        persona_id: None,
         coordination_mode: CoordinationMode::RxNativeTeam,
         automation_id: None,
         automation_run_id: None,
@@ -589,6 +731,7 @@ async fn test_clear_claude_session_id() {
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        persona_id: None,
         coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,

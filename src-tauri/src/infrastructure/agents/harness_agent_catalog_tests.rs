@@ -245,6 +245,12 @@ const CROSS_HARNESS_GENERAL_AGENTS: &[(&str, &str, &str)] = &[
     ("ralphx-qa-executor", "qa_executor", "qa-executor"),
 ];
 
+const PERSONA_EXTRACTOR_AGENTS: &[(&str, &str, &str)] = &[(
+    "ralphx-persona-extractor",
+    "persona_extractor",
+    "ralphx-persona-extractor",
+)];
+
 const CROSS_HARNESS_READONLY_IDEATION_AGENTS: &[(&str, &str, &str)] = &[(
     "ralphx-ideation-readonly",
     "ideation_orchestrator_readonly",
@@ -735,6 +741,158 @@ fn codex_runtime_features_load_from_harness_metadata() {
         Some(&true),
         "general worker should declare Codex metadata instead of falling back to default"
     );
+}
+
+#[test]
+fn persona_extractor_canonical_definition_loads() {
+    let definition = load_canonical_agent_definition(&project_root(), "ralphx-persona-extractor")
+        .expect("persona extractor canonical definition should load");
+
+    assert_eq!(definition.role, "persona_extractor");
+    assert_eq!(
+        definition.capabilities.mcp_tools,
+        vec![
+            "fs_read_file",
+            "fs_list_dir",
+            "fs_grep",
+            "fs_glob",
+            "ask_user_question",
+            "save_persona_draft",
+            "get_persona_draft",
+        ]
+    );
+    assert!(
+        definition.delegation.allowed_targets.is_empty(),
+        "persona extractor must remain unspawnable until PersonaBuilder mode owns dispatch"
+    );
+}
+
+#[test]
+fn persona_extractor_prompts_exist_for_claude_and_codex() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        assert!(
+            load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness).is_some(),
+            "persona extractor should provide an explicit {harness:?} prompt"
+        );
+    }
+}
+
+#[test]
+fn persona_extractor_prompts_mention_only_live_tools() {
+    let root = project_root();
+    let granted_tools = [
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_grep",
+        "fs_glob",
+        "ask_user_question",
+        "save_persona_draft",
+        "get_persona_draft",
+        "TaskList",
+    ];
+    let ungranted_tools = [
+        "delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
+        "create_agent_task",
+        "get_agent_task",
+        "list_agent_tasks",
+        "update_agent_task",
+        "claim_agent_task",
+        "complete_agent_task",
+        "get_artifact",
+        "create_plan_artifact",
+        "update_plan_artifact",
+        "edit_plan_artifact",
+        "search_memories",
+        "get_memory",
+        "get_memories_for_paths",
+        "get_session_plan",
+        "get_task_context",
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ];
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for granted in granted_tools {
+            assert!(
+                prompt.contains(granted),
+                "persona extractor {harness:?} prompt should name granted/inert tool {granted}"
+            );
+        }
+        for ungranted in ungranted_tools {
+            assert!(
+                !prompt.contains(ungranted),
+                "persona extractor {harness:?} prompt must not mention off-surface tool {ungranted}"
+            );
+        }
+    }
+}
+
+#[test]
+fn persona_extractor_prompt_requires_distilled_persona_output() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for required_contract_text in [
+            "SKILL.md",
+            "name",
+            "kind: persona",
+            "description",
+            "10KB",
+            "150 lines",
+            "archived",
+            "slug-collision",
+        ] {
+            assert!(
+                prompt.contains(required_contract_text),
+                "persona extractor {harness:?} prompt should require {required_contract_text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn persona_extractor_codex_prompt_has_no_claude_syntax() {
+    let prompt = load_harness_agent_prompt(
+        &project_root(),
+        "ralphx-persona-extractor",
+        AgentPromptHarness::Codex,
+    )
+    .expect("persona extractor Codex prompt should exist");
+
+    assert!(!prompt.starts_with("---"));
+    for banned in [
+        "Task(",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskGet",
+        "TaskOutput",
+        "TaskStop",
+        "TeamCreate",
+        "TeamDelete",
+        "SendMessage",
+        "mcpServers",
+        "mcp__ralphx__",
+        "CLAUDE_PLUGIN_ROOT",
+        "--append-system-prompt",
+    ] {
+        assert!(
+            !prompt.contains(banned),
+            "persona extractor Codex prompt must not contain Claude-only syntax `{banned}`"
+        );
+    }
 }
 
 #[test]
@@ -1644,6 +1802,7 @@ fn live_runtime_agents() -> Vec<(&'static str, &'static str, &'static str)> {
     agents.extend_from_slice(CROSS_HARNESS_CHAT_AGENTS);
     agents.extend_from_slice(CROSS_HARNESS_SUPPORT_AGENTS);
     agents.extend_from_slice(CROSS_HARNESS_GENERAL_AGENTS);
+    agents.extend_from_slice(PERSONA_EXTRACTOR_AGENTS);
     agents.extend_from_slice(CROSS_HARNESS_READONLY_IDEATION_AGENTS);
     agents
 }

@@ -45,7 +45,7 @@ pub use crate::application::agent_conversation_start_service::{
 use crate::application::agent_conversation_workspace::{
     ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    resolve_agent_conversation_workspace_path_for_send,
+    reject_persona_builder_workspace_mode, resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
 };
@@ -88,6 +88,7 @@ use crate::application::git_service::{
     GitService,
 };
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
+use crate::application::personas::{PERSONA_FEATURE_DISABLED_PREFIX, PERSONA_UNAVAILABLE_PREFIX};
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits,
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
@@ -119,8 +120,8 @@ use crate::domain::entities::{
     ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
     ChatMessage, ChatMessageId, ChatTimelineItem, CoordinationMode, DelegatedSessionId,
     ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
-    TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
+    IdeationSessionId, InternalStatus, PersonaId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    Task, TaskCategory, TaskId, TeamIntent, TeamMessageTarget,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
@@ -134,7 +135,9 @@ use crate::domain::services::{
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
-use crate::infrastructure::agents::claude::git_runtime_config;
+use crate::infrastructure::agents::claude::{
+    agent_personas_enabled, git_runtime_config, ui_feature_flags_config,
+};
 
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
@@ -144,6 +147,8 @@ const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
+pub(crate) const PERSONA_SWITCH_AGENT_RUNNING_ERROR: &str =
+    "Cannot change persona while the agent is running";
 
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
     format!("{}/{}", ChatContextType::Project, conversation_id.as_str())
@@ -1096,11 +1101,25 @@ pub struct SwitchAgentConversationModeInput {
     pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
 }
 
+/// Input for changing the persona binding of an existing project-backed agent conversation.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchAgentConversationPersonaInput {
+    pub conversation_id: String,
+    pub persona_id: Option<String>,
+}
+
 /// Response from switch_agent_conversation_mode command.
 #[derive(Debug, Serialize)]
 pub struct SwitchAgentConversationModeResponse {
     pub conversation: AgentConversationResponse,
     pub workspace: Option<AgentConversationWorkspaceResponse>,
+}
+
+/// Response from switch_agent_conversation_persona command.
+#[derive(Debug, Serialize)]
+pub struct SwitchAgentConversationPersonaResponse {
+    pub conversation: AgentConversationResponse,
 }
 
 /// Response from publishing a project-backed agent conversation workspace.
@@ -1680,6 +1699,15 @@ pub struct AgentConversationResponse {
     pub effective_effort: Option<String>,
     pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
+    pub persona_id: Option<String>,
+    pub last_run_persona_run_id: Option<String>,
+    pub last_run_persona_id: Option<String>,
+    pub last_run_persona_slug: Option<String>,
+    pub last_run_persona_version: Option<i64>,
+    pub last_run_persona_content_hash: Option<String>,
+    pub last_run_persona_injected: Option<bool>,
+    pub last_run_persona_skipped_reason: Option<String>,
+    pub persona_runs: Vec<PersonaRunAttributionResponse>,
     pub coordination_mode: String,
     pub automation_id: Option<String>,
     pub automation_run_id: Option<String>,
@@ -1712,6 +1740,15 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_effort: None,
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
+            persona_id: c.persona_id,
+            last_run_persona_run_id: None,
+            last_run_persona_id: None,
+            last_run_persona_slug: None,
+            last_run_persona_version: None,
+            last_run_persona_content_hash: None,
+            last_run_persona_injected: None,
+            last_run_persona_skipped_reason: None,
+            persona_runs: Vec::new(),
             coordination_mode: c.coordination_mode.to_string(),
             automation_id: c.automation_id.map(|id| id.as_str().to_string()),
             automation_run_id: c.automation_run_id.map(|id| id.as_str().to_string()),
@@ -1726,6 +1763,17 @@ impl From<ChatConversation> for AgentConversationResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PersonaRunAttributionResponse {
+    pub run_id: String,
+    pub persona_id: String,
+    pub persona_slug: String,
+    pub persona_version: i64,
+    pub persona_content_hash: String,
+    pub injected: bool,
+    pub skipped_reason: Option<String>,
+}
+
 impl AgentConversationResponse {
     fn apply_runtime_attribution(&mut self, attribution: ConversationRuntimeAttribution) {
         self.logical_model = attribution.logical_model;
@@ -1733,6 +1781,13 @@ impl AgentConversationResponse {
         self.logical_effort = attribution.logical_effort.map(|value| value.to_string());
         self.effective_effort = attribution.effective_effort;
         self.service_tier = attribution.service_tier;
+        self.last_run_persona_run_id = attribution.persona_run_id;
+        self.last_run_persona_id = attribution.persona_id;
+        self.last_run_persona_slug = attribution.persona_slug;
+        self.last_run_persona_version = attribution.persona_version;
+        self.last_run_persona_content_hash = attribution.persona_content_hash;
+        self.last_run_persona_injected = attribution.persona_injected;
+        self.last_run_persona_skipped_reason = attribution.persona_skipped_reason;
     }
 }
 
@@ -1743,6 +1798,13 @@ struct ConversationRuntimeAttribution {
     logical_effort: Option<LogicalEffort>,
     effective_effort: Option<String>,
     service_tier: Option<String>,
+    persona_run_id: Option<String>,
+    persona_id: Option<String>,
+    persona_slug: Option<String>,
+    persona_version: Option<i64>,
+    persona_content_hash: Option<String>,
+    persona_injected: Option<bool>,
+    persona_skipped_reason: Option<String>,
 }
 
 impl ConversationRuntimeAttribution {
@@ -1752,18 +1814,56 @@ impl ConversationRuntimeAttribution {
             && self.logical_effort.is_none()
             && self.effective_effort.is_none()
             && self.service_tier.is_none()
+            && self.persona_run_id.is_none()
+    }
+
+    fn apply_persona_from(&mut self, attribution: Self) {
+        self.persona_run_id = attribution.persona_run_id;
+        self.persona_id = attribution.persona_id;
+        self.persona_slug = attribution.persona_slug;
+        self.persona_version = attribution.persona_version;
+        self.persona_content_hash = attribution.persona_content_hash;
+        self.persona_injected = attribution.persona_injected;
+        self.persona_skipped_reason = attribution.persona_skipped_reason;
     }
 }
 
 fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAttribution> {
+    let proven_skipped_reason = run
+        .persona_skipped_reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty());
+    let persona_injected = match run.persona_injected {
+        Some(true) => Some(true),
+        Some(false) if proven_skipped_reason.is_some() => Some(false),
+        Some(false) | None => None,
+    };
+    let persona_skipped_reason = match persona_injected {
+        Some(false) => proven_skipped_reason.map(str::to_string),
+        Some(true) | None => None,
+    };
     let attribution = ConversationRuntimeAttribution {
         logical_model: run.logical_model.clone(),
         effective_model_id: run.effective_model_id.clone(),
         logical_effort: run.logical_effort,
         effective_effort: run.effective_effort.clone(),
         service_tier: run.service_tier.clone(),
+        persona_run_id: run.persona_id.as_ref().map(|_| run.id.as_str()),
+        persona_id: run.persona_id.clone(),
+        persona_slug: run.persona_slug.clone(),
+        persona_version: run.persona_version,
+        persona_content_hash: run.persona_content_hash.clone(),
+        persona_injected,
+        persona_skipped_reason,
     };
     (!attribution.is_empty()).then_some(attribution)
+}
+
+fn run_executed_for_runtime_attribution(run: &AgentRun) -> bool {
+    match run.status {
+        AgentRunStatus::Running | AgentRunStatus::Completed | AgentRunStatus::Failed => true,
+        AgentRunStatus::Cancelled => false,
+    }
 }
 
 fn runtime_attribution_from_message(
@@ -1775,6 +1875,13 @@ fn runtime_attribution_from_message(
         logical_effort: message.logical_effort,
         effective_effort: message.effective_effort.clone(),
         service_tier: None,
+        persona_run_id: None,
+        persona_id: None,
+        persona_slug: None,
+        persona_version: None,
+        persona_content_hash: None,
+        persona_injected: None,
+        persona_skipped_reason: None,
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -1782,14 +1889,49 @@ fn runtime_attribution_from_message(
 async fn latest_conversation_runtime_attribution(
     state: &AppState,
     conversation_id: &ChatConversationId,
-) -> Result<Option<ConversationRuntimeAttribution>, String> {
+) -> Result<
+    (
+        Option<ConversationRuntimeAttribution>,
+        Vec<PersonaRunAttributionResponse>,
+    ),
+    String,
+> {
     let runs = state
         .agent_run_repo
         .get_by_conversation(conversation_id)
         .await
         .map_err(|error| error.to_string())?;
-    if let Some(attribution) = runs.iter().find_map(runtime_attribution_from_run) {
-        return Ok(Some(attribution));
+    let persona_runs = runs
+        .iter()
+        .filter_map(|run| {
+            Some(PersonaRunAttributionResponse {
+                run_id: run.id.as_str(),
+                persona_id: run.persona_id.clone()?,
+                persona_slug: run.persona_slug.clone()?,
+                persona_version: run.persona_version?,
+                persona_content_hash: run.persona_content_hash.clone()?,
+                injected: run.persona_injected?,
+                skipped_reason: run.persona_skipped_reason.clone(),
+            })
+        })
+        .collect();
+    let mut attribution = runs
+        .iter()
+        .filter(|run| run_executed_for_runtime_attribution(run))
+        .find_map(runtime_attribution_from_run);
+    let persona_attribution = runs
+        .iter()
+        .filter(|run| run_executed_for_runtime_attribution(run))
+        .filter(|run| run.persona_id.is_some())
+        .find_map(runtime_attribution_from_run);
+    if let Some(persona_attribution) = persona_attribution {
+        match attribution.as_mut() {
+            Some(attribution) => attribution.apply_persona_from(persona_attribution),
+            None => attribution = Some(persona_attribution),
+        }
+    }
+    if attribution.is_some() {
+        return Ok((attribution, persona_runs));
     }
 
     let messages = state
@@ -1797,7 +1939,10 @@ async fn latest_conversation_runtime_attribution(
         .get_recent_by_conversation_paginated(conversation_id, 200, 0)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(messages.iter().find_map(runtime_attribution_from_message))
+    Ok((
+        messages.iter().find_map(runtime_attribution_from_message),
+        persona_runs,
+    ))
 }
 
 pub(crate) async fn agent_conversation_response_for_state(
@@ -1806,9 +1951,10 @@ pub(crate) async fn agent_conversation_response_for_state(
 ) -> Result<AgentConversationResponse, String> {
     let conversation_id = conversation.id;
     let mut response = AgentConversationResponse::from(conversation);
-    if let Some(attribution) =
-        latest_conversation_runtime_attribution(state, &conversation_id).await?
-    {
+    let (attribution, persona_runs) =
+        latest_conversation_runtime_attribution(state, &conversation_id).await?;
+    response.persona_runs = persona_runs;
+    if let Some(attribution) = attribution {
         response.apply_runtime_attribution(attribution);
     }
     Ok(response)
@@ -2076,6 +2222,12 @@ pub struct AgentRunStatusResponse {
     pub error_message: Option<String>,
     pub model_id: Option<String>,
     pub model_label: Option<String>,
+    pub persona_id: Option<String>,
+    pub persona_slug: Option<String>,
+    pub persona_version: Option<i64>,
+    pub persona_content_hash: Option<String>,
+    pub persona_injected: Option<bool>,
+    pub persona_skipped_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2575,10 +2727,12 @@ pub fn parse_context_type(context_type: &str) -> Result<ChatContextType, String>
 fn parse_agent_workspace_mode(
     mode: Option<&str>,
 ) -> Result<AgentConversationWorkspaceMode, String> {
-    mode.map(str::trim)
+    let mode = mode
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("edit")
-        .parse::<AgentConversationWorkspaceMode>()
+        .unwrap_or("edit");
+    reject_persona_builder_workspace_mode(mode)?;
+    mode.parse::<AgentConversationWorkspaceMode>()
 }
 
 fn parse_agent_workspace_base_kind(
@@ -2791,10 +2945,17 @@ async fn agent_workspace_pr_automation_defaults_for_project(
 }
 
 fn validate_agent_conversation_mode_transition(
-    _current_mode: AgentConversationWorkspaceMode,
+    current_mode: AgentConversationWorkspaceMode,
     target_mode: AgentConversationWorkspaceMode,
     workspace_mode_lock: &AgentConversationWorkspaceModeLock,
 ) -> Result<(), String> {
+    if matches!(
+        current_mode,
+        AgentConversationWorkspaceMode::Automation | AgentConversationWorkspaceMode::PersonaBuilder
+    ) {
+        return Err("Automation and PersonaBuilder conversations cannot change mode".to_string());
+    }
+    reject_persona_builder_workspace_mode(&target_mode.to_string())?;
     if workspace_mode_lock.locked && target_mode != AgentConversationWorkspaceMode::Ideation {
         return Err(workspace_mode_lock.reason.clone().unwrap_or_else(|| {
             "This workspace is owned by active ideation or execution state and cannot leave Ideation Mode"
@@ -3091,6 +3252,124 @@ pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     let service = create_chat_service(&state, app, &execution_state, None);
     switch_agent_conversation_mode_for_state_stopping_running_agent(input, state.inner(), &service)
         .await
+}
+
+/// Switch the persona binding for a project-backed agent conversation.
+#[tauri::command]
+pub async fn switch_agent_conversation_persona<R: Runtime + 'static>(
+    input: SwitchAgentConversationPersonaInput,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle<R>,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    let service = create_chat_service(&state, app, &execution_state, None);
+    switch_agent_conversation_persona_for_state_stopping_running_agent(
+        input,
+        state.inner(),
+        &service,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_stopping_running_agent(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    chat_service: &dyn ChatService,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    switch_agent_conversation_persona_for_state_with_provider_session_reset(
+        input,
+        state,
+        chat_service,
+        ui_feature_flags_config().persona_switch_forces_fresh_provider_session,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn switch_agent_conversation_persona_for_state_with_provider_session_reset(
+    input: SwitchAgentConversationPersonaInput,
+    state: &AppState,
+    chat_service: &dyn ChatService,
+    force_fresh_provider_session: bool,
+) -> Result<SwitchAgentConversationPersonaResponse, String> {
+    if !agent_personas_enabled() {
+        return Err(crate::error::AppError::FeatureDisabled(format!(
+            "{PERSONA_FEATURE_DISABLED_PREFIX} agent personas feature is disabled]"
+        ))
+        .to_string());
+    }
+
+    let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let mut conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+    if conversation.context_type != ChatContextType::Project {
+        return Err("Only project agent conversations can change persona".to_string());
+    }
+
+    let persona_id = input.persona_id.map(PersonaId::from_string);
+    if let Some(persona_id) = persona_id.as_ref() {
+        let persona = state
+            .persona_repo
+            .get_by_id(persona_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !persona.is_some_and(|persona| persona.is_bindable()) {
+            return Err(format!(
+                "{PERSONA_UNAVAILABLE_PREFIX} persona {persona_id} is not active]"
+            ));
+        }
+    }
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    if state.running_agent_registry.is_running(&running_key).await {
+        let stopped = chat_service
+            .stop_agent(ChatContextType::Project, &conversation.id.as_str())
+            .await
+            .map_err(|error| error.to_string())?;
+        tracing::info!(
+            conversation_id = %conversation.id,
+            stopped,
+            "Stopped running project agent before switching conversation persona"
+        );
+        if state.running_agent_registry.is_running(&running_key).await {
+            return Err(PERSONA_SWITCH_AGENT_RUNNING_ERROR.to_string());
+        }
+    }
+
+    state
+        .chat_conversation_repo
+        .update_persona_binding(
+            &conversation.id,
+            persona_id.as_ref().map(|persona_id| persona_id.as_str()),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if force_fresh_provider_session {
+        state
+            .chat_conversation_repo
+            .clear_provider_session_ref(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    conversation.persona_id = persona_id.map(|persona_id| persona_id.to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .unwrap_or(conversation);
+
+    Ok(SwitchAgentConversationPersonaResponse {
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
+    })
 }
 
 #[doc(hidden)]
@@ -8275,6 +8554,12 @@ pub async fn get_agent_run_status_unified(
         error_message: run.error_message,
         model_id,
         model_label,
+        persona_id: run.persona_id,
+        persona_slug: run.persona_slug,
+        persona_version: run.persona_version,
+        persona_content_hash: run.persona_content_hash,
+        persona_injected: run.persona_injected,
+        persona_skipped_reason: run.persona_skipped_reason,
     }))
 }
 
@@ -9105,6 +9390,9 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
         AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
+        AgentConversationWorkspaceMode::PersonaBuilder => {
+            AgentConversationRuntimeIndexMode::Automation
+        }
     }
 }
 

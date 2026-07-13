@@ -10,7 +10,8 @@ use crate::domain::repositories::AgentLaneSettingsRepository;
 use crate::infrastructure::agents::claude::{canonical_short_agent_name, resolve_model};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedAgentSpawnSettings {
+#[doc(hidden)]
+pub struct ResolvedAgentSpawnSettings {
     pub configured_harness: Option<AgentHarnessKind>,
     pub effective_harness: AgentHarnessKind,
     pub configured_model: Option<String>,
@@ -28,7 +29,10 @@ pub(crate) struct ResolvedAgentSpawnSettings {
     pub subagent_model_cap: Option<String>,
 }
 
-pub(crate) async fn resolve_agent_spawn_settings(
+/// Integration-test seam (doc-hidden): suites resolve spawn settings to feed
+/// the launch-plan test helper.
+#[doc(hidden)]
+pub async fn resolve_agent_spawn_settings(
     agent_name: &str,
     project_id: Option<&str>,
     context_type: ChatContextType,

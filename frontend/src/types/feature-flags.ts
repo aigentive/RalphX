@@ -9,6 +9,16 @@ export const featureFlagsSchema = z.object({
   teamMode: z.boolean().default(false),
   atlassianOauth: z.boolean().default(false),
   ticketingDashboard: z.boolean().default(false),
+  agentPersonas: z.boolean().default(false),
 });
 
-export type FeatureFlags = z.infer<typeof featureFlagsSchema>;
+/**
+ * Compatibility type for persisted frontend defaults that predate this additive
+ * flag. Parsed feature-flag responses always populate `agentPersonas` as false.
+ */
+export type FeatureFlags = Omit<
+  z.infer<typeof featureFlagsSchema>,
+  "agentPersonas"
+> & {
+  agentPersonas?: boolean;
+};

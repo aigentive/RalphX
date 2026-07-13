@@ -56,6 +56,7 @@ import {
   type LiveTranscriptRow,
   type StreamingToolUseBlock,
 } from "./ChatMessageList.liveRows";
+import type { AgentRun } from "@/types/chat-conversation";
 
 // ============================================================================
 // Constants
@@ -226,6 +227,7 @@ export interface ChatMessageData {
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
   timelineSequence?: number | null;
+  runId?: string | null;
 }
 
 type ToolCallGroupMarker = {
@@ -450,6 +452,44 @@ function senderGroupPart(value: string | null | undefined) {
   return trimmed && trimmed.length > 0 ? trimmed : "";
 }
 
+export type PersonaAttributedRun = Pick<
+  AgentRun,
+  | "id"
+  | "personaId"
+  | "personaSlug"
+  | "personaVersion"
+  | "personaInjected"
+  | "personaSkippedReason"
+>;
+
+function personaRunBadgeProps(
+  agentRun: PersonaAttributedRun | null | undefined,
+  enabled: boolean,
+  runId: string | null | undefined,
+) {
+  if (!enabled || !agentRun || runId !== agentRun.id) {
+    return {};
+  }
+  return {
+    agentPersonasEnabled: true,
+    personaSlug: agentRun.personaSlug ?? null,
+    personaVersion: agentRun.personaVersion ?? null,
+    personaInjected: agentRun.personaInjected ?? null,
+    personaSkippedReason: agentRun.personaSkippedReason ?? null,
+  };
+}
+
+function attributedRunForId(
+  activeRun: PersonaAttributedRun | null | undefined,
+  historicalRuns: readonly PersonaAttributedRun[],
+  runId: string | null | undefined,
+) {
+  if (!runId) return null;
+  return activeRun?.id === runId
+    ? activeRun
+    : (historicalRuns.find((run) => run.id === runId) ?? null);
+}
+
 function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | null {
   if (!isProviderRole(message.role)) {
     return null;
@@ -465,6 +505,7 @@ function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | n
     senderGroupPart(message.providerSessionId),
     senderGroupPart(message.upstreamProvider),
     senderGroupPart(message.providerProfile),
+    senderGroupPart(message.runId),
   ].join("\u0000");
 }
 
@@ -506,6 +547,9 @@ function ToolCallGroupToggleRow({
   onToggle,
   contentWidthClassName,
   rowRef,
+  agentRun,
+  personaRuns,
+  agentPersonasEnabled,
 }: {
   msg: ChatMessageData;
   marker: ToolCallGroupMarker;
@@ -517,6 +561,9 @@ function ToolCallGroupToggleRow({
   onToggle: React.MouseEventHandler<HTMLButtonElement>;
   contentWidthClassName?: string | undefined;
   rowRef?: React.Ref<HTMLDivElement> | undefined;
+  agentRun?: PersonaAttributedRun | null | undefined;
+  personaRuns: readonly PersonaAttributedRun[];
+  agentPersonasEnabled: boolean;
 }) {
   return (
     <div
@@ -548,6 +595,11 @@ function ToolCallGroupToggleRow({
           cacheCreationTokens={msg.cacheCreationTokens}
           cacheReadTokens={msg.cacheReadTokens}
           estimatedUsd={msg.estimatedUsd}
+          {...personaRunBadgeProps(
+            attributedRunForId(agentRun, personaRuns, msg.runId),
+            agentPersonasEnabled && senderGroupState.showSenderHeader,
+            msg.runId,
+          )}
           showAssistantIcon={senderGroupState.showSenderHeader}
           reserveAssistantIconSpace={senderGroupState.reserveAssistantGutter}
           showProviderMeta={senderGroupState.showSenderHeader}
@@ -801,6 +853,9 @@ interface ChatMessageListProps {
   /** Provider metadata for the active conversation */
   providerHarness?: string | null | undefined;
   providerSessionId?: string | null | undefined;
+  agentRun?: PersonaAttributedRun | null | undefined;
+  personaRuns?: readonly PersonaAttributedRun[];
+  agentPersonasEnabled?: boolean;
   contentWidthClassName?: string | undefined;
   topInsetClassName?: string | undefined;
   hasOlderMessages?: boolean;
@@ -836,6 +891,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       contextKey,
       providerHarness,
       providerSessionId,
+      agentRun,
+      personaRuns = [],
+      agentPersonasEnabled = false,
       contentWidthClassName,
       topInsetClassName,
       hasOlderMessages = false,
@@ -1789,6 +1847,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             teammateColor={teammateColor}
             onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
             contentWidthClassName={contentWidthClassName}
+            agentRun={agentRun}
+            personaRuns={personaRuns}
+            agentPersonasEnabled={agentPersonasEnabled}
           />
         )
         : null;
@@ -1849,6 +1910,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               cacheCreationTokens={msg.cacheCreationTokens}
               cacheReadTokens={msg.cacheReadTokens}
               estimatedUsd={msg.estimatedUsd}
+              {...personaRunBadgeProps(
+                attributedRunForId(agentRun, personaRuns, msg.runId),
+                agentPersonasEnabled &&
+                  effectiveSenderGroupState.showSenderHeader,
+                msg.runId,
+              )}
               showAssistantIcon={effectiveSenderGroupState.showSenderHeader}
               reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
               showProviderMeta={effectiveSenderGroupState.showSenderHeader}
@@ -1864,6 +1931,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       ) : messageRow;
     }, [
       contentWidthClassName,
+      agentPersonasEnabled,
+      agentRun,
+      personaRuns,
       expandedToolGroupKeys,
       firstItemIndex,
       footerContent,
@@ -1995,6 +2065,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                   teammateColor={teammateColor}
                   onToggle={(event) => toggleToolCallGroup(toolCallGroup.key, event.currentTarget)}
                   contentWidthClassName={contentWidthClassName}
+                  agentRun={agentRun}
+                  personaRuns={personaRuns}
+                  agentPersonasEnabled={agentPersonasEnabled}
                 />
               )
               : null;
@@ -2056,6 +2129,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     cacheCreationTokens={msg.cacheCreationTokens}
                     cacheReadTokens={msg.cacheReadTokens}
                     estimatedUsd={msg.estimatedUsd}
+                    {...personaRunBadgeProps(
+                      attributedRunForId(agentRun, personaRuns, msg.runId),
+                      agentPersonasEnabled &&
+                        effectiveSenderGroupState.showSenderHeader,
+                      msg.runId,
+                    )}
                     showAssistantIcon={effectiveSenderGroupState.showSenderHeader}
                     reserveAssistantIconSpace={effectiveSenderGroupState.reserveAssistantGutter}
                     showProviderMeta={effectiveSenderGroupState.showSenderHeader}

@@ -37,6 +37,7 @@ import {
 import {
   normalizeToolCallTranscriptPayload,
 } from "./verification-tool-calls";
+import { PersonaRunBadge } from "./PersonaRunBadge";
 
 // ============================================================================
 // Types
@@ -110,6 +111,11 @@ export interface MessageItemProps {
   reserveAssistantIconSpace?: boolean | undefined;
   showProviderMeta?: boolean | undefined;
   hideMeta?: boolean | undefined;
+  agentPersonasEnabled?: boolean | undefined;
+  personaSlug?: string | null | undefined;
+  personaVersion?: number | null | undefined;
+  personaInjected?: boolean | null | undefined;
+  personaSkippedReason?: string | null | undefined;
 }
 
 export interface MessageMetaProps {
@@ -268,6 +274,11 @@ export const MessageItem = React.memo(function MessageItem({
   reserveAssistantIconSpace = showAssistantIcon,
   showProviderMeta = true,
   hideMeta = false,
+  agentPersonasEnabled = false,
+  personaSlug,
+  personaVersion,
+  personaInjected,
+  personaSkippedReason,
 }: MessageItemProps) {
   const isUser = role === "user";
   const hasCustomBody = children != null;
@@ -299,6 +310,12 @@ export const MessageItem = React.memo(function MessageItem({
     !isUser &&
     !teammateName &&
     (providerHarnessLabel !== null || modelEffortLabel !== null);
+  const shouldShowPersonaMeta =
+    agentPersonasEnabled &&
+    !isUser &&
+    !teammateName &&
+    personaSlug != null &&
+    personaInjected != null;
   const shouldReserveAssistantIconSpace =
     !isUser && !teammateName && reserveAssistantIconSpace;
 
@@ -538,11 +555,11 @@ export const MessageItem = React.memo(function MessageItem({
       {/* Agent indicator for assistant messages */}
       {shouldReserveAssistantIconSpace && (
         showAssistantIcon ? (
-          <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", shouldShowProviderMeta ? "mt-0.5" : "mt-2")} />
+          <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", shouldShowProviderMeta || shouldShowPersonaMeta ? "mt-0.5" : "mt-2")} />
         ) : (
           <span
             aria-hidden="true"
-            className={cn("w-3.5 h-3.5 mr-2 shrink-0", shouldShowProviderMeta ? "mt-0.5" : "mt-2")}
+            className={cn("w-3.5 h-3.5 mr-2 shrink-0", shouldShowProviderMeta || shouldShowPersonaMeta ? "mt-0.5" : "mt-2")}
             data-testid="message-assistant-icon-spacer"
           />
         )
@@ -560,20 +577,22 @@ export const MessageItem = React.memo(function MessageItem({
       )}
 
       <div className="flex flex-col gap-3 min-w-0 w-full">
-        {shouldShowProviderMeta && (
+        {(shouldShowProviderMeta || shouldShowPersonaMeta) && (
           <div
             className="flex items-center gap-2 min-w-0"
             data-testid="message-provider-meta"
           >
-            <span
-              className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
-              style={providerHarnessStyle}
-              title={providerTooltip ?? undefined}
-              aria-label={providerTooltip ?? providerHarnessLabel ?? undefined}
-              data-testid="message-provider-badge"
-            >
-              {providerHarnessLabel}
-            </span>
+            {shouldShowProviderMeta && (
+              <span
+                className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
+                style={providerHarnessStyle}
+                title={providerTooltip ?? undefined}
+                aria-label={providerTooltip ?? providerHarnessLabel ?? undefined}
+                data-testid="message-provider-badge"
+              >
+                {providerHarnessLabel}
+              </span>
+            )}
             {modelEffortLabel && (
               <span
                 className="text-[0.625rem] min-w-0 truncate text-text-primary/50"
@@ -583,6 +602,13 @@ export const MessageItem = React.memo(function MessageItem({
                 {modelEffortLabel}
               </span>
             )}
+            <PersonaRunBadge
+              enabled={agentPersonasEnabled}
+              personaSlug={personaSlug}
+              personaVersion={personaVersion}
+              personaInjected={personaInjected}
+              skippedReason={personaSkippedReason}
+            />
           </div>
         )}
 
@@ -662,5 +688,10 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.showAssistantIcon === next.showAssistantIcon
     && prev.reserveAssistantIconSpace === next.reserveAssistantIconSpace
     && prev.showProviderMeta === next.showProviderMeta
-    && prev.hideMeta === next.hideMeta;
+    && prev.hideMeta === next.hideMeta
+    && prev.agentPersonasEnabled === next.agentPersonasEnabled
+    && prev.personaSlug === next.personaSlug
+    && prev.personaVersion === next.personaVersion
+    && prev.personaInjected === next.personaInjected
+    && prev.personaSkippedReason === next.personaSkippedReason;
 });

@@ -5,7 +5,8 @@ use tauri::{Emitter, Runtime};
 
 use super::AgentWorkspaceSourcePullRequestInput;
 use crate::application::agent_conversation_workspace::{
-    AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspacePrAutomationDefaults,
+    reject_persona_builder_workspace_mode, AgentConversationWorkspaceBranchNameHint,
+    AgentConversationWorkspacePrAutomationDefaults,
 };
 use crate::application::agent_planning_session_titles::hydrate_agent_conversation_planning_session_title;
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
@@ -25,10 +26,12 @@ use crate::domain::services::ComposerIntegrationReference;
 pub(crate) fn parse_agent_workspace_mode(
     mode: Option<&str>,
 ) -> Result<AgentConversationWorkspaceMode, String> {
-    mode.map(str::trim)
+    let mode = mode
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("edit")
-        .parse::<AgentConversationWorkspaceMode>()
+        .unwrap_or("edit");
+    reject_persona_builder_workspace_mode(mode)?;
+    mode.parse::<AgentConversationWorkspaceMode>()
 }
 
 pub(crate) fn parse_agent_workspace_base_kind(
@@ -153,7 +156,10 @@ pub(crate) fn agent_mode_should_create_workspace(
     source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
     has_plan_reference: bool,
 ) -> bool {
-    if mode == AgentConversationWorkspaceMode::Automation {
+    if matches!(
+        mode,
+        AgentConversationWorkspaceMode::Automation | AgentConversationWorkspaceMode::PersonaBuilder
+    ) {
         return false;
     }
     agent_mode_requires_workspace(mode)

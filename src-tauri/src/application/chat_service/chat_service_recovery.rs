@@ -13,17 +13,20 @@ use super::chat_service_replay::{
 };
 use super::chat_service_streaming::process_stream_background;
 use super::streaming_state_cache::StreamingStateCache;
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::verification_event_emitters::{
     emit_verification_status_changed, event_sink_from_app_handle,
 };
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::VerificationStatus;
-use crate::domain::entities::{ChatContextType, ChatConversation, ChatConversationId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversation, ChatConversationId, PersonaDirective,
+};
 use crate::domain::repositories::{
-    AgentProviderSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, IdeationSessionRepository,
-    TaskProposalRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    IdeationSessionRepository, TaskProposalRepository,
 };
 use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,
@@ -146,7 +149,8 @@ async fn session_recovery_provider_decision<R: Runtime>(
 /// - `Ok(new_session_id)`: Recovery succeeded, new session ID
 /// - `Err(AppError)`: Recovery failed
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn attempt_session_recovery<R: Runtime>(
+#[doc(hidden)]
+pub async fn attempt_session_recovery<R: Runtime>(
     conversation_id: &ChatConversationId,
     conversation: &ChatConversation,
     harness: AgentHarnessKind,
@@ -164,7 +168,11 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
     artifact_repo: Arc<dyn ArtifactRepository>,
     ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    agent_run_id: &str,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     old_session_id: &str,
     app_handle: Option<&tauri::AppHandle<R>>,
 ) -> AppResult<String> {
@@ -260,6 +268,41 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
     } else {
         None
     };
+    let resolved_persona = if persona_feature_enabled {
+        if let Some(app_state) = app_handle.and_then(|handle| handle.try_state::<AppState>()) {
+            let workspace_mode = app_state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation.id)
+                .await
+                .map_err(|error| {
+                    AppError::PersonaUnavailable(format!("[Persona unavailable: {error}]"))
+                })?
+                .map(|workspace| workspace.mode);
+            resolve_persona_for_send(
+                conversation,
+                &PersonaDirective::Inherit,
+                super::persona_resolve_flags_for_conversation(
+                    persona_feature_enabled,
+                    false,
+                    agent_name_override_set,
+                    context_type,
+                    conversation,
+                    workspace_mode,
+                ),
+                Arc::clone(&app_state.persona_repo),
+            )
+            .await
+            .map_err(|error| {
+                AppError::PersonaUnavailable(format!("[Persona unavailable: {error}]"))
+            })?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let persona_for_attribution = resolved_persona.clone();
 
     // 4. Spawn fresh provider session with history
     let provider_spawnable = match chat_service_context::build_command_for_harness(
@@ -268,6 +311,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
         plugin_dir,
         conversation,
         &bootstrap_prompt,
+        resolved_persona,
         working_directory,
         entity_status.as_deref(),
         _resolved_project_id.as_deref(),
@@ -295,6 +339,10 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
+    let persona_injected = provider_spawnable.spawnable.persona_injected();
+    let persona_injection_skipped_reason = provider_spawnable
+        .spawnable
+        .persona_injection_skipped_reason();
     let provider_env = match session_recovery_provider_decision(
         app_handle,
         &agent_provider_settings_repo,
@@ -323,6 +371,17 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
+    super::record_persona_run_attribution(
+        &agent_run_repo,
+        app_handle,
+        conversation_id,
+        agent_run_id,
+        harness,
+        persona_for_attribution.as_ref(),
+        persona_injected,
+        persona_injection_skipped_reason,
+    )
+    .await;
 
     // 5. Process stream to capture new session ID
     let outcome = match process_stream_background::<tauri::Wry>(

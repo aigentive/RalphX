@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   CheckCircle2,
   Clock,
@@ -97,7 +106,10 @@ import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceCha
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
-import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
+import {
+  AGENT_CONVERSATION_MODE_OPTIONS,
+  isConversationModeLocked,
+} from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
@@ -146,6 +158,41 @@ import {
 } from "./agentWorkspaceQueries";
 import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 import { useAgentWorkspaceBaseUpdate } from "./useAgentWorkspaceBaseUpdate";
+
+interface MemoizedPersonaControlProps {
+  control: ReactNode;
+}
+
+function arePersonaControlsEqual(
+  previous: MemoizedPersonaControlProps,
+  next: MemoizedPersonaControlProps,
+): boolean {
+  const previousControl = previous.control;
+  const nextControl = next.control;
+  if (previousControl === nextControl) return true;
+  if (
+    !isValidElement<Record<string, unknown>>(previousControl) ||
+    !isValidElement<Record<string, unknown>>(nextControl) ||
+    previousControl.type !== nextControl.type ||
+    previousControl.key !== nextControl.key
+  ) {
+    return false;
+  }
+
+  const previousProps = previousControl.props;
+  const nextProps = nextControl.props;
+  const previousKeys = Object.keys(previousProps);
+  return (
+    previousKeys.length === Object.keys(nextProps).length &&
+    previousKeys.every((key) => Object.is(previousProps[key], nextProps[key]))
+  );
+}
+
+const MemoizedPersonaControl = memo(function MemoizedPersonaControl({
+  control,
+}: MemoizedPersonaControlProps) {
+  return control;
+}, arePersonaControlsEqual);
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
 const PLAN_MODE_PROPOSAL_KIND = "plan_mode_proposal";
@@ -829,7 +876,6 @@ interface AgentsActiveConversationPanelProps {
 export const AgentsActiveConversationPanel = memo(function AgentsActiveConversationPanel({
   activeConversation,
   activeConversationMode,
-  activeConversationModeLocked,
   activeProjectId,
   activeProjectOptions,
   activeWorkspace,
@@ -877,6 +923,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
+  const resolvedConversationModeLocked = isConversationModeLocked(
+    activeConversation,
+    activeWorkspace,
+  );
   const queryClient = useQueryClient();
   const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
@@ -1561,7 +1611,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const automationConfigId =
     automationConfig?.id ?? activeConversation.automationId ?? null;
   const modeOptions = useMemo(() => {
-    if (!activeConversationModeLocked) {
+    if (!resolvedConversationModeLocked) {
       return AGENT_CONVERSATION_MODE_OPTIONS;
     }
     const lockReason =
@@ -1578,7 +1628,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     );
   }, [
     activeConversationMode,
-    activeConversationModeLocked,
+    resolvedConversationModeLocked,
     activeWorkspace?.modeSwitchLockReason,
   ]);
   const isPlanWorkspaceComposer =
@@ -2395,7 +2445,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return;
       }
 
-      if (activeConversationModeLocked) {
+      if (resolvedConversationModeLocked) {
         toast.error(
           activeWorkspace?.modeSwitchLockReason ??
             "This conversation cannot switch modes while the workspace is busy.",
@@ -2413,7 +2463,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       activeConversation.contextType,
       activeConversation.automationRunId,
       activeConversationMode,
-      activeConversationModeLocked,
+      resolvedConversationModeLocked,
       activeWorkspace,
       automationConfigId,
       continuePlanModeConversation,
@@ -2701,6 +2751,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               selectedConversationId,
                             testId: "agents-conversation-team",
                           },
+                        }
+                      : {})}
+                    {...(composerProps.personaControl !== undefined
+                      ? {
+                          personaControl: (
+                            <MemoizedPersonaControl
+                              control={composerProps.personaControl}
+                            />
+                          ),
                         }
                       : {})}
                     {...(composerProps.value !== undefined

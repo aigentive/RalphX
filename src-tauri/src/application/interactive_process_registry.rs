@@ -9,6 +9,7 @@
 
 use crate::domain::agents::AgentHarnessKind;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::process::ChildStdin;
@@ -40,12 +41,22 @@ pub struct InteractiveProcess {
     pub stdin: ChildStdin,
     pub completion_signal: Arc<Notify>,
     pub metadata: InteractiveProcessMetadata,
+    token: InteractiveProcessToken,
 }
+
+/// Monotonic identity for one concrete registry entry.
+///
+/// A stream-exit cleanup may outlive a persona-driven replacement under the same key;
+/// the token makes that cleanup remove only the process it originally registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InteractiveProcessToken(u64);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractiveProcessMetadata {
     pub harness: Option<AgentHarnessKind>,
     pub provider_session_id: Option<String>,
+    pub persona_id: Option<String>,
+    pub persona_content_hash: Option<String>,
 }
 
 /// Registry for interactive CLI processes with open stdin handles.
@@ -55,6 +66,7 @@ pub struct InteractiveProcessMetadata {
 #[derive(Debug)]
 pub struct InteractiveProcessRegistry {
     processes: Mutex<HashMap<InteractiveProcessKey, InteractiveProcess>>,
+    next_token: AtomicU64,
 }
 
 impl Default for InteractiveProcessRegistry {
@@ -67,6 +79,7 @@ impl InteractiveProcessRegistry {
     pub fn new() -> Self {
         Self {
             processes: Mutex::new(HashMap::new()),
+            next_token: AtomicU64::new(1),
         }
     }
 
@@ -76,8 +89,9 @@ impl InteractiveProcessRegistry {
     /// Returns the completion signal so callers can await it without holding the registry lock.
     /// If a process already exists for this key, the old one is dropped (closes the pipe).
     pub async fn register(&self, key: InteractiveProcessKey, stdin: ChildStdin) -> Arc<Notify> {
-        self.register_with_metadata(key, stdin, InteractiveProcessMetadata::default())
+        self.register_entry(key, stdin, InteractiveProcessMetadata::default())
             .await
+            .0
     }
 
     /// Register a stdin handle plus optional provider metadata for an interactive process.
@@ -86,7 +100,16 @@ impl InteractiveProcessRegistry {
         key: InteractiveProcessKey,
         stdin: ChildStdin,
         metadata: InteractiveProcessMetadata,
-    ) -> Arc<Notify> {
+    ) -> InteractiveProcessToken {
+        self.register_entry(key, stdin, metadata).await.1
+    }
+
+    async fn register_entry(
+        &self,
+        key: InteractiveProcessKey,
+        stdin: ChildStdin,
+        metadata: InteractiveProcessMetadata,
+    ) -> (Arc<Notify>, InteractiveProcessToken) {
         let mut processes = self.processes.lock().await;
         if processes.contains_key(&key) {
             tracing::warn!(
@@ -96,13 +119,15 @@ impl InteractiveProcessRegistry {
             );
         }
         let completion_signal = Arc::new(Notify::new());
+        let token = InteractiveProcessToken(self.next_token.fetch_add(1, Ordering::Relaxed));
         let entry = InteractiveProcess {
             stdin,
             completion_signal: Arc::clone(&completion_signal),
             metadata,
+            token,
         };
         processes.insert(key, entry);
-        completion_signal
+        (completion_signal, token)
     }
 
     /// Check if an interactive process exists for this context.
@@ -158,6 +183,23 @@ impl InteractiveProcessRegistry {
     pub async fn remove(&self, key: &InteractiveProcessKey) -> Option<InteractiveProcess> {
         let mut processes = self.processes.lock().await;
         processes.remove(key)
+    }
+
+    /// Remove an entry only when it is still the same registration.
+    ///
+    /// Stream-exit cleanup uses this instead of keyed removal so an old process cannot
+    /// erase a newer replacement that reused the same context key.
+    pub async fn remove_if_token(
+        &self,
+        key: &InteractiveProcessKey,
+        token: InteractiveProcessToken,
+    ) -> Option<InteractiveProcess> {
+        let mut processes = self.processes.lock().await;
+        if processes.get(key).is_some_and(|entry| entry.token == token) {
+            processes.remove(key)
+        } else {
+            None
+        }
     }
 
     /// Return the completion signal for a running process, or None if not registered.
@@ -235,6 +277,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_stream_exit_does_not_remove_fresh_ipr_entry() {
+        let registry = InteractiveProcessRegistry::new();
+        let key = InteractiveProcessKey::new("project", "replacement-race");
+        let (stdin_a, _child_a) = create_test_stdin().await;
+        let token_a = registry
+            .register_with_metadata(key.clone(), stdin_a, InteractiveProcessMetadata::default())
+            .await;
+        let (stdin_b, _child_b) = create_test_stdin().await;
+        let token_b = registry
+            .register_with_metadata(key.clone(), stdin_b, InteractiveProcessMetadata::default())
+            .await;
+
+        assert!(
+            registry.remove_if_token(&key, token_a).await.is_none(),
+            "old stream cleanup must not remove the replacement entry"
+        );
+        assert!(registry.has_process(&key).await);
+        assert!(
+            registry.remove_if_token(&key, token_b).await.is_some(),
+            "the current stream cleanup must still remove its own entry"
+        );
+    }
+
+    #[tokio::test]
     async fn test_write_message_no_process_returns_error() {
         let registry = InteractiveProcessRegistry::new();
         let key = InteractiveProcessKey::new("ideation", "session-123");
@@ -268,6 +334,8 @@ mod tests {
                 InteractiveProcessMetadata {
                     harness: Some(AgentHarnessKind::Codex),
                     provider_session_id: Some("thread-123".to_string()),
+                    persona_id: None,
+                    persona_content_hash: None,
                 },
             )
             .await;

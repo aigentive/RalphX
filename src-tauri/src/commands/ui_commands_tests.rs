@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn get_ui_feature_flags_includes_agent_personas() {
+    let response = get_ui_feature_flags();
+    let json = serde_json::to_value(response).expect("feature flags response should serialize");
+
+    assert_eq!(json.get("agentPersonas"), Some(&serde_json::json!(false)));
+    assert!(json.get("agent_personas").is_none());
+}
+
+#[test]
 fn test_ui_feature_flags_response_serializes_to_camel_case() {
     let response = get_ui_feature_flags();
     let json = serde_json::to_string(&response).unwrap();
