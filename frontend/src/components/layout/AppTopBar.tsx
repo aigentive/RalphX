@@ -33,9 +33,6 @@ interface AppTopBarProps {
 
 const VIEW_LABELS: Partial<Record<ViewType, string>> = {
   agents: "Agents",
-  ideation: "Ideation",
-  graph: "Graph",
-  kanban: "Kanban",
   ticketing: "Ticketing",
   github: "GitHub",
   granola: "Granola",
@@ -54,9 +51,6 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
 let lastDockBadgeCount: number | undefined;
 
 const PROJECT_SELECTOR_VIEWS = new Set<ViewType>([
-  "ideation",
-  "graph",
-  "kanban",
   "ticketing",
   "github",
   "granola",
@@ -73,10 +67,6 @@ function breadcrumbItems(
 ): string[] {
   if (currentView === "agents") {
     return ["Workspace", "Agents", agentConversationTitle ?? "New run"];
-  }
-
-  if (currentView === "kanban") {
-    return ["Workspace", projectName ?? "Project", "Tasks"];
   }
 
   if (currentView === "ticketing") {

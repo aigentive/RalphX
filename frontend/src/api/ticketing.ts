@@ -10,6 +10,15 @@ import {
 import { typedInvoke, TauriVoidSchema } from "@/lib/tauri";
 import { ViewTypeSchema } from "@/types/chat";
 
+export const LegacyStandaloneTaskViewSchema = z.enum([
+  "kanban",
+  "graph",
+  "ideation",
+]);
+export type LegacyStandaloneTaskView = z.infer<
+  typeof LegacyStandaloneTaskViewSchema
+>;
+
 export const TicketingProviderSchema = z.enum(["jira", "linear", "clickup"]);
 export type TicketingProvider = z.infer<typeof TicketingProviderSchema>;
 
@@ -251,9 +260,11 @@ export const TicketFilterOptionsSchema = z.object({
 export type TicketFilterOptions = z.infer<typeof TicketFilterOptionsSchema>;
 
 export const TicketDeepLinkSchema = z.object({
-  view: ViewTypeSchema,
+  view: z.union([ViewTypeSchema, LegacyStandaloneTaskViewSchema]),
   id: z.string(),
   projectId: z.string().nullable().optional(),
+  /** Additive ownership context for legacy task links. */
+  conversationId: z.string().nullable().optional(),
 });
 export type TicketDeepLink = z.infer<typeof TicketDeepLinkSchema>;
 

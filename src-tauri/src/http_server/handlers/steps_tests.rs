@@ -134,7 +134,9 @@ async fn execution_complete_rejects_dirty_worktree() {
     .await;
 
     assert_eq!(
-        response.expect_err("dirty worktree must be rejected"),
+        response
+            .expect_err("dirty worktree must be rejected")
+            .status,
         axum::http::StatusCode::CONFLICT
     );
 }
@@ -202,7 +204,9 @@ async fn execution_complete_rejects_empty_captured_base_diff() {
     .await;
 
     assert_eq!(
-        response.expect_err("empty captured-base diff must be rejected"),
+        response
+            .expect_err("empty captured-base diff must be rejected")
+            .status,
         axum::http::StatusCode::CONFLICT
     );
 }
@@ -245,7 +249,7 @@ async fn execution_complete_accepts_non_empty_captured_base_diff() {
 }
 
 #[tokio::test]
-async fn execution_complete_writes_validation_cache_with_targeted_metadata_update() {
+async fn execution_complete_does_not_accept_agent_test_result_as_validation_evidence() {
     let tmp_dir = create_temp_git_repo();
     let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "main"]);
     std::fs::write(tmp_dir.path().join("src.rs"), "fn main() {}\n").unwrap();
@@ -285,14 +289,71 @@ async fn execution_complete_writes_validation_cache_with_targeted_metadata_updat
         .await
         .unwrap()
         .expect("task should exist");
-    let cache = ValidationCacheMetadata::from_task_metadata(updated.metadata.as_deref())
-        .unwrap()
-        .expect("execution_complete should store validation cache metadata");
-    assert!(cache.tests_ran);
-    assert!(cache.tests_passed);
-    assert_eq!(
-        cache.test_summary.as_deref(),
-        Some("focused validation passed")
+    assert!(
+        ValidationCacheMetadata::from_task_metadata(updated.metadata.as_deref())
+            .unwrap()
+            .is_none(),
+        "execution_complete must not convert agent-provided test_result into review evidence"
     );
-    assert_eq!(cache.captured_by, "execution_complete");
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_failed_test_result_as_validation_failure() {
+    let tmp_dir = create_temp_git_repo();
+    let base_sha = git_stdout(tmp_dir.path(), &["rev-parse", "main"]);
+    std::fs::write(tmp_dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+    run_git(tmp_dir.path(), &["add", "src.rs"]);
+    run_git(tmp_dir.path(), &["commit", "-m", "task work"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let mut task = task_for_repo(&app_state, tmp_dir.path(), "Red validation task").await;
+    task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some("main".to_string());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let response = execution_complete_http(
+        State(state),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: Some(TestResultInput {
+                tests_ran: true,
+                tests_passed: false,
+                test_summary: Some("1 failed, 9 passed".to_string()),
+            }),
+        }),
+    )
+    .await;
+
+    let error = response.expect_err("red validation must reject completion");
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    let body = error.message.expect("validation rejection body");
+    assert!(
+        body.contains("\"error\":\"validation_failed\""),
+        "error body should carry typed validation source: {body}"
+    );
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["failure_source"], "validation_failed");
+    assert_eq!(
+        metadata["failure_error"],
+        "Validation failed: 1 failed, 9 passed"
+    );
+    assert!(
+        ValidationCacheMetadata::from_task_metadata(updated.metadata.as_deref())
+            .unwrap()
+            .is_none(),
+        "red validation must not be cached as green completion evidence"
+    );
 }

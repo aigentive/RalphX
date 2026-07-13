@@ -149,10 +149,9 @@ pub fn provider_origin_for_harness(
     match harness {
         AgentHarnessKind::Codex => (Some("openai".to_string()), None),
         AgentHarnessKind::Claude => {
-            let profile = crate::infrastructure::agents::claude::get_effective_settings_profile(
-                agent_name,
-            )
-            .map(str::to_string);
+            let profile =
+                crate::infrastructure::agents::claude::get_effective_settings_profile(agent_name)
+                    .map(str::to_string);
             let upstream_provider = profile
                 .as_deref()
                 .and_then(classify_claude_profile_provider)
@@ -193,6 +192,33 @@ fn classify_claude_profile_provider(profile: &str) -> Option<&'static str> {
 
 pub fn harness_supports_merge_completion_watcher(harness: AgentHarnessKind) -> bool {
     standard_harness_behavior(harness).supports_merge_completion_watcher
+}
+
+/// Decide whether a send must start a new provider session instead of resuming
+/// the conversation's stored provider thread.
+///
+/// Canonical-agent overrides are orchestrated workflow boundaries (for example
+/// PR monitoring, CI autofix, and workspace review). They must not inherit an
+/// arbitrary interactive chat thread just because it belongs to the same
+/// conversation.
+pub fn should_start_fresh_provider_session(
+    force_new_provider_session: bool,
+    provider_switch_requires_fresh_session: bool,
+    agent_name_override: Option<&str>,
+) -> bool {
+    force_new_provider_session
+        || provider_switch_requires_fresh_session
+        || agent_name_override.is_some()
+}
+
+/// A stored provider thread may be resumed only when its most recent known
+/// model matches the model selected for this send. Providers do not guarantee
+/// that a resumed thread can safely switch models.
+pub fn provider_session_model_matches_requested(
+    latest_session_model: Option<&str>,
+    requested_model: &str,
+) -> bool {
+    latest_session_model.is_none_or(|model| model == requested_model)
 }
 
 /// Map ChatContextType to process name for team config lookup

@@ -121,6 +121,30 @@ fn silent_completion_recovery_triggers_after_tool_without_final_text() {
 }
 
 #[test]
+fn silent_completion_recovery_triggers_for_ideation_tool_activity_without_final_text() {
+    let tool_calls = vec![test_tool_call("mcp__ralphx__create_agent_task")];
+    let content_blocks = vec![ContentBlockItem::ToolUse {
+        id: Some("task-1".to_string()),
+        name: "mcp__ralphx__create_agent_task".to_string(),
+        arguments: serde_json::json!({ "title": "Create implementation proposals" }),
+        result: Some(serde_json::json!({ "success": true })),
+        parent_tool_use_id: None,
+        diff_context: None,
+    }];
+
+    assert!(should_recover_silent_completion(
+        ChatContextType::Ideation,
+        "",
+        &tool_calls,
+        &content_blocks,
+        0,
+        false,
+        false,
+        true,
+    ));
+}
+
+#[test]
 fn silent_completion_recovery_treats_blank_text_before_tool_as_unfinished() {
     let tool_calls = vec![test_tool_call("apply_patch")];
     let content_blocks = vec![
@@ -307,6 +331,43 @@ async fn silent_completion_recovery_enqueues_hidden_retry_at_front() {
             .map(|duration| duration.as_millis()),
         Some(1_000)
     );
+}
+
+#[tokio::test]
+async fn silent_completion_recovery_enqueues_ideation_retry_in_place() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let tool_calls = vec![test_tool_call("mcp__ralphx__create_agent_task")];
+
+    let result = enqueue_silent_completion_recovery(
+        &queue,
+        None,
+        ChatContextType::Ideation,
+        "planning-session-1",
+        "",
+        &tool_calls,
+        &[],
+        0,
+        false,
+        false,
+        true,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        SilentCompletionRecoveryEnqueue::Queued {
+            attempt: 1,
+            backoff_ms: 1_000,
+        }
+    );
+    let queued = queue.get_queued(ChatContextType::Ideation, "planning-session-1");
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].content.contains("ended after tool activity"));
+    let metadata: serde_json::Value =
+        serde_json::from_str(queued[0].metadata_override.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["resume_in_place"], true);
+    assert_eq!(metadata["recovery_attempt"], 1);
 }
 
 #[tokio::test]

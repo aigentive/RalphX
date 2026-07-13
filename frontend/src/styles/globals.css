@@ -269,16 +269,6 @@ a:not([class*="no-underline"]):hover {
   font-weight: 500;
 }
 
-/* Ideation PlanItem — hover/menu-open use CSS so they clear automatically
-   when selection moves to another item. Inline-style hover painting got
-   stuck because clicking didn't trigger a mouseleave. */
-.plan-item-row:hover:not([aria-current="true"]):not([data-menu-open="true"]) {
-  background-color: var(--overlay-faint);
-}
-.plan-item-row[data-menu-open="true"]:not([aria-current="true"]) {
-  background-color: var(--overlay-faint);
-}
-
 .agents-session-meta {
   color: var(--text-muted);
 }

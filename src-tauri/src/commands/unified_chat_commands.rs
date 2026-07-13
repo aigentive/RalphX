@@ -3220,6 +3220,8 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     };
 
     validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
+    let plan_to_edit_handoff = current_mode == AgentConversationWorkspaceMode::Plan
+        && target_mode == AgentConversationWorkspaceMode::Edit;
 
     if agent_is_running {
         if let ModeSwitchRunningAgentPolicy::StopWithService(chat_service) = running_agent_policy {
@@ -3344,6 +3346,19 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             }
         }
     };
+
+    if plan_to_edit_handoff && conversation.provider_session_ref().is_some() {
+        state
+            .chat_conversation_repo
+            .clear_provider_session_ref(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        conversation.clear_provider_session_ref();
+        tracing::info!(
+            conversation_id = %conversation.id,
+            "Cleared planning provider session before Plan-to-Edit implementation handoff"
+        );
+    }
 
     state
         .chat_conversation_repo
@@ -3957,22 +3972,24 @@ fn conversation_matches_agent_list_search(
 #[doc(hidden)]
 pub async fn archive_agent_conversation_inner(
     conversation_id: &ChatConversationId,
+    close_pull_request: bool,
     state: &AppState,
 ) -> Result<(), String> {
-    archive_agent_conversation_for_state(conversation_id, state).await
+    archive_agent_conversation_for_state(conversation_id, state, close_pull_request).await
 }
 
 /// Archive a conversation.
-/// If the workspace has an open PR, close it immediately on the remote
-/// and mark publication_pr_status as "closed". The local worktree/branch
-/// will be cleaned up on next app restart via the terminal cleanup pipeline.
+/// An open PR is closed only when the caller opts in. Review PR workspaces
+/// never close their reviewed pull request. The local worktree/branch will
+/// be cleaned up on next app restart via the terminal cleanup pipeline.
 #[tauri::command]
 pub async fn archive_agent_conversation(
     conversation_id: String,
+    close_pull_request: bool,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    archive_agent_conversation_inner(&conversation_id, &state).await?;
+    archive_agent_conversation_inner(&conversation_id, close_pull_request, &state).await?;
 
     let conversation = state
         .chat_conversation_repo
@@ -16290,7 +16307,7 @@ mod tests {
         .expect("conversation should be created");
         assert_eq!(created.title.as_deref(), Some("Created from command"));
 
-        let archived = archive_agent_conversation(conversation_id.clone(), app.state())
+        let archived = archive_agent_conversation(conversation_id.clone(), false, app.state())
             .await
             .expect("conversation should be archived");
         assert!(archived.archived_at.is_some());

@@ -20,6 +20,10 @@ use crate::domain::entities::{
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
 
+#[cfg(test)]
+#[path = "memory_agent_conversation_workspace_repo_tests.rs"]
+mod memory_agent_conversation_workspace_repo_tests;
+
 pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
     followup_provenance: RwLock<HashMap<ChatConversationId, AgentWorkspaceFollowupProvenance>>,
@@ -644,6 +648,8 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut monitors = self.pr_review_monitors.write().await;
         if let Some(existing) = monitors.get(&monitor.conversation_id) {
             monitor.created_at = existing.created_at;
+            monitor.auto_approve_enabled = existing.auto_approve_enabled;
+            monitor.first_action_resolved = existing.first_action_resolved;
             if monitor.review_artifact_id.is_none() {
                 monitor.review_artifact_id = existing.review_artifact_id.clone();
                 monitor.review_artifact_head_sha = existing.review_artifact_head_sha.clone();
@@ -666,6 +672,33 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .get(conversation_id)
             .cloned())
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        let mut monitors = self.pr_review_monitors.write().await;
+        let monitor = monitors
+            .get_mut(conversation_id)
+            .expect("PR review monitor must exist before updating Auto Approve");
+        monitor.auto_approve_enabled = enabled;
+        monitor.updated_at = Utc::now();
+        Ok(monitor.clone())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        let mut monitors = self.pr_review_monitors.write().await;
+        let monitor = monitors
+            .get_mut(conversation_id)
+            .expect("PR review monitor must exist before resolving the first action");
+        monitor.first_action_resolved = true;
+        monitor.updated_at = Utc::now();
+        Ok(monitor.clone())
     }
 
     async fn list_active_pr_review_monitors(
@@ -850,6 +883,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             action.resolved_at = pr_review_action_terminal_status(status).then(Utc::now);
         }
         Ok(())
+    }
+
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool> {
+        let mut actions = self.pr_review_actions.write().await;
+        let Some(action) = actions.get_mut(action_id) else {
+            return Ok(false);
+        };
+        if action.status != AgentWorkspacePrReviewActionStatus::Pending {
+            return Ok(false);
+        }
+        action.status = AgentWorkspacePrReviewActionStatus::Submitting;
+        action.updated_at = Utc::now();
+        Ok(true)
     }
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {

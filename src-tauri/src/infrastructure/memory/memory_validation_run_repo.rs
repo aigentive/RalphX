@@ -43,6 +43,39 @@ impl ValidationRunRepository for MemoryValidationRunRepository {
         Ok(())
     }
 
+    async fn record_validated_content_fingerprint(
+        &self,
+        run_id: &str,
+        fingerprint: Option<String>,
+    ) -> AppResult<()> {
+        if let Some(run) = self.runs.write().await.get_mut(run_id) {
+            run.validated_content_fingerprint = fingerprint;
+        }
+        Ok(())
+    }
+
+    async fn promote_run_to_commit(&self, run_id: &str, commit_sha: &str) -> AppResult<()> {
+        if let Some(run) = self.runs.write().await.get_mut(run_id) {
+            run.promoted_commit_sha = Some(commit_sha.to_string());
+        }
+        Ok(())
+    }
+
+    async fn mark_running_runs_error(
+        &self,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
+        let mut count = 0;
+        for run in self.runs.write().await.values_mut() {
+            if run.status == ValidationRunStatus::Running {
+                run.status = ValidationRunStatus::Error;
+                run.completed_at = Some(completed_at);
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     async fn add_command_result(&self, result: &ValidationCommandResult) -> AppResult<()> {
         self.commands.write().await.push(result.clone());
         Ok(())

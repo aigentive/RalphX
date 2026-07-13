@@ -3,7 +3,11 @@ import { toast } from "sonner";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { tasksApi } from "@/api/tasks";
-import { navigateToIdeationSession } from "@/lib/navigation";
+import {
+  navigateToAgentConversation,
+  navigateToAgentPlan,
+  navigateToIdeationSession,
+} from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
@@ -34,13 +38,13 @@ export async function navigateNotification(
   item: NotificationNavigationItem,
   queryClient: QueryClient,
   options: NotificationNavigationOptions = {},
-) {
+): Promise<boolean> {
   if (item.category === "permission_request") {
     window.dispatchEvent(new CustomEvent("ralphx:open-permission-dialog", {
       detail: { requestId: permissionRequestId(item.id) },
     }));
     options.onClose?.();
-    return;
+    return true;
   }
 
   const { target } = item;
@@ -49,7 +53,7 @@ export async function navigateNotification(
       await tasksApi.get(target.taskId);
     } catch {
       toast.error("This task no longer exists.");
-      return;
+      return false;
     }
 
     const projectState = useProjectStore.getState();
@@ -64,11 +68,24 @@ export async function navigateNotification(
       useUiStore.getState().navigateToTask(target.taskId);
     }
     options.onClose?.();
-    return;
+    return true;
   }
   if (target.kind === "agent_conversation") {
-    const conversationId = target.conversationId ?? target.setupConversationId;
-    if (conversationId) navigateToIdeationSession(conversationId);
+    if (target.projectId && target.conversationId) {
+      if (item.category === "plan_approval" || item.category === "team_plan_approval") {
+        navigateToAgentPlan(target.projectId, target.conversationId);
+      } else {
+        navigateToAgentConversation(target.projectId, target.conversationId);
+      }
+      options.onClose?.();
+      return true;
+    } else if (target.setupConversationId) {
+      navigateToIdeationSession(target.setupConversationId);
+      options.onClose?.();
+      return true;
+    }
+    options.onClose?.();
+    return false;
   }
   if (
     target.kind === "automation_run" &&
@@ -91,12 +108,19 @@ export async function navigateNotification(
         ],
       }),
     });
+    options.onClose?.();
+    return true;
   } else if (target.kind === "automation_run" && target.automationId) {
     options.onOpenAutomationDetail?.(target.automationId);
+    options.onClose?.();
+    return true;
   }
   if (target.kind === "project" && target.projectId) {
     useProjectStore.getState().selectProject(target.projectId);
-    useUiStore.getState().setCurrentView("kanban");
+    useUiStore.getState().setCurrentView("agents");
+    options.onClose?.();
+    return true;
   }
   if (target.kind !== "none") options.onClose?.();
+  return false;
 }

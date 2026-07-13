@@ -740,7 +740,8 @@ export async function mockUpdateConversationTitle(
 }
 
 export async function mockArchiveConversation(
-  conversationId: string
+  conversationId: string,
+  _options: { closePullRequest: boolean }
 ): Promise<ChatConversation> {
   const conversation = mockConversations.get(conversationId);
   if (!conversation) {

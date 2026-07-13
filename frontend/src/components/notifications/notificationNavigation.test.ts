@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { tasksApi } from "@/api/tasks";
-import { navigateToIdeationSession } from "@/lib/navigation";
+import {
+  navigateToAgentConversation,
+  navigateToAgentPlan,
+  navigateToIdeationSession,
+} from "@/lib/navigation";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { NotificationCategory, NotificationTarget } from "@/types/notifications";
@@ -16,7 +20,11 @@ vi.mock("@/components/automations/automationRunNavigation", () => ({
   requestAutomationRunOpen: vi.fn(),
 }));
 vi.mock("@/api/tasks", () => ({ tasksApi: { get: vi.fn() } }));
-vi.mock("@/lib/navigation", () => ({ navigateToIdeationSession: vi.fn() }));
+vi.mock("@/lib/navigation", () => ({
+  navigateToAgentConversation: vi.fn(),
+  navigateToAgentPlan: vi.fn(),
+  navigateToIdeationSession: vi.fn(),
+}));
 vi.mock("sonner", () => ({ toast: { error: toastError } }));
 
 const target = {
@@ -159,10 +167,62 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("opens either agent conversation target and ignores a target with neither conversation id", () => {
+  it("routes an Agent conversation target to its exact project conversation", () => {
     const onClose = vi.fn();
     navigateNotification(
-      { id: "conversation-1", category: "agent_waiting", target: { kind: "agent_conversation", setupConversationId: "setup-1" } },
+      {
+        id: "conversation-1",
+        category: "agent_question",
+        target: {
+          kind: "agent_conversation",
+          projectId: "project-2",
+          conversationId: "conversation-1",
+        },
+      },
+      {} as QueryClient,
+      { onClose },
+    );
+
+    expect(navigateToAgentConversation).toHaveBeenCalledWith(
+      "project-2",
+      "conversation-1",
+    );
+    expect(navigateToIdeationSession).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each(["plan_approval", "team_plan_approval"] as const)(
+    "opens %s targets in the conversation Plan artifact",
+    (category) => {
+      const onClose = vi.fn();
+
+      navigateNotification(
+        {
+          id: `${category}-1`,
+          category,
+          target: {
+            kind: "agent_conversation",
+            projectId: "project-2",
+            conversationId: "conversation-1",
+          },
+        },
+        {} as QueryClient,
+        { onClose },
+      );
+
+      expect(navigateToAgentPlan).toHaveBeenCalledWith(
+        "project-2",
+        "conversation-1",
+      );
+      expect(navigateToAgentConversation).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("keeps the legacy setup-conversation fallback and closes malformed targets", () => {
+    const onClose = vi.fn();
+    navigateNotification(
+      { id: "conversation-legacy", category: "agent_waiting", target: { kind: "agent_conversation", setupConversationId: "setup-1" } },
       {} as QueryClient,
       { onClose },
     );
@@ -192,7 +252,7 @@ describe("navigateNotification", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("selects a project and returns to kanban only when a project id exists", () => {
+  it("selects a project and returns to Agents only when a project id exists", () => {
     const onClose = vi.fn();
     navigateNotification(
       { id: "project-1", category: "info", target: { kind: "project", projectId: "project-1" } },
@@ -207,7 +267,7 @@ describe("navigateNotification", () => {
 
     expect(selectProject).toHaveBeenCalledTimes(1);
     expect(selectProject).toHaveBeenCalledWith("project-1");
-    expect(setCurrentView).toHaveBeenCalledWith("kanban");
+    expect(setCurrentView).toHaveBeenCalledWith("agents");
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 

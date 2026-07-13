@@ -172,7 +172,9 @@ fn row_to_pr_review_monitor(
         status: AgentWorkspacePrReviewMonitorStatus::from_str(&status)
             .unwrap_or(AgentWorkspacePrReviewMonitorStatus::Idle),
         monitor_enabled: row.get("monitor_enabled")?,
+        auto_approve_enabled: row.get("auto_approve_enabled")?,
         first_review_completed: row.get("first_review_completed")?,
+        first_action_resolved: row.get("first_action_resolved")?,
         last_seen_head_sha: row.get("last_seen_head_sha")?,
         last_reviewed_head_sha: row.get("last_reviewed_head_sha")?,
         last_review_run_id: row.get("last_review_run_id")?,
@@ -1573,7 +1575,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let pr_number = monitor.pr_number;
         let status = monitor.status.to_string();
         let monitor_enabled = monitor.monitor_enabled;
+        let auto_approve_enabled = monitor.auto_approve_enabled;
         let first_review_completed = monitor.first_review_completed;
+        let first_action_resolved = monitor.first_action_resolved;
         let last_seen_head_sha = monitor.last_seen_head_sha.clone();
         let last_reviewed_head_sha = monitor.last_reviewed_head_sha.clone();
         let last_review_run_id = monitor.last_review_run_id.clone();
@@ -1598,19 +1602,22 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 conn.execute(
                     "INSERT INTO agent_workspace_pr_review_monitors (
                         conversation_id, project_id, pr_number, status, monitor_enabled,
-                        first_review_completed, last_seen_head_sha, last_reviewed_head_sha,
+                        auto_approve_enabled, first_review_completed, first_action_resolved,
+                        last_seen_head_sha, last_reviewed_head_sha,
                         last_review_run_id, last_review_outcome, last_submitted_review_id,
                         review_artifact_id, review_artifact_head_sha, review_artifact_version,
                         review_artifact_updated_at, last_error, created_at, updated_at
                     ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
                         pr_number = excluded.pr_number,
                         status = excluded.status,
                         monitor_enabled = excluded.monitor_enabled,
+                        auto_approve_enabled = agent_workspace_pr_review_monitors.auto_approve_enabled,
                         first_review_completed = excluded.first_review_completed,
+                        first_action_resolved = agent_workspace_pr_review_monitors.first_action_resolved,
                         last_seen_head_sha = excluded.last_seen_head_sha,
                         last_reviewed_head_sha = excluded.last_reviewed_head_sha,
                         last_review_run_id = excluded.last_review_run_id,
@@ -1628,7 +1635,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_number,
                         status,
                         monitor_enabled,
+                        auto_approve_enabled,
                         first_review_completed,
+                        first_action_resolved,
                         last_seen_head_sha,
                         last_reviewed_head_sha,
                         last_review_run_id,
@@ -1669,6 +1678,51 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 } else {
                     Ok(None)
                 }
+            })
+            .await
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_workspace_pr_review_monitors
+                     SET auto_approve_enabled = ?2, updated_at = ?3
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, enabled, Utc::now().to_rfc3339()],
+                )?;
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_pr_review_monitors WHERE conversation_id = ?1",
+                )?;
+                stmt.query_row(rusqlite::params![conversation_id], row_to_pr_review_monitor)
+                    .map_err(Into::into)
+            })
+            .await
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_workspace_pr_review_monitors
+                     SET first_action_resolved = 1, updated_at = ?2
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, Utc::now().to_rfc3339()],
+                )?;
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_pr_review_monitors WHERE conversation_id = ?1",
+                )?;
+                stmt.query_row(rusqlite::params![conversation_id], row_to_pr_review_monitor)
+                    .map_err(Into::into)
             })
             .await
     }
@@ -2171,6 +2225,22 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     ],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool> {
+        let action_id = action_id.to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run_transaction(move |conn| {
+                let updated = conn.execute(
+                    "UPDATE agent_workspace_pr_review_actions
+                     SET status = 'submitting', updated_at = ?2, resolved_at = NULL
+                     WHERE id = ?1 AND status = 'pending'",
+                    rusqlite::params![action_id, updated_at],
+                )?;
+                Ok(updated == 1)
             })
             .await
     }

@@ -689,6 +689,10 @@ pub enum ExecutionFailureSource {
     GitIsolation,
     /// Agent exited successfully without producing enough work to satisfy execution completion
     AgentIncomplete,
+    /// A local command or MCP tool failed without proving that the agent process crashed
+    LocalToolFailed,
+    /// Backend-owned validation rejected the execution result; not an agent crash.
+    ValidationFailed,
     /// Unknown/unclassified failure
     Unknown,
 }
@@ -768,6 +772,10 @@ pub enum ExecutionRecoveryReasonCode {
     IncompleteSteps,
     /// Agent made a deterministic local command usage error
     AgentCommandInvalid,
+    /// Backend-owned validation returned failed evidence
+    ValidationFailed,
+    /// Local command or MCP tool failed without proving an agent process crash
+    LocalToolFailed,
     /// Unknown/unclassified reason
     Unknown,
 }

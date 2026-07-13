@@ -1,16 +1,18 @@
 // Tauri commands for Task CRUD operations
 // Modular structure: types, helpers, query (read), mutation (write), tests
 
-pub mod helpers;
 mod execution_plan_control_service;
-pub mod execution_plan_controls;
-pub mod mutation;
-pub mod query;
-pub mod types;
 #[cfg(test)]
 mod execution_plan_control_service_tests;
+pub mod execution_plan_controls;
 #[cfg(test)]
 mod execution_plan_controls_tests;
+pub mod helpers;
+pub mod mutation;
+pub mod query;
+#[cfg(test)]
+mod query_tests;
+pub mod types;
 
 // Re-export types
 pub use types::{
@@ -49,9 +51,9 @@ pub use helpers::{default_target, emit_queue_changed, emit_task_lifecycle_event,
 
 // Re-export query commands
 pub use query::{
-    get_archived_count, get_task, get_task_dependency_graph, get_task_state_transitions,
-    get_task_timeline_events, get_tasks_awaiting_review, get_valid_transitions, list_tasks,
-    search_tasks,
+    get_archived_count, get_task, get_task_agent_workspace, get_task_dependency_graph,
+    get_task_state_transitions, get_task_timeline_events, get_tasks_awaiting_review,
+    get_valid_transitions, list_tasks, search_tasks,
 };
 
 // Re-export mutation commands

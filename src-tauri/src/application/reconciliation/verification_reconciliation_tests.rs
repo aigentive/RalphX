@@ -710,6 +710,121 @@ async fn test_reconcile_child_complete_actionable_needs_revision_requests_auto_c
 }
 
 #[tokio::test]
+async fn test_reconcile_child_complete_repairs_zero_blocking_round_before_auto_continue() {
+    let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
+
+    let (parent_id, child_id) = make_parent_child_pair(
+        &repo,
+        Some(make_snapshot(
+            0,
+            VerificationStatus::NeedsRevision,
+            true,
+            2,
+            5,
+            None,
+            &[6, 0],
+        )),
+    )
+    .await;
+    repo.update_verification_state(&parent_id, VerificationStatus::NeedsRevision, true)
+        .await
+        .unwrap();
+
+    let result = reconcile_verification_on_child_complete::<tauri::Wry>(
+        &parent_id, &child_id, &dyn_repo, None,
+    )
+    .await;
+
+    match result {
+        Some(ReconcileVerificationChildCompletion::Terminal(result)) => {
+            assert_eq!(result.terminal_status, VerificationStatus::Verified);
+            let snapshot = result.parsed_snapshot.expect("terminal snapshot");
+            assert_eq!(snapshot.status, VerificationStatus::Verified);
+            assert!(!snapshot.in_progress);
+            assert_eq!(
+                snapshot.convergence_reason.as_deref(),
+                Some("zero_blocking")
+            );
+        }
+        other => panic!(
+            "expected zero-blocking terminal repair, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+
+    let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::Verified
+    );
+    assert!(!parent_after.verification_in_progress);
+
+    let child_after = repo.get_by_id(&child_id).await.unwrap().unwrap();
+    assert_eq!(
+        child_after.status,
+        crate::domain::entities::IdeationSessionStatus::Archived
+    );
+}
+
+#[tokio::test]
+async fn test_reconcile_child_complete_keeps_parse_failed_zero_round_unverified() {
+    let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
+    let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
+    let snapshot = VerificationRunSnapshot {
+        generation: 0,
+        status: VerificationStatus::NeedsRevision,
+        in_progress: true,
+        current_round: 2,
+        max_rounds: 5,
+        best_round_index: None,
+        convergence_reason: None,
+        current_gaps: vec![],
+        rounds: vec![VerificationRoundSnapshot {
+            round: 2,
+            gap_score: 0,
+            fingerprints: vec![],
+            gaps: vec![],
+            parse_failed: true,
+        }],
+    };
+    let (parent_id, child_id) = make_parent_child_pair(&repo, Some(snapshot)).await;
+    repo.update_verification_state(&parent_id, VerificationStatus::NeedsRevision, true)
+        .await
+        .unwrap();
+
+    let result = reconcile_verification_on_child_complete::<tauri::Wry>(
+        &parent_id, &child_id, &dyn_repo, None,
+    )
+    .await;
+
+    match result {
+        Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
+            assert_eq!(request.snapshot.status, VerificationStatus::NeedsRevision);
+            assert!(request.snapshot.in_progress);
+            assert!(request.snapshot.convergence_reason.is_none());
+        }
+        other => panic!(
+            "parse-failed round must not be promoted, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+
+    let parent_after = repo.get_by_id(&parent_id).await.unwrap().unwrap();
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::NeedsRevision
+    );
+    assert!(parent_after.verification_in_progress);
+
+    let child_after = repo.get_by_id(&child_id).await.unwrap().unwrap();
+    assert_ne!(
+        child_after.status,
+        crate::domain::entities::IdeationSessionStatus::Archived
+    );
+}
+
+#[tokio::test]
 async fn test_reconcile_child_complete_pending_review_round_requests_auto_continue() {
     let repo = Arc::new(crate::infrastructure::memory::MemoryIdeationSessionRepository::new());
     let dyn_repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository> = repo.clone();
