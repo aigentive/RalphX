@@ -4968,15 +4968,16 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
 }
 
 #[tokio::test]
-async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_failed_steps() {
+async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cache_for_failed_steps(
+) {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
     let (_worktree, base_sha, head_sha) = git_worktree_with_base_and_change();
 
     let project = Project::new(
-        "AgentExit Validation Override".into(),
-        "/tmp/agent-exit-validation-override".into(),
+        "Local Tool Validation Override".into(),
+        "/tmp/local-tool-validation-override".into(),
     );
     state.project_repo.create(project.clone()).await.unwrap();
 
@@ -5011,9 +5012,8 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         &ChatContextType::TaskExecution,
         task_id.as_str(),
     );
-    let stream_error = StreamError::AgentExit {
-        exit_code: None,
-        stderr: "agent exited after execution_complete".to_string(),
+    let stream_error = StreamError::LocalToolFailed {
+        message: "late local diagnostic after execution_complete".to_string(),
     };
     let app = mock_builder()
         .manage(state.clone())
@@ -5022,13 +5022,13 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
     let app_handle = Some(app.handle().clone());
 
     let recovery_spawned = handle_stream_error::<MockRuntime>(
-        "agent exited after execution_complete",
+        "late local diagnostic after execution_complete",
         Some(&stream_error),
         ChatContextType::TaskExecution,
         task_id.as_str(),
         conversation_id,
         agent_run_id.as_str(),
-        "message-id-agent-exit-validation-cache",
+        "message-id-local-tool-validation-cache",
         &event_ctx,
         None,
         crate::domain::agents::AgentHarnessKind::Codex,
@@ -5071,7 +5071,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
 
     assert!(
         !recovery_spawned,
-        "normal agent-exit path should not spawn stale-session recovery"
+        "normal local-tool diagnostic path should not spawn stale-session recovery"
     );
 
     let updated = state
@@ -5085,7 +5085,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
             updated.internal_status,
             InternalStatus::PendingReview | InternalStatus::Reviewing
         ),
-        "AgentExit should route to review flow when validation cache proves completion, got {:?}",
+        "LocalToolFailed should route to review flow when validation cache proves completion, got {:?}",
         updated.internal_status
     );
 
