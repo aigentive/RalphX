@@ -526,8 +526,8 @@ async fn dirty_worktree_emergency_commit_enables_freshness() {
     );
 }
 
-/// When the emergency auto-commit fails (simulated by making the git repo
-/// directory read-only), `ensure_branches_fresh()` must block execution rather
+/// When the emergency auto-commit fails (simulated by an index lock),
+/// `ensure_branches_fresh()` must block execution rather
 /// than pretending the freshness check passed.
 ///
 /// This verifies fail-closed behavior: if the dirty worktree cannot be made
@@ -553,18 +553,13 @@ async fn dirty_worktree_failed_autocommit_blocks_execution() {
         "Pre-condition: worktree must be dirty"
     );
 
-    // Simulate auto-commit failure by making .git/objects read-only.
-    // This prevents git from writing new objects (commit will fail).
-    let objects_dir = path.join(".git").join("objects");
-    let original_perms = std::fs::metadata(&objects_dir).unwrap().permissions();
+    // A fixed index lock deterministically makes emergency staging fail while
+    // still allowing the preceding read-only status check to detect dirtiness.
+    let index_lock = path.join(".git").join("index.lock");
+    std::fs::write(&index_lock, "held by test").unwrap();
 
-    // Make objects directory read-only to cause commit failure
-    let mut ro_perms = original_perms.clone();
-    use std::os::unix::fs::PermissionsExt;
-    ro_perms.set_mode(0o555); // r-xr-xr-x
-    std::fs::set_permissions(&objects_dir, ro_perms).unwrap();
-
-    let project = make_project_at(&repo.path_string());
+    let mut project = make_project_at(&repo.path_string());
+    project.github_pr_enabled = false;
     let task = make_task_with_branch(&repo.task_branch, 0);
     let cfg = concurrent_test_config();
 
@@ -582,10 +577,7 @@ async fn dirty_worktree_failed_autocommit_blocks_execution() {
     )
     .await;
 
-    // Restore permissions before any assertions (ensure cleanup happens even on panic)
-    let mut rw_perms = original_perms.clone();
-    rw_perms.set_mode(0o755);
-    let _ = std::fs::set_permissions(&objects_dir, rw_perms);
+    std::fs::remove_file(index_lock).unwrap();
 
     // Must block — fail closed rather than skip freshness and spawn on uncertain state.
     assert!(
