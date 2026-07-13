@@ -422,6 +422,36 @@ async fn codex_stream_accepted_completion_tool_enters_grace_path() {
 }
 
 #[tokio::test]
+async fn codex_stream_started_completion_then_rejected_has_no_completion_authority() {
+    let result = run_codex_stream_lines(&[
+        r#"{"type":"item.started","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"}}}"#,
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","error":{"message":"ERROR: validation_failed\n\nDetails: Validation failed: 1 failed, 9 passed"}}}"#,
+    ])
+    .await
+    .expect_err("a rejected completion tool must not inherit authority from item.started");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("validation_failed"));
+            assert!(message.contains("1 failed, 9 passed"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_accepted_completion_suppresses_late_local_diagnostic() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"result":{"success":true}}}"#,
+        r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","status":"failed","aggregated_output":"late cleanup diagnostic","exit_code":1}}"#,
+    ])
+    .await
+    .expect("an accepted completion must outrank a later local diagnostic");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
 async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
     let child = spawn_jsonl_process_with_exit_status(
         &[r#"{"type":"thread.started","thread_id":"compacted-thread"}"#],
@@ -1232,6 +1262,19 @@ async fn claude_stream_accepted_completion_tool_enters_grace_path() {
     ])
     .await
     .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
+async fn claude_stream_accepted_completion_suppresses_late_agent_exit() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":true},"is_error":false}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["late process shutdown"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted completion must outrank a later agent-exit diagnostic");
 
     assert!(outcome.completion_tool_called);
 }

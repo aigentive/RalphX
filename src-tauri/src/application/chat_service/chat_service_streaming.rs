@@ -3600,7 +3600,9 @@ async fn process_codex_stream_background<R: Runtime>(
                     }
                 }
 
-                if is_completion_tool_name(&tool_call.name) {
+                if snapshot.phase == CodexToolCallPhase::Completed
+                    && is_completion_tool_name(&tool_call.name)
+                {
                     if extract_codex_error(&event).is_none()
                         && completion_tool_result_accepted(tool_call.result.as_ref())
                     {
