@@ -153,6 +153,7 @@ pub struct TicketAttachmentSourceHandle {
     provider: TicketAttachmentProvider,
     ticket_id: String,
     attachment_id: String,
+    fetch_url: Option<String>,
 }
 
 impl TicketAttachmentSourceHandle {
@@ -176,7 +177,13 @@ impl TicketAttachmentSourceHandle {
             provider,
             ticket_id: ticket_id.to_string(),
             attachment_id: attachment_id.to_string(),
+            fetch_url: None,
         })
+    }
+
+    pub fn with_fetch_url(mut self, fetch_url: impl Into<String>) -> Self {
+        self.fetch_url = Some(fetch_url.into());
+        self
     }
 
     pub fn provider(&self) -> TicketAttachmentProvider {
@@ -189,6 +196,10 @@ impl TicketAttachmentSourceHandle {
 
     pub fn attachment_id(&self) -> &str {
         &self.attachment_id
+    }
+
+    pub fn fetch_url(&self) -> Option<&str> {
+        self.fetch_url.as_deref()
     }
 
     pub fn content_pointer(&self) -> Result<TicketAttachmentContentPointer, TicketAttachmentError> {

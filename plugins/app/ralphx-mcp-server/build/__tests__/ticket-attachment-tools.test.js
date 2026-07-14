@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { callTicketAttachmentTool, isTicketAttachmentToolName, safeTicketAttachmentResult, } from "../ticket-attachment-tools.js";
-import { getAllTools, getFilteredTools, setAgentType, } from "../tools.js";
+import { getAllTools, getFilteredTools, getToolsByAgent, setAgentType, } from "../tools.js";
 import { CODER, GENERAL_WORKER, MERGER, ORCHESTRATOR_IDEATION, REVIEWER, WORKER, WORKER_TEAM_LEAD, } from "../agentNames.js";
 const TOOL_NAMES = ["list_ticket_attachments", "fetch_ticket_attachment"];
 describe("ticket attachment MCP tools", () => {
@@ -17,7 +17,17 @@ describe("ticket attachment MCP tools", () => {
         for (const name of TOOL_NAMES) {
             const tool = allTools.find((candidate) => candidate.name === name);
             expect(tool, `${name} registered`).toBeDefined();
-            expect(Object.keys(tool.inputSchema.properties ?? {})).not.toEqual(expect.arrayContaining(["url", "path", "token", "credential"]));
+            const properties = Object.keys(tool.inputSchema.properties ?? {});
+            expect(properties).not.toEqual(expect.arrayContaining([
+                "url",
+                "path",
+                "token",
+                "credential",
+                "authorization",
+                "download_url",
+                "content_url",
+                "cache_path",
+            ]));
         }
         const listTool = allTools.find((candidate) => candidate.name === "list_ticket_attachments");
         expect(listTool.inputSchema.required).toEqual(["provider", "ticket_id"]);
@@ -34,7 +44,16 @@ describe("ticket attachment MCP tools", () => {
     it.each([WORKER, CODER, WORKER_TEAM_LEAD])("exposes attachment tools to %s through canonical grants", (agent) => {
         setAgentType(agent);
         const toolNames = getFilteredTools().map((tool) => tool.name);
+        const configuredTools = getToolsByAgent()[agent];
         expect(toolNames).toEqual(expect.arrayContaining(TOOL_NAMES));
+        expect(configuredTools).toEqual(expect.arrayContaining(TOOL_NAMES));
+    });
+    it("keeps live discovery bounded by the injected runtime allowlist", () => {
+        setAgentType(WORKER);
+        process.env.RALPHX_ALLOWED_MCP_TOOLS = "list_ticket_attachments";
+        const toolNames = getFilteredTools().map((tool) => tool.name);
+        expect(toolNames).toContain("list_ticket_attachments");
+        expect(toolNames).not.toContain("fetch_ticket_attachment");
     });
     it("keeps attachment tools off Plan-mode ideation discovery", () => {
         setAgentType(ORCHESTRATOR_IDEATION);
@@ -83,8 +102,22 @@ describe("ticket attachment MCP tools", () => {
                     content_url: "https://example.test/download",
                     token: "Bearer abcdefghijklmnopqrstuvwxyz",
                     location: "/tmp/cache/file",
+                    nested: {
+                        downloadUrl: "https://example.test/direct",
+                        authorization: "Bearer nested-secret",
+                        path: "/tmp/cache/nested",
+                    },
                 },
             ],
+            content: {
+                kind: "ticket_attachment_content",
+                id: "ta_456",
+                trust: "untrusted_external_content",
+                available: true,
+                directDownloadUrl: "https://example.test/direct",
+                bearerToken: "Bearer secret",
+                cachePath: "/tmp/cache/content",
+            },
         });
         expect(shaped).toEqual({
             attachments: [
@@ -95,10 +128,17 @@ describe("ticket attachment MCP tools", () => {
                     contentPointer: { id: "ta_123" },
                 },
             ],
+            content: {
+                kind: "ticket_attachment_content",
+                id: "ta_456",
+                trust: "untrusted_external_content",
+                available: true,
+            },
         });
         expect(JSON.stringify(shaped)).not.toContain("https://");
         expect(JSON.stringify(shaped)).not.toContain("Bearer");
         expect(JSON.stringify(shaped)).not.toContain("/tmp/cache");
+        expect(JSON.stringify(shaped)).not.toContain("authorization");
     });
     it("identifies only ticket attachment tool names", () => {
         expect(isTicketAttachmentToolName("list_ticket_attachments")).toBe(true);

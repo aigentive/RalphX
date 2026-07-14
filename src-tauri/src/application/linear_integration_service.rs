@@ -620,10 +620,7 @@ impl LinearIntegrationService {
             .await
     }
 
-    pub async fn list_issue_team_labels(
-        &self,
-        issue_id: &str,
-    ) -> Result<Vec<LinearLabel>, String> {
+    pub async fn list_issue_team_labels(&self, issue_id: &str) -> Result<Vec<LinearLabel>, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.list_issue_team_labels(&auth, issue_id).await
     }
@@ -735,7 +732,7 @@ impl LinearIntegrationService {
         )
     }
 
-    async fn enabled_auth_context(&self) -> Result<LinearAuthContext, String> {
+    pub(crate) async fn enabled_auth_context(&self) -> Result<LinearAuthContext, String> {
         let settings = self.get_settings().await?;
         if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
             return Err("Linear integration is not enabled".to_string());

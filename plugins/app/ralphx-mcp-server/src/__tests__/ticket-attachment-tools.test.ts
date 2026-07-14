@@ -8,6 +8,7 @@ import {
 import {
   getAllTools,
   getFilteredTools,
+  getToolsByAgent,
   setAgentType,
 } from "../tools.js";
 import {
@@ -74,10 +75,22 @@ describe("ticket attachment MCP tools", () => {
       setAgentType(agent);
 
       const toolNames = getFilteredTools().map((tool) => tool.name);
+      const configuredTools = getToolsByAgent()[agent];
 
       expect(toolNames).toEqual(expect.arrayContaining(TOOL_NAMES));
+      expect(configuredTools).toEqual(expect.arrayContaining(TOOL_NAMES));
     }
   );
+
+  it("keeps live discovery bounded by the injected runtime allowlist", () => {
+    setAgentType(WORKER);
+    process.env.RALPHX_ALLOWED_MCP_TOOLS = "list_ticket_attachments";
+
+    const toolNames = getFilteredTools().map((tool) => tool.name);
+
+    expect(toolNames).toContain("list_ticket_attachments");
+    expect(toolNames).not.toContain("fetch_ticket_attachment");
+  });
 
   it("keeps attachment tools off Plan-mode ideation discovery", () => {
     setAgentType(ORCHESTRATOR_IDEATION);
