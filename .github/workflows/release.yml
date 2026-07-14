@@ -468,8 +468,8 @@ jobs:
                 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
                 "${{ matrix.arch }}" | tee -a "${heartbeat_log}"
               # shellcheck disable=SC2009
-              ps -axo pid,ppid,etime,stat,command \
-                | grep -E 'codesign|notarytool|xcrun|cargo-tauri|cargo tauri|cargo build|node .*tauri|ralphx' \
+              ps -axo pid,ppid,etime,stat,comm \
+                | grep -E 'codesign$|notarytool$|xcrun$|cargo-tauri$|cargo$|node$|ralphx$' \
                 | grep -v 'grep -E' \
                 | sed 's/^/[release-heartbeat] process /' \
                 | tee -a "${heartbeat_log}" || true

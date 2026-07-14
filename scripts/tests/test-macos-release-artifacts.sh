@@ -65,6 +65,9 @@ echo "xcrun $*" >>"${STUB_LOG}"
 if [[ "${1:-}" == "stapler" && "${2:-}" == "validate" && "${STUB_STAPLER_VALIDATE_FAIL_FOR:-}" == "${3:-}" ]]; then
   exit 1
 fi
+if [[ "${1:-}" == "stapler" && "${2:-}" == "staple" && "${STUB_STAPLER_STAPLE_FAIL:-}" == "true" ]]; then
+  exit 1
+fi
 if [[ "${1:-}" == "notarytool" && "${STUB_NOTARY_FAIL:-}" == "true" ]]; then
   exit 1
 fi
@@ -312,6 +315,43 @@ test_build_stops_on_notarization_rejection() {
   pass "production build stops on final-DMG notarization rejection"
 }
 
+test_build_stops_on_dmg_stapling_failure() {
+  local case_dir="${TEST_TMP}/build-stapling-failure"
+  local project_dir="${case_dir}/project"
+  local bin_dir="${case_dir}/bin"
+  local log_file="${case_dir}/commands.log"
+  local output_file="${case_dir}/output.log"
+  make_build_fixture "${project_dir}" "${bin_dir}"
+  make_build_artifacts "${project_dir}"
+  : > "${project_dir}/private-key.p8"
+
+  assert_fails "${output_file}" env \
+    STUB_STAPLER_STAPLE_FAIL="true" \
+    PATH="${bin_dir}:/usr/bin:/bin" \
+    STUB_LOG="${log_file}" \
+    APPLE_API_KEY="KEY-ID" \
+    APPLE_API_ISSUER="ISSUER-ID" \
+    APPLE_API_KEY_PATH="${project_dir}/private-key.p8" \
+    "${project_dir}/scripts/build-prod-release.sh" \
+      --target aarch64-apple-darwin \
+      --expected-arch aarch64
+
+  grep -q "final-dmg-stapling-failed" "${output_file}" || fail "DMG stapling failure stage was not recorded"
+  if grep -q "codesign --verify" "${log_file}"; then
+    fail "DMG stapling failure continued to artifact validation"
+  fi
+  pass "production build stops when final-DMG stapling fails"
+}
+
+test_workflow_heartbeat_omits_process_arguments() {
+  local workflow="${ROOT_DIR}/.github/workflows/release.yml"
+  if grep -Fq 'ps -axo pid,ppid,etime,stat,command' "${workflow}"; then
+    fail "release heartbeat persists full process arguments into uploaded trace artifacts"
+  fi
+  grep -Fq 'ps -axo pid,ppid,etime,stat,comm' "${workflow}" || fail "release heartbeat does not expose sanitized process telemetry"
+  pass "release heartbeat omits secret-bearing process arguments"
+}
+
 test_skip_build_validates_without_submission() {
   local case_dir="${TEST_TMP}/skip-build"
   local project_dir="${case_dir}/project"
@@ -368,7 +408,9 @@ test_validator_rejects_dmg_gatekeeper_failure
 test_build_notarizes_before_validation
 test_build_rejects_ambiguous_dmgs
 test_build_stops_on_notarization_rejection
+test_build_stops_on_dmg_stapling_failure
 test_skip_build_validates_without_submission
 test_build_requires_notarization_credentials_without_leaking_values
+test_workflow_heartbeat_omits_process_arguments
 
 echo "All ${pass_count} macOS release artifact tests passed."
