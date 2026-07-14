@@ -147,7 +147,9 @@ pub async fn get_project_status_http(
             | InternalStatus::QaTesting
             | InternalStatus::QaPassed
             | InternalStatus::QaFailed
-            | InternalStatus::ReExecuting => counts.executing += 1,
+            | InternalStatus::ReExecuting
+            | InternalStatus::UpdatingPlanBranch
+            | InternalStatus::UpdatingTaskBranch => counts.executing += 1,
             InternalStatus::PendingReview => counts.pending_review += 1,
             InternalStatus::Reviewing
             | InternalStatus::ReviewPassed
@@ -164,7 +166,7 @@ pub async fn get_project_status_http(
             InternalStatus::Cancelled => counts.cancelled += 1,
             InternalStatus::Paused => counts.stopped += 1,
             InternalStatus::Stopped => counts.stopped += 1,
-            InternalStatus::Blocked => counts.blocked += 1,
+            InternalStatus::Blocked | InternalStatus::BranchUpdateBlocked => counts.blocked += 1,
         }
     }
 

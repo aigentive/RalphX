@@ -39,7 +39,7 @@ pub(crate) const IDEATION_LANES: [AgentLane; 4] = [
     AgentLane::IdeationVerifierSubagent,
 ];
 
-pub(crate) const AGENT_LANES: [AgentLane; 8] = [
+pub(crate) const AGENT_LANES: [AgentLane; 9] = [
     AgentLane::IdeationPrimary,
     AgentLane::IdeationSubagent,
     AgentLane::IdeationVerifier,
@@ -48,6 +48,7 @@ pub(crate) const AGENT_LANES: [AgentLane; 8] = [
     AgentLane::ExecutionReviewer,
     AgentLane::ExecutionReexecutor,
     AgentLane::ExecutionMerger,
+    AgentLane::ExecutionBranchUpdater,
 ];
 
 pub(crate) async fn resolve_lane_harness_availability(
@@ -327,6 +328,7 @@ fn runtime_lane_for_context(context_type: ChatContextType) -> Option<AgentLane> 
         ChatContextType::TaskExecution => Some(AgentLane::ExecutionWorker),
         ChatContextType::Review => Some(AgentLane::ExecutionReviewer),
         ChatContextType::Merge => Some(AgentLane::ExecutionMerger),
+        ChatContextType::BranchUpdate => Some(AgentLane::ExecutionBranchUpdater),
         ChatContextType::Delegation | ChatContextType::Task | ChatContextType::Project => None,
     }
 }
@@ -353,7 +355,10 @@ async fn project_id_for_context(
             .ok()
             .flatten()
             .map(|session| session.project_id.as_str().to_string()),
-        ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => state
+        ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => state
             .task_repo
             .get_by_id(&TaskId::from_string(context_id.to_string()))
             .await

@@ -29,11 +29,23 @@ const { sonnerToasterMock } = vi.hoisted(() => ({
   sonnerToasterMock: vi.fn(() => null),
 }));
 const { preloadAutomationsViewMock } = vi.hoisted(() => ({
-  preloadAutomationsViewMock: vi.fn(() => new Promise(() => {})),
+  preloadAutomationsViewMock: vi.fn(),
 }));
 const { resolveTaskAgentWorkspaceMock } = vi.hoisted(() => ({
   resolveTaskAgentWorkspaceMock: vi.fn(),
 }));
+
+function AutomationsViewMock({
+  onNewAutomation,
+}: {
+  onNewAutomation: () => void;
+}) {
+  return (
+    <button data-testid="automations-new-automation" onClick={onNewAutomation} type="button">
+      New automation
+    </button>
+  );
+}
 
 vi.mock("sonner", () => ({
   Toaster: sonnerToasterMock,
@@ -480,6 +492,7 @@ function enableAutomationsPage() {
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    preloadAutomationsViewMock.mockResolvedValue({ default: AutomationsViewMock });
     resolveTaskAgentWorkspaceMock.mockResolvedValue(null);
     resetStores();
     vi.mocked(useHarnessProviders).mockReturnValue({
@@ -1145,7 +1158,9 @@ describe("App", () => {
     const shell = screen.getByTestId("notifications-panel-shell");
     expect(shell.getAttribute("style")).toContain("width: 100vw");
     expect(shell.getAttribute("style")).toContain("max-width: 400px");
+    expect(shell.getAttribute("style")).toContain("bottom: 0px");
     expect(shell.className).not.toContain("w-[400px]");
+    expect(shell.className).not.toContain("invisible");
     expect(shell.getAttribute("style")).toContain(
       "background-color: var(--bg-surface)"
     );
@@ -1170,17 +1185,20 @@ describe("App", () => {
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("notifications-panel-shell")).toHaveAttribute(
+    const shell = screen.getByTestId("notifications-panel-shell");
+    expect(shell).toHaveAttribute(
       "aria-hidden",
       "false",
     );
+    expect(shell.className).not.toContain("invisible");
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("notifications-panel-shell")).toHaveAttribute(
+    expect(shell).toHaveAttribute(
       "aria-hidden",
       "true",
     );
+    expect(shell.className).toContain("invisible");
   });
 
   it("closes the notification center from the outside dismissal layer", async () => {
@@ -1357,6 +1375,31 @@ describe("App", () => {
       expect(useUiStore.getState().currentView).toBe("automations");
       expect(screen.getByTestId("automations-view-shell")).toBeInTheDocument();
       expect(preloadAutomationsViewMock).toHaveBeenCalled();
+    });
+
+    it("opens the Agents start composer with Automation preselected before creating a draft", async () => {
+      const user = userEvent.setup();
+      enableAutomationsPage();
+      useAgentSessionStore.getState().selectConversation("demo-project-1", "existing-conversation");
+      useChatStore
+        .getState()
+        .setActiveConversation("project:demo-project-1", "existing-conversation");
+      render(<App />);
+
+      await user.click(screen.getByTestId("nav-automations"));
+      await user.click(await screen.findByTestId("automations-new-automation"));
+
+      expect(useUiStore.getState().currentView).toBe("agents");
+      expect(useAgentSessionStore.getState().focusedProjectId).toBe("demo-project-1");
+      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+      expect(
+        useChatStore.getState().activeConversationIds["project:demo-project-1"],
+      ).toBeNull();
+      expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+        projectId: "demo-project-1",
+        content: "",
+        mode: "automation",
+      });
     });
 
     it("should open Settings modal when clicked", async () => {

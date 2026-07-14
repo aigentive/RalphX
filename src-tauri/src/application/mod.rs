@@ -25,6 +25,9 @@ pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
+pub mod agent_workspace_review_base;
+#[cfg(test)]
+mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
@@ -48,6 +51,13 @@ pub mod execution_settings_bootstrap;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_service;
+pub mod git_mutation_recovery;
+pub mod branch_update_executor;
+pub mod branch_update_workflow;
+#[cfg(test)]
+mod branch_update_executor_tests;
+#[cfg(test)]
+mod git_mutation_recovery_tests;
 pub mod granola_integration_service;
 pub mod harness_runtime_registry;
 pub mod http_shutdown;
@@ -77,7 +87,17 @@ pub mod notification_service;
 mod notification_service_tests;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
+pub mod personas;
+pub mod persona_ingest;
+pub mod persona_prompt;
+pub mod persona_resolver;
 pub mod permission_state;
+#[cfg(test)]
+mod persona_ingest_tests;
+#[cfg(test)]
+mod persona_prompt_tests;
+#[cfg(test)]
+mod persona_resolver_tests;
 pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
@@ -293,6 +313,8 @@ mod agent_conversation_mode_switch_tests;
 mod agent_conversation_archive_restart_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_base_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_restart_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
 #[cfg(test)]

@@ -3676,6 +3676,38 @@ fn awaiting_plan_approval_service_guards_match_domain_open_predicate() {
     ));
 }
 
+#[tokio::test]
+async fn automation_update_and_finalize_reject_persona_builder_run_mode() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter);
+    let draft = automation("automation-persona-builder", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let update_error = service
+        .update_config(UpdateAutomationConfigInput {
+            run_mode: Some("persona_builder".to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(update_error, AppError::Validation(message) if message.contains("PersonaBuilder"))
+    );
+
+    let mut persisted_builder = draft.clone();
+    persisted_builder.id = AutomationId::from_string("automation-persona-builder-persisted");
+    persisted_builder.run_mode = "persona_builder".to_string();
+    automation_repo
+        .create(persisted_builder.clone())
+        .await
+        .unwrap();
+
+    let finalize_error = service.finalize(&persisted_builder.id).await.unwrap_err();
+    assert!(
+        matches!(finalize_error, AppError::Validation(message) if message.contains("PersonaBuilder"))
+    );
+}
+
 fn continue_verdict(next_prompt: &str) -> String {
     json!({
         "decision": "continue",

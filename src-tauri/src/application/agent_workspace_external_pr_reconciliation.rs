@@ -234,7 +234,20 @@ async fn reconcile_linked_agent_workspace_pr(
         .check_pr_status(Path::new(&project.working_directory), pr_number)
         .await?;
     let pr_status = publication_status_for_pr_status(&status);
-    if !matches!(status, PrStatus::Closed | PrStatus::Merged { .. }) {
+    if matches!(status, PrStatus::Open) {
+        if let (Some(registry), Some(chat_service)) =
+            (deps.pr_poller_registry.as_ref(), deps.chat_service.as_ref())
+        {
+            registry.start_agent_workspace_polling(
+                workspace.conversation_id.clone(),
+                pr_number,
+                project.clone(),
+                Path::new(&workspace.worktree_path).to_path_buf(),
+                Arc::clone(&deps.workspace_repo),
+                Arc::clone(&deps.agent_run_repo),
+                Arc::clone(chat_service),
+            );
+        }
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
             "linked_pr_not_terminal",
         ));

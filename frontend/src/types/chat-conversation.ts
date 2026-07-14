@@ -24,6 +24,7 @@ export const CONTEXT_TYPE_VALUES = [
   "task_execution",
   "review",
   "merge",
+  "branch_update",
   "delegation",
 ] as const;
 
@@ -63,6 +64,7 @@ export const AGENT_CONVERSATION_MODE_VALUES = [
   "ideation",
   "review_pr",
   "automation",
+  "persona_builder",
 ] as const;
 export const AgentConversationModeSchema = z.enum(
   AGENT_CONVERSATION_MODE_VALUES
@@ -99,6 +101,27 @@ export const ChatConversationSchema = z.object({
   effectiveEffort: z.string().nullable().optional(),
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  personaId: z.string().nullable().optional(),
+  lastRunPersonaRunId: z.string().nullable().optional(),
+  lastRunPersonaId: z.string().nullable().optional(),
+  lastRunPersonaSlug: z.string().nullable().optional(),
+  lastRunPersonaVersion: z.number().int().nullable().optional(),
+  lastRunPersonaContentHash: z.string().nullable().optional(),
+  lastRunPersonaInjected: z.boolean().nullable().optional(),
+  lastRunPersonaSkippedReason: z.string().nullable().optional(),
+  personaRuns: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        personaId: z.string().min(1),
+        personaSlug: z.string().min(1),
+        personaVersion: z.number().int(),
+        personaContentHash: z.string(),
+        personaInjected: z.boolean(),
+        personaSkippedReason: z.string().nullable(),
+      }),
+    )
+    .optional(),
   coordinationMode: CoordinationModeSchema.default("solo"),
   automationId: z.string().nullable().optional(),
   automationRunId: z.string().nullable().optional(),
@@ -191,6 +214,12 @@ export const AgentRunSchema = z.object({
   errorMessage: z.string().nullable(),
   modelId: z.string().nullable(),
   modelLabel: z.string().nullable(),
+  personaId: z.string().nullable().optional(),
+  personaSlug: z.string().nullable().optional(),
+  personaVersion: z.number().int().nullable().optional(),
+  personaContentHash: z.string().nullable().optional(),
+  personaInjected: z.boolean().nullable().optional(),
+  personaSkippedReason: z.string().nullable().optional(),
 });
 
 export type AgentRun = z.infer<typeof AgentRunSchema>;

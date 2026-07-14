@@ -137,7 +137,8 @@ fn question_context_kind(context_type: &ChatContextType) -> Option<&'static str>
         ChatContextType::Task
         | ChatContextType::TaskExecution
         | ChatContextType::Review
-        | ChatContextType::Merge => Some("task"),
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => Some("task"),
         ChatContextType::Delegation => None,
     }
 }

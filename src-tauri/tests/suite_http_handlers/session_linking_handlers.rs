@@ -1,16 +1,115 @@
 use axum::{extract::State, Json};
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
+use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use ralphx_lib::domain::entities::{
-    ArtifactId, IdeationSession, IdeationSessionId, IdeationSessionStatus, MessageRole, ProjectId,
-    VerificationStatus,
+    ArtifactId, ChatConversation, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    MessageRole, Persona, PersonaId, PersonaStatus, ProjectId, VerificationStatus,
 };
 use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::{CreateChildSessionRequest, HttpServerState};
 use ralphx_lib::infrastructure::agents::claude::verification_config;
 use ralphx_lib::infrastructure::sqlite::SqliteIdeationSessionRepository;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use std::{fs, os::unix::fs::PermissionsExt};
+use tempfile::TempDir;
+use tokio::sync::Mutex;
+
+fn claude_cli_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn install_capturing_claude_cli() -> (TempDir, PathBuf, PathBuf) {
+    let tempdir = TempDir::new().expect("create fake Claude CLI tempdir");
+    let cli_path = tempdir.path().join("claude");
+    let captured_args_path = tempdir.path().join("verification-child-args.txt");
+    fs::write(
+        &cli_path,
+        r#"#!/bin/sh
+is_prompt_spawn=false
+for arg in "$@"; do
+  if [ "$arg" = "-p" ]; then
+    is_prompt_spawn=true
+  fi
+done
+if [ "$is_prompt_spawn" = "true" ] && [ -n "$RALPHX_TEST_CLAUDE_ARGS_PATH" ]; then
+  {
+    printf '%s\n' "$@"
+    for arg in "$@"; do
+      if [ -f "$arg" ]; then
+        cat "$arg"
+      fi
+    done
+    cat
+  } > "$RALPHX_TEST_CLAUDE_ARGS_PATH"
+fi
+exit 0
+"#,
+    )
+    .expect("write fake Claude CLI");
+    let mut permissions = fs::metadata(&cli_path)
+        .expect("read fake Claude CLI metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&cli_path, permissions).expect("mark fake Claude CLI executable");
+    (tempdir, cli_path, captured_args_path)
+}
+
+async fn configure_capturing_claude_cli(state: &HttpServerState, cli_path: &Path) {
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(cli_path.to_string_lossy().into_owned());
+    state
+        .app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("configure fake Claude provider");
+}
+
+async fn seed_bound_active_project_persona(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+    persona_id: &str,
+    body: &str,
+) {
+    let now = chrono::Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(persona_id),
+        slug: persona_id.to_string(),
+        name: "Verification isolation persona".to_string(),
+        description: "Must not reach verification children".to_string(),
+        content: body.to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: format!("{persona_id}-hash"),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .app_state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed active persona");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("bind active persona to a same-project conversation");
+}
 
 fn make_session(team_mode: Option<&str>) -> IdeationSession {
     IdeationSession {
@@ -212,12 +311,14 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid))
             .await
             .unwrap();
-        assert_eq!(gen, Some(1), "First verification trigger should return generation 1");
+        assert_eq!(
+            gen,
+            Some(1),
+            "First verification trigger should return generation 1"
+        );
 
         let updated_parent = state
             .app_state
@@ -303,12 +404,14 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid2)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid2))
             .await
             .unwrap();
-        assert_eq!(gen, Some(2), "Re-verification trigger should return generation 2");
+        assert_eq!(
+            gen,
+            Some(2),
+            "Re-verification trigger should return generation 2"
+        );
 
         let updated_parent = state
             .app_state
@@ -344,7 +447,11 @@ mod verification_init_tests {
         // child agent (keeping the new generation) or roll it back if spawn fails.
         let req = make_verification_request(&parent_id);
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Re-verification should succeed, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Re-verification should succeed, got: {:?}",
+            result.err()
+        );
         let response = result.unwrap().0;
         assert_eq!(
             response.orchestration_triggered,
@@ -377,9 +484,7 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid))
             .await
             .unwrap();
         assert_eq!(gen, Some(1), "Trigger should return generation 1");
@@ -387,7 +492,10 @@ mod verification_init_tests {
         // With in_progress=true, any handler call should get 409
         let req2 = make_verification_request(&parent_id);
         let result2 = create_child_session(State(state.clone()), Json(req2)).await;
-        assert!(result2.is_err(), "Call with in_progress=true should fail with 409");
+        assert!(
+            result2.is_err(),
+            "Call with in_progress=true should fail with 409"
+        );
         let err = result2.unwrap_err();
         assert_eq!(
             err.0,
@@ -413,7 +521,10 @@ mod verification_init_tests {
 
         let req = make_verification_request(&parent_id);
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_err(), "Should fail with 400 when no plan artifact");
+        assert!(
+            result.is_err(),
+            "Should fail with 400 when no plan artifact"
+        );
         let err = result.unwrap_err();
         assert_eq!(
             err.0,
@@ -441,9 +552,7 @@ mod verification_init_tests {
         let gen = state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::trigger_auto_verify_sync(conn, &pid))
             .await
             .unwrap();
         assert_eq!(gen, Some(1), "Trigger should return generation 1");
@@ -466,9 +575,7 @@ mod verification_init_tests {
         state
             .app_state
             .db
-            .run(move |conn| {
-                SqliteIdeationSessionRepository::reset_auto_verify_sync(conn, &pid2)
-            })
+            .run(move |conn| SqliteIdeationSessionRepository::reset_auto_verify_sync(conn, &pid2))
             .await
             .unwrap();
 
@@ -525,7 +632,11 @@ mod verification_init_tests {
         // Handler should succeed (child session is created) regardless of agent spawn outcome.
         // In test environments without a real Claude CLI, the agent spawn will fail and the
         // handler rolls back verification_generation to None.
-        assert!(result.is_ok(), "Handler should succeed, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         let child_id = IdeationSessionId::from_string(response.session_id.clone());
@@ -548,9 +659,7 @@ mod verification_init_tests {
         }
 
         // If a message was stored, it must contain the verification metadata augmentation
-        let user_msg = messages
-            .iter()
-            .find(|m| m.role == MessageRole::User);
+        let user_msg = messages.iter().find(|m| m.role == MessageRole::User);
         if let Some(msg) = user_msg {
             let content = &msg.content;
             assert!(
@@ -710,11 +819,14 @@ mod verification_init_tests {
             .into_iter()
             .filter(|session| {
                 session.source_task_id.as_ref().map(|id| id.as_str()) == Some("task-789")
-                    && session.blocker_fingerprint.as_deref()
-                        == Some("ood:task-789:112233445566")
+                    && session.blocker_fingerprint.as_deref() == Some("ood:task-789:112233445566")
             })
             .collect();
-        assert_eq!(matching.len(), 1, "same blocker should not create duplicates");
+        assert_eq!(
+            matching.len(),
+            1,
+            "same blocker should not create duplicates"
+        );
     }
 
     #[tokio::test]
@@ -840,8 +952,7 @@ mod verification_init_tests {
 
         assert_eq!(child.status, IdeationSessionStatus::Active);
         assert_eq!(
-            child.pending_initial_prompt,
-            response.pending_initial_prompt,
+            child.pending_initial_prompt, response.pending_initial_prompt,
             "verification child pending prompt should persist for drain and hydration"
         );
 
@@ -894,7 +1005,11 @@ mod verification_init_tests {
         };
 
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Handler should succeed even when spawn fails, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed even when spawn fails, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         assert!(
@@ -958,7 +1073,11 @@ mod verification_init_tests {
         };
 
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Handler should succeed even when spawn fails, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed even when spawn fails, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         assert!(
@@ -1019,7 +1138,11 @@ mod verification_init_tests {
         };
 
         let result = create_child_session(State(state.clone()), Json(req)).await;
-        assert!(result.is_ok(), "Handler should succeed even when spawn fails, got: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Handler should succeed even when spawn fails, got: {:?}",
+            result.err()
+        );
 
         let response = result.unwrap().0;
         assert!(
@@ -1089,9 +1212,7 @@ mod verification_init_tests {
             return;
         }
 
-        let user_msg = messages
-            .iter()
-            .find(|m| m.role == MessageRole::User);
+        let user_msg = messages.iter().find(|m| m.role == MessageRole::User);
         if let Some(msg) = user_msg {
             let content = &msg.content;
             assert!(
@@ -1106,6 +1227,85 @@ mod verification_init_tests {
                 content
             );
         }
+    }
+
+    #[tokio::test]
+    async fn verification_child_command_excludes_bound_project_persona() {
+        let _env_lock = claude_cli_env_lock().lock().await;
+        let (_fake_cli_dir, fake_cli_path, captured_command_path) = install_capturing_claude_cli();
+        let _captured_command_guard = crate::support::env::EnvVarGuard::set(
+            "RALPHX_TEST_CLAUDE_ARGS_PATH",
+            captured_command_path.clone(),
+        );
+        let _persona_flag_guard =
+            crate::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "true");
+        let _allow_spawn_guard =
+            crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+        let state = setup_sqlite_state().await;
+        configure_capturing_claude_cli(&state, &fake_cli_path).await;
+
+        let parent = make_parent_session(Some(ArtifactId::new()));
+        let parent_id = parent.id.clone();
+        let persona_body = "VERIFICATION PERSONA BODY MUST NOT REACH CHILD";
+        seed_bound_active_project_persona(
+            &state,
+            &parent.project_id,
+            "verification-cross-contamination-persona",
+            persona_body,
+        )
+        .await;
+        state
+            .app_state
+            .ideation_session_repo
+            .create(parent)
+            .await
+            .expect("create verification parent");
+
+        let response = create_child_session(
+            State(state),
+            Json(CreateChildSessionRequest {
+                parent_session_id: parent_id.as_str().to_string(),
+                title: None,
+                description: Some("Run verification child persona isolation check.".to_string()),
+                inherit_context: false,
+                initial_prompt: None,
+                source_task_id: None,
+                source_context_type: None,
+                source_context_id: None,
+                spawn_reason: None,
+                blocker_fingerprint: None,
+                team_mode: None,
+                team_config: None,
+                purpose: Some("verification".to_string()),
+                is_external_trigger: false,
+            }),
+        )
+        .await
+        .expect("verification child handler should spawn the child")
+        .0;
+        assert!(
+            response.orchestration_triggered,
+            "the fake CLI must make the handler's production spawn path succeed"
+        );
+
+        let mut captured_command = None;
+        for _ in 0..40 {
+            if let Ok(captured) = fs::read_to_string(&captured_command_path) {
+                captured_command = Some(captured);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let captured_command = captured_command
+            .expect("verification child fake CLI should capture the final command and prompt");
+        assert!(
+            !captured_command.contains("<ralphx_agent_persona>"),
+            "verification child command and prompt must not include a persona block: {captured_command}"
+        );
+        assert!(
+            !captured_command.contains(persona_body),
+            "verification child command and prompt must not include the bound persona body: {captured_command}"
+        );
     }
 }
 
@@ -1160,7 +1360,10 @@ fn test_synthesize_verification_prompt_description_present_returns_none() {
         &Some("user description".to_string()),
         "parent-abc",
     );
-    assert_eq!(result, None, "Should return None when description is present");
+    assert_eq!(
+        result, None,
+        "Should return None when description is present"
+    );
 }
 
 #[test]
@@ -1172,7 +1375,10 @@ fn test_synthesize_verification_prompt_non_verification_purpose_returns_none() {
         &None,
         "parent-abc",
     );
-    assert_eq!(result, None, "Should return None for non-verification purpose");
+    assert_eq!(
+        result, None,
+        "Should return None for non-verification purpose"
+    );
 }
 
 #[test]

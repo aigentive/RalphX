@@ -181,6 +181,26 @@ export const STATUS_ICON_CONFIG: Record<InternalStatus, StatusIconConfig> = {
     bgOpacity: "0.2",
     label: "Conflict",
   },
+  updating_plan_branch: {
+    icon: Loader2,
+    color: "var(--status-info)",
+    bgOpacity: "0.2",
+    label: "Updating Plan Branch",
+    animate: true,
+  },
+  updating_task_branch: {
+    icon: Loader2,
+    color: "var(--status-info)",
+    bgOpacity: "0.2",
+    label: "Updating Task Branch",
+    animate: true,
+  },
+  branch_update_blocked: {
+    icon: AlertTriangle,
+    color: "var(--status-warning)",
+    bgOpacity: "0.2",
+    label: "Branch Update Blocked",
+  },
 
   // === Complete States ===
   approved: {

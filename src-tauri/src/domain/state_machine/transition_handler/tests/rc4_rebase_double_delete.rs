@@ -159,9 +159,12 @@ async fn test_rebase_squash_leaves_no_stale_worktrees() {
     project_repo.create(project).await.unwrap();
 
     // --- 5. Run the merge via TransitionHandler ---
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
     let context =
         crate::domain::state_machine::context::TaskContext::new(&task_id_str, "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -289,9 +292,12 @@ async fn test_rebase_squash_git_worktree_list_shows_only_main_worktree() {
     project_repo.create(project).await.unwrap();
 
     // --- 3. Run the merge ---
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
     let context =
         crate::domain::state_machine::context::TaskContext::new(&task_id_str, "proj-2", services);
     let mut machine = TaskStateMachine::new(context);

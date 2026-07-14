@@ -637,7 +637,13 @@ impl StartupJobRunner {
     /// Skips if execution is paused. Stops early if max_concurrent is reached.
     /// For each task in an agent-active state, re-executes entry actions to
     /// respawn the appropriate agent.
-    pub async fn run(&self) -> HashSet<String> {
+    pub fn run(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HashSet<String>> + Send + '_>> {
+        Box::pin(self.run_inner())
+    }
+
+    async fn run_inner(&self) -> HashSet<String> {
         debug!("StartupJobRunner::run() called");
 
         if let Some(notification_repo) = &self.notification_repo {

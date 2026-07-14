@@ -1,7 +1,7 @@
 // Integration tests for concurrent plan branch freshness access and stress scenarios.
 //
 // Covers:
-//   1. 3 tasks on same plan branch simultaneously — at most one RouteToMerging,
+//   1. 3 tasks on same plan branch simultaneously — at most one RouteToBranchUpdate,
 //      others get Ok (transient error, non-fatal) — no deadlocks.
 //   2. Stress: rapid conflict cycles with conflict count cap — task eventually blocked,
 //      never looping indefinitely.
@@ -152,7 +152,7 @@ fn abort_pending_merge(path: &std::path::Path) {
 /// own file locking ensures only one `git merge` can proceed at a time. The
 /// expected outcomes are:
 ///
-/// - At most **one** task returns `RouteToMerging` (the one whose merge succeeded
+/// - At most **one** task returns `RouteToBranchUpdate` (the one whose merge succeeded
 ///   and detected conflicts).
 /// - Remaining tasks get `Ok` (their plan check returned `Error` — non-fatal
 ///   transient git error due to lock contention) or `AlreadyUpToDate` if the
@@ -227,15 +227,15 @@ async fn concurrent_freshness_same_plan_branch_no_deadlock() {
     // All 3 must complete (no deadlock).
     assert_eq!(results.len(), 3, "All 3 concurrent tasks must complete");
 
-    // At most one should return RouteToMerging for plan_update.
+    // At most one should return RouteToBranchUpdate for plan_update.
     // Others may get Ok (transient git error from lock → non-fatal → source passes)
-    // or RouteToMerging for source_update if the source branch also needs merging.
+    // or RouteToBranchUpdate for source_update if the source branch also needs merging.
     let plan_conflict_count = results
         .iter()
         .filter(|r| {
             matches!(
                 r,
-                Err(FreshnessAction::RouteToMerging {
+                Err(FreshnessAction::RouteToBranchUpdate {
                     conflict_type: "plan_update",
                     ..
                 })
@@ -270,7 +270,7 @@ async fn concurrent_freshness_same_plan_branch_no_deadlock() {
 /// task metadata persistence across state transitions.
 ///
 /// Acceptance criteria:
-/// - Calls 1-3 (count 0→1, 1→2, 2→3) return `RouteToMerging` with increasing counts.
+/// - Calls 1-3 (count 0→1, 1→2, 2→3) return `RouteToBranchUpdate` with increasing counts.
 /// - Call 4 (count 3→4, exceeds max_retries=3, auto_reset_count already=1) returns `ExecutionBlocked`.
 /// - No infinite loop: the function terminates at the second cap.
 ///
@@ -322,7 +322,7 @@ async fn stress_rapid_conflict_cycles_blocked_at_cap() {
         .await;
 
         match result {
-            Err(FreshnessAction::RouteToMerging {
+            Err(FreshnessAction::RouteToBranchUpdate {
                 freshness_metadata,
                 conflict_type,
                 ..
@@ -339,7 +339,7 @@ async fn stress_rapid_conflict_cycles_blocked_at_cap() {
                 current_count = freshness_metadata.freshness_conflict_count;
                 route_counts.push(current_count);
             }
-            Err(FreshnessAction::ExecutionBlocked { reason }) => {
+            Err(FreshnessAction::ExecutionBlocked { reason, .. }) => {
                 got_blocked = true;
                 assert!(
                     current_count >= cfg.freshness_max_conflict_retries,
@@ -439,7 +439,7 @@ async fn pr_mode_dirty_primary_checkout_is_not_auto_committed() {
 /// `ensure_branches_fresh()` must:
 ///   1. Detect the dirty worktree via `git status --porcelain -z`.
 ///   2. Attempt an emergency auto-commit.
-///   3. Continue with the freshness check (either Ok or RouteToMerging).
+///   3. Continue with the freshness check (either Ok or RouteToBranchUpdate).
 ///   4. NOT return early without a meaningful check.
 ///
 /// We verify by writing an untracked file (dirty), calling the function,
@@ -484,9 +484,9 @@ async fn dirty_worktree_emergency_commit_enables_freshness() {
     )
     .await;
 
-    // The result should be Ok or RouteToMerging — NOT an early abort that skips the check.
+    // The result should be Ok or RouteToBranchUpdate — NOT an early abort that skips the check.
     // An Ok result means the auto-commit succeeded and the source branch is fresh.
-    // A RouteToMerging is also acceptable if a genuine conflict exists (though
+    // A RouteToBranchUpdate is also acceptable if a genuine conflict exists (though
     // setup_real_git_repo() creates a task branch already diverged from main,
     // it does NOT create a source conflict, so Ok is expected here).
     match &result {
@@ -501,10 +501,10 @@ async fn dirty_worktree_emergency_commit_enables_freshness() {
                 "No conflict expected for a fresh task branch after auto-commit"
             );
         }
-        Err(FreshnessAction::RouteToMerging { .. }) => {
+        Err(FreshnessAction::RouteToBranchUpdate { .. }) => {
             // Acceptable — task branch genuinely stale, auto-commit ran, conflict detected.
         }
-        Err(FreshnessAction::ExecutionBlocked { reason }) => {
+        Err(FreshnessAction::ExecutionBlocked { reason, .. }) => {
             panic!(
                 "ExecutionBlocked unexpected for a dirty worktree with fresh branch. \
                  Reason: {reason}"
@@ -526,8 +526,8 @@ async fn dirty_worktree_emergency_commit_enables_freshness() {
     );
 }
 
-/// When the emergency auto-commit fails (simulated by making the git repo
-/// directory read-only), `ensure_branches_fresh()` must block execution rather
+/// When the emergency auto-commit fails (simulated by holding Git's index lock),
+/// `ensure_branches_fresh()` must block execution rather
 /// than pretending the freshness check passed.
 ///
 /// This verifies fail-closed behavior: if the dirty worktree cannot be made
@@ -553,18 +553,14 @@ async fn dirty_worktree_failed_autocommit_blocks_execution() {
         "Pre-condition: worktree must be dirty"
     );
 
-    // Simulate auto-commit failure by making .git/objects read-only.
-    // This prevents git from writing new objects (commit will fail).
-    let objects_dir = path.join(".git").join("objects");
-    let original_perms = std::fs::metadata(&objects_dir).unwrap().permissions();
+    // Hold the index lock so `git add` fails deterministically even when tests run
+    // as a user that can bypass directory permission bits, while still allowing
+    // the preceding read-only status check to detect dirtiness.
+    let index_lock = path.join(".git").join("index.lock");
+    std::fs::write(&index_lock, "held by freshness regression test").unwrap();
 
-    // Make objects directory read-only to cause commit failure
-    let mut ro_perms = original_perms.clone();
-    use std::os::unix::fs::PermissionsExt;
-    ro_perms.set_mode(0o555); // r-xr-xr-x
-    std::fs::set_permissions(&objects_dir, ro_perms).unwrap();
-
-    let project = make_project_at(&repo.path_string());
+    let mut project = make_project_at(&repo.path_string());
+    project.github_pr_enabled = false;
     let task = make_task_with_branch(&repo.task_branch, 0);
     let cfg = concurrent_test_config();
 
@@ -582,16 +578,13 @@ async fn dirty_worktree_failed_autocommit_blocks_execution() {
     )
     .await;
 
-    // Restore permissions before any assertions (ensure cleanup happens even on panic)
-    let mut rw_perms = original_perms.clone();
-    rw_perms.set_mode(0o755);
-    let _ = std::fs::set_permissions(&objects_dir, rw_perms);
+    std::fs::remove_file(&index_lock).expect("remove deterministic index lock");
 
     // Must block — fail closed rather than skip freshness and spawn on uncertain state.
     assert!(
         matches!(
             result,
-            Err(FreshnessAction::ExecutionBlocked { ref reason })
+            Err(FreshnessAction::ExecutionBlocked { ref reason, .. })
                 if reason.contains("Emergency auto-commit failed")
         ),
         "Failed auto-commit must block execution. Got: {:?}",
@@ -664,12 +657,12 @@ async fn git_lock_contention_plan_check_is_transient_non_fatal() {
     //
     // Note: git behavior with index.lock varies — some git versions detect
     // the lock before starting, others may partially succeed. Either Ok or
-    // RouteToMerging(source_update) are acceptable; ExecutionBlocked is not.
+    // RouteToBranchUpdate(source_update) are acceptable; ExecutionBlocked is not.
     match result {
         Ok(_) => {
             // Plan check failed (transient) → source check passed → Ok. Expected case.
         }
-        Err(FreshnessAction::RouteToMerging { conflict_type, .. }) => {
+        Err(FreshnessAction::RouteToBranchUpdate { conflict_type, .. }) => {
             // Plan check may have partially succeeded and detected a conflict,
             // or source check detected a conflict. Both are acceptable.
             assert!(
@@ -677,7 +670,7 @@ async fn git_lock_contention_plan_check_is_transient_non_fatal() {
                 "Unexpected conflict_type: {conflict_type}"
             );
         }
-        Err(FreshnessAction::ExecutionBlocked { reason }) => {
+        Err(FreshnessAction::ExecutionBlocked { reason, .. }) => {
             panic!(
                 "ExecutionBlocked must not occur from a transient git lock error. \
                  Reason: {reason}"
@@ -686,13 +679,10 @@ async fn git_lock_contention_plan_check_is_transient_non_fatal() {
     }
 }
 
-/// When TWO concurrent callers both try to update the same plan branch
-/// via `ensure_branches_fresh()`, git's file locking ensures only one proceeds.
-/// The other gets a transient error (non-fatal). Both calls must complete
-/// without deadlock. Neither should return `ExecutionBlocked`.
-///
-/// This is the concurrency variant of the lock contention test, where the
-/// lock is caused by actual concurrent git processes rather than a fake file.
+/// When TWO concurrent callers observe the same stale plan branch, both may
+/// request the dedicated update. Observation is read-only; repository activation
+/// provides the single-writer authority. Both calls must complete without a
+/// deadlock or false `ExecutionBlocked` result.
 #[tokio::test]
 async fn concurrent_plan_branch_updates_no_deadlock_or_blocked() {
     let repo = setup_real_git_repo();
@@ -770,22 +760,22 @@ async fn concurrent_plan_branch_updates_no_deadlock_or_blocked() {
         );
     }
 
-    // At most one should have gotten a plan_update RouteToMerging (shouldn't happen
-    // since no conflict, but if git lock causes misdetection, we still bound it).
+    // Read-only observers may both see the same stale branch. Single-writer
+    // contention is enforced when the durable update operation is activated.
     let plan_conflict_count = results
         .iter()
         .filter(|r| {
             matches!(
                 r,
-                Err(FreshnessAction::RouteToMerging {
+                Err(FreshnessAction::RouteToBranchUpdate {
                     conflict_type: "plan_update",
                     ..
                 })
             )
         })
         .count();
-    assert!(
-        plan_conflict_count <= 1,
-        "At most one caller should see a plan_update conflict; got {plan_conflict_count}"
+    assert_eq!(
+        plan_conflict_count, 2,
+        "Both observers should report the stale plan without mutating it"
     );
 }

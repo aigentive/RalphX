@@ -209,7 +209,10 @@ pub(super) async fn queue_key_matches_project(
             };
             Ok(session.project_id == *project_id)
         }
-        ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+        ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => {
             let task_id = TaskId::from_string(key.context_id.clone());
             let Some(task) = app_state
                 .task_repo

@@ -20,6 +20,7 @@ pub mod artifact_bucket_repository;
 pub mod artifact_flow_repository;
 pub mod artifact_repository;
 pub mod automation_repository;
+pub mod branch_update_repository;
 pub mod automation_run_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
@@ -43,6 +44,7 @@ pub mod notification_settings_repository;
 pub mod plan_artifact_approval_repository;
 pub mod plan_branch_repository;
 pub mod plan_selection_stats_repository;
+pub mod persona_repository;
 pub mod process_repo;
 pub mod project_repository;
 pub mod proposal_dependency_repository;
@@ -88,6 +90,16 @@ pub use artifact_repository::{ArtifactRepository, ArtifactVersionSummary};
 pub use automation_repository::{
     AutomationConfigPatch, AutomationRepository, AutomationSettingsPatch,
 };
+pub use branch_update_repository::{
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
+    BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
+    BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
+    CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
+    MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
+    CheckpointBranchUpdateResult, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    TransferBranchUpdateTargetLease,
+    UnbindBranchUpdateRun,
+};
 pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;
 pub use chat_conversation_repository::{ChatConversationPage, ChatConversationRepository};
@@ -117,6 +129,7 @@ pub use plan_artifact_approval_repository::{
 };
 pub use plan_branch_repository::PlanBranchRepository;
 pub use plan_selection_stats_repository::PlanSelectionStatsRepository;
+pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_repository::ProjectRepository;
 pub use proposal_dependency_repository::ProposalDependencyRepository;

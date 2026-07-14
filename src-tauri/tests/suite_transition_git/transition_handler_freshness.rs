@@ -120,7 +120,7 @@ async fn unreadable_worktree_status_blocks_execution() {
     assert!(
         matches!(
             result,
-            Err(FreshnessAction::ExecutionBlocked { ref reason })
+            Err(FreshnessAction::ExecutionBlocked { ref reason, .. })
                 if reason.contains("Failed to check worktree status")
         ),
         "Unreadable worktree status must block execution; got {result:?}"
@@ -300,8 +300,8 @@ async fn plan_already_up_to_date_continues_to_source() {
 }
 
 #[tokio::test]
-async fn plan_updated_continues_to_source() {
-    // Plan branch behind main → Updated → source check also passes → Ok.
+async fn stale_plan_routes_to_dedicated_update_without_mutating_git() {
+    // Plan branch behind main → observation routes to the dedicated plan-branch update.
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -342,8 +342,14 @@ async fn plan_updated_continues_to_source() {
     .await;
 
     assert!(
-        result.is_ok(),
-        "Plan updated (behind→fresh) + source up-to-date should return Ok. Got: {:?}",
+        matches!(
+            result,
+            Err(FreshnessAction::RouteToBranchUpdate {
+                conflict_type: "plan_update",
+                ..
+            })
+        ),
+        "A stale plan must route to dedicated update authority. Got: {:?}",
         result
     );
 }
@@ -378,8 +384,8 @@ async fn plan_not_plan_branch_skipped() {
 }
 
 #[tokio::test]
-async fn plan_conflicts_returns_route_to_merging() {
-    // Plan branch and main have diverging changes on same file → conflict → RouteToMerging.
+async fn plan_conflicts_returns_route_to_branch_update() {
+    // Plan branch and main have diverging changes on same file → conflict → RouteToBranchUpdate.
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -442,12 +448,12 @@ async fn plan_conflicts_returns_route_to_merging() {
     assert!(
         matches!(
             result,
-            Err(FreshnessAction::RouteToMerging {
+            Err(FreshnessAction::RouteToBranchUpdate {
                 conflict_type: "plan_update",
                 ..
             })
         ),
-        "Plan conflict must return RouteToMerging with conflict_type=plan_update. Got: {:?}",
+        "Plan conflict must return RouteToBranchUpdate with conflict_type=plan_update. Got: {:?}",
         result
     );
 }
@@ -479,7 +485,7 @@ async fn plan_error_after_retry_blocks_execution() {
     assert!(
         matches!(
             result,
-            Err(FreshnessAction::ExecutionBlocked { ref reason })
+            Err(FreshnessAction::ExecutionBlocked { ref reason, .. })
                 if reason.contains("update_plan_from_main failed after retry")
         ),
         "Plan check error must block after retry. Got: {:?}",
@@ -522,8 +528,8 @@ async fn source_already_up_to_date_returns_ok() {
 }
 
 #[tokio::test]
-async fn source_updated_returns_ok() {
-    // Main has a new commit after task branch was created.  Source update merges it in → Ok.
+async fn stale_source_routes_to_dedicated_update_without_mutating_git() {
+    // Main has a new commit after task branch creation. Observation must not merge it.
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -557,16 +563,22 @@ async fn source_updated_returns_ok() {
     .await;
 
     assert!(
-        result.is_ok(),
-        "Source updated (behind→fresh) should return Ok. Got: {:?}",
+        matches!(
+            result,
+            Err(FreshnessAction::RouteToBranchUpdate {
+                conflict_type: "source_update",
+                ..
+            })
+        ),
+        "A stale task branch must route to dedicated update authority. Got: {:?}",
         result
     );
 }
 
 #[tokio::test]
-async fn source_conflicts_returns_route_to_merging() {
+async fn source_conflicts_returns_route_to_branch_update() {
     // Main and task branch have conflicting changes on the same file → source conflict →
-    // RouteToMerging with conflict_type=source_update.
+    // RouteToBranchUpdate with conflict_type=source_update.
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -606,12 +618,12 @@ async fn source_conflicts_returns_route_to_merging() {
     assert!(
         matches!(
             result,
-            Err(FreshnessAction::RouteToMerging {
+            Err(FreshnessAction::RouteToBranchUpdate {
                 conflict_type: "source_update",
                 ..
             })
         ),
-        "Source conflict must return RouteToMerging with conflict_type=source_update. Got: {:?}",
+        "Source conflict must return RouteToBranchUpdate with conflict_type=source_update. Got: {:?}",
         result
     );
 }
@@ -641,9 +653,13 @@ async fn source_branch_missing_blocks_execution_without_retry() {
     assert!(
         matches!(
             result,
-            Err(FreshnessAction::ExecutionBlocked { ref reason })
+            Err(FreshnessAction::ExecutionBlocked {
+                ref reason,
+                branch_missing: Some(ref missing_branch),
+            })
                 if reason.contains("branch missing before source update")
                     && reason.contains("task/nonexistent-source-branch")
+                    && missing_branch == "task/nonexistent-source-branch"
         ),
         "Missing source branch must block without retry. Got: {:?}",
         result
@@ -685,7 +701,7 @@ async fn missing_task_branch_skips_source_check_returns_ok() {
 
 #[tokio::test]
 async fn plan_conflict_increments_count_and_routes() {
-    // conflict_count starts at 0, conflict detected → count becomes 1 → RouteToMerging (not blocked).
+    // conflict_count starts at 0, conflict detected → count becomes 1 → RouteToBranchUpdate (not blocked).
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -713,7 +729,7 @@ async fn plan_conflict_increments_count_and_routes() {
     .await;
 
     match result {
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             freshness_metadata, ..
         }) => {
             assert_eq!(
@@ -721,14 +737,14 @@ async fn plan_conflict_increments_count_and_routes() {
                 "Count should be incremented from 0 to 1"
             );
         }
-        other => panic!("Expected RouteToMerging, got: {other:?}"),
+        other => panic!("Expected RouteToBranchUpdate, got: {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn plan_conflict_at_cap_auto_resets_first_time() {
     // conflict_count starts at 3, cap=3 → count becomes 4 > 3 → first cap → auto-reset.
-    // After auto-reset: count=0, auto_reset_count=1, returns RouteToMerging.
+    // After auto-reset: count=0, auto_reset_count=1, returns RouteToBranchUpdate.
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -757,7 +773,7 @@ async fn plan_conflict_at_cap_auto_resets_first_time() {
     .await;
 
     match result {
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             freshness_metadata, ..
         }) => {
             assert_eq!(
@@ -769,7 +785,9 @@ async fn plan_conflict_at_cap_auto_resets_first_time() {
                 "First cap auto-reset must reset count to 0"
             );
         }
-        other => panic!("First cap must RouteToMerging (auto-reset), not block. Got: {other:?}"),
+        other => {
+            panic!("First cap must RouteToBranchUpdate (auto-reset), not block. Got: {other:?}")
+        }
     }
 }
 
@@ -857,8 +875,8 @@ async fn success_resets_conflict_count() {
 
 /// Tests the full dual-conflict flow across three sequential calls:
 ///
-/// Call 1: plan has conflicts → RouteToMerging (count=1)
-/// Call 2: task metadata has count=1, plan now fresh but source has conflicts → RouteToMerging (count=2)
+/// Call 1: plan has conflicts → RouteToBranchUpdate (count=1)
+/// Call 2: task metadata has count=1, plan now fresh but source has conflicts → RouteToBranchUpdate (count=2)
 /// Call 3: task metadata has count=2, both fresh → Ok (count reset to 0)
 #[tokio::test]
 async fn dual_conflict_sequential_plan_then_source() {
@@ -889,7 +907,7 @@ async fn dual_conflict_sequential_plan_then_source() {
     .await;
 
     let freshness_after_call1 = match result1 {
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             freshness_metadata,
             conflict_type: "plan_update",
             ..
@@ -900,15 +918,16 @@ async fn dual_conflict_sequential_plan_then_source() {
             );
             freshness_metadata
         }
-        other => panic!("Call 1 expected RouteToMerging(plan_update), got: {other:?}"),
+        other => panic!("Call 1 expected RouteToBranchUpdate(plan_update), got: {other:?}"),
     };
 
     // Simulate: merger agent resolved the plan conflict (plan branch now merged main).
     // We do a real git merge abort + fast-forward so the next plan check passes.
     resolve_plan_conflict(path, "plan/dual-conflict-plan");
 
-    // Now set up a source conflict: main gets a new change that conflicts with task branch
-    setup_source_conflict(path, &repo.task_branch);
+    // Now set up a source conflict on the fresh plan branch. Advancing main here
+    // would correctly make the plan stale again and require another plan update.
+    setup_source_conflict(path, "plan/dual-conflict-plan");
 
     // --- Call 2: plan fresh, source has conflict ---
     // Carry forward the metadata from call 1 (count=1)
@@ -930,7 +949,7 @@ async fn dual_conflict_sequential_plan_then_source() {
     .await;
 
     let freshness_after_call2 = match result2 {
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             freshness_metadata,
             conflict_type: "source_update",
             ..
@@ -941,11 +960,11 @@ async fn dual_conflict_sequential_plan_then_source() {
             );
             freshness_metadata
         }
-        other => panic!("Call 2 expected RouteToMerging(source_update), got: {other:?}"),
+        other => panic!("Call 2 expected RouteToBranchUpdate(source_update), got: {other:?}"),
     };
 
     // Simulate: merger agent resolved the source conflict.
-    resolve_source_conflict(path, &repo.task_branch);
+    resolve_source_conflict(path, &repo.task_branch, "plan/dual-conflict-plan");
 
     // --- Call 3: both branches fresh ---
     let meta_json3 = serde_json::to_value(&freshness_after_call2).unwrap();
@@ -1057,12 +1076,19 @@ fn resolve_plan_conflict(path: &std::path::Path, plan_branch_name: &str) {
         .output();
 }
 
-/// Create a source conflict: add a commit to main that conflicts with what's in task branch.
+/// Create a source conflict: add a commit to the target that conflicts with the task branch.
 ///
 /// The `setup_real_git_repo()` task branch already has `feature.rs`. This adds a conflicting
 /// version of `feature.rs` on main so the source update will conflict.
-fn setup_source_conflict(path: &std::path::Path, task_branch: &str) {
-    // We're on main — add a conflicting change to feature.rs
+fn setup_source_conflict(path: &std::path::Path, target_branch: &str) {
+    let checkout = std::process::Command::new("git")
+        .args(["checkout", target_branch])
+        .current_dir(path)
+        .output()
+        .expect("checkout source-update target");
+    assert!(checkout.status.success());
+
+    // Add a conflicting change to feature.rs on the target.
     std::fs::write(
         path.join("feature.rs"),
         "// main conflicting source version\nfn main_source() {}",
@@ -1081,22 +1107,24 @@ fn setup_source_conflict(path: &std::path::Path, task_branch: &str) {
         .current_dir(path)
         .output();
 
-    // Verify the task branch has the old version (it should from setup_real_git_repo)
-    let _ = task_branch; // suppress unused warning
+    let _ = std::process::Command::new("git")
+        .args(["checkout", "main"])
+        .current_dir(path)
+        .output();
 }
 
-/// Resolve a source conflict by merging main into the task branch with `ours` strategy.
+/// Resolve a source conflict by merging the target into the task branch with `ours` strategy.
 ///
 /// Simulates what a merger agent does after resolving a source_update conflict.
-fn resolve_source_conflict(path: &std::path::Path, task_branch: &str) {
+fn resolve_source_conflict(path: &std::path::Path, task_branch: &str, target_branch: &str) {
     let _ = std::process::Command::new("git")
         .args(["checkout", task_branch])
         .current_dir(path)
         .output();
 
-    // Merge main using ours strategy to resolve the conflict
+    // Merge the target using ours strategy to resolve the conflict.
     let merge_out = std::process::Command::new("git")
-        .args(["merge", "main", "-X", "ours", "--no-edit"])
+        .args(["merge", target_branch, "-X", "ours", "--no-edit"])
         .current_dir(path)
         .output()
         .expect("git merge for source conflict resolution");
@@ -1422,7 +1450,7 @@ fn backoff_reads_from_config_not_hardcoded() {
 
 #[test]
 fn count_persistence_across_merger_cycles() {
-    // After a RouteToMerging round-trip, the merger agent calls clear_routing_flags()
+    // After a RouteToBranchUpdate round-trip, the merger agent calls clear_routing_flags()
     // on re-entry to Executing. count must survive that call.
     let mut freshness = FreshnessMetadata {
         branch_freshness_conflict: true,
@@ -1604,7 +1632,7 @@ async fn backoff_set_at_conflict_detection() {
     .await;
 
     match result {
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             freshness_metadata, ..
         }) => {
             assert!(
@@ -1623,7 +1651,7 @@ async fn backoff_set_at_conflict_detection() {
                 "backoff_until should be ~60s from now, got {secs_from_now}s"
             );
         }
-        other => panic!("Expected RouteToMerging with backoff set. Got: {other:?}"),
+        other => panic!("Expected RouteToBranchUpdate with backoff set. Got: {other:?}"),
     }
 }
 
@@ -1710,6 +1738,7 @@ fn execution_blocked_reason_format() {
     // Verify the FreshnessAction::ExecutionBlocked variant wraps it correctly
     let action = FreshnessAction::ExecutionBlocked {
         reason: reason.clone(),
+        branch_missing: None,
     };
     assert!(
         matches!(action, FreshnessAction::ExecutionBlocked { .. }),

@@ -547,6 +547,60 @@ fn test_create_mcp_config_allowed_tools_value_matches_agent_mcp_tools() {
 }
 
 #[test]
+fn persona_extractor_spawn_emits_tools_flag_and_mcp_grants() {
+    let (_plugin_dir_guard, plugin_dir) = make_temp_plugin_dir();
+    let working_directory = tempfile::tempdir().expect("working directory");
+    let command = build_spawnable_command_with_mcp_runtime_context_for_test(
+        Path::new("/fake/claude"),
+        &plugin_dir,
+        "Distill the selected context into a persona.",
+        Some("ralphx:ralphx-persona-extractor"),
+        None,
+        working_directory.path(),
+        None,
+        None,
+        None,
+    )
+    .expect("persona extractor command should build");
+    let args = command.get_args_for_test();
+
+    let tools_index = args
+        .iter()
+        .position(|arg| arg == "--tools")
+        .expect("A7 containment requires --tools on the extractor command");
+    assert!(
+        !args[tools_index + 1].is_empty(),
+        "A7 containment requires a non-empty --tools value"
+    );
+    assert_eq!(args[tools_index + 1], "TaskList");
+
+    let mcp_config_index = args
+        .iter()
+        .position(|arg| arg == "--mcp-config")
+        .expect("extractor command should carry a strict MCP config");
+    let mcp_config: serde_json::Value =
+        serde_json::from_str(&read_test_file(Path::new(&args[mcp_config_index + 1])))
+            .expect("generated MCP config should be valid JSON");
+    let mcp_args = get_json_args(&mcp_config);
+    let allowed_tools = mcp_args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--allowed-tools="))
+        .expect("extractor MCP config should explicitly restrict allowed tools");
+
+    let expected_grants = BTreeSet::from([
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_grep",
+        "fs_glob",
+        "ask_user_question",
+        "save_persona_draft",
+        "get_persona_draft",
+    ]);
+    let actual_grants = allowed_tools.split(',').collect::<BTreeSet<_>>();
+    assert_eq!(actual_grants, expected_grants);
+}
+
+#[test]
 fn test_create_mcp_config_injects_no_tools_sentinel_for_automation_judge() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     let config =
@@ -770,6 +824,7 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         Some("plan"),
         "Create a plan",
+        None,
     )
     .expect("plan profile prompt");
 
@@ -783,10 +838,264 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         None,
         "Create a plan",
+        None,
     )
     .expect("default profile prompt");
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
     assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
+}
+
+#[test]
+fn claude_prompt_orders_persona_after_base_and_appendices_before_skills_and_runtime_profile() {
+    let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let persona = "<ralphx_agent_persona>Persona voice</ralphx_agent_persona>";
+    let (system_prompt, _) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
+        Some(persona),
+    )
+    .expect("plan profile prompt");
+
+    let base = system_prompt
+        .find("## Agent Conversation Plan Mode")
+        .expect("profile prompt");
+    let persona = system_prompt.find(persona).expect("persona block");
+    // The live profile prompt mentions these tags in prose, so anchor on the
+    // APPENDED blocks (last occurrence), not the first prose mention.
+    let skills = system_prompt
+        .rfind("<ralphx_internal_skills>")
+        .expect("internal skills");
+    let runtime_profile = system_prompt
+        .rfind("<agent_runtime_profile>")
+        .expect("runtime profile");
+
+    assert!(base < persona && persona < skills && skills < runtime_profile);
+}
+
+#[test]
+fn persona_block_is_excluded_from_internal_skills_match_text() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    auto_match: true
+    allowed:
+      - persona-only-skill
+"#,
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+    std::fs::create_dir_all(root.join("plugins/app/skills/persona-only-skill"))
+        .expect("create skill dir");
+    std::fs::write(
+        root.join("plugins/app/skills/persona-only-skill/SKILL.md"),
+        r#"---
+name: persona-only-skill
+trigger: persona-only-trigger
+---
+This skill must not be selected from persona text.
+"#,
+    )
+    .expect("write skill");
+
+    let (system_prompt, injected_skills) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "test-agent",
+        None,
+        "ordinary user request",
+        Some("<ralphx_agent_persona>persona-only-trigger</ralphx_agent_persona>"),
+    )
+    .expect("system prompt");
+
+    assert!(injected_skills.is_empty());
+    assert!(!system_prompt.contains("<ralphx_internal_skills>"));
+}
+
+#[test]
+fn persona_survives_skills_injector_error_fallback() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    allowed:
+      - missing-skill
+"#,
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+
+    let persona = "<ralphx_agent_persona>Fallback persona</ralphx_agent_persona>";
+    let (system_prompt, injected_skills) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "test-agent",
+        None,
+        "ordinary user request",
+        Some(persona),
+    )
+    .expect("system prompt");
+
+    assert!(injected_skills.is_empty());
+    assert!(system_prompt.contains(persona));
+}
+
+#[test]
+fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: test-agent\nrole: test\n",
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+
+    let persona = "<ralphx_agent_persona>CLI persona</ralphx_agent_persona>";
+    let mut command = tokio::process::Command::new("/fake/claude");
+    let outcome = add_prompt_args(
+        &mut command,
+        &plugin_dir,
+        "ordinary user request",
+        Some(persona),
+        Some("test-agent"),
+        None,
+        None,
+        false,
+    );
+    assert!(outcome.persona_injected);
+    assert_eq!(outcome.persona_injection_skipped_reason, None);
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let appended_prompt = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt-file")
+        .map(|index| read_test_file(&args[index + 1]))
+        .or_else(|| {
+            args.iter()
+                .position(|arg| arg == "--append-system-prompt")
+                .map(|index| args[index + 1].clone())
+        })
+        .expect("appended system prompt");
+
+    assert!(appended_prompt.contains(persona));
+}
+
+#[test]
+fn fallback_prompt_without_persona_pins_none_metadata() {
+    let (_dir, _root, plugin_dir) = make_temp_project_plugin_dir();
+    let persona = "<ralphx_agent_persona>Fallback persona</ralphx_agent_persona>";
+    let mut command = tokio::process::Command::new("/fake/claude");
+
+    let outcome = add_prompt_args(
+        &mut command,
+        &plugin_dir,
+        "ordinary user request",
+        Some(persona),
+        Some("missing-agent"),
+        None,
+        None,
+        false,
+    );
+
+    assert!(
+        !outcome.persona_injected,
+        "native fallback must not claim that it injected a persona"
+    );
+    assert_eq!(
+        outcome.persona_injection_skipped_reason,
+        Some("agent_prompt_not_found_native_agent")
+    );
+}
+
+#[test]
+fn all_inherit_families_resolve_through_add_prompt_args_seam() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/test-agent");
+    std::fs::create_dir_all(agent_root.join("claude")).expect("create agent prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: test-agent\nrole: test\n",
+    )
+    .expect("write agent definition");
+    std::fs::write(agent_root.join("claude/prompt.md"), "Base prompt").expect("write prompt");
+
+    let working_directory = tempfile::tempdir().expect("working directory");
+    let persona = "<ralphx_agent_persona>Inherited voice</ralphx_agent_persona>";
+    let commands = [
+        build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
+            std::path::Path::new("/fake/claude"),
+            &plugin_dir,
+            "continue",
+            Some("test-agent"),
+            None,
+            Some(persona),
+            Some("resume-session"),
+            working_directory.path(),
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("noninteractive inherit command"),
+        build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
+            std::path::Path::new("/fake/claude"),
+            &plugin_dir,
+            "continue",
+            Some("test-agent"),
+            None,
+            Some(persona),
+            Some("resume-session"),
+            working_directory.path(),
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("interactive inherit command"),
+    ];
+
+    for command in commands {
+        let args = command.get_args_for_test().into_iter().collect::<Vec<_>>();
+        let prompt = args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt-file")
+            .map(|index| read_test_file(&args[index + 1]))
+            .or_else(|| {
+                args.iter()
+                    .position(|arg| arg == "--append-system-prompt")
+                    .map(|index| args[index + 1].clone())
+            })
+            .expect("append-system-prompt argument");
+        assert!(
+            prompt.contains(persona),
+            "inherit family must route through add_prompt_args with the persona block"
+        );
+    }
+}
+
+#[test]
+fn native_agent_flag_bypass_reports_injection_skipped() {
+    assert_eq!(
+        persona_injection_skipped_reason(true, true),
+        Some("native_agent_flag")
+    );
+    assert_eq!(persona_injection_skipped_reason(false, true), None);
+    assert_eq!(persona_injection_skipped_reason(false, false), None);
 }
 
 #[test]
@@ -1051,15 +1360,66 @@ Report only unless workspace intervention is explicit.
     let args = spawnable.get_args_for_test();
     let prompt_index = args
         .iter()
-        .position(|arg| arg == "--append-system-prompt")
-        .expect("expected inline system prompt with internal skill context");
+        .position(|arg| arg == "--append-system-prompt-file")
+        .expect("expected system prompt file with internal skill context");
+    let generated_prompt = read_test_file(Path::new(&args[prompt_index + 1]));
     assert!(
-        args[prompt_index + 1].contains("Report only unless workspace intervention is explicit."),
-        "expected internal skill body in Claude system prompt"
+        generated_prompt.contains("Report only unless workspace intervention is explicit."),
+        "expected internal skill body in Claude system prompt file"
     );
     assert!(
+        !args.contains(&"--append-system-prompt".to_string()),
+        "Claude must not use an inline prompt when internal skill context is selected"
+    );
+}
+
+#[test]
+fn append_system_prompt_args_falls_back_to_inline_on_write_error() {
+    let mut cmd = tokio::process::Command::new("/fake/claude");
+    let prompt = "Full generated system prompt";
+
+    append_system_prompt_args(&mut cmd, "ralphx-test", prompt, true, |_| {
+        Err("simulated prompt write failure".to_string())
+    });
+
+    let args: Vec<String> = cmd
+        .as_std()
+        .get_args()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("write failure should fall back to inline system prompt");
+    assert_eq!(args[prompt_index + 1], prompt);
+    assert!(
         !args.contains(&"--append-system-prompt-file".to_string()),
-        "Claude must use inline prompt when internal skill context is selected"
+        "write failure must not leave a system prompt file argument"
+    );
+}
+
+#[test]
+fn append_system_prompt_args_inline_when_file_delivery_disabled() {
+    let mut cmd = tokio::process::Command::new("/fake/claude");
+    let prompt = "Full generated system prompt";
+
+    append_system_prompt_args(&mut cmd, "ralphx-test", prompt, false, |_| {
+        panic!("disabled file delivery must not invoke the prompt writer")
+    });
+
+    let args: Vec<String> = cmd
+        .as_std()
+        .get_args()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("disabled file delivery should use inline system prompt");
+    assert_eq!(args[prompt_index + 1], prompt);
+    assert!(
+        !args.contains(&"--append-system-prompt-file".to_string()),
+        "disabled file delivery must not add a system prompt file argument"
     );
 }
 
@@ -1391,6 +1751,30 @@ fn test_materialize_generated_plugin_dir_matches_canonical_and_runtime_semantics
         assert_eq!(
             canonical_body, generated_body,
             "generated Claude prompt body drifted from canonical source for {agent_name}"
+        );
+    }
+}
+
+#[test]
+fn generated_plugin_agents_contain_no_persona_content() {
+    let (_dir, root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let generated_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
+    let agent_names =
+        crate::infrastructure::agents::harness_agent_catalog::list_canonical_prompt_backed_agents(
+            &root,
+            crate::infrastructure::agents::harness_agent_catalog::AgentPromptHarness::Claude,
+        );
+
+    for agent_name in agent_names {
+        let generated_markdown = read_test_file(
+            generated_dir
+                .join("agents")
+                .join(format!("{agent_name}.md")),
+        );
+        assert!(
+            !generated_markdown.contains("<ralphx_agent_persona>"),
+            "generated agent {agent_name} must not contain conversation persona content"
         );
     }
 }

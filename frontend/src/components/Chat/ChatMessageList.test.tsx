@@ -23,12 +23,48 @@ vi.mock("@/hooks/useMessageAttachments", () => ({
   useMessageAttachments: (...args: unknown[]) => messageAttachments(...args),
 }));
 
-vi.mock("./MessageItem", () => ({
-  MessageItem: ({ content, children }: { content: string; children?: React.ReactNode }) => (
-    <article data-chat-message-item="true">{content}{children}</article>
-  ),
-  MessageMeta: () => null,
-}));
+vi.mock("./MessageItem", async () => {
+  const { PersonaRunBadge } = await import("./PersonaRunBadge");
+  return {
+    MessageItem: ({
+      content,
+      children,
+      createdAt,
+      hideMeta,
+      agentPersonasEnabled,
+      personaSlug,
+      personaVersion,
+      personaInjected,
+      personaSkippedReason,
+    }: {
+      content: string;
+      children?: React.ReactNode;
+      createdAt: string;
+      hideMeta?: boolean;
+      agentPersonasEnabled?: boolean;
+      personaSlug?: string | null;
+      personaVersion?: number | null;
+      personaInjected?: boolean | null;
+      personaSkippedReason?: string | null;
+    }) => (
+      <article data-chat-message-item="true">
+        {content}
+        {children}
+        {!hideMeta && <footer data-testid="message-meta">{createdAt}</footer>}
+        <PersonaRunBadge
+          enabled={agentPersonasEnabled ?? false}
+          personaSlug={personaSlug ?? null}
+          personaVersion={personaVersion ?? null}
+          personaInjected={personaInjected ?? null}
+          skippedReason={personaSkippedReason ?? null}
+        />
+      </article>
+    ),
+    MessageMeta: ({ createdAt }: { createdAt: string }) => (
+      <footer data-testid="message-meta">{createdAt}</footer>
+    ),
+  };
+});
 
 vi.mock("./TextBubble", () => ({
   TextBubble: ({ text }: { text: string }) => <span>{text}</span>,
@@ -412,6 +448,81 @@ describe("ChatMessageList controller integration", () => {
     expect(scrollWrites).not.toHaveBeenCalled();
   });
 
+  it("keeps the timestamp and message actions reachable when the last row grows after returning to bottom", () => {
+    const resizeObservers: Array<{
+      callback: ResizeObserverCallback;
+      targets: Set<Element>;
+    }> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly record: (typeof resizeObservers)[number];
+
+        constructor(callback: ResizeObserverCallback) {
+          this.record = { callback, targets: new Set() };
+          resizeObservers.push(this.record);
+        }
+
+        disconnect(): void {
+          this.record.targets.clear();
+        }
+
+        observe(target: Element): void {
+          this.record.targets.add(target);
+        }
+
+        unobserve(target: Element): void {
+          this.record.targets.delete(target);
+        }
+      },
+    );
+    renderList();
+    const scroller = primeAtBottom();
+    const lastMeta = screen.getAllByTestId("message-meta").at(-1);
+    const lastRow = lastMeta?.closest('[data-chat-last-rendered-row="true"]');
+    expect(lastRow).toBeInstanceOf(HTMLElement);
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_000, scrollTop: 200 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    fireEvent.click(screen.getByTestId("chat-scroll-to-bottom-button"));
+    flushAnimationFrames();
+    expect(scroller.scrollTop).toBe(500);
+
+    const lastRowObserver = resizeObservers.find(({ targets }) =>
+      lastRow ? targets.has(lastRow) : false,
+    );
+    expect(lastRowObserver).toBeDefined();
+    const notifyLastRowHeight = (height: number) => {
+      lastRowObserver?.callback(
+        [{ contentRect: { height }, target: lastRow } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    };
+    act(() => notifyLastRowHeight(100));
+    scrollWrites.mockClear();
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_024, scrollTop: 500 });
+    act(() => notifyLastRowHeight(124));
+    flushAnimationFrames();
+
+    expect(scrollWrites).toHaveBeenCalledWith(expect.objectContaining({ top: 524 }));
+    expect(scroller.scrollTop).toBe(524);
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "true");
+
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_024, scrollTop: 200 });
+    fireEvent.wheel(scroller, { deltaY: -80 });
+    fireEvent.scroll(scroller);
+    scrollWrites.mockClear();
+    setScrollerGeometry(scroller, { clientHeight: 500, scrollHeight: 1_048, scrollTop: 200 });
+    act(() => notifyLastRowHeight(148));
+    flushAnimationFrames();
+
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(200);
+    expect(screen.getByTestId("chat-scroll-to-bottom-control")).toHaveAttribute("aria-hidden", "false");
+  });
+
   it("leaves controller follow state untouched for a prepend epoch", () => {
     const onLoadOlderMessages = vi.fn();
     renderList({ hasOlderMessages: true, onLoadOlderMessages });
@@ -784,6 +895,129 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getByText("Second tool call")).toBeInTheDocument();
     expect(harness.scrollToIndex).toHaveBeenCalledWith(
       expect.objectContaining({ index: 2, align: "end" }),
+    );
+  });
+
+  it("renders applied persona attribution on the matching transcript run boundary", async () => {
+    renderList({
+      messages: [
+        {
+          id: "assistant-run-message",
+          role: "assistant",
+          content: "Applied persona response",
+          createdAt: "2026-07-13T06:19:00.000Z",
+          runId: "run-persona",
+          providerHarness: "codex",
+        },
+      ],
+      agentPersonasEnabled: true,
+      agentRun: {
+        id: "run-persona",
+        conversationId: "conversation-a",
+        status: "running",
+        startedAt: "2026-07-13T06:19:00.000Z",
+        completedAt: null,
+        errorMessage: null,
+        modelId: null,
+        modelLabel: null,
+        personaSlug: "design-voice",
+        personaVersion: 2,
+        personaInjected: true,
+      },
+    });
+
+    const badge = screen.getByTestId("persona-run-badge");
+    expect(badge).toHaveTextContent("design-voice");
+    fireEvent.pointerMove(badge);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "design-voice · v2 — applied to this run",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render persona attribution for another run or when the flag is off", () => {
+    const assistantMessages: ChatMessageData[] = [
+      {
+        id: "assistant-run-message",
+        role: "assistant",
+        content: "No matching persona badge",
+        createdAt: "2026-07-13T06:19:00.000Z",
+        runId: "older-run",
+        providerHarness: "claude",
+      },
+    ];
+    const agentRun = {
+      id: "run-persona",
+      conversationId: "conversation-a",
+      status: "running" as const,
+      startedAt: "2026-07-13T06:19:00.000Z",
+      completedAt: null,
+      errorMessage: null,
+      modelId: null,
+      modelLabel: null,
+      personaId: "persona-design-voice",
+      personaSlug: "design-voice",
+      personaVersion: 2,
+      personaInjected: false,
+      personaSkippedReason: "persona_not_injected",
+    };
+    const { rerender } = renderList({
+      messages: assistantMessages,
+      agentPersonasEnabled: true,
+      agentRun,
+    });
+    expect(screen.queryByTestId("persona-run-badge")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[{ ...assistantMessages[0]!, runId: "run-persona" }]}
+        agentPersonasEnabled={false}
+        agentRun={agentRun}
+      />,
+    );
+    expect(screen.queryByTestId("persona-run-badge")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[{ ...assistantMessages[0]!, runId: "run-persona" }]}
+        agentPersonasEnabled
+        agentRun={agentRun}
+      />,
+    );
+    expect(screen.getByTestId("persona-run-badge")).toHaveTextContent(
+      "design-voice not applied",
+    );
+  });
+
+  it("renders body-free attribution for older persisted transcript runs", () => {
+    renderList({
+      messages: [
+        {
+          id: "older-assistant-run",
+          role: "assistant",
+          content: "Older attributed response",
+          createdAt: "2026-07-13T06:18:00.000Z",
+          runId: "run-persona-older",
+        },
+      ],
+      agentPersonasEnabled: true,
+      personaRuns: [
+        {
+          id: "run-persona-older",
+          personaId: "persona-careful-reviewer",
+          personaSlug: "careful-reviewer",
+          personaVersion: 1,
+          personaInjected: true,
+          personaSkippedReason: null,
+        },
+      ],
+    });
+
+    expect(screen.getByTestId("persona-run-badge")).toHaveTextContent(
+      "careful-reviewer",
     );
   });
 

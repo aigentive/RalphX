@@ -332,40 +332,60 @@ impl<'a> TransitionHandler<'a> {
         ) {
             let task_id_typed = TaskId::from_string(task_id_str.to_string());
             let project_id_typed = ProjectId::from_string(project_id_str.to_string());
-            if let (Ok(Some(task)), Ok(Some(project))) = (
-                task_repo.get_by_id(&task_id_typed).await,
-                project_repo.get_by_id(&project_id_typed).await,
-            ) {
+            if let Ok(Some(project)) = project_repo.get_by_id(&project_id_typed).await {
                 let repo_path = Path::new(&project.working_directory);
-                let plan_branch = get_task_plan_branch(
-                    &task,
-                    &project,
-                    &self.machine.context.services.plan_branch_repo,
-                    &self.machine.context.services.task_repo,
-                )
-                .await;
-                let config = reconciliation_config();
-                let event_sink = self.machine.context.services.event_sink.as_deref();
-                let activity_event_repo =
-                    self.machine.context.services.activity_event_repo.as_ref();
-                let freshness_result = freshness::ensure_branches_fresh(
-                    repo_path,
-                    &task,
-                    &project,
-                    task_id_str,
-                    plan_branch
-                        .as_ref()
-                        .map(|branch| branch.branch_name.as_str()),
-                    plan_branch
-                        .as_ref()
-                        .map(|branch| branch.source_branch.as_str()),
-                    event_sink,
-                    activity_event_repo,
-                    stage,
-                    config,
-                )
-                .await;
-                apply_freshness_result(freshness_result, &task, task_id_str, task_repo).await?;
+                for _ in 0..3 {
+                    let Some(task) = task_repo.get_by_id(&task_id_typed).await? else {
+                        return Err(AppError::TaskNotFound(task_id_str.to_string()));
+                    };
+                    let plan_branch = get_task_plan_branch(
+                        &task,
+                        &project,
+                        &self.machine.context.services.plan_branch_repo,
+                        &self.machine.context.services.task_repo,
+                    )
+                    .await;
+                    let freshness_result = freshness::ensure_branches_fresh(
+                        repo_path,
+                        &task,
+                        &project,
+                        task_id_str,
+                        plan_branch
+                            .as_ref()
+                            .map(|branch| branch.branch_name.as_str()),
+                        plan_branch
+                            .as_ref()
+                            .map(|branch| branch.source_branch.as_str()),
+                        self.machine.context.services.event_sink.as_deref(),
+                        self.machine.context.services.activity_event_repo.as_ref(),
+                        stage,
+                        reconciliation_config(),
+                    )
+                    .await;
+                    match apply_freshness_result(
+                        freshness_result,
+                        &task,
+                        task_id_str,
+                        task_repo,
+                        self.machine.context.services.branch_update_repo.as_ref(),
+                        self.machine
+                            .context
+                            .services
+                            .branch_update_workflow
+                            .as_ref(),
+                        &project,
+                        repo_path,
+                        stage,
+                    )
+                    .await?
+                    {
+                        FreshnessApplyOutcome::Ready => return Ok(()),
+                        FreshnessApplyOutcome::Updated(_) => continue,
+                    }
+                }
+                return Err(AppError::ExecutionBlocked(
+                    "Branch freshness checkpoints did not converge".to_string(),
+                ));
             }
         }
 

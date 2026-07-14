@@ -167,7 +167,8 @@ function isTaskRuntimeHistoryContextType(
   return (
     contextType === "task_execution" ||
     contextType === "review" ||
-    contextType === "merge"
+    contextType === "merge" ||
+    contextType === "branch_update"
   );
 }
 

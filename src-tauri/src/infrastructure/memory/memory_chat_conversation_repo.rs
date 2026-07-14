@@ -239,6 +239,19 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(())
     }
 
+    async fn update_persona_binding(
+        &self,
+        id: &ChatConversationId,
+        persona_id: Option<&str>,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.persona_id = persona_id.map(str::to_string);
+            conversation.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
     async fn update_coordination_mode(
         &self,
         id: &ChatConversationId,

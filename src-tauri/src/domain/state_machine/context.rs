@@ -6,8 +6,8 @@ use super::mocks::{
     MockTaskScheduler,
 };
 use super::services::{
-    AgentSpawner, DependencyManager, EventEmitter, NotificationContext, Notifier, ReviewStarter,
-    TaskScheduler, WebhookPublisher,
+    AgentSpawner, BranchUpdateWorkflow, DependencyManager, EventEmitter, NotificationContext,
+    Notifier, ReviewStarter, TaskScheduler, WebhookPublisher,
 };
 use super::types::Blocker;
 use crate::application::ChatService;
@@ -16,8 +16,8 @@ use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::entities::PlanBranchId;
 use crate::domain::repositories::{
-    ActivityEventRepository, ArtifactRepository, IdeationSessionRepository, PlanBranchRepository,
-    ProjectRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, ArtifactRepository, BranchUpdateRepository, IdeationSessionRepository,
+    PlanBranchRepository, ProjectRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::github_service::GithubServiceTrait;
 use crate::domain::services::PlanPrDescriptionDrafter;
@@ -71,6 +71,12 @@ pub struct TaskServices {
     /// Task repository for fetching and updating tasks during state transitions.
     /// Used by TransitionHandler to set task_branch and worktree_path on Executing entry.
     pub task_repo: Option<Arc<dyn TaskRepository>>,
+
+    /// Durable branch-update and canonical Git target authority.
+    pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
+
+    /// Application-owned branch-update effect adapter.
+    pub branch_update_workflow: Option<Arc<dyn BranchUpdateWorkflow>>,
 
     /// Project repository for fetching project settings during state transitions.
     /// Used by TransitionHandler to get git_mode and worktree_parent_directory.
@@ -172,6 +178,8 @@ impl TaskServices {
             event_sink: None,
             task_scheduler: None,
             task_repo: None,
+            branch_update_repo: None,
+            branch_update_workflow: None,
             project_repo: None,
             plan_branch_repo: None,
             step_repo: None,
@@ -225,6 +233,16 @@ impl TaskServices {
     /// Set the task repository (builder pattern)
     pub fn with_task_repo(mut self, repo: Arc<dyn TaskRepository>) -> Self {
         self.task_repo = Some(repo);
+        self
+    }
+
+    pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.branch_update_repo = Some(repo);
+        self
+    }
+
+    pub fn with_branch_update_workflow(mut self, workflow: Arc<dyn BranchUpdateWorkflow>) -> Self {
+        self.branch_update_workflow = Some(workflow);
         self
     }
 
@@ -358,6 +376,8 @@ impl TaskServices {
             event_sink: None,
             task_scheduler: Some(Arc::new(MockTaskScheduler::new())),
             task_repo: None,
+            branch_update_repo: None,
+            branch_update_workflow: None,
             project_repo: None,
             plan_branch_repo: None,
             step_repo: None,

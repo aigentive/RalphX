@@ -28,10 +28,11 @@ use crate::application::interactive_process_registry::InteractiveProcessRegistry
 use crate::application::{NotificationService, TaskTransitionService};
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository,
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, BranchUpdateRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 
@@ -59,6 +60,7 @@ pub struct ReconciliationRunner {
     pub(crate) execution_state: Arc<ExecutionState>,
     pub(crate) execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub(crate) plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    pub(crate) branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub(crate) interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub(crate) review_repo: Option<Arc<dyn ReviewRepository>>,
     pub(crate) app_handle: Option<AppHandle>,
@@ -109,6 +111,7 @@ impl ReconciliationRunner {
             execution_state,
             execution_settings_repo: None,
             plan_branch_repo: None,
+            branch_update_repo: None,
             interactive_process_registry: None,
             review_repo: None,
             app_handle,
@@ -131,6 +134,11 @@ impl ReconciliationRunner {
 
     pub fn with_plan_branch_repo(mut self, repo: Arc<dyn PlanBranchRepository>) -> Self {
         self.plan_branch_repo = Some(repo);
+        self
+    }
+
+    pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.branch_update_repo = Some(repo);
         self
     }
 

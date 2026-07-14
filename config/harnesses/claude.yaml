@@ -22,6 +22,8 @@ tool_sets:
     ]
   readonly_tools: [Read, Grep, Glob, WebFetch, WebSearch]
   critic_tools: [Read, Grep, Glob]
+  # A7 containment: non-empty prevents Claude from falling back to its native defaults.
+  persona_extractor_tools: [TaskList]
 
 claude:
   mcp_server_name: ralphx

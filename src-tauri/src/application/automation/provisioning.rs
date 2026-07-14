@@ -8,6 +8,7 @@ use ralphx_domain::entities::automation::latest_run_holds_goal_authority;
 use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
+use crate::application::agent_conversation_workspace::reject_persona_builder_workspace_mode;
 use crate::application::automation::judge::{
     build_automation_run_context_block, mark_current_goal_item_in_progress,
 };
@@ -114,6 +115,7 @@ impl AutomationRunStartRequest {
     }
 
     pub fn into_start_input(self) -> AppResult<StartAgentConversationInput> {
+        reject_persona_builder_workspace_mode(&self.run_mode).map_err(AppError::Validation)?;
         // D5: the `<automation_context>` block is composed at spawn time only. The
         // persisted `run_prompt` on the run stays clean so the judge loop-guard
         // fingerprint (stored prompt vs judge nextRunPrompt) keeps working.
@@ -132,6 +134,7 @@ impl AutomationRunStartRequest {
         Ok(StartAgentConversationInput {
             project_id: self.project_id,
             content,
+            persona_id: None,
             conversation_id: Some(self.conversation_id.as_str().to_string()),
             parent_conversation_id: None,
             title: None,

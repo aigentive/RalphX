@@ -15,6 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::application::git_service::GitService;
 use crate::application::notification_service::NotificationService;
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
@@ -31,9 +32,9 @@ use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
-    MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
-    SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata, VerificationGap,
-    VerificationStatus,
+    MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote, ReviewOutcome,
+    ReviewerType, SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata,
+    VerificationGap, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
@@ -336,6 +337,45 @@ impl RecoveryRetryAppRepos {
             delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
         }
     }
+}
+
+async fn resolve_recovery_retry_persona<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    feature_enabled: bool,
+    conversation: &ChatConversation,
+    context_type: ChatContextType,
+    agent_name_override_set: bool,
+) -> Result<Option<crate::application::persona_prompt::ResolvedPersona>, String> {
+    if !feature_enabled {
+        return Ok(None);
+    }
+    let Some(handle) = app_handle else {
+        return Ok(None);
+    };
+    let Some(app_state) = handle.try_state::<AppState>() else {
+        return Ok(None);
+    };
+    let workspace_mode = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
+        .map(|workspace| workspace.mode);
+    resolve_persona_for_send(
+        conversation,
+        &PersonaDirective::Inherit,
+        super::persona_resolve_flags_for_conversation(
+            feature_enabled,
+            false,
+            agent_name_override_set,
+            context_type,
+            conversation,
+            workspace_mode,
+        ),
+        Arc::clone(&app_state.persona_repo),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 fn queue_verification_auto_continue(
@@ -825,6 +865,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     app_handle: &Option<AppHandle<R>>,
     run_chain_id: Option<String>,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     user_message_content: Option<&str>,
     retry_conv: ChatConversation,
     agent_name: Option<&str>,
@@ -895,6 +937,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
         app_handle: app_handle.clone(),
         run_chain_id,
         is_retry_attempt: true,
+        persona_feature_enabled,
+        agent_name_override_set,
         user_message_content: user_message_content.map(str::to_string),
         turn_metadata: None,
         conversation: Some(retry_conv),
@@ -916,6 +960,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: interactive_process_registry.clone(),
+        interactive_process_token: None,
         verification_child_registry: verification_child_registry.clone(),
     }
 }
@@ -2053,6 +2098,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     stored_session_id: Option<&str>,
     effective_harness: AgentHarnessKind,
     is_retry_attempt: bool,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     user_message_content: Option<&str>,
     conversation: Option<&ChatConversation>,
     resolved_project_id: Option<String>,
@@ -2288,6 +2335,23 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             context_id,
             "Stream cancelled — skipping error recovery and fallback transitions"
         );
+        if effective_harness == AgentHarnessKind::Codex {
+            if let Err(error) = conversation_repo
+                .clear_provider_session_ref(&conversation_id)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    %error,
+                    "Failed to clear provider session after an incomplete Codex turn was cancelled"
+                );
+            } else {
+                tracing::info!(
+                    conversation_id = conversation_id.as_str(),
+                    "Cleared provider session after an incomplete Codex turn was cancelled"
+                );
+            }
+        }
         mark_cancelled_stream_as_cancelled(
             agent_run_repo,
             agent_run_id,
@@ -2402,7 +2466,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(artifact_repo),
                     Some(Arc::clone(ideation_session_repo)),
                     task_proposal_repo.clone(),
+                    Arc::clone(agent_run_repo),
+                    agent_run_id,
                     agent_provider_settings_repo.as_ref().map(Arc::clone),
+                    persona_feature_enabled,
+                    agent_name_override_set,
                     &session_id,
                     app_handle.as_ref(),
                 )
@@ -2440,48 +2508,65 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             agent_lane_settings_repo.as_ref().map(Arc::clone);
                         let retry_agent_provider_settings_repo =
                             agent_provider_settings_repo.as_ref().map(Arc::clone);
+                        let retry_persona = resolve_recovery_retry_persona(
+                            app_handle,
+                            persona_feature_enabled,
+                            conv,
+                            context_type,
+                            agent_name_override_set,
+                        )
+                        .await;
+                        let retry_persona_for_attribution = retry_persona
+                            .as_ref()
+                            .ok()
+                            .and_then(|persona| persona.clone());
 
-                        let retry_provider_spawnable =
-                            chat_service_context::build_resume_command_for_harness(
-                                recovery_harness,
-                                cli_path,
-                                plugin_dir,
-                                context_type,
-                                context_id,
-                                msg,
-                                None,
-                                None,
-                                working_directory,
-                                &new_session_id,
-                                resolved_project_id.as_deref(),
-                                &[],
-                                if context_type == ChatContextType::Project {
-                                    Some(conversation_id.as_str())
-                                } else {
-                                    None
-                                },
-                                team_mode,
-                                Arc::clone(chat_attachment_repo),
-                                Arc::clone(artifact_repo),
-                                retry_agent_lane_settings_repo.clone(),
-                                retry_app_repos.ideation_effort_settings_repo.clone(),
-                                retry_app_repos.ideation_model_settings_repo.clone(),
-                                Arc::clone(ideation_session_repo),
-                                Arc::clone(
-                                    retry_app_repos
-                                        .delegated_session_repo
-                                        .as_ref()
-                                        .expect("delegated session repo available"),
-                                ),
-                                Arc::clone(task_repo),
-                                &[],
-                                0,
-                                None,
-                                None,
-                                false,
-                                None,
-                            )
-                            .await;
+                        let retry_provider_spawnable = match retry_persona {
+                            Ok(persona) => {
+                                chat_service_context::build_resume_command_for_harness(
+                                    recovery_harness,
+                                    cli_path,
+                                    plugin_dir,
+                                    context_type,
+                                    context_id,
+                                    msg,
+                                    persona,
+                                    None,
+                                    None,
+                                    working_directory,
+                                    &new_session_id,
+                                    resolved_project_id.as_deref(),
+                                    &[],
+                                    if context_type == ChatContextType::Project {
+                                        Some(conversation_id.as_str())
+                                    } else {
+                                        None
+                                    },
+                                    team_mode,
+                                    Arc::clone(chat_attachment_repo),
+                                    Arc::clone(artifact_repo),
+                                    retry_agent_lane_settings_repo.clone(),
+                                    retry_app_repos.ideation_effort_settings_repo.clone(),
+                                    retry_app_repos.ideation_model_settings_repo.clone(),
+                                    Arc::clone(ideation_session_repo),
+                                    Arc::clone(
+                                        retry_app_repos
+                                            .delegated_session_repo
+                                            .as_ref()
+                                            .expect("delegated session repo available"),
+                                    ),
+                                    Arc::clone(task_repo),
+                                    &[],
+                                    0,
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(format!("Persona unavailable: {error}")),
+                        };
                         let retry_provider_gate = RecoveryRetryProviderGate::new(
                             app_handle,
                             &retry_agent_provider_settings_repo,
@@ -2495,7 +2580,21 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         .await;
 
                         if let Some(spawnable) = retry_spawnable {
+                            let persona_injected = spawnable.persona_injected();
+                            let persona_injection_skipped_reason =
+                                spawnable.persona_injection_skipped_reason();
                             if let Ok(retry_child) = spawnable.spawn().await {
+                                super::record_persona_run_attribution(
+                                    agent_run_repo,
+                                    app_handle.as_ref(),
+                                    &conversation_id,
+                                    agent_run_id,
+                                    recovery_harness,
+                                    retry_persona_for_attribution.as_ref(),
+                                    persona_injected,
+                                    persona_injection_skipped_reason,
+                                )
+                                .await;
                                 super::chat_service_send_background::spawn_send_message_background(
                                     build_recovery_retry_background_context(
                                         retry_child,
@@ -2536,6 +2635,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         plan_branch_repo,
                                         app_handle,
                                         run_chain_id.clone(),
+                                        persona_feature_enabled,
+                                        agent_name_override_set,
                                         user_message_content,
                                         retry_conv,
                                         agent_name,
@@ -2590,14 +2691,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Redact secrets from error string before propagating to non-tracing sinks
     let redacted_error = redact(error);
 
-    // AgentExit where the work is actually complete: the agent called
+    // A late agent-exit or local-tool diagnostic where the work is actually complete: the agent called
     // execution_complete successfully, green validation was cached for the
     // current attempt/HEAD, and the provider process exited before the normal
     // success finalizer ran. Treat this as a successful execution completion
     // before the generic failure path can persist stale stderr or emit
     // agent:error.
     if context_type == ChatContextType::TaskExecution
-        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
+        && matches!(
+            stream_error,
+            Some(StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. })
+        )
     {
         if let Some(ref exec_state) = execution_state {
             let task_id = TaskId::from_string(context_id.to_string());
@@ -3117,15 +3221,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         }
                     }
 
-                    // AgentExit where the work is actually complete → agent called
+                    // Late agent-exit/local-tool diagnostics where the work is actually complete → agent called
                     // execution_complete successfully but exited with signal (code=None).
                     // Override to PendingReview only when a current-attempt, HEAD-matched green
                     // validation cache proves completion. Completed steps alone are not enough:
                     // a failed agent can mark steps done before leaving uncommitted or invalid
                     // working-tree changes behind.
                     let target_status = if target_status == InternalStatus::Failed
-                        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
-                    {
+                        && matches!(
+                            stream_error,
+                            Some(
+                                StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. }
+                            )
+                        ) {
                         let validation_complete = if let Some(episode_entered_at) =
                             episode_entered_at
                         {
@@ -3141,7 +3249,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 task_id = task_id.as_str(),
                                 all_steps_done,
                                 validation_complete,
-                                "AgentExit with current green validation cache — overriding Failed → PendingReview"
+                                "Late execution diagnostic with current green validation cache — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {

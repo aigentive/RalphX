@@ -7,7 +7,7 @@
 // queueing messages for all context types, not just TaskExecution.
 
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
-use crate::domain::entities::{ChatAttachmentId, ChatContextType, TaskId};
+use crate::domain::entities::{ChatAttachmentId, ChatContextType, PersonaDirective, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -120,6 +120,12 @@ pub struct QueuedMessage {
     /// Optional runtime harness override to preserve relaunch/recovery provider continuity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_override: Option<AgentHarnessKind>,
+    /// Optional canonical agent override selected when this message was queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name_override: Option<String>,
+    /// Persona intent selected when this message was queued.
+    #[serde(default)]
+    pub persona_directive: PersonaDirective,
     /// Optional model override selected when this message was queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
@@ -157,6 +163,8 @@ impl QueuedMessage {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
@@ -179,6 +187,8 @@ impl QueuedMessage {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
@@ -328,6 +338,8 @@ impl MessageQueue {
             created_at_override,
             harness_override,
             None,
+            PersonaDirective::Inherit,
+            None,
             None,
             None,
             false,
@@ -348,6 +360,8 @@ impl MessageQueue {
         metadata_override: Option<String>,
         created_at_override: Option<String>,
         harness_override: Option<AgentHarnessKind>,
+        agent_name_override: Option<String>,
+        persona_directive: PersonaDirective,
         model_override: Option<String>,
         logical_effort_override: Option<LogicalEffort>,
         service_tier_override: Option<String>,
@@ -362,6 +376,8 @@ impl MessageQueue {
         message.metadata_override = metadata_override;
         message.created_at_override = created_at_override;
         message.harness_override = harness_override;
+        message.agent_name_override = agent_name_override;
+        message.persona_directive = persona_directive;
         message.model_override = model_override;
         message.logical_effort_override = logical_effort_override;
         message.service_tier_override = service_tier_override;

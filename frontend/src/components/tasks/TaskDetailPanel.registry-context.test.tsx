@@ -52,6 +52,7 @@ vi.mock("./detail-views", async () => {
     MergeConflictTaskDetail: MockRegistryView,
     MergeIncompleteTaskDetail: MockRegistryView,
     MergedTaskDetail: MockRegistryView,
+    BranchUpdateTaskDetail: MockRegistryView,
   };
 });
 
@@ -181,5 +182,16 @@ describe("TaskDetailPanel registry context", () => {
 
     expect(await screen.findByText("Historical State")).toBeInTheDocument();
     expect(screen.getByText("Waiting on PR")).toBeInTheDocument();
+  });
+
+  it.each([
+    "updating_plan_branch",
+    "updating_task_branch",
+    "branch_update_blocked",
+  ] as const)("wraps %s with the common task context rail", async (internalStatus) => {
+    renderPanel(createTask({ internalStatus }));
+
+    expect(screen.getByText("Registry body for Test Task")).toBeInTheDocument();
+    expect(await screen.findByText("Plan visible from registry detail")).toBeInTheDocument();
   });
 });

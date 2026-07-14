@@ -19,7 +19,8 @@ pub use agent_config::team_config::{
     TeamConstraintError, TeamConstraints, TeamConstraintsConfig, TeamMode, TeammateSpawnRequest,
 };
 pub use agent_config::{
-    agent_configs, agent_harness_defaults_config, automations_config, claude_runtime_config,
+    agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
+    claude_runtime_config,
     config_path, defer_merge_enabled, execution_defaults_config, external_mcp_config,
     external_mcp_config_path, file_logging_enabled, get_agent_config, get_agent_config_for_profile,
     get_allowed_tools, get_allowed_tools_for_profile, get_effective_settings,
@@ -31,6 +32,9 @@ pub use agent_config::{
     AllRuntimeConfig, AutomationsRuntimeConfig, ExecutionDefaultsConfig, ExternalMcpConfig,
     GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
     StreamTimeoutsConfig, SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
+};
+pub use agent_config::live_flags::{
+    reset_agent_personas_override_for_test, set_agent_personas_override,
 };
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;
@@ -772,6 +776,7 @@ fn load_agent_system_prompt_with_internal_skills(
     agent_name: &str,
     agent_profile: Option<&str>,
     prompt: &str,
+    persona_block: Option<&str>,
 ) -> Option<(String, Vec<String>)> {
     let short = mcp_agent_type(agent_name);
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
@@ -781,6 +786,7 @@ fn load_agent_system_prompt_with_internal_skills(
         AgentPromptHarness::Claude,
         agent_profile,
     )?;
+    let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, short, agent_profile);
     match inject_internal_skills_into_system_prompt_for_profile(
@@ -1269,6 +1275,52 @@ fn write_agent_system_prompt_temp(system_prompt: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
+fn append_system_prompt_args<F>(
+    cmd: &mut Command,
+    agent_name: &str,
+    system_prompt: &str,
+    use_file: bool,
+    write_system_prompt_temp: F,
+)
+where
+    F: FnOnce(&str) -> Result<PathBuf, String>,
+{
+    if use_file {
+        match write_system_prompt_temp(system_prompt) {
+            Ok(prompt_file) => {
+                if let Some(path_str) = prompt_file.to_str() {
+                    cmd.args(["--append-system-prompt-file", path_str]);
+                    tracing::debug!(
+                        agent = agent_name,
+                        path = path_str,
+                        "Injected generated agent prompt via --append-system-prompt-file"
+                    );
+                } else {
+                    cmd.args(["--append-system-prompt", system_prompt]);
+                    tracing::debug!(
+                        agent = agent_name,
+                        "Injected generated agent prompt via --append-system-prompt"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    agent = agent_name,
+                    error = %error,
+                    "Failed to write generated agent prompt file; falling back to --append-system-prompt"
+                );
+                cmd.args(["--append-system-prompt", system_prompt]);
+            }
+        }
+    } else {
+        cmd.args(["--append-system-prompt", system_prompt]);
+        tracing::debug!(
+            agent = agent_name,
+            "Injected agent prompt via --append-system-prompt"
+        );
+    }
+}
+
 /// A ready-to-spawn CLI command that handles stdin piping automatically.
 ///
 /// **CLI bug workaround (2.1.38):** `--agent` + `-p "text"` causes the CLI to
@@ -1278,6 +1330,8 @@ pub struct SpawnableCommand {
     cmd: Command,
     stdin_prompt: Option<String>,
     prompt_arg_debug_redaction: Option<PromptArgDebugRedaction>,
+    persona_injected: bool,
+    persona_injection_skipped_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -1294,15 +1348,14 @@ struct DebugCommandView<'a> {
 impl std::fmt::Debug for DebugCommandView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let std_cmd = self.cmd.as_std();
-        let mut args = std_cmd
-            .get_args()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        if let Some(redaction) = self.prompt_arg_debug_redaction {
-            if let Some(arg) = args.get_mut(redaction.arg_index) {
-                *arg = format!("<prompt logged at {}>", redaction.artifact_path.display());
-            }
-        }
+        let args_count = std_cmd.get_args().count();
+        let prompt_arg_index = self
+            .prompt_arg_debug_redaction
+            .map(|redaction| redaction.arg_index);
+        let has_prompt_artifact = self.prompt_arg_debug_redaction.is_some();
+        let prompt_artifact = self
+            .prompt_arg_debug_redaction
+            .map(|redaction| redaction.artifact_path.display().to_string());
 
         let envs = std_cmd
             .get_envs()
@@ -1322,7 +1375,10 @@ impl std::fmt::Debug for DebugCommandView<'_> {
                     .get_current_dir()
                     .map(|path| path.to_string_lossy().into_owned()),
             )
-            .field("args", &args)
+            .field("args_count", &args_count)
+            .field("prompt_arg_index", &prompt_arg_index)
+            .field("has_prompt_artifact", &has_prompt_artifact)
+            .field("prompt_artifact", &prompt_artifact)
             .field("envs", &envs)
             .finish()
     }
@@ -1331,13 +1387,6 @@ impl std::fmt::Debug for DebugCommandView<'_> {
 impl std::fmt::Debug for SpawnableCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let prompt_len = self.stdin_prompt.as_ref().map(|s| s.len());
-        let prompt_preview = self.stdin_prompt.as_ref().map(|s| {
-            let mut out = s.chars().take(200).collect::<String>();
-            if s.chars().count() > 200 {
-                out.push_str("...");
-            }
-            out.replace('\n', "\\n")
-        });
         f.debug_struct("SpawnableCommand")
             .field(
                 "cmd",
@@ -1348,7 +1397,7 @@ impl std::fmt::Debug for SpawnableCommand {
             )
             .field("uses_stdin", &self.stdin_prompt.is_some())
             .field("stdin_prompt_len", &prompt_len)
-            .field("stdin_prompt_preview", &prompt_preview)
+            .field("stdin_prompt_redacted", &self.stdin_prompt.is_some())
             .finish()
     }
 }
@@ -1359,7 +1408,27 @@ impl SpawnableCommand {
             cmd,
             stdin_prompt,
             prompt_arg_debug_redaction: None,
+            persona_injected: false,
+            persona_injection_skipped_reason: None,
         }
+    }
+
+    pub(crate) fn with_persona_injection_outcome(
+        mut self,
+        persona_injected: bool,
+        persona_injection_skipped_reason: Option<&'static str>,
+    ) -> Self {
+        self.persona_injected = persona_injected;
+        self.persona_injection_skipped_reason = persona_injection_skipped_reason;
+        self
+    }
+
+    pub(crate) fn persona_injected(&self) -> bool {
+        self.persona_injected
+    }
+
+    pub(crate) fn persona_injection_skipped_reason(&self) -> Option<&'static str> {
+        self.persona_injection_skipped_reason
     }
 
     pub(crate) fn with_prompt_arg_debug_redaction(
@@ -1507,17 +1576,24 @@ pub fn format_stream_json_input(content: &str) -> String {
 /// When `interactive` is `true`, `-p -` + `--input-format stream-json` are added so the
 /// CLI stays in print mode (required for `--output-format stream-json`) while reading
 /// structured JSON messages from stdin for multi-turn conversations.
-/// The returned `Option<String>` holds the prompt for stdin delivery: `Some(prompt)` in
-/// both stdin-pipe mode and interactive mode, `None` when using the `-p <arg>` form.
+/// The returned outcome carries both stdin delivery and whether the persona block was
+/// actually appended. Fallback agent-prompt paths deliberately report no injection.
+struct PromptArgsOutcome {
+    stdin_prompt: Option<String>,
+    persona_injected: bool,
+    persona_injection_skipped_reason: Option<&'static str>,
+}
+
 fn add_prompt_args(
     cmd: &mut Command,
     plugin_dir: &Path,
     prompt: &str,
+    persona_block: Option<&str>,
     agent: Option<&str>,
     agent_profile: Option<&str>,
     resume_session: Option<&str>,
     interactive: bool,
-) -> Option<String> {
+) -> PromptArgsOutcome {
     // Add resume if continuing an existing session
     if let Some(session_id) = resume_session {
         cmd.args(["--resume", session_id]);
@@ -1528,9 +1604,7 @@ fn add_prompt_args(
     // `--append-system-prompt` loaded from our codebase agent markdown.
     // Set RALPHX_USE_NATIVE_AGENT_FLAG=1 to force native --agent mode.
     //
-    let use_native_agent_flag = std::env::var("RALPHX_USE_NATIVE_AGENT_FLAG")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let use_native_agent_flag = native_agent_flag_enabled();
 
     // Default to stdin mode for agent runs due to CLI instability with
     // `--agent` + `-p "<text>"` on some Claude Code versions.
@@ -1540,9 +1614,13 @@ fn add_prompt_args(
     } else {
         false
     };
+    let mut persona_injected = false;
+    let mut persona_skip_reason = None;
     if let Some(agent_name) = agent {
         if use_native_agent_flag {
             cmd.args(["--agent", agent_name]);
+            persona_skip_reason =
+                persona_injection_skipped_reason(use_native_agent_flag, persona_block.is_some());
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
             let prompt_with_internal_skills = load_agent_system_prompt_with_internal_skills(
@@ -1550,51 +1628,26 @@ fn add_prompt_args(
                 agent_name,
                 agent_profile,
                 prompt,
+                persona_block,
             );
             if let Some((system_prompt, injected_skill_names)) =
                 prompt_with_internal_skills.as_ref()
             {
                 if !injected_skill_names.is_empty() {
-                    cmd.args(["--append-system-prompt", system_prompt]);
                     tracing::debug!(
                         agent = agent_name,
                         skills = ?injected_skill_names,
-                        "Injected agent prompt with internal skills via --append-system-prompt"
-                    );
-                } else if runtime.use_append_system_prompt_file {
-                    match write_agent_system_prompt_temp(system_prompt) {
-                        Ok(prompt_file) => {
-                            if let Some(path_str) = prompt_file.to_str() {
-                                cmd.args(["--append-system-prompt-file", path_str]);
-                                tracing::debug!(
-                                    agent = agent_name,
-                                    path = path_str,
-                                    "Injected generated agent prompt via --append-system-prompt-file"
-                                );
-                            } else {
-                                cmd.args(["--append-system-prompt", system_prompt]);
-                                tracing::debug!(
-                                    agent = agent_name,
-                                    "Injected generated agent prompt via --append-system-prompt"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                agent = agent_name,
-                                error = %error,
-                                "Failed to write generated agent prompt file; falling back to --append-system-prompt"
-                            );
-                            cmd.args(["--append-system-prompt", system_prompt]);
-                        }
-                    }
-                } else {
-                    cmd.args(["--append-system-prompt", system_prompt]);
-                    tracing::debug!(
-                        agent = agent_name,
-                        "Injected agent prompt via --append-system-prompt"
+                        "Injected agent prompt with internal skills"
                     );
                 }
+                append_system_prompt_args(
+                    cmd,
+                    agent_name,
+                    system_prompt,
+                    runtime.use_append_system_prompt_file,
+                    write_agent_system_prompt_temp,
+                );
+                persona_injected = persona_block.is_some();
             } else if runtime.use_append_system_prompt_file {
                 if let Some(path_str) = prompt_path.to_str() {
                     cmd.args(["--append-system-prompt-file", path_str]);
@@ -1603,12 +1656,18 @@ fn add_prompt_args(
                         path = path_str,
                         "Injected agent prompt via --append-system-prompt-file"
                     );
+                    persona_skip_reason = persona_block
+                        .is_some()
+                        .then_some("prompt_composition_fallback_raw_prompt_file");
                 } else {
                     tracing::warn!(
                         agent = agent_name,
                         "Agent prompt path was not valid UTF-8; falling back to native --agent"
                     );
                     cmd.args(["--agent", agent_name]);
+                    persona_skip_reason = persona_block
+                        .is_some()
+                        .then_some("prompt_path_non_utf8_native_agent");
                 }
             } else {
                 tracing::warn!(
@@ -1616,6 +1675,9 @@ fn add_prompt_args(
                     "Failed to load prompt content; falling back to native --agent"
                 );
                 cmd.args(["--agent", agent_name]);
+                persona_skip_reason = persona_block
+                    .is_some()
+                    .then_some("prompt_composition_fallback_native_agent");
             }
         } else {
             tracing::warn!(
@@ -1623,6 +1685,9 @@ fn add_prompt_args(
                 "Agent prompt not found in plugin; falling back to native --agent"
             );
             cmd.args(["--agent", agent_name]);
+            persona_skip_reason = persona_block
+                .is_some()
+                .then_some("agent_prompt_not_found_native_agent");
         }
 
         // Apply CLI tool restrictions from agent_config
@@ -1653,7 +1718,7 @@ fn add_prompt_args(
         }
     }
 
-    if interactive {
+    let stdin_prompt = if interactive {
         // --output-format stream-json only works with -p (print mode).
         // Use `-p -` to stay in print mode + `--input-format stream-json` so the CLI
         // reads structured JSON messages from stdin (one per line) for multi-turn.
@@ -1670,7 +1735,26 @@ fn add_prompt_args(
         cmd.args(["-p", prompt]);
         tracing::debug!("Claude prompt mode: arg");
         None
+    };
+
+    PromptArgsOutcome {
+        stdin_prompt,
+        persona_injected,
+        persona_injection_skipped_reason: persona_skip_reason,
     }
+}
+
+pub(crate) fn native_agent_flag_enabled() -> bool {
+    std::env::var("RALPHX_USE_NATIVE_AGENT_FLAG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+pub(crate) fn persona_injection_skipped_reason(
+    use_native_agent_flag: bool,
+    resolved: bool,
+) -> Option<&'static str> {
+    (use_native_agent_flag && resolved).then_some("native_agent_flag")
 }
 
 /// Configure command for spawning (working dir, stdout/stderr capture)
@@ -1735,10 +1819,13 @@ pub fn build_spawnable_command_with_mcp_runtime_context(
         mcp_runtime_context,
         true,
     )?;
-    let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    let prompt_args =
+        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1748,6 +1835,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -1766,17 +1854,21 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
         mcp_runtime_context,
         true,
     )?;
-    let stdin_prompt = add_prompt_args(
+    let prompt_args = add_prompt_args(
         &mut cmd,
         plugin_dir,
         prompt,
+        persona_block,
         agent,
         agent_profile,
         resume_session,
         false,
     );
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1826,10 +1918,13 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, None, resume_session, false);
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    let prompt_args =
+        add_prompt_args(&mut cmd, plugin_dir, prompt, None, agent, None, resume_session, false);
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -1840,6 +1935,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -1858,17 +1954,21 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt = add_prompt_args(
+    let prompt_args = add_prompt_args(
         &mut cmd,
         plugin_dir,
         prompt,
+        persona_block,
         agent,
         agent_profile,
         resume_session,
         false,
     );
-    configure_spawn(&mut cmd, working_directory, stdin_prompt.is_some());
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    configure_spawn(&mut cmd, working_directory, prompt_args.stdin_prompt.is_some());
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 /// Build a ready-to-spawn interactive CLI command (no `-p` flag).
@@ -1923,6 +2023,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context(
         prompt,
         agent,
         None,
+        None,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -1939,6 +2040,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -1958,10 +2060,21 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
         true,
     )?;
     // interactive=true: no -p flag; prompt stored in stdin_prompt for spawn_interactive()
-    let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, agent_profile, resume_session, true);
+    let prompt_args = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        persona_block,
+        agent,
+        agent_profile,
+        resume_session,
+        true,
+    );
     configure_spawn(&mut cmd, working_directory, true);
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -2010,6 +2123,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
         prompt,
         agent,
         None,
+        None,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -2027,6 +2141,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
     prompt: &str,
     agent: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -2045,10 +2160,21 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_
         mcp_runtime_context,
         false,
     )?;
-    let stdin_prompt =
-        add_prompt_args(&mut cmd, plugin_dir, prompt, agent, agent_profile, resume_session, true);
+    let prompt_args = add_prompt_args(
+        &mut cmd,
+        plugin_dir,
+        prompt,
+        persona_block,
+        agent,
+        agent_profile,
+        resume_session,
+        true,
+    );
     configure_spawn(&mut cmd, working_directory, true);
-    Ok(SpawnableCommand::new(cmd, stdin_prompt))
+    Ok(SpawnableCommand::new(cmd, prompt_args.stdin_prompt).with_persona_injection_outcome(
+        prompt_args.persona_injected,
+        prompt_args.persona_injection_skipped_reason,
+    ))
 }
 
 /// Register the configured MCP server with Claude Code CLI.
@@ -2223,6 +2349,10 @@ pub fn format_allowed_tools_arg_value(tools: Option<&[String]>) -> Option<String
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod create_mcp_config_tests;
+
+#[cfg(test)]
+#[path = "spawnable_command_tests.rs"]
+mod spawnable_command_tests;
 
 #[cfg(test)]
 mod tests {

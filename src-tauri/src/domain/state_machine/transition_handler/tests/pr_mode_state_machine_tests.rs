@@ -22,8 +22,8 @@ use crate::domain::entities::{
     PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    ArtifactRepository, IdeationSessionRepository, PlanBranchRepository, ProjectRepository,
-    TaskRepository,
+    ArtifactRepository, BranchUpdateRepository, IdeationSessionRepository, PlanBranchRepository,
+    ProjectRepository, TaskRepository,
 };
 use crate::domain::services::{
     github_service::GithubServiceTrait, PlanPrDescriptionDrafter, PrReviewState,
@@ -37,6 +37,7 @@ use crate::infrastructure::memory::{
     MemoryArtifactRepository, MemoryIdeationSessionRepository, MemoryPlanBranchRepository,
     MemoryProjectRepository, MemoryTaskRepository,
 };
+use crate::testing::{SqliteBranchUpdateRepository, SqliteTaskRepository, SqliteTestDb};
 use crate::tests::mock_github_service::MockGithubService;
 use crate::AppError;
 use async_trait::async_trait;
@@ -1863,6 +1864,8 @@ async fn test_regular_plan_task_completion_creates_draft_pr_after_first_local_me
         None,
         Some(PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: None,
+            branch_update_workflow: None,
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
@@ -1988,6 +1991,8 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
         None,
         Some(PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: None,
+            branch_update_workflow: None,
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
@@ -2112,6 +2117,8 @@ async fn test_regular_plan_task_completion_updates_existing_pr_as_draft_when_pla
         &project,
         &PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: None,
+            branch_update_workflow: None,
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
@@ -2231,6 +2238,8 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
         None,
         Some(PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: None,
+            branch_update_workflow: None,
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
@@ -2296,23 +2305,23 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
 
 #[tokio::test]
 async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publication() {
-    let task_repo = Arc::new(MemoryTaskRepository::new());
-    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let db = SqliteTestDb::new("pr-publication-authority-fast-forward");
+    let task_repo = Arc::new(SqliteTaskRepository::from_shared(db.shared_conn()));
+    let branch_update_repo = Arc::new(SqliteBranchUpdateRepository::from_shared(db.shared_conn()));
     let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
 
     let branch_name = "plan/existing-pr-non-fast-forward";
     let repo = setup_plan_git_repo(branch_name, true);
     let (_remote, commit_sha, remote_sha) =
         setup_origin_with_remote_plan_branch_ahead(repo.path(), branch_name);
-    setup_project_with_path(&project_repo, repo.path().to_string_lossy().into_owned()).await;
-    let project = project_repo
-        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
-        .await
-        .unwrap()
-        .unwrap();
+    let workspace_parent = tempfile::tempdir().unwrap();
+    let mut project = db.seed_project("pr-publication-authority-fast-forward");
+    project.working_directory = repo.path().to_string_lossy().into_owned();
+    project.worktree_parent_directory =
+        Some(workspace_parent.path().to_string_lossy().into_owned());
 
     let mut task = Task::new(
-        ProjectId::from_string("proj-1".to_string()),
+        project.id.clone(),
         "Merged follow-up with stale local PR branch".to_string(),
     );
     task.id = TaskId::from_string("task-programmatic-plan-pr-nff".to_string());
@@ -2320,7 +2329,7 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
     task.category = TaskCategory::Regular;
     task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
     let task_id = task.id.clone();
-    task_repo.create(task).await.unwrap();
+    db.insert_task(task);
 
     let mut plan_branch =
         make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
@@ -2351,6 +2360,11 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
         None,
         Some(PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: Some(Arc::clone(&branch_update_repo)
+                as Arc<dyn crate::domain::repositories::BranchUpdateRepository>),
+            branch_update_workflow: Some(crate::testing::branch_update_workflow(Arc::new(
+                MockChatService::new(),
+            ))),
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
@@ -2371,8 +2385,8 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
     {
         let state = mock_github.state();
         assert_eq!(
-            state.push_branch_calls, 2,
-            "publication should retry the PR branch push after repair"
+            state.push_branch_calls, 1,
+            "the rejected adapter push must not be retried outside durable authority"
         );
         assert_eq!(
             state.last_push_branch_name.as_deref(),
@@ -2415,23 +2429,23 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
 
 #[tokio::test]
 async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_merger() {
-    let task_repo = Arc::new(MemoryTaskRepository::new());
-    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let db = SqliteTestDb::new("pr-publication-authority-conflict");
+    let task_repo = Arc::new(SqliteTaskRepository::from_shared(db.shared_conn()));
+    let branch_update_repo = Arc::new(SqliteBranchUpdateRepository::from_shared(db.shared_conn()));
     let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
 
     let branch_name = "plan/existing-pr-publication-conflict";
     let repo = setup_plan_git_repo(branch_name, true);
     let (_remote, local_commit_sha, remote_sha) =
         setup_origin_with_conflicting_remote_plan_branch_ahead(repo.path(), branch_name);
-    setup_project_with_path(&project_repo, repo.path().to_string_lossy().into_owned()).await;
-    let project = project_repo
-        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
-        .await
-        .unwrap()
-        .unwrap();
+    let workspace_parent = tempfile::tempdir().unwrap();
+    let mut project = db.seed_project("pr-publication-authority-conflict");
+    project.working_directory = repo.path().to_string_lossy().into_owned();
+    project.worktree_parent_directory =
+        Some(workspace_parent.path().to_string_lossy().into_owned());
 
     let mut task = Task::new(
-        ProjectId::from_string("proj-1".to_string()),
+        project.id.clone(),
         "Merged follow-up with conflicting remote PR branch".to_string(),
     );
     task.id = TaskId::from_string("task-programmatic-plan-pr-conflict".to_string());
@@ -2439,7 +2453,7 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
     task.category = TaskCategory::Regular;
     task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
     let task_id = task.id.clone();
-    task_repo.create(task).await.unwrap();
+    db.insert_task(task);
 
     let mut plan_branch =
         make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
@@ -2470,6 +2484,11 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
         None,
         Some(PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: Some(Arc::clone(&branch_update_repo)
+                as Arc<dyn crate::domain::repositories::BranchUpdateRepository>),
+            branch_update_workflow: Some(crate::testing::branch_update_workflow(Arc::new(
+                MockChatService::new(),
+            ))),
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
@@ -2490,16 +2509,8 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
     let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
         final_task.internal_status,
-        InternalStatus::Merging,
-        "publication conflicts should route to the merger, not MergeIncomplete"
-    );
-    assert!(
-        final_task
-            .worktree_path
-            .as_deref()
-            .map(|path| std::path::Path::new(path).exists())
-            .unwrap_or(false),
-        "routed publication conflict should create a merge worktree"
+        InternalStatus::UpdatingPlanBranch,
+        "publication conflicts should route to the branch updater, not merge recovery"
     );
     let metadata: serde_json::Value =
         serde_json::from_str(final_task.metadata.as_deref().unwrap()).unwrap();
@@ -2515,12 +2526,23 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
     assert_eq!(metadata["pr_branch_publication_conflict"], true);
     assert_eq!(metadata["base_branch"], format!("origin/{branch_name}"));
     assert_eq!(metadata["target_branch"], branch_name);
+    let operation = branch_update_repo
+        .get_active_operation(&task_id)
+        .await
+        .unwrap()
+        .expect("branch update operation");
+    assert!(
+        operation
+            .workspace_path
+            .as_deref()
+            .is_some_and(std::path::Path::exists),
+        "routed publication conflict should create an operation-owned worktree"
+    );
     assert_eq!(
-        metadata["conflict_files"]
-            .as_array()
-            .expect("conflict files")
+        operation
+            .conflict_files
             .iter()
-            .filter_map(|value| value.as_str())
+            .map(|path| path.to_string_lossy().into_owned())
             .collect::<Vec<_>>(),
         vec!["plan.txt"]
     );
@@ -2628,6 +2650,8 @@ async fn test_regular_plan_task_completion_without_github_service_does_not_mark_
         None,
         Some(PlanBranchPrSyncServices {
             task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            branch_update_repo: None,
+            branch_update_workflow: None,
             plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
             pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
             github_service: None,

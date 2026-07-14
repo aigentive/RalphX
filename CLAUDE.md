@@ -180,6 +180,7 @@ style={{ boxShadow: "none", outline: "none" }}
 - **Active Plan** — Project-scoped plan filtering for Graph/Kanban. Docs: `docs/features/active-plan.md` | `docs/architecture/active-plan-api.md`
 - **Session Recovery** — Expired Claude session recovery with history preservation. Docs: `docs/features/session-recovery.md`
 - **Plan Verification** — Automated adversarial review loop for ideation plans. Docs: `docs/features/plan-verification.md` | Architecture: `.claude/rules/ideation-verification-architecture.md`
+- **Agent Personas** — Conversation-bound prompt-only behavior profiles for Project Agent conversations. Docs: `docs/features/agent-personas.md`
 
 ## Git Conventions
 ❌ git init/push/remotes | Prefixes: `docs:` | `feat:` | `fix:` | `chore:`

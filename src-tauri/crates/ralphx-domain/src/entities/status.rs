@@ -49,6 +49,12 @@ pub enum InternalStatus {
     Merging,
     /// Waiting for an external pull request review/merge in PR mode
     WaitingOnPr,
+    /// Synchronizing the project base into a plan or pull-request branch
+    UpdatingPlanBranch,
+    /// Synchronizing the plan or project base into a task branch
+    UpdatingTaskBranch,
+    /// Branch synchronization requires retry or operator attention
+    BranchUpdateBlocked,
     /// Merge failed due to non-conflict errors (agent/git operation failure)
     MergeIncomplete,
     /// Merge failed, needs manual resolution
@@ -77,7 +83,16 @@ impl InternalStatus {
             Blocked => &[Ready, Cancelled],
 
             // Execution states
-            Executing => &[QaRefining, PendingReview, Failed, Blocked, Stopped, Paused],
+            Executing => &[
+                QaRefining,
+                PendingReview,
+                UpdatingPlanBranch,
+                UpdatingTaskBranch,
+                Failed,
+                Blocked,
+                Stopped,
+                Paused,
+            ],
 
             // QA states
             QaRefining => &[QaTesting, Stopped, Paused],
@@ -87,11 +102,27 @@ impl InternalStatus {
 
             // Review states
             PendingReview => &[Reviewing],
-            Reviewing => &[ReviewPassed, RevisionNeeded, Escalated, Stopped, Paused],
+            Reviewing => &[
+                ReviewPassed,
+                RevisionNeeded,
+                Escalated,
+                UpdatingPlanBranch,
+                UpdatingTaskBranch,
+                Stopped,
+                Paused,
+            ],
             ReviewPassed => &[Approved, RevisionNeeded],
             Escalated => &[Approved, RevisionNeeded, PendingReview],
             RevisionNeeded => &[ReExecuting, Cancelled],
-            ReExecuting => &[PendingReview, Failed, Blocked, Stopped, Paused],
+            ReExecuting => &[
+                PendingReview,
+                UpdatingPlanBranch,
+                UpdatingTaskBranch,
+                Failed,
+                Blocked,
+                Stopped,
+                Paused,
+            ],
 
             // Approval leads to merge workflow
             Approved => &[PendingMerge, Ready],
@@ -101,6 +132,8 @@ impl InternalStatus {
                 Merged,
                 Merging,
                 WaitingOnPr,
+                UpdatingPlanBranch,
+                UpdatingTaskBranch,
                 MergeIncomplete,
                 Stopped,
                 Paused,
@@ -109,6 +142,7 @@ impl InternalStatus {
             Merging => &[
                 Merged,
                 WaitingOnPr,
+                UpdatingPlanBranch,
                 MergeConflict,
                 MergeIncomplete,
                 Stopped,
@@ -119,6 +153,7 @@ impl InternalStatus {
                 Merged,
                 MergeIncomplete,
                 PendingMerge,
+                UpdatingPlanBranch,
                 Stopped,
                 Paused,
                 Cancelled,
@@ -133,6 +168,39 @@ impl InternalStatus {
                 Cancelled,
             ], // Retry → PendingMerge, agent spawn → Merging, PR repair → WaitingOnPr, manual resolution → Merged
             MergeConflict => &[PendingMerge, Merging, Merged, Stopped, Paused, Cancelled], // Retry → PendingMerge, Agent spawn → Merging, Manual resolution → Merged
+
+            // Branch-update states return only to closed workflow checkpoints.
+            UpdatingPlanBranch => &[
+                UpdatingTaskBranch,
+                BranchUpdateBlocked,
+                Executing,
+                ReExecuting,
+                Reviewing,
+                PendingMerge,
+                WaitingOnPr,
+                Merged,
+                Failed,
+                Escalated,
+                MergeIncomplete,
+                Stopped,
+                Paused,
+                Cancelled,
+            ],
+            UpdatingTaskBranch => &[
+                BranchUpdateBlocked,
+                Executing,
+                ReExecuting,
+                Reviewing,
+                PendingMerge,
+                WaitingOnPr,
+                Failed,
+                Escalated,
+                MergeIncomplete,
+                Stopped,
+                Paused,
+                Cancelled,
+            ],
+            BranchUpdateBlocked => &[UpdatingPlanBranch, UpdatingTaskBranch, Stopped, Cancelled],
 
             // Terminal states (can be re-opened)
             Merged => &[Ready],
@@ -150,6 +218,8 @@ impl InternalStatus {
                 Reviewing,
                 Merging,
                 WaitingOnPr,
+                UpdatingPlanBranch,
+                UpdatingTaskBranch,
             ],
         }
     }
@@ -182,6 +252,9 @@ impl InternalStatus {
             PendingMerge,
             Merging,
             WaitingOnPr,
+            UpdatingPlanBranch,
+            UpdatingTaskBranch,
+            BranchUpdateBlocked,
             MergeIncomplete,
             MergeConflict,
             Merged,
@@ -242,6 +315,9 @@ impl InternalStatus {
             InternalStatus::PendingMerge => "pending_merge",
             InternalStatus::Merging => "merging",
             InternalStatus::WaitingOnPr => "waiting_on_pr",
+            InternalStatus::UpdatingPlanBranch => "updating_plan_branch",
+            InternalStatus::UpdatingTaskBranch => "updating_task_branch",
+            InternalStatus::BranchUpdateBlocked => "branch_update_blocked",
             InternalStatus::MergeIncomplete => "merge_incomplete",
             InternalStatus::MergeConflict => "merge_conflict",
             InternalStatus::Merged => "merged",
@@ -296,6 +372,9 @@ impl FromStr for InternalStatus {
             "pending_merge" => Ok(InternalStatus::PendingMerge),
             "merging" => Ok(InternalStatus::Merging),
             "waiting_on_pr" => Ok(InternalStatus::WaitingOnPr),
+            "updating_plan_branch" => Ok(InternalStatus::UpdatingPlanBranch),
+            "updating_task_branch" => Ok(InternalStatus::UpdatingTaskBranch),
+            "branch_update_blocked" => Ok(InternalStatus::BranchUpdateBlocked),
             "merge_incomplete" => Ok(InternalStatus::MergeIncomplete),
             "merge_conflict" => Ok(InternalStatus::MergeConflict),
             "merged" => Ok(InternalStatus::Merged),
@@ -309,7 +388,3 @@ impl FromStr for InternalStatus {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "status_tests.rs"]
-mod tests;

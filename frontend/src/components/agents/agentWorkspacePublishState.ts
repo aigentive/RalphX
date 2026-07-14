@@ -170,7 +170,7 @@ export function canInspectAgentWorkspaceBaseFreshness(
   }
 
   if (workspace.mode === "plan") {
-    return workspace.status !== "missing";
+    return false;
   }
 
   if (isAgentWorkspacePublishSurfaceMode(workspace)) {
@@ -230,6 +230,13 @@ export function getAgentWorkspaceEffectiveBaseLabel(
 ): string {
   if (freshness?.baseStatus === "blocked") {
     return "Base unavailable";
+  }
+  if (workspace?.branchMode === "linked") {
+    const linkedBaseRef =
+      freshness?.effectiveBaseRef ??
+      freshness?.baseRef ??
+      workspace.baseRef;
+    return linkedBaseRef.trim() ? linkedBaseRef : (workspace.baseDisplayName ?? "Base branch");
   }
   return (
     freshness?.effectiveBaseDisplayName ??

@@ -2701,3 +2701,15 @@ describe('canonical specialist allowlist entries', () => {
     expect(toolsByAgent()[agent]).not.toContain('get_team_artifacts');
   });
 });
+
+describe('persona builder tool registry', () => {
+  it('includes exactly the two persona draft tools in ALL_TOOLS', () => {
+    const allToolNames = getAllTools().map((tool) => tool.name);
+    const personaToolNames = allToolNames.filter(
+      (toolName) => toolName === 'save_persona_draft' || toolName === 'get_persona_draft',
+    );
+
+    expect(personaToolNames).toEqual(['save_persona_draft', 'get_persona_draft']);
+    expect(new Set(allToolNames).size).toBe(allToolNames.length);
+  });
+});

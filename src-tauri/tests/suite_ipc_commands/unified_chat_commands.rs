@@ -1,26 +1,33 @@
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use ralphx_lib::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
 };
 use ralphx_lib::application::chat_service::AgentRuntimeStatus;
+use ralphx_lib::application::interactive_process_registry::InteractiveProcessMetadata;
 use ralphx_lib::application::pr_startup_recovery::{
     cleanup_terminal_agent_workspace_local_artifacts_on_startup,
     cleanup_terminal_plan_branch_local_artifacts_on_startup,
 };
-use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendResult};
+use ralphx_lib::application::{
+    AppState, InteractiveProcessKey, MockChatService, PrPollerRegistry, SendResult,
+};
 use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
     switch_agent_conversation_mode_for_state_allowing_running,
-    switch_agent_conversation_mode_for_state_stopping_running_agent, AgentRunStatusResponse,
-    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, ModeSwitchInitiator,
-    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state_stopping_running_agent,
+    switch_agent_conversation_persona_for_state_stopping_running_agent,
+    switch_agent_conversation_persona_for_state_with_provider_session_reset,
+    AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
+    ModeSwitchInitiator, QueuedMessageResponse, SendAgentMessageResponse,
+    SwitchAgentConversationModeInput, SwitchAgentConversationPersonaInput,
     AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE,
 };
 use ralphx_lib::commands::ExecutionState;
@@ -30,8 +37,8 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, AutomationId,
     AutomationRunId, ChatContextType, ChatConversation, ChatConversationId, ExecutionPlan,
-    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, ProjectId,
+    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, Persona,
+    PersonaId, PersonaStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -210,6 +217,535 @@ async fn seed_mode_switch_workspace(
         .expect("workspace persisted");
 }
 
+fn enable_personas_for_test() -> crate::support::env::EnvVarGuard {
+    crate::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "true")
+}
+
+async fn seed_mode_locked_conversation_without_workspace(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    project_id: ProjectId,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let mut project = Project::new(
+        "Mode-locked conversation project".to_string(),
+        "/tmp/persona-builder-mode-lock".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.id = conversation_id;
+    conversation.set_agent_mode(Some(mode));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation persisted");
+}
+
+async fn seed_persona_switch_project_conversation(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    project_id: ProjectId,
+) -> ChatConversation {
+    let mut project = Project::new(
+        "Persona Switch Project".to_string(),
+        "/tmp/persona-switch-project".to_string(),
+    );
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+
+    let mut conversation = ChatConversation::new_project(project_id);
+    conversation.id = conversation_id;
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("project conversation persisted");
+    conversation
+}
+
+async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStatus) -> Persona {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(id),
+        slug: format!("{id}-slug"),
+        name: format!("{id} name"),
+        description: "persona switch fixture".to_string(),
+        content: "Use the requested project voice.".to_string(),
+        status,
+        version: 1,
+        content_hash: format!("{id}-hash"),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("persona persisted");
+    persona
+}
+
+fn persona_switch_input(
+    conversation_id: &ChatConversationId,
+    persona_id: Option<&PersonaId>,
+) -> SwitchAgentConversationPersonaInput {
+    SwitchAgentConversationPersonaInput {
+        conversation_id: conversation_id.as_str(),
+        persona_id: persona_id.map(|id| id.as_str().to_string()),
+    }
+}
+
+#[tokio::test]
+async fn persona_switch_updates_binding_when_idle() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("12121212-1212-4212-8212-121212121212");
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        conversation_id,
+        ProjectId::from_string("project-persona-switch-idle".to_string()),
+    )
+    .await;
+    let persona =
+        seed_persona_for_switch(&state, "persona-switch-idle", PersonaStatus::Active).await;
+    let service = MockChatService::new();
+
+    let response = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, Some(&persona.id)),
+        &state,
+        &service,
+    )
+    .await
+    .expect("idle persona switch should succeed");
+
+    assert_eq!(
+        response.conversation.persona_id.as_deref(),
+        Some(persona.id.as_str())
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("conversation lookup succeeds")
+        .expect("conversation exists");
+    assert_eq!(stored.persona_id.as_deref(), Some(persona.id.as_str()));
+    assert!(service.get_stop_agent_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn persona_switch_stopping_running_agent_stops_run_and_preserves_provider_session() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("13131313-1313-4313-8313-131313131313");
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        conversation_id,
+        ProjectId::from_string("project-persona-switch-running".to_string()),
+    )
+    .await;
+    let persona =
+        seed_persona_for_switch(&state, "persona-switch-running", PersonaStatus::Active).await;
+    let provider_session = ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "codex-persona-switch-thread".to_string(),
+    };
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(&conversation.id, &provider_session)
+        .await
+        .expect("provider session should persist");
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation.id.as_str().to_string(),
+            "run-persona-switch".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let interactive_key = InteractiveProcessKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("interactive stdin observer should spawn");
+    state
+        .interactive_process_registry
+        .register_with_metadata(
+            interactive_key.clone(),
+            child.stdin.take().expect("interactive stdin should exist"),
+            InteractiveProcessMetadata {
+                harness: Some(AgentHarnessKind::Codex),
+                provider_session_id: Some(provider_session.provider_session_id.clone()),
+                persona_id: None,
+                persona_content_hash: None,
+            },
+        )
+        .await;
+
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let response = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, Some(&persona.id)),
+        &state,
+        &service,
+    )
+    .await
+    .expect("stop-and-switch persona change should succeed");
+
+    assert_eq!(
+        response.conversation.persona_id.as_deref(),
+        Some(persona.id.as_str())
+    );
+    assert!(
+        !state.running_agent_registry.is_running(&running_key).await,
+        "running agent registry entry should be removed before binding changes"
+    );
+    assert!(
+        !state
+            .interactive_process_registry
+            .has_process(&interactive_key)
+            .await,
+        "stop should remove the interactive process entry"
+    );
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("conversation lookup succeeds")
+        .expect("conversation exists");
+    assert_eq!(
+        stored
+            .provider_session_ref()
+            .map(|session| session.provider_session_id),
+        Some(provider_session.provider_session_id)
+    );
+    assert_eq!(stored.persona_id.as_deref(), Some(persona.id.as_str()));
+    child
+        .wait()
+        .await
+        .expect("interactive observer should exit");
+}
+
+#[tokio::test]
+async fn persona_switch_forces_fresh_provider_session_when_resume_fallback_enabled() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let retained_conversation = seed_persona_switch_project_conversation(
+        &state,
+        ChatConversationId::from_string("14141414-1414-4414-8414-141414141410"),
+        ProjectId::from_string("project-persona-switch-resume-default".to_string()),
+    )
+    .await;
+    let fresh_conversation = seed_persona_switch_project_conversation(
+        &state,
+        ChatConversationId::from_string("14141414-1414-4414-8414-141414141411"),
+        ProjectId::from_string("project-persona-switch-fresh-fallback".to_string()),
+    )
+    .await;
+    let persona = seed_persona_for_switch(
+        &state,
+        "persona-switch-session-fallback",
+        PersonaStatus::Active,
+    )
+    .await;
+    let retained_session = ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-persona-switch-resume".to_string(),
+    };
+    let fresh_session = ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-persona-switch-fresh".to_string(),
+    };
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(&retained_conversation.id, &retained_session)
+        .await
+        .expect("default conversation session should persist");
+    state
+        .chat_conversation_repo
+        .update_provider_session_ref(&fresh_conversation.id, &fresh_session)
+        .await
+        .expect("fallback conversation session should persist");
+    let service = MockChatService::new();
+
+    switch_agent_conversation_persona_for_state_with_provider_session_reset(
+        persona_switch_input(&retained_conversation.id, Some(&persona.id)),
+        &state,
+        &service,
+        false,
+    )
+    .await
+    .expect("default switch should succeed");
+    switch_agent_conversation_persona_for_state_with_provider_session_reset(
+        persona_switch_input(&fresh_conversation.id, Some(&persona.id)),
+        &state,
+        &service,
+        true,
+    )
+    .await
+    .expect("fallback switch should succeed");
+
+    let retained = state
+        .chat_conversation_repo
+        .get_by_id(&retained_conversation.id)
+        .await
+        .expect("default conversation lookup succeeds")
+        .expect("default conversation exists");
+    let fresh = state
+        .chat_conversation_repo
+        .get_by_id(&fresh_conversation.id)
+        .await
+        .expect("fallback conversation lookup succeeds")
+        .expect("fallback conversation exists");
+    assert_eq!(
+        retained
+            .provider_session_ref()
+            .map(|session| session.provider_session_id),
+        Some(retained_session.provider_session_id),
+        "default-off must retain the session that the next Claude send resumes"
+    );
+    assert!(
+        fresh.provider_session_ref().is_none(),
+        "fallback-on must clear the session so the next send starts fresh"
+    );
+}
+
+#[tokio::test]
+async fn persona_switch_clears_binding_with_null_persona_id() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("14141414-1414-4414-8414-141414141414");
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        conversation_id,
+        ProjectId::from_string("project-persona-switch-clear".to_string()),
+    )
+    .await;
+    let persona =
+        seed_persona_for_switch(&state, "persona-switch-clear", PersonaStatus::Active).await;
+    state
+        .chat_conversation_repo
+        .update_persona_binding(&conversation.id, Some(persona.id.as_str()))
+        .await
+        .expect("original binding should persist");
+    let service = MockChatService::new();
+
+    let response = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, None),
+        &state,
+        &service,
+    )
+    .await
+    .expect("null persona id should clear the binding");
+
+    assert!(response.conversation.persona_id.is_none());
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("conversation lookup succeeds")
+        .expect("conversation exists");
+    assert!(stored.persona_id.is_none());
+    assert!(service.get_stop_agent_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn persona_switch_rejects_missing_or_archived_persona() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("15151515-1515-4515-8515-151515151515");
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        conversation_id,
+        ProjectId::from_string("project-persona-switch-unavailable".to_string()),
+    )
+    .await;
+    let original =
+        seed_persona_for_switch(&state, "persona-switch-original", PersonaStatus::Active).await;
+    let draft = seed_persona_for_switch(&state, "persona-switch-draft", PersonaStatus::Draft).await;
+    let archived =
+        seed_persona_for_switch(&state, "persona-switch-archived", PersonaStatus::Archived).await;
+    state
+        .chat_conversation_repo
+        .update_persona_binding(&conversation.id, Some(original.id.as_str()))
+        .await
+        .expect("original binding should persist");
+    let service = MockChatService::new();
+
+    for persona_id in [
+        Some(PersonaId::from("persona-switch-missing")),
+        Some(draft.id),
+        Some(archived.id),
+    ] {
+        let error = switch_agent_conversation_persona_for_state_stopping_running_agent(
+            persona_switch_input(&conversation.id, persona_id.as_ref()),
+            &state,
+            &service,
+        )
+        .await
+        .expect_err("missing, draft, and archived personas must fail closed");
+        assert!(
+            error.starts_with("[Persona unavailable:"),
+            "unexpected unavailable persona error: {error}"
+        );
+        let stored = state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .expect("conversation lookup succeeds")
+            .expect("conversation exists");
+        assert_eq!(stored.persona_id.as_deref(), Some(original.id.as_str()));
+    }
+    assert!(
+        service.get_stop_agent_calls().await.is_empty(),
+        "invalid persona input must not stop an agent"
+    );
+}
+
+#[tokio::test]
+async fn persona_switch_rejects_non_project_conversation() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_task(TaskId::from_string(
+            "task-persona-switch-non-project".to_string(),
+        )))
+        .await
+        .expect("task conversation should persist");
+    let service = MockChatService::new();
+
+    let error = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, None),
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("persona bindings require Project conversation context");
+
+    assert_eq!(error, "Only project agent conversations can change persona");
+    assert!(service.get_stop_agent_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn persona_switch_rejects_when_flag_off() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("16161616-1616-4616-8616-161616161616");
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        conversation_id,
+        ProjectId::from_string("project-persona-switch-disabled".to_string()),
+    )
+    .await;
+    let service = MockChatService::new();
+
+    let error = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, None),
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("disabled persona feature should reject the switch");
+
+    assert!(error.starts_with("[Personas disabled:"));
+    assert!(service.get_stop_agent_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn persona_switch_errors_when_agent_cannot_stop() {
+    let _persona_feature = enable_personas_for_test();
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::from_string("17171717-1717-4717-8717-171717171717");
+    let conversation = seed_persona_switch_project_conversation(
+        &state,
+        conversation_id,
+        ProjectId::from_string("project-persona-switch-cannot-stop".to_string()),
+    )
+    .await;
+    let original = seed_persona_for_switch(
+        &state,
+        "persona-switch-cannot-stop-original",
+        PersonaStatus::Active,
+    )
+    .await;
+    let replacement = seed_persona_for_switch(
+        &state,
+        "persona-switch-cannot-stop-replacement",
+        PersonaStatus::Active,
+    )
+    .await;
+    state
+        .chat_conversation_repo
+        .update_persona_binding(&conversation.id, Some(original.id.as_str()))
+        .await
+        .expect("original binding should persist");
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation.id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation.id.as_str().to_string(),
+            "run-persona-switch-cannot-stop".to_string(),
+            None,
+            None,
+        )
+        .await;
+    let service = MockChatService::new();
+
+    let error = switch_agent_conversation_persona_for_state_stopping_running_agent(
+        persona_switch_input(&conversation.id, Some(&replacement.id)),
+        &state,
+        &service,
+    )
+    .await
+    .expect_err("a still-running agent must block the binding update");
+
+    assert_eq!(error, "Cannot change persona while the agent is running");
+    assert_eq!(
+        service.get_stop_agent_calls().await,
+        vec![(
+            ChatContextType::Project,
+            conversation.id.as_str().to_string()
+        )]
+    );
+    assert!(state.running_agent_registry.is_running(&running_key).await);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .expect("conversation lookup succeeds")
+        .expect("conversation exists");
+    assert_eq!(stored.persona_id.as_deref(), Some(original.id.as_str()));
+}
+
 async fn seed_automation_mode_switch_workspace(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -336,6 +872,103 @@ async fn user_mode_switch_rejects_automation_run_conversation() {
         .expect("workspace lookup should succeed")
         .expect("workspace should still exist");
     assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+}
+
+#[tokio::test]
+async fn switch_mode_rejects_persona_builder_target() {
+    let state = AppState::new_test();
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: "persona-builder-target".to_string(),
+            mode: "persona_builder".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("generic mode switch must reject PersonaBuilder before loading a conversation");
+
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn mode_switch_rejected_from_persona_builder_keyed_on_conversation_agent_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-persona-builder-mode-lock".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("56565656-5656-4565-8565-565656565656".to_string());
+    seed_mode_locked_conversation_without_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::PersonaBuilder,
+    )
+    .await;
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("PersonaBuilder source mode must lock without a workspace row");
+
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup succeeds")
+        .is_none());
+}
+
+#[tokio::test]
+async fn mode_switch_rejected_from_automation_conversation_backend() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-automation-mode-lock".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("57575757-5757-4575-8575-575757575757".to_string());
+    seed_mode_locked_conversation_without_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Automation,
+    )
+    .await;
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("Automation source mode must be locked without automation-run metadata");
+
+    assert!(error.contains("Automation"), "unexpected error: {error}");
 }
 
 #[tokio::test]
@@ -1632,6 +2265,12 @@ fn test_agent_run_status_response_serializes_model_present() {
         error_message: None,
         model_id: Some("claude-sonnet-4-6".to_string()),
         model_label: Some("Sonnet 4.6".to_string()),
+        persona_id: None,
+        persona_slug: None,
+        persona_version: None,
+        persona_content_hash: None,
+        persona_injected: None,
+        persona_skipped_reason: None,
     };
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains(r#""model_id":"claude-sonnet-4-6""#));
@@ -1649,10 +2288,42 @@ fn test_agent_run_status_response_serializes_model_absent() {
         error_message: None,
         model_id: None,
         model_label: None,
+        persona_id: None,
+        persona_slug: None,
+        persona_version: None,
+        persona_content_hash: None,
+        persona_injected: None,
+        persona_skipped_reason: None,
     };
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains(r#""model_id":null"#));
     assert!(json.contains(r#""model_label":null"#));
+}
+
+#[test]
+fn persona_agent_run_status_response_serializes_attribution_without_body() {
+    let response = AgentRunStatusResponse {
+        id: "run-persona".to_string(),
+        conversation_id: "conv-persona".to_string(),
+        status: "running".to_string(),
+        started_at: "2026-07-13T06:19:00Z".to_string(),
+        completed_at: None,
+        error_message: None,
+        model_id: Some("gpt-5.5".to_string()),
+        model_label: Some("GPT-5.5".to_string()),
+        persona_id: Some("persona-design-voice".to_string()),
+        persona_slug: Some("design-voice".to_string()),
+        persona_version: Some(2),
+        persona_content_hash: Some("persona-hash".to_string()),
+        persona_injected: Some(true),
+        persona_skipped_reason: None,
+    };
+
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains(r#""persona_slug":"design-voice""#));
+    assert!(json.contains(r#""persona_version":2"#));
+    assert!(json.contains(r#""persona_injected":true"#));
+    assert!(!json.contains("SECRET_PERSONA_BODY_SENTINEL"));
 }
 
 // ── IPC contract tests ─────────────────────────────────────────────────────────
@@ -1813,6 +2484,112 @@ mod ipc_contract {
         );
         assert_eq!(response.target_ref, "main");
         assert!(!response.is_base_ahead);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_rejects_plan_mode_without_repair_mutation() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("91919191-9191-9191-9191-919191919191");
+        let mut workspace = sqlite_workspace(conversation_id);
+        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
+            "planning-session-1".to_string(),
+        ));
+        workspace.publication_pr_number = Some(42);
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.worktree_path = "/missing/plan-mode-workspace".to_string();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let error = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect_err("Plan-mode freshness should be rejected");
+
+        assert!(error.contains("Only edit workspaces and ideation workspaces"));
+        let persisted = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should remain persisted");
+        assert_eq!(
+            persisted.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
+        assert_eq!(persisted.publication_pr_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_rejects_plan_mode_with_stale_edit_cache() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "freshness-plan-mode-stale-cache",
+            true,
+            Some(43),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("edit freshness should seed the cache");
+
+        let mut workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        app.state::<AppState>()
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("Plan workspace should persist without cache invalidation");
+
+        let error = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect_err("cached edit freshness must not authorize Plan mode");
+
+        assert!(error.contains("Only edit workspaces and ideation workspaces"));
+        let persisted = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should remain persisted");
+        assert_eq!(
+            persisted.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
     }
 
     #[tokio::test]
@@ -2497,6 +3274,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Inspect the repo without editing".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -2589,6 +3367,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Review this PR".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -2749,6 +3528,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Prepare an editable workspace".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -2906,6 +3686,7 @@ mod ipc_contract {
                 StartAgentConversationInput {
                     project_id: fix.project_id.as_str().to_string(),
                     content: format!("Use the selected plan in {mode} mode"),
+                    persona_id: None,
                     conversation_id: None,
                     parent_conversation_id: None,
                     title: None,
@@ -3055,6 +3836,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: fix.project_id.as_str().to_string(),
                 content: "Review the selected PR".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3128,6 +3910,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: fix.project_id.as_str().to_string(),
                 content: "Use both selected plans".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3229,6 +4012,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Continue on the linked branch".to_string(),
+                persona_id: None,
                 conversation_id: Some(conversation.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -3329,6 +4113,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Start on linked branch".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,
@@ -3423,6 +4208,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Start on checked-out linked branch".to_string(),
+                persona_id: None,
                 conversation_id: Some(draft.id.as_str()),
                 parent_conversation_id: None,
                 title: None,
@@ -3516,6 +4302,7 @@ mod ipc_contract {
             StartAgentConversationInput {
                 project_id: project_id.as_str().to_string(),
                 content: "Plan a small refactor".to_string(),
+                persona_id: None,
                 conversation_id: None,
                 parent_conversation_id: None,
                 title: None,

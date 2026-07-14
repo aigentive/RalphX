@@ -256,12 +256,27 @@ impl AttentionService {
             {
                 continue;
             }
-            let conversation = self
-                .chat_conversation_repo
-                .get_by_context(ChatContextType::Ideation, session.id.as_str())
+            let agent_conversation = match self
+                .agent_workspace_repo
+                .get_by_linked_ideation_session_id(&session.id)
                 .await?
-                .into_iter()
-                .max_by_key(|conversation| conversation.updated_at);
+            {
+                Some(workspace) => {
+                    self.chat_conversation_repo
+                        .get_by_id(&workspace.conversation_id)
+                        .await?
+                }
+                None => None,
+            };
+            let conversation = match agent_conversation {
+                Some(conversation) => Some(conversation),
+                None => self
+                    .chat_conversation_repo
+                    .get_by_context(ChatContextType::Ideation, session.id.as_str())
+                    .await?
+                    .into_iter()
+                    .max_by_key(|conversation| conversation.updated_at),
+            };
             items.push(AttentionItem {
                 id: format!("plan:{}:approval", session.id),
                 category: NotificationCategory::PlanApproval,

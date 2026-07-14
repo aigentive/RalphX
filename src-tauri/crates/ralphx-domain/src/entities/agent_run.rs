@@ -157,6 +157,18 @@ pub struct AgentRunAttribution {
     pub service_tier: Option<String>,
 }
 
+/// Body-free persona identity and delivery outcome attributed to one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonaRunAttribution {
+    pub persona_id: String,
+    pub persona_slug: String,
+    pub persona_version: i64,
+    pub persona_content_hash: String,
+    pub injected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+}
+
 impl AgentRunUsage {
     pub fn is_empty(&self) -> bool {
         self.input_tokens.is_none()
@@ -242,6 +254,24 @@ pub struct AgentRun {
     /// The agent_run ID that triggered this continuation (None for initial runs)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,
+    /// Persona identity resolved for this run, without persona body content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_id: Option<String>,
+    /// Stable human-readable persona slug resolved for this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_slug: Option<String>,
+    /// Persona version resolved for this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_version: Option<i64>,
+    /// Content fingerprint of the resolved persona body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_content_hash: Option<String>,
+    /// Whether the resolved persona body reached the launched prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_injected: Option<bool>,
+    /// Body-free reason code when a resolved persona was not injected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_skipped_reason: Option<String>,
 }
 
 impl AgentRun {
@@ -273,6 +303,12 @@ impl AgentRun {
             sandbox_mode: None,
             run_chain_id: Some(chain_id),
             parent_run_id: None,
+            persona_id: None,
+            persona_slug: None,
+            persona_version: None,
+            persona_content_hash: None,
+            persona_injected: None,
+            persona_skipped_reason: None,
         }
     }
 
@@ -307,6 +343,12 @@ impl AgentRun {
             sandbox_mode: None,
             run_chain_id: Some(run_chain_id),
             parent_run_id: Some(parent_run_id),
+            persona_id: None,
+            persona_slug: None,
+            persona_version: None,
+            persona_content_hash: None,
+            persona_injected: None,
+            persona_skipped_reason: None,
         }
     }
 
@@ -377,6 +419,15 @@ impl AgentRun {
         if let Some(value) = attribution.service_tier.as_ref() {
             self.service_tier = Some(value.clone());
         }
+    }
+
+    pub fn apply_persona_attribution(&mut self, attribution: PersonaRunAttribution) {
+        self.persona_id = Some(attribution.persona_id);
+        self.persona_slug = Some(attribution.persona_slug);
+        self.persona_version = Some(attribution.persona_version);
+        self.persona_content_hash = Some(attribution.persona_content_hash);
+        self.persona_injected = Some(attribution.injected);
+        self.persona_skipped_reason = attribution.skipped_reason;
     }
 
     /// Get the duration of the run (if completed)

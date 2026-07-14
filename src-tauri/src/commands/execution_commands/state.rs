@@ -20,6 +20,8 @@ pub const AGENT_ACTIVE_STATUSES: &[InternalStatus] = &[
     InternalStatus::ReExecuting,
     InternalStatus::Merging,      // spawns merger agent
     InternalStatus::PendingMerge, // runs attempt_programmatic_merge async side effect
+    InternalStatus::UpdatingPlanBranch,
+    InternalStatus::UpdatingTaskBranch,
 ];
 
 /// States that have automatic transitions on entry.
@@ -597,7 +599,10 @@ impl ExecutionState {
 
     /// Emit execution:status_changed event with current state through EventSink.
     pub fn emit_status_changed_to_sink(&self, sink: &dyn EventSink, reason: &str) {
-        sink.emit("execution:status_changed", self.status_changed_payload(reason));
+        sink.emit(
+            "execution:status_changed",
+            self.status_changed_payload(reason),
+        );
     }
 
     /// Emit execution:status_changed event with current state

@@ -365,6 +365,14 @@ export const tasksApi = {
       TauriVoidSchema
     ),
 
+  retryBranchUpdate: (taskId: string): Promise<Task> =>
+    typedInvokeWithTransform(
+      "retry_branch_update",
+      { taskId },
+      TaskSchema,
+      transformTask
+    ),
+
   /**
    * Inject a task mid-loop
    * Tasks can be sent to backlog (deferred) or planned (immediate queue).

@@ -70,6 +70,9 @@ pub async fn get_or_create_conversation(
         ChatContextType::Merge => {
             ChatConversation::new_merge(TaskId::from_string(context_id.to_string()))
         }
+        ChatContextType::BranchUpdate => {
+            ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
+        }
     };
 
     conv.parent_conversation_id = parent_conversation_id;

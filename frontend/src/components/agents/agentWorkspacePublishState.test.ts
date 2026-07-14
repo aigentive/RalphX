@@ -7,6 +7,7 @@ import type {
 import {
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
+  getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
@@ -22,6 +23,7 @@ function workspace(
     conversationId: "conversation-1",
     projectId: "project-1",
     mode: "edit",
+    branchMode: "isolated",
     baseRefKind: "project_default",
     baseRef: "main",
     baseDisplayName: "Project default (main)",
@@ -75,6 +77,34 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("getAgentWorkspaceEffectiveBaseLabel", () => {
+  it("uses the actual base ref for linked workspaces when the stored display name is the source branch", () => {
+    expect(
+      getAgentWorkspaceEffectiveBaseLabel(
+        workspace({
+          branchMode: "linked",
+          baseRef: "master",
+          baseDisplayName: "feature/diverged-agent-work",
+          branchName: "feature/diverged-agent-work",
+        }),
+        undefined,
+      ),
+    ).toBe("master");
+  });
+
+  it("retains the descriptive base label for isolated workspaces", () => {
+    expect(
+      getAgentWorkspaceEffectiveBaseLabel(
+        workspace({
+          baseRef: "main",
+          baseDisplayName: "Project default (main)",
+        }),
+        undefined,
+      ),
+    ).toBe("Project default (main)");
+  });
+});
 
 describe("isAgentWorkspacePublishCurrent", () => {
   const currentFreshness = () =>
@@ -375,15 +405,17 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(true);
   });
 
-  it("allows active plan workspaces before a PR exists", () => {
-    expect(
-      canInspectAgentWorkspaceBaseFreshness(
-        workspace({
-          mode: "plan",
-          linkedIdeationSessionId: "planning-session-1",
-        }),
-      ),
-    ).toBe(true);
+  it("keeps plan publish and diff surfaces without base freshness inspection", () => {
+    const planWorkspace = workspace({
+      mode: "plan",
+      linkedIdeationSessionId: "planning-session-1",
+      publicationPrNumber: 42,
+      publicationPrStatus: "open",
+    });
+
+    expect(canInspectAgentWorkspaceBaseFreshness(planWorkspace)).toBe(false);
+    expect(shouldShowAgentWorkspacePublishSurface(planWorkspace)).toBe(true);
+    expect(canInspectAgentWorkspacePublishDiffs(planWorkspace)).toBe(true);
   });
 
   it("preserves published PR freshness inspection", () => {

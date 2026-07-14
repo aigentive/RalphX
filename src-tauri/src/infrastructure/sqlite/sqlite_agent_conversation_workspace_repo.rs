@@ -822,15 +822,19 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         self.db
             .run(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT * FROM agent_conversation_workspaces
-                     WHERE status = 'active'
-                       AND mode = 'edit'
-                       AND linked_plan_branch_id IS NULL
-                       AND publication_pr_number IS NOT NULL
-                       AND auto_publish_enabled = 1
-                       AND COALESCE(publication_push_status, 'pushed') IN ('pushed', 'refreshed')
-                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
-                     ORDER BY updated_at DESC",
+                    "SELECT workspace.*
+                     FROM agent_conversation_workspaces AS workspace
+                     INNER JOIN chat_conversations AS conversation
+                       ON conversation.id = workspace.conversation_id
+                     WHERE workspace.status = 'active'
+                       AND conversation.archived_at IS NULL
+                       AND workspace.mode = 'edit'
+                       AND workspace.linked_plan_branch_id IS NULL
+                       AND workspace.publication_pr_number IS NOT NULL
+                       AND workspace.auto_publish_enabled = 1
+                       AND COALESCE(workspace.publication_push_status, 'pushed') IN ('pushed', 'refreshed')
+                       AND COALESCE(workspace.publication_pr_status, '') NOT IN ('closed', 'merged')
+                     ORDER BY workspace.updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], row_to_workspace)?;
                 let mut workspaces = Vec::new();

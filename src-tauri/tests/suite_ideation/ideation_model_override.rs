@@ -365,6 +365,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         Path::new("/fake/plugin"),
         &conv,
         "verify plan",
+        None,
         Path::new("/tmp"),
         Some("verification"), // → ralphx-plan-verifier agent
         Some("proj-1"),
@@ -420,6 +421,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         ChatContextType::Ideation,
         session_id.as_str(),
         "verify plan",
+        None,
         None,
         None,
         Path::new("/tmp"),

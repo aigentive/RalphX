@@ -10,6 +10,7 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::personas::PersonaService;
 use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
@@ -19,11 +20,13 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, ChatContextType,
-    ChatConversation, ChatConversationId, ProjectId, TeamIntent,
+    ChatConversation, ChatConversationId, PersonaDirective, PersonaId, ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
 };
+use crate::error::AppError;
+use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 mod helpers;
 
@@ -55,6 +58,8 @@ pub struct AgentWorkspaceSourcePullRequestInput {
 pub struct StartAgentConversationInput {
     pub project_id: String,
     pub content: String,
+    /// Optional active persona to bind before the first project-conversation send.
+    pub persona_id: Option<String>,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
     /// Optional visible parent conversation for follow-up/branch conversations.
@@ -111,6 +116,19 @@ pub struct AgentConversationStartDeps<'a, R: Runtime + 'static> {
 
 pub struct AgentConversationStartService<'a, R: Runtime + 'static> {
     deps: AgentConversationStartDeps<'a, R>,
+}
+
+const PERSONA_BINDING_PROJECT_CONTEXT_ERROR: &str =
+    "Persona bindings require Project conversation context";
+
+fn ensure_persona_binding_project_context(context_type: ChatContextType) -> Result<(), AppError> {
+    if context_type == ChatContextType::Project {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            PERSONA_BINDING_PROJECT_CONTEXT_ERROR.to_string(),
+        ))
+    }
 }
 
 impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
@@ -175,6 +193,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
         let conversation_title = trim_optional_input(input.title);
+        let persona_id = trim_optional_input(input.persona_id).map(PersonaId::from_string);
         let draft_conversation_id = input
             .conversation_id
             .as_deref()
@@ -223,6 +242,33 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "load_project",
             project_lookup_started,
         );
+
+        if let Some(persona_id) = persona_id.as_ref() {
+            if let Some(conversation_id) = draft_conversation_id.as_ref() {
+                let existing = self
+                    .deps
+                    .state
+                    .chat_conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+                ensure_persona_binding_project_context(existing.context_type)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                ensure_persona_binding_project_context(ChatContextType::Project)
+                    .map_err(|error| error.to_string())?;
+            }
+
+            PersonaService::new(
+                self.deps.state.db.clone(),
+                Arc::clone(&self.deps.state.persona_repo),
+                Arc::clone(&self.deps.state.chat_conversation_repo),
+            )
+            .ensure_bindable(agent_personas_enabled(), persona_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        }
 
         if should_create_workspace {
             if let Err(error) = ensure_linked_branch_workspace_available(
@@ -435,7 +481,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "persist_conversation",
             "Saving chat",
         );
-        let conversation = if should_create_conversation {
+        let mut conversation = if should_create_conversation {
             self.deps
                 .state
                 .chat_conversation_repo
@@ -459,6 +505,15 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             }
             conversation
         };
+        if let Some(persona_id) = persona_id.as_ref() {
+            self.deps
+                .state
+                .chat_conversation_repo
+                .update_persona_binding(&conversation.id, Some(persona_id.as_str()))
+                .await
+                .map_err(|error| error.to_string())?;
+            conversation.persona_id = Some(persona_id.to_string());
+        }
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
@@ -591,6 +646,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 SendMessageOptions {
                     harness_override,
                     agent_name_override: Some(agent_name_for_workspace_mode(mode).to_string()),
+                    persona_directive: persona_id
+                        .as_ref()
+                        .map(|persona_id| PersonaDirective::Explicit(persona_id.clone()))
+                        .unwrap_or_default(),
                     model_override,
                     logical_effort_override,
                     service_tier_override,

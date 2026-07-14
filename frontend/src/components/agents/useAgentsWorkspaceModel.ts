@@ -6,7 +6,7 @@ import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
 import {
-  isWorkspaceModeLocked,
+  isConversationModeLocked,
   resolveConversationAgentMode,
 } from "./agentConversationMode";
 import {
@@ -112,7 +112,9 @@ export function useAgentsWorkspaceModel({
         : isPublishShortcutCurrent
           ? "Published"
           : "Commit & Publish";
-  const activeConversationModeLocked = isWorkspaceModeLocked(activeWorkspace);
+  const activeConversationModeLocked = activeConversation
+    ? isConversationModeLocked(activeConversation, activeWorkspace)
+    : false;
   const terminalUnavailableReason = getAgentTerminalUnavailableReason(
     activeConversation,
     activeWorkspace,

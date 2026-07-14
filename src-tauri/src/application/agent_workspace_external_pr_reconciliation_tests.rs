@@ -156,6 +156,44 @@ async fn reconciliation_links_external_open_pr_to_unpublished_workspace() {
 }
 
 #[tokio::test]
+async fn reconciliation_restarts_polling_for_linked_open_pr() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(42);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/42".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Open);
+    let (mut deps, _) = deps_with_workspace(project, workspace, github.clone()).await;
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+    deps.chat_service = Some(Arc::new(MockChatService::new()) as Arc<dyn ChatService>);
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("linked_pr_not_terminal")
+    );
+    assert!(
+        registry.is_agent_workspace_polling(&conversation_id),
+        "a linked open PR must regain CI supervision after a poller is lost"
+    );
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
 async fn reconciliation_marks_external_merged_pr_terminal() {
     let project = test_project();
     let workspace = test_workspace(&project);

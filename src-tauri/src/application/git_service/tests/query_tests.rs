@@ -1,4 +1,6 @@
 use super::super::*;
+use super::init_test_repo;
+use crate::error::AppError;
 use std::process::Command;
 
 #[test]
@@ -35,6 +37,88 @@ fn test_parse_shortstat_empty() {
     assert_eq!(files, 0);
     assert_eq!(insertions, 0);
     assert_eq!(deletions, 0);
+}
+
+#[tokio::test]
+async fn get_merge_base_returns_common_ancestor_for_diverged_branches() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path();
+    init_test_repo(repo);
+
+    std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+    Command::new("git")
+        .args(["add", "base.txt"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "base"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let base_sha = String::from_utf8_lossy(
+        &Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    Command::new("git")
+        .args(["checkout", "-b", "feature"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("feature.txt"), "feature\n").unwrap();
+    Command::new("git")
+        .args(["add", "feature.txt"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "feature"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    Command::new("git")
+        .args(["checkout", "main"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("main.txt"), "main\n").unwrap();
+    Command::new("git")
+        .args(["add", "main.txt"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "main"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    let merge_base = GitService::get_merge_base(repo, "main", "feature")
+        .await
+        .expect("merge base should resolve");
+
+    assert_eq!(merge_base, base_sha);
+}
+
+#[tokio::test]
+async fn get_merge_base_reports_git_failure_for_unknown_refs() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path();
+    init_test_repo(repo);
+
+    let result = GitService::get_merge_base(repo, "main", "missing-branch").await;
+
+    assert!(
+        matches!(result, Err(AppError::GitOperation(message)) if message.contains("Failed to resolve merge base between 'main' and 'missing-branch'"))
+    );
 }
 
 // =========================================================================
@@ -474,10 +558,9 @@ async fn test_find_commit_by_message_grep_loose_task_id_matches_unrelated_commit
 
     // ----- FIX: precise grep (source_branch) returns the CORRECT commit -----
     // The rollback commit does not contain the full branch path, so no false match.
-    let precise_result =
-        GitService::find_commit_by_message_grep(repo, source_branch, &branch)
-            .await
-            .unwrap();
+    let precise_result = GitService::find_commit_by_message_grep(repo, source_branch, &branch)
+        .await
+        .unwrap();
     assert_eq!(
         precise_result,
         Some(real_task_sha),

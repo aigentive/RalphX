@@ -18,6 +18,9 @@ mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
 pub mod chat_timeline;
+pub mod branch_update;
+#[cfg(test)]
+mod branch_update_tests;
 pub mod delegated_session;
 pub mod event_type;
 pub mod execution_plan;
@@ -31,11 +34,14 @@ pub mod methodology;
 pub mod notification;
 pub mod plan_branch;
 pub mod plan_selection_stats;
+pub mod persona;
 pub mod project;
 pub mod research;
 pub mod review;
 pub mod review_issue;
 pub mod status;
+#[cfg(test)]
+mod status_tests;
 pub mod task;
 pub mod task_context;
 pub mod task_metadata;
@@ -125,6 +131,13 @@ pub use chat_timeline::{
     ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
     ChatTimelinePage,
 };
+pub use branch_update::{
+    BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
+    BranchUpdateFailureKind, BranchUpdateFailurePolicy, BranchUpdateOperation,
+    BranchUpdateOperationId, BranchUpdatePhase, BranchUpdateWorkspaceOwnership,
+    GitMutationClaim, GitMutationKind, GitTargetIdentity, GitTargetIdentityError,
+    GitTargetLease, GitTargetLeaseError, GitTargetLeaseOwner, GitTargetLeaseOwnerKind,
+};
 pub use delegated_session::{DelegatedSession, DelegatedSessionId};
 pub use event_type::{EventType, ParseEventTypeError};
 pub use execution_plan::{
@@ -164,6 +177,7 @@ pub use notification::{
 };
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
+pub use persona::{Persona, PersonaDirective, PersonaId, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use research::{
     CustomDepth, ParseResearchDepthPresetError, ParseResearchProcessStatusError, ResearchBrief,

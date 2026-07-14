@@ -244,17 +244,17 @@ pub fn validate_automation_judge_verdict(
             }
         }
     }
-    if verdict.decision == AutomationJudgeDecision::Stop && verdict.goal_met {
-        let applied_goal_items = apply_updated_item_statuses(
-            context.automation.goal_items_json.as_deref(),
-            verdict.updated_item_statuses.as_deref(),
-        )?;
-        if goal_items_have_unfinished_work(applied_goal_items.as_deref())? {
-            return Err(AppError::Validation(
-                "judge verdict goalMet=true requires all goal items to be done or skipped"
-                    .to_string(),
-            ));
-        }
+    let applied_goal_items = apply_updated_item_statuses(
+        context.automation.goal_items_json.as_deref(),
+        verdict.updated_item_statuses.as_deref(),
+    )?;
+    if verdict.decision == AutomationJudgeDecision::Stop
+        && verdict.goal_met
+        && goal_items_have_unfinished_work(applied_goal_items.as_deref())?
+    {
+        return Err(AppError::Validation(
+            "judge verdict goalMet=true requires all goal items to be done or skipped".to_string(),
+        ));
     }
 
     verdict.reason = verdict.reason.trim().chars().take(1000).collect();
@@ -271,12 +271,17 @@ pub fn validate_automation_judge_verdict(
                 .next_run_prompt
                 .as_deref()
                 .map(str::trim)
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_string();
             if prompt.chars().count() < MIN_CONTINUE_PROMPT_CHARS {
                 return Err(AppError::Validation(
                     "judge verdict continue requires a substantive nextRunPrompt".to_string(),
                 ));
             }
+            verdict.next_run_prompt = Some(normalize_next_run_prompt_phase(
+                &prompt,
+                applied_goal_items.as_deref(),
+            )?);
             match verdict.next_base_branch {
                 Some(AutomationJudgeNextBaseBranch::AutomationBase) => {
                     if context.automation.chain_mode == "pr_head_stacked" {
@@ -602,6 +607,65 @@ fn collect_ids_from_value(value: &Value, ids: &mut HashSet<String>) {
 
 pub(crate) fn first_non_done_goal_item_value(value: &Value) -> Option<Value> {
     find_current_goal_item_candidate(value, &mut |_| true).map(|candidate| candidate.value)
+}
+
+fn normalize_next_run_prompt_phase(
+    prompt: &str,
+    goal_items_json: Option<&str>,
+) -> AppResult<String> {
+    let Some(after_prefix) = prompt.strip_prefix("Phase ") else {
+        return Ok(prompt.to_string());
+    };
+    let digit_bytes = after_prefix.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_bytes == 0 || !after_prefix[digit_bytes..].starts_with(':') {
+        return Ok(prompt.to_string());
+    }
+    let Some(goal_items_json) = goal_items_json.filter(|value| !value.trim().is_empty()) else {
+        return Ok(prompt.to_string());
+    };
+    let goal_items = parse_goal_items_json(goal_items_json)?;
+    let Some(ordinal) = current_goal_item_ordinal(&goal_items) else {
+        return Ok(prompt.to_string());
+    };
+    Ok(format!("Phase {ordinal}{}", &after_prefix[digit_bytes..]))
+}
+
+fn current_goal_item_ordinal(value: &Value) -> Option<usize> {
+    fn visit(value: &Value, ordinal: &mut usize) -> Option<usize> {
+        match value {
+            Value::Object(object) => {
+                let is_goal_item = object.get("id").and_then(Value::as_str).is_some()
+                    || object.contains_key("status");
+                if is_goal_item {
+                    *ordinal += 1;
+                    let status = object
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or(AutomationGoalItemStatus::Pending.as_str());
+                    if !matches!(status, "done" | "skipped") {
+                        return Some(*ordinal);
+                    }
+                }
+                for value in object.values() {
+                    if let Some(current) = visit(value, ordinal) {
+                        return Some(current);
+                    }
+                }
+                None
+            }
+            Value::Array(values) => {
+                for value in values {
+                    if let Some(current) = visit(value, ordinal) {
+                        return Some(current);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    visit(value, &mut 0)
 }
 
 fn find_current_goal_item(value: &Value) -> Option<CurrentGoalItem> {
@@ -967,6 +1031,7 @@ Rules:
 - `continue` requires `nextRunPrompt` and `nextBaseBranch`.
 - `previous_pr_head` is valid only for `chainMode=pr_head_stacked` with a valid previous PR head.
 - `updatedItemStatuses` ids must exist in `goal_items`.
+- If `nextRunPrompt` starts with `Phase N:`, `N` must be the 1-based position of the first goal item that remains unfinished after `updatedItemStatuses`; repeated runs for that item keep the same `N`.
 - If `stop` uses `goalMet=true`, the resulting `goal_items` after `updatedItemStatuses` must all be `done` or `skipped`.
 - If there is no concrete unfinished work, choose `stop`.
 - The next run prompt must be self-contained and may cite attached specs by file or section.

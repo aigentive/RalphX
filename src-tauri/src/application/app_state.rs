@@ -57,20 +57,21 @@ use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
     AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    AutomationRepository, AutomationRunRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
+    AutomationRepository, AutomationRunRepository, BranchUpdateRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
+    MemoryEventRepository, MethodologyRepository, NotificationRepository,
+    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
     PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
     ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
     ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
-    ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
-    WorkspaceReviewRuntimeSettingsRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -86,7 +87,7 @@ use crate::infrastructure::memory::{
     MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
     MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
     MemoryAtlassianIntegrationSettingsRepository, MemoryAutomationRepository,
-    MemoryAutomationRunRepository, MemoryChatAttachmentRepository,
+    MemoryAutomationRunRepository, MemoryBranchUpdateRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryClickUpIntegrationSettingsRepository, MemoryDelegatedSessionRepository,
     MemoryExecutionPlanRepository, MemoryExecutionSettingsRepository,
@@ -97,7 +98,7 @@ use crate::infrastructure::memory::{
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryNotificationRepository, MemoryNotificationSettingsRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
     MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
     MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
@@ -105,7 +106,8 @@ use crate::infrastructure::memory::{
     MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
     MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
     MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
-    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -120,7 +122,7 @@ use crate::infrastructure::sqlite::{
     SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
     SqliteArtifactFlowRepository, SqliteArtifactRepository,
     SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
-    SqliteAutomationRunRepository, SqliteChatAttachmentRepository,
+    SqliteAutomationRunRepository, SqliteBranchUpdateRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteClickUpIntegrationSettingsRepository, SqliteDelegatedSessionRepository,
     SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
@@ -132,7 +134,7 @@ use crate::infrastructure::sqlite::{
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteNotificationRepository, SqliteNotificationSettingsRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
     SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
     SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
     SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
@@ -140,7 +142,8 @@ use crate::infrastructure::sqlite::{
     SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
     SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
     SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
-    SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteUiFeatureFlagOverridesRepository, SqliteValidationRunRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -178,6 +181,8 @@ impl ResolvedBackgroundAgentRuntime {
 pub struct AppState {
     /// Task repository (SQLite in production, in-memory for tests)
     pub task_repo: Arc<dyn TaskRepository>,
+    /// Durable branch-update operation and canonical Git target authority.
+    pub branch_update_repo: Arc<dyn BranchUpdateRepository>,
     /// Task step repository for tracking execution progress
     pub task_step_repo: Arc<dyn TaskStepRepository>,
     /// Project repository (SQLite in production, in-memory for tests)
@@ -204,6 +209,8 @@ pub struct AppState {
     pub review_repo: Arc<dyn ReviewRepository>,
     /// Review settings repository
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
+    /// Persisted UI feature flag overrides.
+    pub ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
     /// Durable task validation run/result repository
     pub validation_run_repo: Arc<dyn ValidationRunRepository>,
     /// Provider-keyed Workspace Review runtime defaults repository
@@ -253,6 +260,8 @@ pub struct AppState {
     pub chat_timeline_repo: Arc<dyn ChatTimelineRepository>,
     /// Chat conversation repository (for context-aware chat)
     pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    /// Persona repository for persisted agent personas.
+    pub persona_repo: Arc<dyn PersonaRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     /// Conversation-owned primary Jira assignment/cache repository
@@ -1248,6 +1257,9 @@ impl AppState {
 
         Ok(Self {
             task_repo: Arc::clone(&task_repo),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1279,6 +1291,9 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            ui_feature_flag_overrides_repo: Arc::new(
+                SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             notification_settings_repo: Arc::new(
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1352,6 +1367,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(SqliteChatConversationRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            persona_repo: Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1537,6 +1555,9 @@ impl AppState {
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1552,6 +1573,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1597,6 +1619,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -1704,6 +1727,9 @@ impl AppState {
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1719,6 +1745,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1764,6 +1791,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -1876,6 +1904,9 @@ impl AppState {
 
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1895,6 +1926,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1942,6 +1974,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -2055,6 +2088,7 @@ impl AppState {
 
         Self {
             task_repo: Arc::clone(&task_repo),
+            branch_update_repo: Arc::new(MemoryBranchUpdateRepository::new()),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -2068,6 +2102,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -2101,6 +2136,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
