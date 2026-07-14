@@ -20,7 +20,30 @@ use crate::infrastructure::agents::harness_agent_catalog::{
     AgentPromptHarness,
 };
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 #[test]
 fn test_yaml_loaded_has_unique_names() {
@@ -418,6 +441,73 @@ fn test_runtime_config_dir_path_resolution_uses_bundled_config_dir() {
         config_path_for_runtime_config_dir(None),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/ralphx.yaml")
     );
+}
+
+#[test]
+fn early_file_logging_environment_override_has_highest_precedence() {
+    assert!(resolve_file_logging_from_sources(
+        Some("YES"),
+        None,
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        Some("0"),
+        None,
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_public_resolver_reads_environment_override() {
+    let _env = EnvGuard::set("RALPHX_FILE_LOGGING", "0");
+
+    assert!(!resolve_file_logging_early());
+}
+
+#[test]
+fn early_file_logging_prefers_configured_runtime_file() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(&config_path, "file_logging: false\n").expect("write runtime config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&config_path),
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_uses_embedded_config_before_runtime_setup() {
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        None,
+        "file_logging: false"
+    ));
+}
+
+#[test]
+fn early_file_logging_falls_back_from_missing_or_malformed_runtime_config() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing_path = temp_dir.path().join("missing.yaml");
+    let malformed_path = temp_dir.path().join("malformed.yaml");
+    std::fs::write(&malformed_path, "file_logging: [\n").expect("write malformed config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&missing_path),
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: false"
+    ));
+    assert!(resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: ["
+    ));
 }
 
 #[test]
