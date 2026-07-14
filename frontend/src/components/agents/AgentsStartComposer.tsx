@@ -78,6 +78,7 @@ import {
   supportedEffortsForProvider,
   supportedModelAliasesForProvider,
 } from "./agentProviderAvailability";
+import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
@@ -202,19 +203,6 @@ function composerIntegrationReferencesEqual(
     );
   });
 }
-
-export const AGENT_MODE_OPTIONS: Array<{
-  id: AgentConversationWorkspaceMode;
-  label: string;
-  description: string;
-}> = [
-  { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
-  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
-  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
-  { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },
-  { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
-  { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
-];
 
 export function AgentsStartComposer({
   projects,
@@ -1194,7 +1182,7 @@ export function AgentsStartComposer({
               isExecutionHalted
                 ? "Queue Prompt"
                 : mode === "automation"
-                  ? "Start Automation"
+                  ? "Setup Automation"
                   : "Start Agent"
             }
             submittingLabel={
@@ -1213,7 +1201,7 @@ export function AgentsStartComposer({
                 clearStartError();
                 setMode(value as AgentConversationWorkspaceMode);
               },
-              options: AGENT_MODE_OPTIONS,
+              options: AGENT_START_MODE_OPTIONS,
               testId: "agents-start-mode",
             }}
             team={{

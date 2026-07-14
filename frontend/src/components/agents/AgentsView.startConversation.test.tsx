@@ -220,7 +220,7 @@ describe("AgentsView start conversation", () => {
       "placeholder",
       "Describe your goal for the new automation",
     );
-    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Start Automation");
+    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Setup Automation");
     expect(createAutomationDraftMock).not.toHaveBeenCalled();
     expect(startAgentConversationMock).not.toHaveBeenCalled();
   });
