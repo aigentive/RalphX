@@ -217,9 +217,11 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     } = deps;
 
     let phase_started_at = startup_phase_started("git_mutation_authority_recovery");
-    match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(Arc::clone(
-        &app_state.branch_update_repo,
-    ))
+    match crate::application::git_mutation_recovery::recover_in_flight_git_mutations(
+        Arc::clone(&app_state.branch_update_repo),
+        Arc::clone(&task_repo),
+        Arc::clone(&project_repo),
+    )
     .await
     {
         Ok(outcomes) => {

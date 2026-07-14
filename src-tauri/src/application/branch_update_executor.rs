@@ -7,8 +7,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     BlockBranchUpdate, BranchUpdateCasOutcome, BranchUpdateRepository,
-    ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation, MarkBranchUpdateResolving,
-    SettleBranchUpdateProgrammatic, TaskRepository, TransferBranchUpdateTargetLease,
+    CheckpointBranchUpdateResult, ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation,
+    MarkBranchUpdateResolving, SettleBranchUpdateProgrammatic, TaskRepository,
+    TransferBranchUpdateTargetLease,
 };
 use crate::error::{AppError, AppResult};
 use std::path::Path;
@@ -61,6 +62,71 @@ async fn read_ref(repo: &Path, reference: &str) -> AppResult<String> {
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn is_strict_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
+    let output = crate::application::git_service::git_cmd::run(
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+        repo,
+    )
+    .await?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(AppError::GitOperation(format!(
+            "failed to verify commit ancestry: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))),
+    }
+}
+
+async fn ensure_registered_workspace(repo: &Path, workspace: &Path) -> AppResult<()> {
+    let canonical_workspace = std::fs::canonicalize(workspace).map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to resolve branch update workspace {}: {error}",
+            workspace.display()
+        ))
+    })?;
+    let worktrees = GitService::list_worktrees(repo).await?;
+    let registered = worktrees.iter().any(|worktree| {
+        std::fs::canonicalize(&worktree.path)
+            .map(|path| path == canonical_workspace)
+            .unwrap_or(false)
+    });
+    if !registered {
+        return Err(AppError::Validation(format!(
+            "Branch update workspace is not registered to the target repository: {}",
+            workspace.display()
+        )));
+    }
+    Ok(())
+}
+
+async fn checkpoint_result(
+    repository: &Arc<dyn BranchUpdateRepository>,
+    operation: &BranchUpdateOperation,
+    update_status: InternalStatus,
+    owner: &GitTargetLeaseOwner,
+    fencing_epoch: u64,
+    resulting_sha: &str,
+) -> AppResult<()> {
+    let outcome = repository
+        .checkpoint_result(CheckpointBranchUpdateResult {
+            operation_id: operation.id.clone(),
+            task_id: operation.task_id.clone(),
+            originating_history_id: operation.originating_history_id.clone(),
+            update_status,
+            owner: owner.clone(),
+            fencing_epoch,
+            resulting_sha: resulting_sha.to_string(),
+        })
+        .await?;
+    if outcome != BranchUpdateCasOutcome::Applied {
+        return Err(AppError::Conflict(format!(
+            "Branch update result checkpoint lost authority: {outcome:?}"
+        )));
+    }
+    Ok(())
 }
 
 async fn block(
@@ -118,44 +184,28 @@ pub async fn execute_programmatic_branch_update(
     )?;
     let owner =
         GitTargetLeaseOwner::branch_update(operation.task_id.as_str(), operation.id.as_str());
-    if workspace.exists() {
-        return block(
-            &repository,
-            operation,
-            update_status,
-            owner,
-            fencing_epoch,
-            BranchUpdateFailureKind::CheckoutBusy,
-            format!(
-                "Branch update workspace already exists: {}",
-                workspace.display()
-            ),
-        )
-        .await;
-    }
-    let parent = workspace
-        .parent()
-        .ok_or_else(|| AppError::Validation("Branch update workspace has no parent".to_string()))?;
-    let parent = crate::utils::path_safety::validate_absolute_non_root_path(
-        parent,
-        "branch update workspace parent",
-    )?;
-    tokio::fs::create_dir_all(&parent).await.map_err(|error| {
-        AppError::Infrastructure(format!(
-            "Failed to create branch update workspace parent {}: {error}",
-            parent.display()
-        ))
-    })?;
-
     let expected_source = operation.observed_source_sha.clone().ok_or_else(|| {
         AppError::Validation("Branch update is missing its observed source SHA".to_string())
     })?;
     let expected_target = operation.observed_target_sha.clone().ok_or_else(|| {
         AppError::Validation("Branch update is missing its observed target SHA".to_string())
     })?;
-    let current_source = read_ref(repo_path, &operation.source_branch).await?;
+    let mut resulting_sha = operation.resulting_sha.clone();
+    let current_source = if resulting_sha.is_none() {
+        Some(read_ref(repo_path, &operation.source_branch).await?)
+    } else {
+        None
+    };
     let current_target = read_ref(repo_path, &operation.target_branch).await?;
-    if current_source != expected_source || current_target != expected_target {
+    let target_is_expected = current_target == expected_target;
+    let target_is_result = resulting_sha
+        .as_deref()
+        .is_some_and(|result| current_target == result);
+    if (!target_is_expected && !target_is_result)
+        || current_source
+            .as_deref()
+            .is_some_and(|source| source != expected_source)
+    {
         return block(
             &repository,
             operation,
@@ -164,58 +214,19 @@ pub async fn execute_programmatic_branch_update(
             fencing_epoch,
             BranchUpdateFailureKind::CheckoutBusy,
             format!(
-                "Branch tips changed after preflight (source {expected_source}->{current_source}, target {expected_target}->{current_target})"
+                "Branch tips changed after preflight (source {expected_source}->{}, target {expected_target}->{current_target})",
+                current_source.as_deref().unwrap_or("<checkpointed>")
             ),
         )
         .await;
     }
-    let workspace_arg = workspace.to_string_lossy().into_owned();
-    let add_output = run_authorized_mutation(
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &workspace_arg,
-            &expected_target,
-        ],
-        repo_path,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            fencing_epoch,
-            GitMutationKind::WorktreeCreate,
-        )
-        .await?,
-    )
-    .await?;
-    if !add_output.status.success() {
-        return block(
-            &repository,
-            operation,
-            update_status,
-            owner,
-            fencing_epoch,
-            BranchUpdateFailureKind::CheckoutBusy,
-            String::from_utf8_lossy(&add_output.stderr).into_owned(),
-        )
-        .await;
-    }
 
-    let merge_output = run_authorized_mutation(
-        &["merge", "--no-edit", &expected_source],
-        &workspace,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            fencing_epoch,
-            GitMutationKind::Merge,
-        )
-        .await?,
-    )
-    .await?;
-    if !merge_output.status.success() {
+    let workspace_arg = workspace.to_string_lossy().into_owned();
+    let workspace_exists = workspace.exists();
+    let mut needs_merge = false;
+    if workspace_exists {
+        ensure_registered_workspace(repo_path, &workspace).await?;
+        let workspace_head = read_ref(&workspace, "HEAD").await?;
         let conflicts = GitService::get_conflict_files(&workspace).await?;
         if !conflicts.is_empty() {
             let outcome = repository
@@ -231,39 +242,207 @@ pub async fn execute_programmatic_branch_update(
                 .await?;
             if outcome != BranchUpdateCasOutcome::Applied {
                 return Err(AppError::Conflict(format!(
-                    "Branch update conflict settlement lost authority: {outcome:?}"
+                    "Branch update conflict recovery lost authority: {outcome:?}"
                 )));
             }
             return Ok(BranchUpdateExecutionOutcome::NeedsAgent);
         }
-        return block(
+        if GitService::is_merge_in_progress(&workspace) {
+            return block(
+                &repository,
+                operation,
+                update_status,
+                owner,
+                fencing_epoch,
+                BranchUpdateFailureKind::Incomplete,
+                "Branch update workspace has an incomplete conflict-free merge".to_string(),
+            )
+            .await;
+        }
+        if let Some(checkpointed) = resulting_sha.as_deref() {
+            if workspace_head != checkpointed {
+                return block(
+                    &repository,
+                    operation,
+                    update_status,
+                    owner,
+                    fencing_epoch,
+                    BranchUpdateFailureKind::CheckoutBusy,
+                    format!(
+                        "Branch update workspace HEAD differs from checkpoint ({checkpointed}->{workspace_head})"
+                    ),
+                )
+                .await;
+            }
+        } else if workspace_head == expected_target {
+            needs_merge = true;
+        } else {
+            let contains_source =
+                is_strict_ancestor(&workspace, &expected_source, &workspace_head).await?;
+            let contains_target =
+                is_strict_ancestor(&workspace, &expected_target, &workspace_head).await?;
+            if !contains_source || !contains_target {
+                return block(
+                    &repository,
+                    operation,
+                    update_status,
+                    owner,
+                    fencing_epoch,
+                    BranchUpdateFailureKind::Incomplete,
+                    "Branch update workspace HEAD does not contain both preflight tips".to_string(),
+                )
+                .await;
+            }
+            checkpoint_result(
+                &repository,
+                operation,
+                update_status,
+                &owner,
+                fencing_epoch,
+                &workspace_head,
+            )
+            .await?;
+            resulting_sha = Some(workspace_head);
+        }
+    } else if resulting_sha.is_none() {
+        let parent = workspace.parent().ok_or_else(|| {
+            AppError::Validation("Branch update workspace has no parent".to_string())
+        })?;
+        let parent = crate::utils::path_safety::validate_absolute_non_root_path(
+            parent,
+            "branch update workspace parent",
+        )?;
+        tokio::fs::create_dir_all(&parent).await.map_err(|error| {
+            AppError::Infrastructure(format!(
+                "Failed to create branch update workspace parent {}: {error}",
+                parent.display()
+            ))
+        })?;
+        let add_output = run_authorized_mutation(
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &workspace_arg,
+                &expected_target,
+            ],
+            repo_path,
+            authority(
+                Arc::clone(&repository),
+                operation,
+                &owner,
+                fencing_epoch,
+                GitMutationKind::WorktreeCreate,
+            )
+            .await?,
+        )
+        .await?;
+        if !add_output.status.success() {
+            return block(
+                &repository,
+                operation,
+                update_status,
+                owner,
+                fencing_epoch,
+                BranchUpdateFailureKind::CheckoutBusy,
+                String::from_utf8_lossy(&add_output.stderr).into_owned(),
+            )
+            .await;
+        }
+        needs_merge = true;
+    }
+
+    if needs_merge {
+        let merge_output = run_authorized_mutation(
+            &["merge", "--no-edit", &expected_source],
+            &workspace,
+            authority(
+                Arc::clone(&repository),
+                operation,
+                &owner,
+                fencing_epoch,
+                GitMutationKind::Merge,
+            )
+            .await?,
+        )
+        .await?;
+        if !merge_output.status.success() {
+            let conflicts = GitService::get_conflict_files(&workspace).await?;
+            if !conflicts.is_empty() {
+                let outcome = repository
+                    .mark_resolving(MarkBranchUpdateResolving {
+                        operation_id: operation.id.clone(),
+                        task_id: operation.task_id.clone(),
+                        originating_history_id: operation.originating_history_id.clone(),
+                        update_status,
+                        owner,
+                        fencing_epoch,
+                        conflict_files: conflicts,
+                    })
+                    .await?;
+                if outcome != BranchUpdateCasOutcome::Applied {
+                    return Err(AppError::Conflict(format!(
+                        "Branch update conflict settlement lost authority: {outcome:?}"
+                    )));
+                }
+                return Ok(BranchUpdateExecutionOutcome::NeedsAgent);
+            }
+            return block(
+                &repository,
+                operation,
+                update_status,
+                owner,
+                fencing_epoch,
+                BranchUpdateFailureKind::Incomplete,
+                String::from_utf8_lossy(&merge_output.stderr).into_owned(),
+            )
+            .await;
+        }
+        let merged_sha = read_ref(&workspace, "HEAD").await?;
+        checkpoint_result(
             &repository,
             operation,
             update_status,
-            owner,
-            fencing_epoch,
-            BranchUpdateFailureKind::Incomplete,
-            String::from_utf8_lossy(&merge_output.stderr).into_owned(),
-        )
-        .await;
-    }
-
-    let resulting_sha = read_ref(&workspace, "HEAD").await?;
-    let full_ref = operation.target_identity.full_ref();
-    let update_output = run_authorized_mutation(
-        &["update-ref", full_ref, &resulting_sha, &expected_target],
-        repo_path,
-        authority(
-            Arc::clone(&repository),
-            operation,
             &owner,
             fencing_epoch,
-            GitMutationKind::Merge,
+            &merged_sha,
         )
-        .await?,
-    )
-    .await?;
-    if !update_output.status.success() {
+        .await?;
+        resulting_sha = Some(merged_sha);
+    }
+
+    let resulting_sha = resulting_sha.ok_or_else(|| {
+        AppError::Conflict("Branch update completed Git work without a result checkpoint".into())
+    })?;
+    let full_ref = operation.target_identity.full_ref();
+    let target_before_update = read_ref(repo_path, &operation.target_branch).await?;
+    if target_before_update == expected_target {
+        let update_output = run_authorized_mutation(
+            &["update-ref", full_ref, &resulting_sha, &expected_target],
+            repo_path,
+            authority(
+                Arc::clone(&repository),
+                operation,
+                &owner,
+                fencing_epoch,
+                GitMutationKind::Merge,
+            )
+            .await?,
+        )
+        .await?;
+        if !update_output.status.success() {
+            return block(
+                &repository,
+                operation,
+                update_status,
+                owner,
+                fencing_epoch,
+                BranchUpdateFailureKind::CheckoutBusy,
+                String::from_utf8_lossy(&update_output.stderr).into_owned(),
+            )
+            .await;
+        }
+    } else if target_before_update != resulting_sha {
         return block(
             &repository,
             operation,
@@ -271,35 +450,40 @@ pub async fn execute_programmatic_branch_update(
             owner,
             fencing_epoch,
             BranchUpdateFailureKind::CheckoutBusy,
-            String::from_utf8_lossy(&update_output.stderr).into_owned(),
+            format!(
+                "Branch update target differs from both preflight and checkpoint ({expected_target}->{target_before_update}, checkpoint {resulting_sha})"
+            ),
         )
         .await;
     }
 
-    let remove_output = run_authorized_mutation(
-        &["worktree", "remove", "--force", &workspace_arg],
-        repo_path,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            fencing_epoch,
-            GitMutationKind::WorktreeDelete,
+    if workspace.exists() {
+        ensure_registered_workspace(repo_path, &workspace).await?;
+        let remove_output = run_authorized_mutation(
+            &["worktree", "remove", "--force", &workspace_arg],
+            repo_path,
+            authority(
+                Arc::clone(&repository),
+                operation,
+                &owner,
+                fencing_epoch,
+                GitMutationKind::WorktreeDelete,
+            )
+            .await?,
         )
-        .await?,
-    )
-    .await?;
-    if !remove_output.status.success() {
-        return block(
-            &repository,
-            operation,
-            update_status,
-            owner,
-            fencing_epoch,
-            BranchUpdateFailureKind::Incomplete,
-            String::from_utf8_lossy(&remove_output.stderr).into_owned(),
-        )
-        .await;
+        .await?;
+        if !remove_output.status.success() {
+            return block(
+                &repository,
+                operation,
+                update_status,
+                owner,
+                fencing_epoch,
+                BranchUpdateFailureKind::Incomplete,
+                String::from_utf8_lossy(&remove_output.stderr).into_owned(),
+            )
+            .await;
+        }
     }
 
     let settled = repository
@@ -406,131 +590,189 @@ pub async fn complete_resolved_branch_update(
     let owner =
         GitTargetLeaseOwner::branch_update(operation.task_id.as_str(), operation.id.as_str());
     let epoch = operation.target_lease_epoch;
-    let conflicts = if operation.conflict_files.is_empty() {
-        GitService::get_conflict_files(&workspace).await?
-    } else {
-        operation.conflict_files.clone()
-    };
-    if conflicts.is_empty() {
-        return Err(AppError::Validation(
-            "Resolved branch update has no persisted conflict paths".to_string(),
-        ));
-    }
-    let mut add_args = vec!["add".to_string(), "--".to_string()];
-    for path in &conflicts {
-        if path.is_absolute()
-            || path.components().any(|component| {
-                matches!(
-                    component,
-                    std::path::Component::ParentDir | std::path::Component::RootDir
-                )
-            })
-        {
-            return Err(AppError::Validation(format!(
-                "Unsafe branch update conflict path: {}",
-                path.display()
-            )));
-        }
-        add_args.push(path.to_string_lossy().into_owned());
-    }
-    let add_refs: Vec<&str> = add_args.iter().map(String::as_str).collect();
-    let add = run_authorized_mutation(
-        &add_refs,
-        &workspace,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            epoch,
-            GitMutationKind::Merge,
-        )
-        .await?,
-    )
-    .await?;
-    if !add.status.success() {
-        return Err(AppError::GitOperation(
-            String::from_utf8_lossy(&add.stderr).into_owned(),
-        ));
-    }
-    let unresolved = GitService::get_conflict_files(&workspace).await?;
-    if !unresolved.is_empty() {
-        return Err(AppError::Conflict(format!(
-            "Unresolved branch update paths remain: {}",
-            unresolved
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
-    if GitService::has_conflict_markers(&workspace).await? {
-        return Err(AppError::Conflict(
-            "Resolved branch update still contains conflict markers".to_string(),
-        ));
-    }
-    let commit = run_authorized_mutation(
-        &["-c", "core.editor=true", "commit", "--no-edit"],
-        &workspace,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            epoch,
-            GitMutationKind::Merge,
-        )
-        .await?,
-    )
-    .await?;
-    if !commit.status.success() {
-        return Err(AppError::GitOperation(
-            String::from_utf8_lossy(&commit.stderr).into_owned(),
-        ));
-    }
-    let resulting_sha = read_ref(&workspace, "HEAD").await?;
     let expected_target = operation.observed_target_sha.as_deref().ok_or_else(|| {
         AppError::Validation("Branch update is missing its observed target SHA".to_string())
     })?;
-    let updated = run_authorized_mutation(
-        &[
-            "update-ref",
-            operation.target_identity.full_ref(),
-            &resulting_sha,
-            expected_target,
-        ],
-        repo_path,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            epoch,
-            GitMutationKind::Merge,
+    let expected_source = operation.observed_source_sha.as_deref().ok_or_else(|| {
+        AppError::Validation("Branch update is missing its observed source SHA".to_string())
+    })?;
+    let mut resulting_sha = operation.resulting_sha.clone();
+    if workspace.exists() {
+        ensure_registered_workspace(repo_path, &workspace).await?;
+        let workspace_head = read_ref(&workspace, "HEAD").await?;
+        if let Some(checkpointed) = resulting_sha.as_deref() {
+            if workspace_head != checkpointed {
+                return Err(AppError::Conflict(format!(
+                    "Resolved branch update workspace HEAD differs from checkpoint ({checkpointed}->{workspace_head})"
+                )));
+            }
+        } else if !GitService::is_merge_in_progress(&workspace) && workspace_head != expected_target
+        {
+            if !is_strict_ancestor(&workspace, expected_source, &workspace_head).await?
+                || !is_strict_ancestor(&workspace, expected_target, &workspace_head).await?
+            {
+                return Err(AppError::Conflict(
+                    "Resolved branch update commit does not contain both preflight tips".into(),
+                ));
+            }
+            checkpoint_result(
+                &repository,
+                operation,
+                update_status,
+                &owner,
+                epoch,
+                &workspace_head,
+            )
+            .await?;
+            resulting_sha = Some(workspace_head);
+        } else {
+            let conflicts = if operation.conflict_files.is_empty() {
+                GitService::get_conflict_files(&workspace).await?
+            } else {
+                operation.conflict_files.clone()
+            };
+            if conflicts.is_empty() {
+                return Err(AppError::Validation(
+                    "Resolved branch update has no persisted conflict paths".to_string(),
+                ));
+            }
+            let mut add_args = vec!["add".to_string(), "--".to_string()];
+            for path in &conflicts {
+                if path.is_absolute()
+                    || path.components().any(|component| {
+                        matches!(
+                            component,
+                            std::path::Component::ParentDir | std::path::Component::RootDir
+                        )
+                    })
+                {
+                    return Err(AppError::Validation(format!(
+                        "Unsafe branch update conflict path: {}",
+                        path.display()
+                    )));
+                }
+                add_args.push(path.to_string_lossy().into_owned());
+            }
+            let add_refs: Vec<&str> = add_args.iter().map(String::as_str).collect();
+            let add = run_authorized_mutation(
+                &add_refs,
+                &workspace,
+                authority(
+                    Arc::clone(&repository),
+                    operation,
+                    &owner,
+                    epoch,
+                    GitMutationKind::Merge,
+                )
+                .await?,
+            )
+            .await?;
+            if !add.status.success() {
+                return Err(AppError::GitOperation(
+                    String::from_utf8_lossy(&add.stderr).into_owned(),
+                ));
+            }
+            let unresolved = GitService::get_conflict_files(&workspace).await?;
+            if !unresolved.is_empty() {
+                return Err(AppError::Conflict(format!(
+                    "Unresolved branch update paths remain: {}",
+                    unresolved
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            if GitService::has_conflict_markers(&workspace).await? {
+                return Err(AppError::Conflict(
+                    "Resolved branch update still contains conflict markers".to_string(),
+                ));
+            }
+            let commit = run_authorized_mutation(
+                &["-c", "core.editor=true", "commit", "--no-edit"],
+                &workspace,
+                authority(
+                    Arc::clone(&repository),
+                    operation,
+                    &owner,
+                    epoch,
+                    GitMutationKind::Merge,
+                )
+                .await?,
+            )
+            .await?;
+            if !commit.status.success() {
+                return Err(AppError::GitOperation(
+                    String::from_utf8_lossy(&commit.stderr).into_owned(),
+                ));
+            }
+            let committed_sha = read_ref(&workspace, "HEAD").await?;
+            checkpoint_result(
+                &repository,
+                operation,
+                update_status,
+                &owner,
+                epoch,
+                &committed_sha,
+            )
+            .await?;
+            resulting_sha = Some(committed_sha);
+        }
+    }
+    let resulting_sha = resulting_sha.ok_or_else(|| {
+        AppError::Conflict("Resolved branch update has no durable result checkpoint".into())
+    })?;
+    let target_before_update = read_ref(repo_path, &operation.target_branch).await?;
+    if target_before_update == expected_target {
+        let updated = run_authorized_mutation(
+            &[
+                "update-ref",
+                operation.target_identity.full_ref(),
+                &resulting_sha,
+                expected_target,
+            ],
+            repo_path,
+            authority(
+                Arc::clone(&repository),
+                operation,
+                &owner,
+                epoch,
+                GitMutationKind::Merge,
+            )
+            .await?,
         )
-        .await?,
-    )
-    .await?;
-    if !updated.status.success() {
-        return Err(AppError::GitOperation(
-            String::from_utf8_lossy(&updated.stderr).into_owned(),
-        ));
+        .await?;
+        if !updated.status.success() {
+            return Err(AppError::GitOperation(
+                String::from_utf8_lossy(&updated.stderr).into_owned(),
+            ));
+        }
+    } else if target_before_update != resulting_sha {
+        return Err(AppError::Conflict(format!(
+            "Resolved branch update target differs from both preflight and checkpoint ({expected_target}->{target_before_update}, checkpoint {resulting_sha})"
+        )));
     }
     let workspace_arg = workspace.to_string_lossy().into_owned();
-    let removed = run_authorized_mutation(
-        &["worktree", "remove", "--force", &workspace_arg],
-        repo_path,
-        authority(
-            Arc::clone(&repository),
-            operation,
-            &owner,
-            epoch,
-            GitMutationKind::WorktreeDelete,
+    if workspace.exists() {
+        ensure_registered_workspace(repo_path, &workspace).await?;
+        let removed = run_authorized_mutation(
+            &["worktree", "remove", "--force", &workspace_arg],
+            repo_path,
+            authority(
+                Arc::clone(&repository),
+                operation,
+                &owner,
+                epoch,
+                GitMutationKind::WorktreeDelete,
+            )
+            .await?,
         )
-        .await?,
-    )
-    .await?;
-    if !removed.status.success() {
-        return Err(AppError::GitOperation(
-            String::from_utf8_lossy(&removed.stderr).into_owned(),
-        ));
+        .await?;
+        if !removed.status.success() {
+            return Err(AppError::GitOperation(
+                String::from_utf8_lossy(&removed.stderr).into_owned(),
+            ));
+        }
     }
     let settled = repository
         .settle_programmatic(SettleBranchUpdateProgrammatic {
@@ -630,8 +872,7 @@ pub async fn publish_post_merge_branch_update(
             "Branch update publication snapshot does not match durable operation".to_string(),
         ));
     }
-    if operation.continuation
-        != BranchUpdateContinuation::FinalizePostMergePrPublication
+    if operation.continuation != BranchUpdateContinuation::FinalizePostMergePrPublication
         || !matches!(
             operation.phase,
             BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress
@@ -643,9 +884,7 @@ pub async fn publish_post_merge_branch_update(
         ));
     }
     let resulting_sha = operation.resulting_sha.as_deref().ok_or_else(|| {
-        AppError::Validation(
-            "Post-merge publication continuation has no resulting SHA".to_string(),
-        )
+        AppError::Validation("Post-merge publication continuation has no resulting SHA".to_string())
     })?;
     let local_sha = read_ref(repo_path, operation.target_identity.full_ref()).await?;
     if local_sha != resulting_sha {
@@ -683,9 +922,9 @@ pub async fn publish_post_merge_branch_update(
                 })
                 .await?
             {
-                crate::domain::repositories::GitAuthorityCasOutcome::Applied {
-                    fencing_epoch,
-                } => fencing_epoch,
+                crate::domain::repositories::GitAuthorityCasOutcome::Applied { fencing_epoch } => {
+                    fencing_epoch
+                }
                 outcome => {
                     return Err(AppError::Conflict(format!(
                         "Post-merge publication lease handoff failed: {outcome:?}"
@@ -830,8 +1069,7 @@ pub async fn resume_branch_update_continuation(
         .ok_or_else(|| AppError::Conflict("Branch update operation is missing".to_string()))?;
     if operation.task_id != operation_snapshot.task_id
         || operation.originating_history_id != operation_snapshot.originating_history_id
-        || operation.continuation
-            == BranchUpdateContinuation::FinalizePostMergePrPublication
+        || operation.continuation == BranchUpdateContinuation::FinalizePostMergePrPublication
         || !matches!(
             operation.phase,
             BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress

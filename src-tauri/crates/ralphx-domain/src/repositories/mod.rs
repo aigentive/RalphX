@@ -96,7 +96,8 @@ pub use branch_update_repository::{
     BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
     CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
     MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
-    SettleBranchUpdateProgrammatic, StopBranchUpdate, TransferBranchUpdateTargetLease,
+    CheckpointBranchUpdateResult, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    TransferBranchUpdateTargetLease,
     UnbindBranchUpdateRun,
 };
 pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};

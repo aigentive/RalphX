@@ -12,11 +12,11 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
     BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
-    BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
-    CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
-    MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
-    SettleBranchUpdateProgrammatic, StopBranchUpdate, TransferBranchUpdateTargetLease,
-    UnbindBranchUpdateRun,
+    BranchUpdateCasOutcome, BranchUpdateRepository, CheckpointBranchUpdateResult,
+    ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation, CompleteGitMutation,
+    GitAuthorityCasOutcome, MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate,
+    RetryBranchUpdate, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    TransferBranchUpdateTargetLease, UnbindBranchUpdateRun,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
@@ -612,6 +612,50 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
             .await
     }
 
+    async fn checkpoint_result(
+        &self,
+        request: CheckpointBranchUpdateResult,
+    ) -> AppResult<BranchUpdateCasOutcome> {
+        self.db
+            .run_transaction(move |conn| {
+                let epoch = i64::try_from(request.fencing_epoch)
+                    .map_err(|_| AppError::Database("target lease epoch overflow".to_string()))?;
+                let changed = conn.execute(
+                    "UPDATE branch_update_operations SET resulting_sha = ?1, updated_at = ?2
+                     WHERE id = ?3 AND task_id = ?4 AND originating_history_id = ?5
+                       AND phase IN ('programmatic', 'resolving') AND settled_at IS NULL
+                       AND (resulting_sha IS NULL OR resulting_sha = ?1)
+                       AND target_lease_epoch = ?6
+                       AND EXISTS (
+                         SELECT 1 FROM git_target_leases lease
+                         WHERE lease.git_common_dir = branch_update_operations.git_common_dir
+                           AND lease.target_ref = branch_update_operations.target_ref
+                           AND lease.owner_kind = ?7 AND lease.owner_id = ?8
+                           AND lease.fencing_epoch = ?6 AND lease.released_at IS NULL
+                           AND lease.mutation_claim_id IS NULL
+                       )
+                       AND EXISTS (SELECT 1 FROM tasks WHERE id = ?4 AND internal_status = ?9)",
+                    params![
+                        request.resulting_sha,
+                        Utc::now().to_rfc3339(),
+                        request.operation_id.as_str(),
+                        request.task_id.as_str(),
+                        request.originating_history_id,
+                        epoch,
+                        request.owner.kind.as_str(),
+                        request.owner.owner_id,
+                        request.update_status.as_str(),
+                    ],
+                )?;
+                Ok(if changed == 1 {
+                    BranchUpdateCasOutcome::Applied
+                } else {
+                    BranchUpdateCasOutcome::Stale
+                })
+            })
+            .await
+    }
+
     async fn settle_programmatic(
         &self,
         request: SettleBranchUpdateProgrammatic,
@@ -622,11 +666,13 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
                     .query_row(
                         "SELECT git_common_dir, target_ref FROM branch_update_operations
                          WHERE id = ?1 AND task_id = ?2 AND originating_history_id = ?3
-                           AND phase IN ('programmatic', 'resolving') AND settled_at IS NULL",
+                           AND phase IN ('programmatic', 'resolving') AND settled_at IS NULL
+                           AND resulting_sha = ?4",
                         params![
                             request.operation_id.as_str(),
                             request.task_id.as_str(),
                             request.originating_history_id,
+                            request.resulting_sha,
                         ],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )
@@ -647,16 +693,17 @@ impl BranchUpdateRepository for SqliteBranchUpdateRepository {
                 }
                 let changed = conn.execute(
                     "UPDATE branch_update_operations SET phase = 'continuation_pending',
-                        resulting_sha = ?1, updated_at = ?2
-                     WHERE id = ?3 AND task_id = ?4 AND originating_history_id = ?5
+                        updated_at = ?1
+                     WHERE id = ?2 AND task_id = ?3 AND originating_history_id = ?4
                        AND phase IN ('programmatic', 'resolving') AND settled_at IS NULL
-                       AND EXISTS (SELECT 1 FROM tasks WHERE id = ?4 AND internal_status = ?6)",
+                       AND resulting_sha = ?5
+                       AND EXISTS (SELECT 1 FROM tasks WHERE id = ?3 AND internal_status = ?6)",
                     params![
-                        request.resulting_sha,
                         Utc::now().to_rfc3339(),
                         request.operation_id.as_str(),
                         request.task_id.as_str(),
                         request.originating_history_id,
+                        request.resulting_sha,
                         request.update_status.as_str(),
                     ],
                 )?;

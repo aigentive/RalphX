@@ -9,11 +9,11 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
     BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
-    BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
-    CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
-    MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
-    SettleBranchUpdateProgrammatic, StopBranchUpdate, TransferBranchUpdateTargetLease,
-    UnbindBranchUpdateRun,
+    BranchUpdateCasOutcome, BranchUpdateRepository, CheckpointBranchUpdateResult,
+    ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation, CompleteGitMutation,
+    GitAuthorityCasOutcome, MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate,
+    RetryBranchUpdate, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    TransferBranchUpdateTargetLease, UnbindBranchUpdateRun,
 };
 use crate::infrastructure::sqlite::SqliteBranchUpdateRepository;
 use crate::testing::SqliteTestDb;
@@ -449,7 +449,6 @@ async fn durable_mutation_claim_blocks_transfer_until_exact_completion() {
     let BranchUpdateActivationOutcome::Applied { fencing_epoch, .. } = activation else {
         panic!("activation should apply");
     };
-
     assert_eq!(
         repo.begin_git_mutation(BeginGitMutation {
             identity: identity.clone(),
@@ -608,6 +607,48 @@ async fn continuation_requires_exact_claim_and_receipt_before_releasing_authorit
         panic!("activation should apply");
     };
     assert_eq!(
+        repo.checkpoint_result(CheckpointBranchUpdateResult {
+            operation_id: operation_id.clone(),
+            task_id: task.id.clone(),
+            originating_history_id: "history-continuation".into(),
+            update_status: InternalStatus::UpdatingPlanBranch,
+            owner: owner.clone(),
+            fencing_epoch,
+            resulting_sha: "abc123".into(),
+        })
+        .await
+        .unwrap(),
+        BranchUpdateCasOutcome::Applied
+    );
+    assert_eq!(
+        repo.checkpoint_result(CheckpointBranchUpdateResult {
+            operation_id: operation_id.clone(),
+            task_id: task.id.clone(),
+            originating_history_id: "history-continuation".into(),
+            update_status: InternalStatus::UpdatingPlanBranch,
+            owner: owner.clone(),
+            fencing_epoch,
+            resulting_sha: "different-result".into(),
+        })
+        .await
+        .unwrap(),
+        BranchUpdateCasOutcome::Stale
+    );
+    assert_eq!(
+        repo.settle_programmatic(SettleBranchUpdateProgrammatic {
+            operation_id: operation_id.clone(),
+            task_id: task.id.clone(),
+            originating_history_id: "history-continuation".into(),
+            update_status: InternalStatus::UpdatingPlanBranch,
+            owner: owner.clone(),
+            fencing_epoch,
+            resulting_sha: "different-result".into(),
+        })
+        .await
+        .unwrap(),
+        BranchUpdateCasOutcome::Stale
+    );
+    assert_eq!(
         repo.settle_programmatic(SettleBranchUpdateProgrammatic {
             operation_id: operation_id.clone(),
             task_id: task.id.clone(),
@@ -713,6 +754,20 @@ async fn post_merge_publication_continuation_goes_directly_from_update_to_merged
     else {
         panic!("activation should apply");
     };
+    assert_eq!(
+        repo.checkpoint_result(CheckpointBranchUpdateResult {
+            operation_id: operation_id.clone(),
+            task_id: task.id.clone(),
+            originating_history_id: "history-publication".into(),
+            update_status: InternalStatus::UpdatingPlanBranch,
+            owner: owner.clone(),
+            fencing_epoch,
+            resulting_sha: "merged-sha".into(),
+        })
+        .await
+        .unwrap(),
+        BranchUpdateCasOutcome::Applied
+    );
     repo.settle_programmatic(SettleBranchUpdateProgrammatic {
         operation_id: operation_id.clone(),
         task_id: task.id.clone(),

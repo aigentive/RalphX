@@ -11,10 +11,10 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     BeginGitMutation, BindBranchUpdateRun, BlockBranchUpdate, BranchUpdateActivation,
     BranchUpdateActivationOutcome, BranchUpdateCasOutcome, BranchUpdateRepository,
-    ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation, CompleteGitMutation,
-    GitAuthorityCasOutcome, MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate,
-    RetryBranchUpdate, SettleBranchUpdateProgrammatic, StopBranchUpdate, TaskRepository,
-    TransferBranchUpdateTargetLease, UnbindBranchUpdateRun,
+    CheckpointBranchUpdateResult, ClaimBranchUpdateContinuation, CompleteBranchUpdateContinuation,
+    CompleteGitMutation, GitAuthorityCasOutcome, MarkBranchUpdateResolving, PauseBranchUpdate,
+    ResumeBranchUpdate, RetryBranchUpdate, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    TaskRepository, TransferBranchUpdateTargetLease, UnbindBranchUpdateRun,
 };
 use crate::error::AppResult;
 
@@ -284,6 +284,49 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
         )
     }
 
+    async fn checkpoint_result(
+        &self,
+        request: CheckpointBranchUpdateResult,
+    ) -> AppResult<BranchUpdateCasOutcome> {
+        let mut state = self.state.lock().await;
+        if state.task_statuses.get(&request.task_id) != Some(&request.update_status) {
+            return Ok(BranchUpdateCasOutcome::Stale);
+        }
+        let Some(snapshot) = state.operations.get(&request.operation_id) else {
+            return Ok(BranchUpdateCasOutcome::Stale);
+        };
+        if snapshot.task_id != request.task_id
+            || snapshot.originating_history_id != request.originating_history_id
+            || !matches!(
+                snapshot.phase,
+                BranchUpdatePhase::Programmatic | BranchUpdatePhase::Resolving
+            )
+            || snapshot
+                .resulting_sha
+                .as_deref()
+                .is_some_and(|sha| sha != request.resulting_sha)
+        {
+            return Ok(BranchUpdateCasOutcome::Stale);
+        }
+        let identity = snapshot.target_identity.clone();
+        let Some(lease) = state.leases.get(&identity) else {
+            return Ok(BranchUpdateCasOutcome::Stale);
+        };
+        if lease.owner() != &request.owner || lease.fencing_epoch() != request.fencing_epoch {
+            return Ok(BranchUpdateCasOutcome::Stale);
+        }
+        if lease.active_mutation().is_some() {
+            return Ok(BranchUpdateCasOutcome::MutationInFlight);
+        }
+        let operation = state
+            .operations
+            .get_mut(&request.operation_id)
+            .expect("operation checked above");
+        operation.resulting_sha = Some(request.resulting_sha);
+        operation.updated_at = Utc::now();
+        Ok(BranchUpdateCasOutcome::Applied)
+    }
+
     async fn settle_programmatic(
         &self,
         request: SettleBranchUpdateProgrammatic,
@@ -301,6 +344,7 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
                 snapshot.phase,
                 BranchUpdatePhase::Programmatic | BranchUpdatePhase::Resolving
             )
+            || snapshot.resulting_sha.as_deref() != Some(request.resulting_sha.as_str())
         {
             return Ok(BranchUpdateCasOutcome::Stale);
         }
@@ -319,7 +363,6 @@ impl BranchUpdateRepository for MemoryBranchUpdateRepository {
             .get_mut(&request.operation_id)
             .expect("operation checked above");
         operation.phase = BranchUpdatePhase::ContinuationPending;
-        operation.resulting_sha = Some(request.resulting_sha);
         operation.updated_at = Utc::now();
         Ok(BranchUpdateCasOutcome::Applied)
     }

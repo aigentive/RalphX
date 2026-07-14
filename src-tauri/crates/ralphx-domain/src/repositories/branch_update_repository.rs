@@ -87,6 +87,17 @@ pub struct SettleBranchUpdateProgrammatic {
 }
 
 #[derive(Debug, Clone)]
+pub struct CheckpointBranchUpdateResult {
+    pub operation_id: BranchUpdateOperationId,
+    pub task_id: TaskId,
+    pub originating_history_id: String,
+    pub update_status: InternalStatus,
+    pub owner: GitTargetLeaseOwner,
+    pub fencing_epoch: u64,
+    pub resulting_sha: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct BlockBranchUpdate {
     pub operation_id: BranchUpdateOperationId,
     pub task_id: TaskId,
@@ -266,6 +277,14 @@ pub trait BranchUpdateRepository: Send + Sync {
         &self,
         request: CompleteGitMutation,
     ) -> AppResult<GitAuthorityCasOutcome>;
+
+    /// Durably records the exact commit produced by the operation before the target
+    /// ref or operation worktree is mutated. Repeating the same checkpoint is
+    /// idempotent; a different result is stale.
+    async fn checkpoint_result(
+        &self,
+        request: CheckpointBranchUpdateResult,
+    ) -> AppResult<BranchUpdateCasOutcome>;
 
     async fn settle_programmatic(
         &self,
