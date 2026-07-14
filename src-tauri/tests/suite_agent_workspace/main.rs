@@ -18,3 +18,4 @@ mod agent_workspace_publish_recovery;
 mod agent_workspace_pr_review_notifications;
 mod agent_workspace_repair_auto_publish;
 mod agent_workspace_review;
+mod linked_workspace_diff;

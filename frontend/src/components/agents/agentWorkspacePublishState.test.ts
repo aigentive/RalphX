@@ -7,6 +7,7 @@ import type {
 import {
   canInspectAgentWorkspaceBaseFreshness,
   canInspectAgentWorkspacePublishDiffs,
+  getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
@@ -22,6 +23,7 @@ function workspace(
     conversationId: "conversation-1",
     projectId: "project-1",
     mode: "edit",
+    branchMode: "isolated",
     baseRefKind: "project_default",
     baseRef: "main",
     baseDisplayName: "Project default (main)",
@@ -75,6 +77,34 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("getAgentWorkspaceEffectiveBaseLabel", () => {
+  it("uses the actual base ref for linked workspaces when the stored display name is the source branch", () => {
+    expect(
+      getAgentWorkspaceEffectiveBaseLabel(
+        workspace({
+          branchMode: "linked",
+          baseRef: "master",
+          baseDisplayName: "feature/diverged-agent-work",
+          branchName: "feature/diverged-agent-work",
+        }),
+        undefined,
+      ),
+    ).toBe("master");
+  });
+
+  it("retains the descriptive base label for isolated workspaces", () => {
+    expect(
+      getAgentWorkspaceEffectiveBaseLabel(
+        workspace({
+          baseRef: "main",
+          baseDisplayName: "Project default (main)",
+        }),
+        undefined,
+      ),
+    ).toBe("Project default (main)");
+  });
+});
 
 describe("isAgentWorkspacePublishCurrent", () => {
   const currentFreshness = () =>
