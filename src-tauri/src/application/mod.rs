@@ -26,6 +26,8 @@ pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review_base;
+#[cfg(test)]
+mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
