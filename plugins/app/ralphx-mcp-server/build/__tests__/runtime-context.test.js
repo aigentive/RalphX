@@ -67,5 +67,27 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(env.TAURI_API_URL).toBe("http://127.0.0.1:3857");
         expect(env.RALPHX_MCP_TRACE_DIR).toBe("/tmp/ralphx-logs/mcp-proxy");
     });
+    it("preserves PersonaBuilder extractor read roots in the runtime environment", () => {
+        const env = {};
+        const runtimeContext = hydrateRalphxRuntimeEnvFromCli([
+            "node",
+            "index.js",
+            "--agent-type",
+            "ralphx-persona-extractor",
+            "--context-type",
+            "project",
+            "--context-id",
+            "project-persona-builder",
+            "--conversation-id",
+            "conversation-persona-builder",
+            "--filesystem-read-root",
+            "/app-data/persona_ingest/conversation-hash",
+        ], env);
+        const expectedReadRoots = JSON.stringify([
+            "/app-data/persona_ingest/conversation-hash",
+        ]);
+        expect(runtimeContext.filesystemReadRoots).toBe(expectedReadRoots);
+        expect(env.RALPHX_FILESYSTEM_READ_ROOTS).toBe(expectedReadRoots);
+    });
 });
 //# sourceMappingURL=runtime-context.test.js.map

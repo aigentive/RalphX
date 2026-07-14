@@ -175,5 +175,8 @@ pub fn status_to_state(status: InternalStatus) -> State {
         InternalStatus::Cancelled => State::Cancelled,
         InternalStatus::Paused => State::Paused,
         InternalStatus::Stopped => State::Stopped,
+        InternalStatus::UpdatingPlanBranch => State::UpdatingPlanBranch,
+        InternalStatus::UpdatingTaskBranch => State::UpdatingTaskBranch,
+        InternalStatus::BranchUpdateBlocked => State::BranchUpdateBlocked,
     }
 }

@@ -141,6 +141,17 @@ describe("AgentComposerSurface", () => {
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
   });
 
+  it("renders an optional compact toolbar control without changing runtime selector layout", () => {
+    renderComposer({
+      personaControl: <span data-testid="persona-control-slot">Persona</span>,
+    });
+
+    expect(screen.getByTestId("persona-control-slot")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveClass(
+      "max-w-[34rem]",
+    );
+  });
+
   it("renders the Team switch and reports toggle changes", () => {
     const onEnabledChange = vi.fn();
     renderComposer({

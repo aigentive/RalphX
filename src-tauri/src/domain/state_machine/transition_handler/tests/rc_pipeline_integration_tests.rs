@@ -57,13 +57,18 @@ fn make_services_with_repos_and_state(
     execution_state: Arc<ExecutionState>,
 ) -> (TaskServices, Arc<MockTaskScheduler>) {
     let scheduler = Arc::new(MockTaskScheduler::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
-        Arc::new(MockChatService::new()) as Arc<dyn ChatService>,
+    let chat_service = Arc::new(MockChatService::new());
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+        chat_service as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)

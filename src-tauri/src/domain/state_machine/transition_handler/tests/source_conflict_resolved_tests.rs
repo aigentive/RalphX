@@ -142,12 +142,16 @@ async fn rebase_squash_with_source_conflict_resolved_uses_squash_and_merges_clea
     project_repo.create(project).await.unwrap();
 
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
@@ -305,12 +309,16 @@ async fn exact_bug_scenario_source_update_conflict_retry_does_not_spawn_second_a
     project_repo.create(project).await.unwrap();
 
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
@@ -376,10 +384,13 @@ async fn both_rebase_and_source_flags_use_squash_only() {
     project.merge_strategy = MergeStrategy::RebaseSquash;
     project_repo.create(project).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
 
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);

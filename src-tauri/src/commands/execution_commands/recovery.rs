@@ -37,6 +37,7 @@ pub(super) fn build_reconciler_for_recovery(
     .with_notification_service(app_state.notification_service())
     .with_execution_settings_repo(Arc::clone(&app_state.execution_settings_repo))
     .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+    .with_branch_update_repo(Arc::clone(&app_state.branch_update_repo))
     .with_interactive_process_registry(Arc::clone(&app_state.interactive_process_registry))
 }
 

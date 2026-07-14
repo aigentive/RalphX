@@ -18,7 +18,8 @@ use crate::domain::entities::{
     ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
     IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
-    NotificationTargetKind, Project, ProjectId, Task, VerificationStatus,
+    NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, Task,
+    VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -156,6 +157,8 @@ async fn handle_stream_error<R: Runtime + 'static>(
         stored_session_id,
         effective_harness,
         is_retry_attempt,
+        false,
+        false,
         user_message_content,
         conversation,
         resolved_project_id,
@@ -3045,6 +3048,8 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         &None,
         &None::<tauri::AppHandle<MockRuntime>>,
         Some("run-chain-1".to_string()),
+        false,
+        false,
         Some("retry this review".to_string()).as_deref(),
         retry_conv,
         Some("ralphx:ralphx-execution-reviewer"),
@@ -3083,7 +3088,7 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 }
 
 #[tokio::test]
-async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_runtime_repos() {
+async fn handle_stream_error_persona_recovery_attributes_retry_run() {
     let _env = EnvVarGuard::set("ENABLE_SESSION_RECOVERY", "true");
     let state = AppState::new_test();
     let mut provider_settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
@@ -3107,6 +3112,26 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         .expect("seed project");
 
     let mut conversation = ChatConversation::new_project(project_id.clone());
+    let persona = Persona {
+        id: PersonaId::from("handler-recovery-persona"),
+        slug: "handler-recovery-persona".to_string(),
+        name: "Handler Recovery Persona".to_string(),
+        description: "handler recovery attribution fixture".to_string(),
+        content: "SECRET_HANDLER_RECOVERY_PERSONA_BODY".to_string(),
+        status: PersonaStatus::Active,
+        version: 5,
+        content_hash: "handler-recovery-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed recovery persona");
+    conversation.persona_id = Some(persona.id.to_string());
     conversation.set_provider_session_ref(ProviderSessionRef {
         harness: AgentHarnessKind::Claude,
         provider_session_id: "old-session".to_string(),
@@ -3155,6 +3180,8 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         Some("old-session"),
         AgentHarnessKind::Claude,
         false,
+        true,
+        false,
         Some("retry after stale session"),
         Some(&conversation),
         Some(project_id.as_str().to_string()),
@@ -3198,6 +3225,25 @@ async fn handle_stream_error_stale_session_recovery_success_spawns_retry_with_ru
         recovery_spawned,
         "successful stale-session recovery must spawn a retry instead of falling through"
     );
+    let attributed = state
+        .agent_run_repo
+        .get_by_id(&agent_run.id)
+        .await
+        .expect("read handler recovery run")
+        .expect("handler recovery run exists");
+    assert_eq!(
+        attributed.persona_id.as_deref(),
+        Some("handler-recovery-persona")
+    );
+    // Unit fixture has no canonical agents tree, so the retry spawn cannot inject;
+    // what this pins is that the retry path records attribution at all (it did not
+    // before). injected=true is pinned against the real send path in
+    // tests/suite_chat_service/persona_feature_flag.rs.
+    assert_eq!(attributed.persona_injected, Some(false));
+    assert!(attributed.persona_skipped_reason.is_some());
+    assert!(!serde_json::to_string(&attributed)
+        .expect("serialize handler recovery attribution")
+        .contains("SECRET_HANDLER_RECOVERY_PERSONA_BODY"));
 }
 
 #[tokio::test]
@@ -3355,6 +3401,184 @@ async fn test_handle_stream_error_cancelled_false_completion_takes_agent_stopped
     assert_eq!(
         count_after, 0,
         "User-stop path must NOT touch the execution slot"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_incomplete_codex_turn_clears_provider_session_before_next_send() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "incomplete-codex-thread".to_string(),
+    });
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed Codex conversation");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        "run-id-incomplete-codex-turn",
+        "message-id-incomplete-codex-turn",
+        &event_ctx,
+        Some("incomplete-codex-thread"),
+        AgentHarnessKind::Codex,
+        false,
+        None,
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("load Codex conversation")
+        .expect("Codex conversation remains present");
+    assert!(
+        stored.provider_session_ref().is_none(),
+        "a cancelled Codex turn without terminal proof must not be resumed"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_incomplete_claude_turn_preserves_provider_session_for_continuation() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let project_id = ProjectId::new();
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id.clone();
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "continuable-claude-session".to_string(),
+    });
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("insert Claude conversation");
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        project_id.as_str(),
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        project_id.as_str(),
+        conversation_id.clone(),
+        "run-id-incomplete-claude-turn",
+        "message-id-incomplete-claude-turn",
+        &event_ctx,
+        Some("continuable-claude-session"),
+        AgentHarnessKind::Claude,
+        false,
+        None,
+        Some(&conversation),
+        Some(project_id.as_str().to_string()),
+        std::path::Path::new("/tmp/claude"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let stored = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .expect("load Claude conversation")
+        .expect("Claude conversation remains present");
+    assert_eq!(
+        stored
+            .provider_session_ref()
+            .map(|session_ref| session_ref.provider_session_id),
+        Some("continuable-claude-session".to_string()),
+        "Claude cancellation keeps its provider continuation semantics"
     );
 }
 
@@ -4744,15 +4968,16 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
 }
 
 #[tokio::test]
-async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_failed_steps() {
+async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cache_for_failed_steps(
+) {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
     let (_worktree, base_sha, head_sha) = git_worktree_with_base_and_change();
 
     let project = Project::new(
-        "AgentExit Validation Override".into(),
-        "/tmp/agent-exit-validation-override".into(),
+        "Local Tool Validation Override".into(),
+        "/tmp/local-tool-validation-override".into(),
     );
     state.project_repo.create(project.clone()).await.unwrap();
 
@@ -4787,9 +5012,8 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         &ChatContextType::TaskExecution,
         task_id.as_str(),
     );
-    let stream_error = StreamError::AgentExit {
-        exit_code: None,
-        stderr: "agent exited after execution_complete".to_string(),
+    let stream_error = StreamError::LocalToolFailed {
+        message: "late local diagnostic after execution_complete".to_string(),
     };
     let app = mock_builder()
         .manage(state.clone())
@@ -4798,13 +5022,13 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
     let app_handle = Some(app.handle().clone());
 
     let recovery_spawned = handle_stream_error::<MockRuntime>(
-        "agent exited after execution_complete",
+        "late local diagnostic after execution_complete",
         Some(&stream_error),
         ChatContextType::TaskExecution,
         task_id.as_str(),
         conversation_id,
         agent_run_id.as_str(),
-        "message-id-agent-exit-validation-cache",
+        "message-id-local-tool-validation-cache",
         &event_ctx,
         None,
         crate::domain::agents::AgentHarnessKind::Codex,
@@ -4847,7 +5071,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
 
     assert!(
         !recovery_spawned,
-        "normal agent-exit path should not spawn stale-session recovery"
+        "normal local-tool diagnostic path should not spawn stale-session recovery"
     );
 
     let updated = state
@@ -4861,7 +5085,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
             updated.internal_status,
             InternalStatus::PendingReview | InternalStatus::Reviewing
         ),
-        "AgentExit should route to review flow when validation cache proves completion, got {:?}",
+        "LocalToolFailed should route to review flow when validation cache proves completion, got {:?}",
         updated.internal_status
     );
 
@@ -5069,6 +5293,8 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         None,
         AgentHarnessKind::Codex,
         false,
+        false,
+        false,
         None,
         None,
         None,
@@ -5261,4 +5487,84 @@ async fn test_normal_completion_unaffected_by_verification_guards() {
         !is_unknown,
         "Gate B must return false for unknown sessions (safe fallthrough to normal agent:error)"
     );
+}
+
+#[tokio::test]
+async fn recovery_retry_persona_short_circuits_without_feature_or_app_handle() {
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
+
+    assert_eq!(
+        resolve_recovery_retry_persona::<MockRuntime>(
+            &None,
+            false,
+            &conversation,
+            ChatContextType::Project,
+            false,
+        )
+        .await
+        .expect("feature-off retries must not resolve personas"),
+        None
+    );
+    assert_eq!(
+        resolve_recovery_retry_persona::<MockRuntime>(
+            &None,
+            true,
+            &conversation,
+            ChatContextType::Project,
+            false,
+        )
+        .await
+        .expect("retries without a Tauri app must keep the prior no-persona behavior"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn recovery_retry_persona_uses_project_binding_without_a_workspace_row() {
+    let now = Utc::now();
+    let persona = Persona {
+        id: PersonaId::from("retry-bound-persona"),
+        slug: "retry-bound-persona".to_string(),
+        name: "Retry Bound Persona".to_string(),
+        description: "Retry persona fixture".to_string(),
+        content: "Keep the recovered conversation focused.".to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: "retry-bound-persona-hash".to_string(),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    let mut conversation =
+        ChatConversation::new_project(ProjectId::from_string("retry-persona-project".to_string()));
+    conversation.persona_id = Some(persona.id.to_string());
+    let state = AppState::new_test();
+    state
+        .persona_repo
+        .create(persona)
+        .await
+        .expect("seed active retry persona");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let resolved = resolve_recovery_retry_persona(
+        &app_handle,
+        true,
+        &conversation,
+        ChatContextType::Project,
+        false,
+    )
+    .await
+    .expect("workspace fallback should resolve the bound project persona")
+    .expect("active binding should produce a persona block");
+
+    assert!(resolved.block.contains("<ralphx_agent_persona>"));
+    assert!(resolved
+        .block
+        .contains("Keep the recovered conversation focused."));
 }

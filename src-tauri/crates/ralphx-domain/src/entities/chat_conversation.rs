@@ -89,6 +89,9 @@ pub enum ChatContextType {
     Review,
     /// Merge conflict resolution context (merger agent)
     Merge,
+    /// Branch synchronization and conflict-resolution context (branch updater)
+    #[serde(rename = "branch_update")]
+    BranchUpdate,
 }
 
 impl fmt::Display for ChatContextType {
@@ -101,6 +104,7 @@ impl fmt::Display for ChatContextType {
             ChatContextType::TaskExecution => write!(f, "task_execution"),
             ChatContextType::Review => write!(f, "review"),
             ChatContextType::Merge => write!(f, "merge"),
+            ChatContextType::BranchUpdate => write!(f, "branch_update"),
         }
     }
 }
@@ -117,6 +121,7 @@ impl std::str::FromStr for ChatContextType {
             "task_execution" => Ok(ChatContextType::TaskExecution),
             "review" => Ok(ChatContextType::Review),
             "merge" => Ok(ChatContextType::Merge),
+            "branch_update" => Ok(ChatContextType::BranchUpdate),
             _ => Err(format!("Invalid context type: {}", s)),
         }
     }
@@ -228,6 +233,8 @@ pub struct ChatConversation {
     pub provider_profile: Option<String>,
     /// Current project-agent mode for Agents conversations.
     pub agent_mode: Option<AgentConversationWorkspaceMode>,
+    /// Optional active persona bound to this conversation.
+    pub persona_id: Option<String>,
     /// Conversation-level team coordination state.
     pub coordination_mode: CoordinationMode,
     /// Automation that owns this setup or run conversation.
@@ -272,6 +279,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -304,6 +312,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -336,6 +345,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -368,6 +378,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -401,6 +412,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -433,6 +445,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -465,6 +478,7 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
             coordination_mode: CoordinationMode::Solo,
             automation_id: None,
             automation_run_id: None,
@@ -482,6 +496,13 @@ impl ChatConversation {
             attribution_backfill_completed_at: None,
             attribution_backfill_error_summary: None,
         }
+    }
+
+    /// Create a new conversation for dedicated branch-update conflict resolution.
+    pub fn new_branch_update(task_id: TaskId) -> Self {
+        let mut conversation = Self::new_review(task_id);
+        conversation.context_type = ChatContextType::BranchUpdate;
+        conversation
     }
 
     pub fn update_attribution_backfill_state(

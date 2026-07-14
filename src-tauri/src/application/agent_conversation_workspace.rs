@@ -23,13 +23,16 @@ use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_PR_REVIEWER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
 };
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
     "A new workspace branch has been created automatically.";
 pub(crate) const REVIEW_PR_SOURCE_PULL_REQUEST_REQUIRED_ERROR: &str =
     "Review PR mode requires a selected pull request";
+pub(crate) const PERSONA_BUILDER_GENERIC_ENTRY_POINT_ERROR: &str =
+    "PersonaBuilder mode can only be created through the persona builder command";
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentConversationWorkspaceBaseSelection {
@@ -999,6 +1002,16 @@ pub fn agent_name_for_workspace_mode(mode: AgentConversationWorkspaceMode) -> &'
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
         AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
+        AgentConversationWorkspaceMode::PersonaBuilder => AGENT_PERSONA_EXTRACTOR,
+    }
+}
+
+/// Reject the reserved builder mode at generic workspace entry points.
+pub(crate) fn reject_persona_builder_workspace_mode(mode: &str) -> Result<(), String> {
+    if mode.trim() == AgentConversationWorkspaceMode::PersonaBuilder.to_string() {
+        Err(PERSONA_BUILDER_GENERIC_ENTRY_POINT_ERROR.to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -1237,6 +1250,46 @@ pub async fn ensure_linked_plan_branch_agent_worktree(
     Ok(workspace_path)
 }
 
+/// Move the known conversation worktree into the linked-plan location for restart.
+///
+/// The conversation worktree is the expected owner of the implementation branch
+/// immediately after plan application. Other callers must continue to reject a
+/// matching branch checked out at an unknown path.
+pub(crate) async fn relocate_linked_plan_branch_agent_worktree_for_restart(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    plan_branch: &PlanBranch,
+) -> AppResult<PathBuf> {
+    validate_workspace_linked_plan_branch(project, workspace, plan_branch)?;
+    let linked_worktree_path =
+        resolve_linked_plan_branch_agent_worktree_path(project, plan_branch)?;
+    if linked_worktree_path.exists() {
+        return ensure_linked_plan_branch_agent_worktree(project, plan_branch).await;
+    }
+
+    let conversation_worktree_path =
+        resolve_agent_conversation_workspace_path_from_record(project, workspace)?;
+    let checked_out = GitService::get_current_branch(&conversation_worktree_path).await?;
+    if checked_out != plan_branch.branch_name {
+        return Err(AppError::Validation(format!(
+            "Owned agent conversation worktree {} is checked out at '{}' instead of '{}'",
+            conversation_worktree_path.display(),
+            checked_out,
+            plan_branch.branch_name
+        )));
+    }
+
+    let project_path = Path::new(&project.working_directory);
+    let project_root = validate_absolute_non_root_path(project_path, "project checkout")?;
+    GitService::move_worktree(
+        &project_root,
+        &conversation_worktree_path,
+        &linked_worktree_path,
+    )
+    .await?;
+    Ok(linked_worktree_path)
+}
+
 pub fn resolve_linked_plan_branch_agent_worktree_path(
     project: &Project,
     plan_branch: &PlanBranch,
@@ -1467,6 +1520,14 @@ mod tests {
     };
     use crate::infrastructure::memory::MemoryPlanBranchRepository;
     use std::process::Command;
+
+    #[test]
+    fn agent_name_maps_resolve_persona_builder_to_extractor() {
+        assert_eq!(
+            agent_name_for_workspace_mode(AgentConversationWorkspaceMode::PersonaBuilder),
+            AGENT_PERSONA_EXTRACTOR
+        );
+    }
 
     fn git(repo: &Path, args: &[&str]) -> String {
         let output = Command::new("git")

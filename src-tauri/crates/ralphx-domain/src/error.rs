@@ -21,6 +21,14 @@ pub enum AppError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    // Bare passthrough: constructors embed the [Personas disabled: prefix so
+    // IPC/HTTP strings start with the A15 family constant (matches PersonaUnavailable).
+    #[error("{0}")]
+    FeatureDisabled(String),
+
+    #[error("{0}")]
+    PersonaUnavailable(String),
+
     #[error("Agent error: {0}")]
     Agent(String),
 
@@ -50,6 +58,9 @@ pub enum AppError {
 
     #[error("Review worktree missing: worktree directory does not exist")]
     ReviewWorktreeMissing,
+
+    #[error("Review worktree contains unresolved conflict markers")]
+    ReviewWorktreeConflictMarkers,
 
     #[error("Duplicate pull request: branch already has an open PR")]
     DuplicatePr,

@@ -3561,7 +3561,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "ralphx"
-version = "0.65.0"
+version = "0.67.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3633,6 +3633,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "thiserror 1.0.69",
  "tokio",

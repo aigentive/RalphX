@@ -284,6 +284,8 @@ impl ChatService for MockChatService {
             SendMessageOptions {
                 metadata: queued_msg.metadata_override.clone(),
                 harness_override: queued_msg.harness_override,
+                agent_name_override: queued_msg.agent_name_override.clone(),
+                persona_directive: queued_msg.persona_directive.clone(),
                 model_override: queued_msg.model_override.clone(),
                 logical_effort_override: queued_msg.logical_effort_override,
                 service_tier_override: queued_msg.service_tier_override.clone(),
@@ -334,6 +336,9 @@ impl ChatService for MockChatService {
             }
             ChatContextType::Merge => {
                 ChatConversation::new_merge(TaskId::from_string(context_id.to_string()))
+            }
+            ChatContextType::BranchUpdate => {
+                ChatConversation::new_branch_update(TaskId::from_string(context_id.to_string()))
             }
         };
 

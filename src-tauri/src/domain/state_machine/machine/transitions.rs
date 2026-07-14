@@ -71,7 +71,8 @@ impl TaskStateMachine {
                     .add_blocker(Blocker::human_input(reason.clone()));
                 Response::Transition(State::Blocked)
             }
-            TaskEvent::BranchFreshnessConflict => Response::Transition(State::Merging),
+            TaskEvent::PlanBranchUpdateRequired => Response::Transition(State::UpdatingPlanBranch),
+            TaskEvent::TaskBranchUpdateRequired => Response::Transition(State::UpdatingTaskBranch),
             TaskEvent::Pause => Response::Transition(State::Paused),
             TaskEvent::Stop => Response::Transition(State::Stopped),
             TaskEvent::Cancel => Response::Transition(State::Cancelled),
@@ -94,7 +95,8 @@ impl TaskStateMachine {
                 Response::Transition(State::Failed(FailedData::new(error.clone())))
             }
             TaskEvent::BlockerDetected { blocker_id: _ } => Response::Transition(State::Blocked),
-            TaskEvent::BranchFreshnessConflict => Response::Transition(State::Merging),
+            TaskEvent::PlanBranchUpdateRequired => Response::Transition(State::UpdatingPlanBranch),
+            TaskEvent::TaskBranchUpdateRequired => Response::Transition(State::UpdatingTaskBranch),
             TaskEvent::Pause => Response::Transition(State::Paused),
             TaskEvent::Stop => Response::Transition(State::Stopped),
             TaskEvent::Cancel => Response::Transition(State::Cancelled),
@@ -187,7 +189,8 @@ impl TaskStateMachine {
                 }
                 Response::Transition(State::RevisionNeeded)
             }
-            TaskEvent::BranchFreshnessConflict => Response::Transition(State::Merging),
+            TaskEvent::PlanBranchUpdateRequired => Response::Transition(State::UpdatingPlanBranch),
+            TaskEvent::TaskBranchUpdateRequired => Response::Transition(State::UpdatingTaskBranch),
             TaskEvent::Pause => Response::Transition(State::Paused),
             TaskEvent::Stop => Response::Transition(State::Stopped),
             TaskEvent::Cancel => Response::Transition(State::Cancelled),
@@ -249,6 +252,8 @@ impl TaskStateMachine {
     /// PendingMerge state - awaiting programmatic merge attempt
     pub fn pending_merge(&mut self, event: &TaskEvent) -> Response {
         match event {
+            TaskEvent::PlanBranchUpdateRequired => Response::Transition(State::UpdatingPlanBranch),
+            TaskEvent::TaskBranchUpdateRequired => Response::Transition(State::UpdatingTaskBranch),
             TaskEvent::MergeComplete => Response::Transition(State::Merged),
             TaskEvent::MergeConflict => Response::Transition(State::Merging),
             TaskEvent::Pause => Response::Transition(State::Paused),
@@ -261,6 +266,7 @@ impl TaskStateMachine {
     /// WaitingOnPr state - external pull request is open and RalphX is polling GitHub
     pub fn waiting_on_pr(&mut self, event: &TaskEvent) -> Response {
         match event {
+            TaskEvent::PlanBranchUpdateRequired => Response::Transition(State::UpdatingPlanBranch),
             TaskEvent::MergeComplete => Response::Transition(State::Merged),
             TaskEvent::MergeAgentError => Response::Transition(State::MergeIncomplete),
             TaskEvent::Retry => Response::Transition(State::PendingMerge),
@@ -274,10 +280,29 @@ impl TaskStateMachine {
     /// Merging state - merge agent is attempting to resolve conflicts
     pub fn merging(&mut self, event: &TaskEvent) -> Response {
         match event {
+            TaskEvent::PlanBranchUpdateRequired => Response::Transition(State::UpdatingPlanBranch),
             TaskEvent::MergeComplete => Response::Transition(State::Merged),
             TaskEvent::MergeAgentFailed => Response::Transition(State::MergeConflict),
             TaskEvent::MergeAgentError => Response::Transition(State::MergeIncomplete),
             TaskEvent::Retry => Response::Transition(State::PendingMerge),
+            TaskEvent::Pause => Response::Transition(State::Paused),
+            TaskEvent::Stop => Response::Transition(State::Stopped),
+            TaskEvent::Cancel => Response::Transition(State::Cancelled),
+            _ => Response::NotHandled,
+        }
+    }
+
+    pub fn branch_updating(&mut self, event: &TaskEvent) -> Response {
+        match event {
+            TaskEvent::Pause => Response::Transition(State::Paused),
+            TaskEvent::Stop => Response::Transition(State::Stopped),
+            TaskEvent::Cancel => Response::Transition(State::Cancelled),
+            _ => Response::NotHandled,
+        }
+    }
+
+    pub fn branch_update_blocked(&mut self, event: &TaskEvent) -> Response {
+        match event {
             TaskEvent::Pause => Response::Transition(State::Paused),
             TaskEvent::Stop => Response::Transition(State::Stopped),
             TaskEvent::Cancel => Response::Transition(State::Cancelled),

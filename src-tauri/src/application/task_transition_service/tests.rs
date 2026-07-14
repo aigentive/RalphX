@@ -3357,15 +3357,11 @@ async fn test_freshness_conflict_at_cap_during_review_routes_to_failed() {
     assert_eq!(history[0].trigger, "system");
 }
 
-/// Regression: a review-origin freshness conflict with real merge-conflict evidence must
-/// hand off to the merge pipeline instead of looping back through PendingReview.
-///
-/// Before the fix, transition_task(PendingReview) on a task with conflict markers in the
-/// review worktree would churn Reviewing <-> PendingReview repeatedly until the retry cap
-/// or scheduler interference. The task must now route into Merging so the merger agent can
-/// resolve the conflict.
+/// Regression: marker-only conflict evidence has no trustworthy source/target direction.
+/// It must escalate for operator repair rather than entering the merge pipeline or guessing
+/// a dedicated branch-update operation.
 #[tokio::test]
-async fn test_review_origin_freshness_conflict_routes_to_merging_without_loop() {
+async fn test_review_origin_marker_only_conflict_escalates_without_guessing_direction() {
     let app_state = AppState::new_test();
     let service = build_test_service(&app_state);
 
@@ -3434,8 +3430,8 @@ async fn test_review_origin_freshness_conflict_routes_to_merging_without_loop() 
         .expect("task must exist");
     assert_eq!(
         stored.internal_status,
-        InternalStatus::Merging,
-        "Task must route to Merging after review-origin freshness conflict with merge markers"
+        InternalStatus::Escalated,
+        "Marker-only conflict evidence must escalate instead of guessing a branch-update direction"
     );
 
     let history = app_state
@@ -3446,14 +3442,14 @@ async fn test_review_origin_freshness_conflict_routes_to_merging_without_loop() 
     assert_eq!(
         history.len(),
         3,
-        "Expected exactly QaPassed->PendingReview, PendingReview->Reviewing, Reviewing->Merging"
+        "Expected exactly QaPassed->PendingReview, PendingReview->Reviewing, Reviewing->Escalated"
     );
     assert_eq!(history[0].from, InternalStatus::QaPassed);
     assert_eq!(history[0].to, InternalStatus::PendingReview);
     assert_eq!(history[1].from, InternalStatus::PendingReview);
     assert_eq!(history[1].to, InternalStatus::Reviewing);
     assert_eq!(history[2].from, InternalStatus::Reviewing);
-    assert_eq!(history[2].to, InternalStatus::Merging);
+    assert_eq!(history[2].to, InternalStatus::Escalated);
     assert!(
         history
             .iter()

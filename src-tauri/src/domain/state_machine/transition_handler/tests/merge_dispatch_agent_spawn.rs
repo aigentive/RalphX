@@ -30,12 +30,16 @@ fn make_services_with_tracked_chat(
     project_repo: Arc<MemoryProjectRepository>,
 ) -> (Arc<MockChatService>, TaskServices) {
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
@@ -237,7 +241,7 @@ async fn merging_spawns_agent_for_normal_conflict() {
 // End-to-end regression test: source_update_conflict from PendingMerge
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Regression test: full PendingMerge→Merging path for source_update_conflict spawns agent.
+/// Regression test: full PendingMerge→UpdatingTaskBranch path spawns the dedicated updater.
 ///
 /// Before commit 849163c9, SourceUpdateResult::Conflicts in attempt_programmatic_merge
 /// called persist_merge_transition(Merging) but did NOT call on_enter_dispatch(Merging).
@@ -250,7 +254,7 @@ async fn merging_spawns_agent_for_normal_conflict() {
 ///   → source_update_conflict arm: create worktree + persist_merge_transition(Merging)
 ///   → on_enter_dispatch(Merging) → chat_service.send_message  ← THIS IS THE FIX
 #[tokio::test]
-async fn source_update_conflict_from_pending_merge_transitions_to_merging_and_spawns_agent() {
+async fn source_update_conflict_from_pending_merge_spawns_branch_updater() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
 
@@ -306,15 +310,14 @@ async fn source_update_conflict_from_pending_merge_transitions_to_merging_and_sp
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merging,
-        "source_update_conflict path must transition task to Merging. Got: {:?}. Metadata: {:?}",
+        InternalStatus::UpdatingTaskBranch,
+        "source_update_conflict path must transition task to UpdatingTaskBranch. Got: {:?}. Metadata: {:?}",
         updated.internal_status,
         updated.metadata,
     );
     assert!(
         chat_service.call_count() >= 1,
-        "source_update_conflict path must spawn a merger agent (call_count={}). \
-         Before the fix, on_enter_dispatch was not called and task was stuck in Merging forever.",
+        "source_update_conflict path must spawn a branch updater (call_count={}).",
         chat_service.call_count(),
     );
 }

@@ -33,6 +33,8 @@ use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 
 mod merge_attempt;
+#[cfg(test)]
+mod merge_attempt_tests;
 mod transitions;
 mod validation;
 

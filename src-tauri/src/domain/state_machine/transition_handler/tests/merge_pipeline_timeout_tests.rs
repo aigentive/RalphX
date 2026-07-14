@@ -30,6 +30,14 @@ fn make_services_with_repos(
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
         Arc::new(MockChatService::new()) as Arc<dyn ChatService>,
     )
+    .with_branch_update_repo(
+        crate::testing::memory_branch_update_repository_with_task_repository(
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+        ),
+    )
+    .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::new(
+        MockChatService::new(),
+    )))
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);

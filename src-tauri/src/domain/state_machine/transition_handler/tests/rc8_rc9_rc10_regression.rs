@@ -410,11 +410,14 @@ async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
     project_repo.create(project).await.unwrap();
 
     // Build machine with repos wired
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(
-            Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
-        );
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+    );
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
@@ -440,9 +443,9 @@ async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
         "Task should have metadata after merge failure"
     );
 
-    // The merge_recovery events from prior retries should be preserved.
-    // The branch_not_found path also adds a new event (BranchNotFound), so we
-    // expect 2 prior AutoRetryTriggered events + 1 new one from this attempt.
+    // The merge_recovery events from prior retries should be preserved. The
+    // canonical-target precondition fails before strategy dispatch, so it must
+    // not fabricate a BranchNotFound merge-outcome event.
     let recovery_restored =
         MergeRecoveryMetadata::from_task_metadata(updated_task.metadata.as_deref())
             .expect("should parse")
@@ -462,11 +465,17 @@ async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
         retry_count
     );
 
-    // Verify the merge_recovery section exists with multiple events
-    assert!(
-        recovery_restored.events.len() >= 3,
-        "Should have at least 3 events (2 prior retries + 1 new). Got: {}",
-        recovery_restored.events.len()
+    assert_eq!(
+        recovery_restored.events.len(),
+        2,
+        "Pre-strategy authority failure must preserve the two prior events without fabricating a merge outcome"
+    );
+
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata.get("error_code").and_then(|value| value.as_str()),
+        Some("git_target_identity_failed")
     );
 }
 
@@ -502,11 +511,14 @@ async fn transition_to_merge_incomplete_preserves_validation_revert_count() {
     project_repo.create(project).await.unwrap();
 
     // Build machine
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(
-            Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
-        );
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+    );
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
@@ -572,11 +584,14 @@ async fn transition_to_merge_incomplete_preserves_merge_failure_source() {
     project.base_branch = Some("main".to_string());
     project_repo.create(project).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(
-            Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
-        );
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+    );
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);

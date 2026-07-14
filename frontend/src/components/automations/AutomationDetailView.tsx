@@ -157,6 +157,34 @@ function isSignalTerminalUnjudged(run: AutomationRun | null): run is AutomationR
   );
 }
 
+interface RunTimelineHighlight {
+  backgroundColor: string;
+  borderColor: string;
+  markerColor: string;
+}
+
+function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
+  if (describeRunFailure(run) || run.status === "cancelled") {
+    return {
+      backgroundColor: "var(--bg-hover)",
+      borderColor: "var(--border-default)",
+      markerColor: "var(--text-muted)",
+    };
+  }
+  if (isOpenAutomationRun(run)) {
+    return {
+      backgroundColor: "var(--accent-muted)",
+      borderColor: "var(--accent-border)",
+      markerColor: "var(--accent-primary)",
+    };
+  }
+  return {
+    backgroundColor: "var(--status-success-muted)",
+    borderColor: "var(--status-success-border)",
+    markerColor: "var(--status-success)",
+  };
+}
+
 function isAutomationTerminal(status: Automation["status"]): boolean {
   return status === "completed" || status === "stopped";
 }
@@ -568,6 +596,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
       (onOpenAutomationRun || onOpenRunConversation),
   );
   const failureReason = describeRunFailure(run);
+  const highlight = runTimelineHighlight(run);
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       if (onOpenAutomationRun) {
@@ -609,20 +638,22 @@ const RunTimelineItem = memo(function RunTimelineItem({
       <div
         className="absolute left-0 top-1 h-3 w-3 rounded-full"
         style={{
-          backgroundColor: "var(--accent-primary)",
+          backgroundColor: highlight.markerColor,
           borderColor: "var(--app-content-bg)",
           borderStyle: "solid",
           borderWidth: "2px",
         }}
+        data-testid={`automation-run-${run.id}-marker`}
       />
       <div
         className="rounded-md p-4"
         style={{
-          backgroundColor: "var(--bg-surface)",
-          borderColor: "var(--border-default)",
+          backgroundColor: highlight.backgroundColor,
+          borderColor: highlight.borderColor,
           borderStyle: "solid",
           borderWidth: "1px",
         }}
+        data-testid={`automation-run-${run.id}-card`}
       >
         <button
           type="button"

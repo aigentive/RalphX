@@ -16,6 +16,7 @@ mod conversations_handlers;
 mod delegation_handlers;
 mod internal_handlers;
 mod projects_handlers;
+mod personas_handlers;
 mod reliability_tests;
 mod session_linking_handlers;
 mod teams_handlers;

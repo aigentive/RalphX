@@ -277,7 +277,11 @@ async fn attempt_session_recovery_blocks_review_without_provider_settings_before
         Arc::clone(&state.artifact_repo),
         None,
         None,
+        Arc::clone(&state.agent_run_repo),
+        "recovery-run-id",
         None,
+        false,
+        false,
         "old-session",
         None,
     )
@@ -325,7 +329,11 @@ async fn attempt_session_recovery_allows_project_without_provider_settings_until
         Arc::clone(&state.artifact_repo),
         None,
         None,
+        Arc::clone(&state.agent_run_repo),
+        "recovery-run-id",
         None,
+        false,
+        false,
         "old-session",
         None,
     )

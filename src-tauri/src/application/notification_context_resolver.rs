@@ -198,7 +198,8 @@ impl NotificationContextResolver {
             ChatContextType::Task
             | ChatContextType::TaskExecution
             | ChatContextType::Review
-            | ChatContextType::Merge => Ok(self
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => Ok(self
                 .task_repo
                 .get_by_id(&TaskId::from_string(conversation.context_id.clone()))
                 .await?
@@ -223,7 +224,8 @@ impl NotificationContextResolver {
             ChatContextType::Task
             | ChatContextType::TaskExecution
             | ChatContextType::Review
-            | ChatContextType::Merge => Ok(self
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => Ok(self
                 .task_repo
                 .get_by_id(&TaskId::from_string(conversation.context_id.clone()))
                 .await?

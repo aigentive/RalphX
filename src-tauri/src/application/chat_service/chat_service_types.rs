@@ -911,6 +911,7 @@ pub enum ChatServiceError {
     ConversationNotFound(String),
     RepositoryError(String),
     AgentRunFailed(String),
+    PersonaUnavailable(String),
 }
 
 impl std::fmt::Display for ChatServiceError {
@@ -924,6 +925,7 @@ impl std::fmt::Display for ChatServiceError {
             Self::ConversationNotFound(msg) => write!(f, "Conversation not found: {}", msg),
             Self::RepositoryError(msg) => write!(f, "Repository error: {}", msg),
             Self::AgentRunFailed(msg) => write!(f, "Agent run failed: {}", msg),
+            Self::PersonaUnavailable(message) => write!(f, "{message}"),
         }
     }
 }

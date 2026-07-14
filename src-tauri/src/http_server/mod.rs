@@ -169,6 +169,9 @@ pub async fn start_http_server(
         )
         // Session tools (ralphx-utility-session-namer agent)
         .route("/api/update_session_title", post(update_session_title))
+        // Persona tools (flag-gated in the handler because MCP grants are flag-agnostic).
+        .route("/api/save_persona_draft", post(save_persona_draft))
+        .route("/api/get_persona_draft/:id", get(get_persona_draft))
         // Session linking tools (ralphx-ideation agent)
         .route("/api/create_child_session", post(create_child_session))
         .route(
@@ -382,6 +385,22 @@ pub async fn start_http_server(
         .route("/api/question/resolve", post(resolve_question))
         // Git merge endpoints (merger agent)
         .route("/api/git/tasks/:id/complete-merge", post(complete_merge))
+        .route(
+            "/api/branch-updates/tasks/:id/context",
+            get(get_branch_update_context),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/complete",
+            post(complete_branch_update),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/report-conflict",
+            post(report_branch_update_conflict),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/report-incomplete",
+            post(report_branch_update_incomplete),
+        )
         .route(
             "/api/agent-workspaces/:conversation_id/complete-repair",
             post(complete_agent_workspace_repair),

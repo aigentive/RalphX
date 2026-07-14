@@ -26,6 +26,9 @@ export const InternalStatusSchema = z.enum([
   "pending_merge",
   "merging",
   "waiting_on_pr",
+  "updating_plan_branch",
+  "updating_task_branch",
+  "branch_update_blocked",
   "merge_incomplete",
   "merge_conflict",
   "merged",
@@ -68,6 +71,9 @@ export const ACTIVE_STATUSES: readonly InternalStatus[] = [
   "merging",
   "waiting_on_pr",
   "merge_incomplete",
+  "updating_plan_branch",
+  "updating_task_branch",
+  "branch_update_blocked",
 ] as const;
 
 /**
@@ -92,6 +98,9 @@ export const MERGE_STATUSES: readonly InternalStatus[] = [
   "waiting_on_pr",
   "merge_incomplete",
   "merge_conflict",
+  "updating_plan_branch",
+  "updating_task_branch",
+  "branch_update_blocked",
   "merged",
 ] as const;
 
@@ -193,6 +202,9 @@ export const NON_DRAGGABLE_STATUSES = [
   "waiting_on_pr",
   "merge_incomplete",
   "merge_conflict",
+  "updating_plan_branch",
+  "updating_task_branch",
+  "branch_update_blocked",
   "approved",
   "merged",
   "paused",

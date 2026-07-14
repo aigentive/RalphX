@@ -4,6 +4,8 @@
 // enabling specific error handling strategies. Also defines StreamError for typed
 // stream processing failures, replacing String-based error returns.
 
+use crate::application::persona_resolver::PersonaError;
+use crate::application::personas::PERSONA_UNAVAILABLE_PREFIX;
 use crate::domain::entities::{ChatContextType, ChatConversationId, InternalStatus};
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::limits_config;
@@ -22,6 +24,12 @@ pub const STALE_SESSION_ERROR: &str = "No conversation found with session ID";
 /// a missed banner is hard-failed as `AgentExit` instead of paused/auto-resumed.
 const CLAUDE_USAGE_LIMIT_STEM: &str = "you've hit your";
 const CLAUDE_EXTRA_USAGE_PREFIX: &str = "you're out of extra usage";
+
+impl From<PersonaError> for super::ChatServiceError {
+    fn from(error: PersonaError) -> Self {
+        Self::PersonaUnavailable(format!("{PERSONA_UNAVAILABLE_PREFIX} {error}]"))
+    }
+}
 
 /// True when `lower` (already lowercased) is a Claude usage/session limit banner.
 fn is_claude_usage_limit_banner(lower: &str) -> bool {

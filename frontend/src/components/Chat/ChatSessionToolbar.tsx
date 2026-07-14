@@ -36,6 +36,8 @@ export interface ChatSessionToolbarProps {
   providerProfile?: string | null;
   fallbackConversation?: ChatConversation | null | undefined;
   fallbackMessages?: ChatMessageResponse[] | null | undefined;
+  /** Optional conversation-local control rendered on the toolbar row. */
+  personaChip?: ReactNode;
   /**
    * When true, skip rendering the provider-context chips (harness badge,
    * ModelChip, EffortChip, stats popover) — used when those chips are
@@ -61,6 +63,7 @@ export function ChatSessionToolbar({
   providerProfile,
   fallbackConversation,
   fallbackMessages,
+  personaChip,
   hideProviderContext = false,
 }: ChatSessionToolbarProps) {
   const { data: featureFlags } = useFeatureFlags();
@@ -134,7 +137,7 @@ export function ChatSessionToolbar({
     agentStatus === "waiting_for_input" ||
     (hasActivity === true && featureFlags.activityPage === true);
 
-  if (!backAction && !showProviderContext && !showStatus) {
+  if (!backAction && !showProviderContext && !showStatus && !personaChip) {
     return null;
   }
 
@@ -206,6 +209,7 @@ export function ChatSessionToolbar({
               />
             </div>
           )}
+          {personaChip && <div className="shrink-0">{personaChip}</div>}
         </div>
       </div>
     </div>

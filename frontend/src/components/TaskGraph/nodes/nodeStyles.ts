@@ -242,6 +242,9 @@ export function getStatusCategory(status: InternalStatus): StatusCategory {
     case "waiting_on_pr":
     case "merge_conflict":
     case "merge_incomplete":
+    case "updating_plan_branch":
+    case "updating_task_branch":
+    case "branch_update_blocked":
       return "merge";
     case "approved":
     case "merged":

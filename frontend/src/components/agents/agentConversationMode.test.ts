@@ -4,8 +4,32 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
-  isWorkspaceModeLocked,
+  isConversationModeLocked,
 } from "./agentConversationMode";
+import type { AgentConversation } from "./agentConversations";
+import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
+
+function conversation(
+  overrides: Partial<AgentConversation> = {},
+): AgentConversation {
+  return {
+    id: "conversation-1",
+    contextType: "project",
+    contextId: "project-1",
+    claudeSessionId: null,
+    providerSessionId: null,
+    providerHarness: null,
+    title: "Agent",
+    messageCount: 0,
+    lastMessageAt: null,
+    createdAt: "2026-05-15T00:00:00.000Z",
+    updatedAt: "2026-05-15T00:00:00.000Z",
+    archivedAt: null,
+    projectId: "project-1",
+    ideationSessionId: null,
+    ...overrides,
+  };
+}
 
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},
@@ -33,10 +57,11 @@ function workspace(
   };
 }
 
-describe("isWorkspaceModeLocked", () => {
+describe("isConversationModeLocked", () => {
   it("uses the backend mode-switch projection when present", () => {
     expect(
-      isWorkspaceModeLocked(
+      isConversationModeLocked(
+        conversation(),
         workspace({
           linkedIdeationSessionId: "session-1",
           linkedPlanBranchId: "plan-branch-1",
@@ -46,7 +71,8 @@ describe("isWorkspaceModeLocked", () => {
     ).toBe(false);
 
     expect(
-      isWorkspaceModeLocked(
+      isConversationModeLocked(
+        conversation(),
         workspace({
           modeSwitchLocked: true,
           modeSwitchLockReason: "Plan execution is still active",
@@ -56,12 +82,22 @@ describe("isWorkspaceModeLocked", () => {
   });
 
   it("falls back to legacy link presence for older responses", () => {
-    expect(isWorkspaceModeLocked(workspace({ linkedIdeationSessionId: "session-1" }))).toBe(true);
-    expect(isWorkspaceModeLocked(workspace())).toBe(false);
+    expect(
+      isConversationModeLocked(
+        conversation(),
+        workspace({ linkedIdeationSessionId: "session-1" }),
+      ),
+    ).toBe(true);
+    expect(isConversationModeLocked(conversation(), workspace())).toBe(false);
   });
 
-  it("locks automation workspaces without relying on legacy links", () => {
-    expect(isWorkspaceModeLocked(workspace({ mode: "automation" }))).toBe(true);
+  it("locks automation and persona builder conversations without workspace rows", () => {
+    expect(
+      isConversationModeLocked(conversation({ agentMode: "automation" }), null),
+    ).toBe(true);
+    expect(
+      isConversationModeLocked(conversation({ agentMode: "persona_builder" }), null),
+    ).toBe(true);
   });
 });
 
@@ -69,6 +105,15 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
   it("offers automation as a first-class starter mode", () => {
     expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).toContain(
       "automation",
+    );
+  });
+
+  it("excludes persona builder from selectable mode options", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
+      "persona_builder",
+    );
+    expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
+      "persona_builder",
     );
   });
 });

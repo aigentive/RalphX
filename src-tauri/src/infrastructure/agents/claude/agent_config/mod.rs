@@ -1,7 +1,9 @@
+pub mod live_flags;
 pub mod runtime_config;
 pub mod team_config;
 mod tool_sets;
 mod ui_config;
+pub use live_flags::agent_personas_enabled;
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
@@ -1267,7 +1269,7 @@ fn normalize_override_value(raw: Option<String>) -> Option<String> {
     })
 }
 
-fn all_agent_lanes() -> [AgentLane; 8] {
+fn all_agent_lanes() -> [AgentLane; 9] {
     [
         AgentLane::IdeationPrimary,
         AgentLane::IdeationVerifier,
@@ -1277,6 +1279,7 @@ fn all_agent_lanes() -> [AgentLane; 8] {
         AgentLane::ExecutionReviewer,
         AgentLane::ExecutionReexecutor,
         AgentLane::ExecutionMerger,
+        AgentLane::ExecutionBranchUpdater,
     ]
 }
 

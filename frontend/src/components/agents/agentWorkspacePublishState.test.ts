@@ -375,15 +375,17 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(true);
   });
 
-  it("allows active plan workspaces before a PR exists", () => {
-    expect(
-      canInspectAgentWorkspaceBaseFreshness(
-        workspace({
-          mode: "plan",
-          linkedIdeationSessionId: "planning-session-1",
-        }),
-      ),
-    ).toBe(true);
+  it("keeps plan publish and diff surfaces without base freshness inspection", () => {
+    const planWorkspace = workspace({
+      mode: "plan",
+      linkedIdeationSessionId: "planning-session-1",
+      publicationPrNumber: 42,
+      publicationPrStatus: "open",
+    });
+
+    expect(canInspectAgentWorkspaceBaseFreshness(planWorkspace)).toBe(false);
+    expect(shouldShowAgentWorkspacePublishSurface(planWorkspace)).toBe(true);
+    expect(canInspectAgentWorkspacePublishDiffs(planWorkspace)).toBe(true);
   });
 
   it("preserves published PR freshness inspection", () => {

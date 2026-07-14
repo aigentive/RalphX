@@ -244,6 +244,7 @@ pub enum AgentLane {
     ExecutionReviewer,
     ExecutionReexecutor,
     ExecutionMerger,
+    ExecutionBranchUpdater,
 }
 
 impl fmt::Display for AgentLane {
@@ -257,6 +258,7 @@ impl fmt::Display for AgentLane {
             Self::ExecutionReviewer => write!(f, "execution_reviewer"),
             Self::ExecutionReexecutor => write!(f, "execution_reexecutor"),
             Self::ExecutionMerger => write!(f, "execution_merger"),
+            Self::ExecutionBranchUpdater => write!(f, "execution_branch_updater"),
         }
     }
 }
@@ -274,6 +276,7 @@ impl FromStr for AgentLane {
             "execution_reviewer" => Ok(Self::ExecutionReviewer),
             "execution_reexecutor" => Ok(Self::ExecutionReexecutor),
             "execution_merger" => Ok(Self::ExecutionMerger),
+            "execution_branch_updater" => Ok(Self::ExecutionBranchUpdater),
             other => Err(format!("Invalid agent lane '{}'", other)),
         }
     }
@@ -397,7 +400,8 @@ pub fn generic_harness_lane_defaults(
                 AgentLane::ExecutionWorker
                 | AgentLane::ExecutionReviewer
                 | AgentLane::ExecutionReexecutor
-                | AgentLane::ExecutionMerger => {
+                | AgentLane::ExecutionMerger
+                | AgentLane::ExecutionBranchUpdater => {
                     settings.model = Some(
                         super::model_registry::default_model_for_provider(harness).to_string(),
                     );
@@ -447,6 +451,10 @@ pub fn standard_agent_lane_defaults() -> HashMap<AgentLane, AgentLaneSettings> {
         ),
         (
             AgentLane::ExecutionMerger,
+            AgentLaneSettings::new(DEFAULT_AGENT_HARNESS),
+        ),
+        (
+            AgentLane::ExecutionBranchUpdater,
             AgentLaneSettings::new(DEFAULT_AGENT_HARNESS),
         ),
     ])

@@ -830,11 +830,15 @@ fn test_build_teammate_cli_args_no_allowed_tools_when_empty() {
 }
 
 #[test]
-fn test_build_teammate_cli_args_no_append_system_prompt() {
+fn teammate_spawn_bypasses_persona_when_conversation_is_bound() {
     // --append-system-prompt was removed (commit 959c4c8d); teammates join via
     // the team inbox system, not a one-shot prompt injection.
     let client = ClaudeCodeClient::new();
-    let config = test_teammate_config();
+    let config = test_teammate_config().with_context(TeammateContext {
+        context_id: "persona-bound-conversation".to_string(),
+        context_type: "project".to_string(),
+        project_id: Some("persona-bound-project".to_string()),
+    });
     let args = client
         .build_teammate_cli_args(&config)
         .expect("build_teammate_cli_args should succeed in test");
@@ -842,6 +846,12 @@ fn test_build_teammate_cli_args_no_append_system_prompt() {
     assert!(
         !args.contains(&"--append-system-prompt".to_string()),
         "--append-system-prompt must not be present (removed in 959c4c8d)"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.contains("<ralphx_agent_persona>")),
+        "teammate CLI args must not acquire a persona block from the backing conversation"
     );
 }
 

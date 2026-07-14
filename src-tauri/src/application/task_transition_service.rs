@@ -38,10 +38,10 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -734,6 +734,9 @@ fn internal_status_to_state(
         InternalStatus::Cancelled => State::Cancelled,
         InternalStatus::Paused => State::Paused,
         InternalStatus::Stopped => State::Stopped,
+        InternalStatus::UpdatingPlanBranch => State::UpdatingPlanBranch,
+        InternalStatus::UpdatingTaskBranch => State::UpdatingTaskBranch,
+        InternalStatus::BranchUpdateBlocked => State::BranchUpdateBlocked,
     }
 }
 
@@ -765,6 +768,9 @@ fn state_to_internal_status(
         State::MergeIncomplete => InternalStatus::MergeIncomplete,
         State::MergeConflict => InternalStatus::MergeConflict,
         State::Merged => InternalStatus::Merged,
+        State::UpdatingPlanBranch => InternalStatus::UpdatingPlanBranch,
+        State::UpdatingTaskBranch => InternalStatus::UpdatingTaskBranch,
+        State::BranchUpdateBlocked => InternalStatus::BranchUpdateBlocked,
         State::Failed(_) => InternalStatus::Failed,
         State::Cancelled => InternalStatus::Cancelled,
         State::Paused => InternalStatus::Paused,
@@ -843,6 +849,7 @@ const GITHUB_AUTO_MERGE_METHOD_KEY: &str = "github_auto_merge_method";
 /// the appropriate side effects are triggered (e.g., spawning worker agents).
 pub struct TaskTransitionService {
     task_repo: Arc<dyn TaskRepository>,
+    branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     chat_message_repo: Arc<dyn ChatMessageRepository>,
@@ -1277,6 +1284,7 @@ impl TaskTransitionService {
 
         let service = Self {
             task_repo,
+            branch_update_repo: None,
             task_dependency_repo: task_dep_repo,
             project_repo,
             chat_message_repo,
@@ -1348,6 +1356,12 @@ impl TaskTransitionService {
     /// can trigger scheduling when tasks exit agent-active states or enter Ready state.
     pub fn with_task_scheduler(mut self, scheduler: Arc<dyn TaskScheduler>) -> Self {
         self.task_scheduler = Some(scheduler);
+        self
+    }
+
+    pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.chat_service.set_branch_update_repo(Arc::clone(&repo));
+        self.branch_update_repo = Some(repo);
         self
     }
 
@@ -2240,8 +2254,8 @@ impl TaskTransitionService {
     /// Keep an open PR-mode plan PR branch current with its GitHub base branch.
     ///
     /// Simple behind-but-mergeable cases are updated programmatically and pushed.
-    /// Conflict cases are routed to the merger agent, but completion returns to
-    /// `WaitingOnPr`; GitHub remains the authority for the final plan merge.
+    /// Conflict cases enter the dedicated plan-branch update checkpoint and
+    /// return to `WaitingOnPr`; GitHub remains the authority for the final merge.
     #[track_caller]
     #[allow(clippy::manual_async_fn)]
     pub(crate) fn reconcile_pr_branch_freshness<'a>(
@@ -2310,7 +2324,6 @@ impl TaskTransitionService {
             }
 
             if pr_sync_state_requires_conflict_resolution(&sync_state) {
-                GitService::fetch_origin(repo_path).await?;
                 return self
                     .route_pr_branch_update_conflict(
                         task,
@@ -2326,6 +2339,23 @@ impl TaskTransitionService {
 
             if !pr_sync_state_requires_update(&sync_state) {
                 return Ok(PrBranchFreshnessOutcome::UpToDate);
+            }
+
+            // All stale PR branches enter the durable checkpoint. The checkpoint owns
+            // both the programmatic fast path and any agent conflict resolution; this
+            // caller must not mutate Git before operation/target authority exists.
+            if pr_sync_state_requires_update(&sync_state) {
+                return self
+                    .route_pr_branch_update_conflict(
+                        task,
+                        &project,
+                        &plan_branch,
+                        &sync_state,
+                        pr_number,
+                        source,
+                        Vec::new(),
+                    )
+                    .await;
             }
 
             GitService::fetch_origin(repo_path).await?;
@@ -2510,28 +2540,11 @@ impl TaskTransitionService {
         source: &str,
         conflict_files: Vec<PathBuf>,
     ) -> AppResult<PrBranchFreshnessOutcome> {
-        if task.internal_status == InternalStatus::Merging
+        if task.internal_status == InternalStatus::UpdatingPlanBranch
             && task_metadata_bool(&task, "pr_branch_update_conflict")
         {
             return Ok(PrBranchFreshnessOutcome::ConflictRouted);
         }
-
-        let repo_path = Path::new(&project.working_directory);
-        let merge_worktree =
-            crate::domain::state_machine::transition_handler::compute_merge_worktree_path(
-                project,
-                task.id.as_str(),
-            );
-        let merge_worktree_path = PathBuf::from(&merge_worktree);
-        if merge_worktree_path.exists() {
-            let _ = GitService::delete_worktree(repo_path, &merge_worktree_path).await;
-        }
-        GitService::checkout_existing_branch_worktree(
-            repo_path,
-            &merge_worktree_path,
-            &plan_branch.branch_name,
-        )
-        .await?;
 
         let remote_base = remote_tracking_ref(&sync_state.base_ref_name);
         let conflict_file_strings = conflict_files
@@ -2554,7 +2567,6 @@ impl TaskTransitionService {
                 "conflict_files": conflict_file_strings,
             }),
         );
-        task.worktree_path = Some(merge_worktree);
         task.touch();
         self.task_repo.update(&task).await?;
 
@@ -2570,19 +2582,108 @@ impl TaskTransitionService {
                 .await;
         }
 
-        let updated = self
-            .transition_task_corrective_with_exit(
-                &task.id,
-                InternalStatus::Merging,
-                Some(format!(
-                    "PR #{pr_number} branch needs conflict resolution before review can continue"
-                )),
-                "pr_branch_freshness",
+        let branch_update_repo = self.branch_update_repo.as_ref().ok_or_else(|| {
+            AppError::ExecutionBlocked(
+                "Branch update authority repository is unavailable".to_string(),
             )
-            .await?;
-        self.execute_entry_actions(&task.id, &updated, InternalStatus::Merging)
-            .await;
-        Ok(PrBranchFreshnessOutcome::ConflictRouted)
+        })?;
+        let target_identity = GitService::canonical_target_identity(
+            Path::new(&project.working_directory),
+            &plan_branch.branch_name,
+        )
+        .await?;
+        let mut operation = crate::domain::entities::BranchUpdateOperation::new(
+            task.id.clone(),
+            crate::domain::entities::BranchUpdateDirection::PlanBranch,
+            crate::domain::entities::BranchUpdateContinuation::ResumeWaitingOnPr,
+            uuid::Uuid::new_v4().to_string(),
+            remote_base,
+            plan_branch.branch_name.clone(),
+            crate::domain::entities::BranchUpdateWorkspaceOwnership::OperationWorktree,
+            crate::domain::entities::BranchUpdateCapacityOwnership::Inherited,
+            target_identity,
+            chrono::Utc::now(),
+        );
+        operation.workspace_path = Some(PathBuf::from(
+            crate::domain::state_machine::transition_handler::compute_plan_update_worktree_path(
+                project,
+                task.id.as_str(),
+            ),
+        ));
+        operation.observed_source_sha = Some(
+            GitService::resolve_ref_sha(
+                Path::new(&project.working_directory),
+                &operation.source_branch,
+            )
+            .await?,
+        );
+        operation.observed_target_sha = Some(
+            GitService::resolve_ref_sha(
+                Path::new(&project.working_directory),
+                &operation.target_branch,
+            )
+            .await?,
+        );
+        let operation_for_execution = operation.clone();
+        let fencing_epoch = match branch_update_repo
+            .activate(crate::domain::repositories::BranchUpdateActivation {
+                operation,
+                expected_status: task.internal_status,
+                update_status: InternalStatus::UpdatingPlanBranch,
+                trigger: "pr_branch_freshness".to_string(),
+            })
+            .await?
+        {
+            crate::domain::repositories::BranchUpdateActivationOutcome::Applied {
+                fencing_epoch,
+                ..
+            } => fencing_epoch,
+            outcome => {
+                return Err(AppError::Conflict(format!(
+                    "PR branch update activation lost authority: {outcome:?}"
+                )))
+            }
+        };
+        match crate::application::branch_update_executor::execute_programmatic_branch_update(
+            Arc::clone(branch_update_repo),
+            Arc::clone(&self.task_repo),
+            Path::new(&project.working_directory),
+            &operation_for_execution,
+            InternalStatus::UpdatingPlanBranch,
+            fencing_epoch,
+        )
+        .await?
+        {
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::Completed {
+                ..
+            } => {
+                self.push_and_refresh_pr_branch(&task, project, plan_branch)
+                    .await?;
+                Ok(PrBranchFreshnessOutcome::Updated)
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::NeedsAgent => {
+                let current = self
+                    .task_repo
+                    .get_by_id(&task.id)
+                    .await?
+                    .ok_or_else(|| AppError::TaskNotFound(task.id.as_str().to_string()))?;
+                self.execute_entry_actions(
+                    &task.id,
+                    &current,
+                    InternalStatus::UpdatingPlanBranch,
+                )
+                .await;
+                Ok(PrBranchFreshnessOutcome::ConflictRouted)
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::Blocked => {
+                Ok(PrBranchFreshnessOutcome::ConflictRouted)
+            }
+            crate::application::branch_update_executor::BranchUpdateExecutionOutcome::ContinuationPending => {
+                Err(AppError::Conflict(
+                    "Unexpected publication continuation for WaitingOnPr freshness".to_string(),
+                ))
+            }
+        }
     }
 
     /// Reroute a merge failure caused by repository commit hooks back into revision flow.
@@ -2968,9 +3069,18 @@ impl TaskTransitionService {
             Arc::clone(&self.review_starter),
             Arc::clone(&self.chat_service),
         )
+        .with_branch_update_workflow(Arc::new(
+            crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+                Arc::clone(&self.chat_service),
+            ),
+        ))
         .with_execution_state(Arc::clone(&self.execution_state))
         .with_task_repo(Arc::clone(&self.task_repo))
         .with_project_repo(Arc::clone(&self.project_repo));
+
+        if let Some(ref repo) = self.branch_update_repo {
+            services = services.with_branch_update_repo(Arc::clone(repo));
+        }
 
         if let Some(ref event_sink) = self.event_sink {
             services = services.with_event_sink(Arc::clone(event_sink));
@@ -3351,11 +3461,15 @@ impl TaskTransitionService {
                 );
                 self.handle_branch_freshness_conflict(&handler, task_id, &state)
                     .await;
-            } else if matches!(&e, AppError::ReviewWorktreeMissing) {
+            } else if matches!(
+                &e,
+                AppError::ReviewWorktreeMissing | AppError::ReviewWorktreeConflictMarkers
+            ) {
                 use crate::domain::state_machine::machine::State as MState;
                 tracing::warn!(
                     task_id = task_id.as_str(),
-                    "ReviewWorktreeMissing during initial on_enter — routing to Escalated"
+                    error = %e,
+                    "Review worktree attention during initial on_enter — routing to Escalated"
                 );
                 handler.on_exit(&state, &MState::Escalated).await;
                 if let Some(result) = self
@@ -3368,7 +3482,7 @@ impl TaskTransitionService {
                         "from": result.from_status.as_str(),
                         "to": "escalated",
                         "changedBy": "system",
-                        "reason": "ReviewWorktreeMissing during initial on_enter",
+                        "reason": e.to_string(),
                     }));
                     self.event_emitter
                         .emit_status_change(
@@ -3525,13 +3639,17 @@ impl TaskTransitionService {
                 if matches!(&e, AppError::BranchFreshnessConflict) {
                     self.handle_branch_freshness_conflict(&handler, task_id, &auto_state)
                         .await;
-                } else if matches!(&e, AppError::ReviewWorktreeMissing) {
+                } else if matches!(
+                    &e,
+                    AppError::ReviewWorktreeMissing | AppError::ReviewWorktreeConflictMarkers
+                ) {
                     use crate::domain::state_machine::machine::State;
 
                     tracing::warn!(
                         task_id = task_id.as_str(),
                         from = auto_status.as_str(),
-                        "ReviewWorktreeMissing during auto-transition on_enter — routing to Escalated"
+                        error = %e,
+                        "Review worktree attention during auto-transition on_enter — routing to Escalated"
                     );
 
                     handler.on_exit(&auto_state, &State::Escalated).await;
@@ -3552,7 +3670,7 @@ impl TaskTransitionService {
                             "from": result.from_status.as_str(),
                             "to": "escalated",
                             "changedBy": "system",
-                            "reason": "ReviewWorktreeMissing during auto-transition",
+                            "reason": e.to_string(),
                         }));
                         // Dual-channel emit: persist to external_events table and fire webhook.
                         // The corrective path bypasses on_enter(Escalated), so we emit explicitly here.
@@ -3617,6 +3735,31 @@ impl TaskTransitionService {
 
         // Step 1: Read freshness metadata written by on_enter before the error.
         let fresh_task = self.task_repo.get_by_id(task_id).await.ok().flatten();
+        if let Some(task) = fresh_task.as_ref() {
+            let update_state = match task.internal_status {
+                InternalStatus::UpdatingPlanBranch => Some(State::UpdatingPlanBranch),
+                InternalStatus::UpdatingTaskBranch => Some(State::UpdatingTaskBranch),
+                _ => None,
+            };
+            if let Some(update_state) = update_state {
+                self.emit_task_event(serde_json::json!({
+                    "type": "status_changed",
+                    "taskId": task_id.as_str(),
+                    "from": current_state.as_str(),
+                    "to": update_state.as_str(),
+                    "changedBy": "system",
+                    "reason": "Dedicated branch update activated",
+                }));
+                if let Err(error) = handler.on_enter(&update_state).await {
+                    tracing::error!(
+                        task_id = task_id.as_str(),
+                        error = %error,
+                        "Failed to start branch updater after activation"
+                    );
+                }
+                return;
+            }
+        }
         let task_meta_val: serde_json::Value = fresh_task
             .as_ref()
             .and_then(|t| t.metadata.as_deref())
@@ -3627,6 +3770,44 @@ impl TaskTransitionService {
             .as_str()
             .map(|s| s.to_owned());
         let reviewing_origin = freshness_origin.as_deref() == Some("reviewing");
+        let marker_only_legacy_row = task_meta_val["conflict_markers_detected"]
+            .as_bool()
+            .unwrap_or(false)
+            && !task_meta_val["source_update_conflict"]
+                .as_bool()
+                .unwrap_or(false)
+            && !task_meta_val["plan_update_conflict"]
+                .as_bool()
+                .unwrap_or(false)
+            && !task_meta_val["pr_branch_update_conflict"]
+                .as_bool()
+                .unwrap_or(false);
+        if marker_only_legacy_row {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                "Legacy marker-only freshness row has no directional evidence — escalating instead of guessing a branch update"
+            );
+            handler.on_exit(current_state, &State::Escalated).await;
+            if let Some(result) = self
+                .apply_corrective_transition(
+                    task_id,
+                    InternalStatus::Escalated,
+                    Some("Review worktree contains unresolved conflict markers".to_string()),
+                    "legacy_branch_update_remediation",
+                )
+                .await
+            {
+                self.emit_task_event(serde_json::json!({
+                    "type": "status_changed",
+                    "taskId": task_id.as_str(),
+                    "from": result.from_status.as_str(),
+                    "to": "escalated",
+                    "changedBy": "system",
+                    "reason": "Marker-only legacy row had no branch-update direction",
+                }));
+            }
+            return;
+        }
         let has_merge_conflict_evidence = task_meta_val["conflict_markers_detected"]
             .as_bool()
             .unwrap_or(false)

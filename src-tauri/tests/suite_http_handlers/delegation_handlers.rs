@@ -10,7 +10,8 @@ use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
-    DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Project, SessionPurpose,
+    DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Persona, PersonaId,
+    PersonaStatus, Project, ProjectId, SessionPurpose,
 };
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
@@ -91,6 +92,9 @@ exit 0
 fi
 
 if [ "$1" = "exec" ]; then
+if [ -n "$RALPHX_TEST_CODEX_ARGS_PATH" ]; then
+  printf '%s\n' "$@" > "$RALPHX_TEST_CODEX_ARGS_PATH"
+fi
 printf '%s\n' '{"type":"thread.started","thread_id":"delegation-thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"MOCK_COMPLETION"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7}}'
@@ -105,6 +109,44 @@ exit 2
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("chmod fake codex cli");
     (tempdir, script_path)
+}
+
+async fn seed_bound_active_project_persona(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+    persona_id: &str,
+    body: &str,
+) {
+    let now = chrono::Utc::now();
+    let persona = Persona {
+        id: PersonaId::from(persona_id),
+        slug: persona_id.to_string(),
+        name: "Delegation isolation persona".to_string(),
+        description: "Must not reach delegated children".to_string(),
+        content: body.to_string(),
+        status: PersonaStatus::Active,
+        version: 1,
+        content_hash: format!("{persona_id}-hash"),
+        source_session_id: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .app_state
+        .persona_repo
+        .create(persona.clone())
+        .await
+        .expect("seed active persona");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.persona_id = Some(persona.id.to_string());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("bind active persona to a same-project conversation");
 }
 
 fn build_state(app_state: Arc<AppState>) -> HttpServerState {
@@ -186,14 +228,12 @@ async fn create_project_agent_workspace(
 
     let worktree_path =
         resolve_agent_conversation_workspace_path(&project, &conversation.id).unwrap();
-    let safe_worktree_path =
-        ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
-            &worktree_path,
-            "test agent workspace",
-        )
-        .unwrap();
-    fs::create_dir_all(safe_worktree_path.join(".git"))
-        .expect("create fake workspace git marker");
+    let safe_worktree_path = ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+        &worktree_path,
+        "test agent workspace",
+    )
+    .unwrap();
+    fs::create_dir_all(safe_worktree_path.join(".git")).expect("create fake workspace git marker");
     let workspace = AgentConversationWorkspace::new(
         conversation.id,
         project.id.clone(),
@@ -388,6 +428,91 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
     assert_eq!(latest_run.input_tokens, Some(11));
     assert_eq!(latest_run.cache_read_tokens, Some(2));
     assert_eq!(latest_run.output_tokens, Some(7));
+}
+
+#[tokio::test]
+async fn delegate_start_child_command_excludes_bound_project_persona() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let captured_args_path = fake_codex_dir.path().join("delegated-child-args.txt");
+    let _captured_args_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_TEST_CODEX_ARGS_PATH",
+        captured_args_path.clone(),
+    );
+    let _persona_flag_guard =
+        crate::support::env::EnvVarGuard::set("RALPHX_UI_AGENT_PERSONAS", "true");
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let parent = create_parent_session(&state).await;
+    let persona_body = "DELEGATION PERSONA BODY MUST NOT REACH CHILD";
+    seed_bound_active_project_persona(
+        &state,
+        &parent.project_id,
+        "delegation-cross-contamination-persona",
+        persona_body,
+    )
+    .await;
+
+    let start = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("ideation".to_string()),
+            caller_context_id: Some(parent.id.as_str().to_string()),
+            parent_session_id: Some(parent.id.as_str().to_string()),
+            parent_turn_id: Some("turn-persona-isolation".to_string()),
+            parent_message_id: Some("msg-persona-isolation".to_string()),
+            parent_conversation_id: None,
+            parent_tool_use_id: Some("toolu-persona-isolation".to_string()),
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "Inspect delegated child persona isolation.".to_string(),
+            title: Some("Delegated persona isolation".to_string()),
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .expect("delegated child should spawn")
+    .0;
+
+    for _ in 0..20 {
+        let status = wait_delegate(
+            State(state.clone()),
+            Json(DelegateWaitRequest {
+                job_id: start.job_id.clone(),
+                include_delegated_status: Some(false),
+                include_child_status: None,
+                include_messages: Some(false),
+                message_limit: None,
+            }),
+        )
+        .await
+        .expect("delegation status should load")
+        .0;
+        if status.status != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let captured_args = fs::read_to_string(&captured_args_path)
+        .expect("delegated child fake CLI should capture the final command arguments");
+    assert!(
+        !captured_args.contains("<ralphx_agent_persona>"),
+        "delegated child command must not include a persona block: {captured_args}"
+    );
+    assert!(
+        !captured_args.contains(persona_body),
+        "delegated child command must not include the bound persona body: {captured_args}"
+    );
 }
 
 #[tokio::test]

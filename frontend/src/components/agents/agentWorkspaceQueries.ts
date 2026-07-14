@@ -204,6 +204,7 @@ export function canInspectAgentWorkspaceFreshness(
   return (
     Boolean(workspace) &&
     !terminalPublicationLabel &&
+    workspace?.mode !== "plan" &&
     (workspace?.mode === "edit" || hasPublishedPr) &&
     (workspace?.mode !== "edit" || workspace?.status !== "missing")
   );

@@ -65,6 +65,15 @@ fn parse_mode_rejects_unknown_value() {
     );
 }
 
+#[test]
+fn parse_mode_rejects_persona_builder() {
+    let error = parse_agent_workspace_mode(Some("persona_builder")).unwrap_err();
+    assert!(
+        error.contains("PersonaBuilder"),
+        "unexpected error: {error}"
+    );
+}
+
 // ── parse_agent_workspace_base_kind ──────────────────────────────────────────
 
 #[test]
@@ -369,6 +378,7 @@ fn requires_workspace_is_true_for_non_chat_modes() {
     assert!(agent_mode_requires_workspace(ReviewPr));
     assert!(!agent_mode_requires_workspace(Chat));
     assert!(!agent_mode_requires_workspace(Automation));
+    assert!(!agent_mode_requires_workspace(PersonaBuilder));
 }
 
 #[test]
@@ -380,10 +390,20 @@ fn should_create_workspace_covers_chat_with_source_pr() {
     // Chat without a source PR does not create a workspace.
     assert!(!agent_mode_should_create_workspace(Chat, None, false));
     assert!(!agent_mode_should_create_workspace(Automation, None, false));
+    assert!(!agent_mode_should_create_workspace(
+        PersonaBuilder,
+        None,
+        false
+    ));
 
     // Chat with a selected plan reference needs workspace-linked plan context.
     assert!(agent_mode_should_create_workspace(Chat, None, true));
     assert!(!agent_mode_should_create_workspace(Automation, None, true));
+    assert!(!agent_mode_should_create_workspace(
+        PersonaBuilder,
+        None,
+        true
+    ));
 
     // Chat WITH a source PR does create a workspace.
     let source = AgentWorkspaceSourcePullRequest {
@@ -401,6 +421,11 @@ fn should_create_workspace_covers_chat_with_source_pr() {
     ));
     assert!(!agent_mode_should_create_workspace(
         Automation,
+        Some(&source),
+        false
+    ));
+    assert!(!agent_mode_should_create_workspace(
+        PersonaBuilder,
         Some(&source),
         false
     ));

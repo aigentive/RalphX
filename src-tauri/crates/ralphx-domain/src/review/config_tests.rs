@@ -12,6 +12,7 @@ fn test_review_settings_default() {
     assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
+    assert!(!settings.auto_create_followup_agent_conversation);
 }
 
 #[test]
@@ -117,7 +118,7 @@ fn test_review_settings_serialize() {
     assert!(json.contains("\"require_workspace_review\":true"));
     assert!(json.contains("\"autofix_workspace_review_blocking_findings\":true"));
     assert!(json.contains("\"max_fix_attempts\":3"));
-    assert!(json.contains("\"auto_create_followup_agent_conversation\":true"));
+    assert!(json.contains("\"auto_create_followup_agent_conversation\":false"));
     assert!(json.contains("\"run_task_validations\":true"));
 }
 
@@ -183,6 +184,17 @@ fn test_review_settings_partial_json_with_defaults() {
     assert!(settings.require_workspace_review);
     assert!(settings.autofix_workspace_review_blocking_findings);
     assert!(settings.run_task_validations);
+    assert!(!settings.auto_create_followup_agent_conversation);
+}
+
+#[test]
+fn test_review_settings_deserialize_preserves_explicit_auto_followup_opt_in() {
+    let mut json = serde_json::to_value(ReviewSettings::default()).unwrap();
+    json["auto_create_followup_agent_conversation"] = serde_json::Value::Bool(true);
+
+    let settings: ReviewSettings = serde_json::from_value(json).unwrap();
+
+    assert!(settings.auto_create_followup_agent_conversation);
 }
 
 #[test]

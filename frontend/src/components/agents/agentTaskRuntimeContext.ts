@@ -1,4 +1,8 @@
-export type AgentTaskRuntimeContextType = "task_execution" | "review" | "merge";
+export type AgentTaskRuntimeContextType =
+  | "task_execution"
+  | "review"
+  | "merge"
+  | "branch_update";
 
 export function isTaskRuntimeContextType(
   contextType: string,
@@ -6,6 +10,7 @@ export function isTaskRuntimeContextType(
   return (
     contextType === "task_execution" ||
     contextType === "review" ||
-    contextType === "merge"
+    contextType === "merge" ||
+    contextType === "branch_update"
   );
 }

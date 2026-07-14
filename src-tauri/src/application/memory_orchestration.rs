@@ -28,6 +28,7 @@ impl MemoryCategory {
             ChatContextType::Ideation => MemoryCategory::Planning,
             ChatContextType::Delegation => MemoryCategory::Execution,
             ChatContextType::Task | ChatContextType::TaskExecution => MemoryCategory::Execution,
+            ChatContextType::BranchUpdate => MemoryCategory::Execution,
             ChatContextType::Review => MemoryCategory::Review,
             ChatContextType::Merge => MemoryCategory::Merge,
             ChatContextType::Project => MemoryCategory::ProjectChat,

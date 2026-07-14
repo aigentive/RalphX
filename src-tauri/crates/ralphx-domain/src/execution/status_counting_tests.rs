@@ -23,6 +23,14 @@ fn context_matches_running_status_only_accepts_live_task_states() {
         ChatContextType::Merge,
         InternalStatus::Merging
     ));
+    assert!(context_matches_running_status(
+        ChatContextType::BranchUpdate,
+        InternalStatus::UpdatingPlanBranch
+    ));
+    assert!(context_matches_running_status(
+        ChatContextType::BranchUpdate,
+        InternalStatus::UpdatingTaskBranch
+    ));
 
     assert!(!context_matches_running_status(
         ChatContextType::TaskExecution,
@@ -35,6 +43,10 @@ fn context_matches_running_status_only_accepts_live_task_states() {
     assert!(!context_matches_running_status(
         ChatContextType::Task,
         InternalStatus::Executing
+    ));
+    assert!(!context_matches_running_status(
+        ChatContextType::BranchUpdate,
+        InternalStatus::BranchUpdateBlocked
     ));
 }
 

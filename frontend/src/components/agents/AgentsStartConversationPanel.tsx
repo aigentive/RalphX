@@ -2,6 +2,7 @@ import { useState, type ComponentProps } from "react";
 import { toast } from "sonner";
 
 import { useUiStore } from "@/stores/uiStore";
+import { isPersonaUnavailableError } from "@/lib/personaErrors";
 
 import { getAgentQueueHaltState } from "./agentExecutionPause";
 import { AgentsStartComposer } from "./AgentsStartComposer";
@@ -52,11 +53,13 @@ export function AgentsStartConversationPanel({
             setIsStartingConversation(true);
             await onStartAgentConversation(input);
           } catch (err) {
-            toast.error(
+            const message =
               err instanceof Error
                 ? err.message
-                : "Failed to start agent conversation",
-            );
+                : "Failed to start agent conversation";
+            if (!isPersonaUnavailableError(message)) {
+              toast.error(message);
+            }
             throw err;
           } finally {
             setIsStartingConversation(false);

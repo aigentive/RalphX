@@ -13,6 +13,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const TRACE_SUBDIR = "mcp-proxy";
 const TRACE_DISABLED = "(disabled)";
+const PERSONA_LOG_REDACTION = "***PERSONA_ARGS_REDACTED***";
+export const ARG_REDACTED_TOOLS = new Set([
+    "save_persona_draft",
+    "get_persona_draft",
+]);
 /**
  * Ordered list of secret patterns with their replacements.
  * Patterns are applied in order — specific before generic.
@@ -52,6 +57,15 @@ export function redactSecrets(input) {
         result = result.replace(regex, replacement);
     }
     return result;
+}
+export function redactToolArgsForLog(toolName, args) {
+    return isPersonaTool(toolName) ? PERSONA_LOG_REDACTION : args;
+}
+export function redactToolResultForLog(toolName, result) {
+    return isPersonaTool(toolName) ? PERSONA_LOG_REDACTION : result;
+}
+function isPersonaTool(toolName) {
+    return ARG_REDACTED_TOOLS.has(toolName) || toolName.startsWith("persona_");
 }
 /**
  * Stringify an unknown value for redaction.

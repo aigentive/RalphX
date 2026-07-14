@@ -58,6 +58,8 @@ pub mod notification_commands;
 #[cfg(test)]
 mod notification_commands_tests;
 pub mod permission_commands;
+pub mod persona_builder_commands;
+pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
@@ -71,6 +73,8 @@ pub mod release_notes_commands;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
+#[cfg(test)]
+mod review_commands_types_tests;
 pub mod review_helpers;
 pub mod task_commands;
 pub mod task_context_commands;
@@ -150,6 +154,11 @@ pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation, resume_automation,
     stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
+};
+pub use persona_builder_commands::{
+    create_persona_builder_conversation, get_persona_builder_ingest_status,
+    CreatePersonaBuilderConversationInput, PersonaBuilderIngestStatusInput,
+    PersonaBuilderIngestStatusResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
@@ -281,8 +290,8 @@ pub use review_commands::{
 pub use task_commands::{
     answer_user_question, archive_task, cancel_tasks_in_group, create_task, emit_queue_changed,
     get_archived_count, get_task, get_task_state_transitions, get_valid_transitions, inject_task,
-    list_tasks, move_task, pause_task, restore_task, search_tasks, stop_task, update_task,
-    StateTransitionResponse,
+    list_tasks, move_task, pause_task, restore_task, retry_branch_update, search_tasks, stop_task,
+    update_task, StateTransitionResponse,
 };
 pub use task_context_commands::{
     get_artifact_full, get_artifact_version, get_related_artifacts, get_task_context,
@@ -346,7 +355,8 @@ pub use unified_chat_commands::{
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,
-    switch_agent_conversation_mode, update_agent_conversation_coordination_mode,
+    switch_agent_conversation_mode, switch_agent_conversation_persona,
+    update_agent_conversation_coordination_mode,
     update_agent_conversation_title, update_agent_conversation_workspace_from_base,
     AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
     AgentConversationResponse, AgentConversationRuntimeIndexResponse,
@@ -362,6 +372,7 @@ pub use unified_chat_commands::{
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,
+    SwitchAgentConversationPersonaInput, SwitchAgentConversationPersonaResponse,
     UpdateAgentConversationTitleInput, UpdateAgentConversationWorkspaceFromBaseResponse,
 };
 // Plan branch commands (Phase 85 - Feature branch for plan groups)
@@ -370,7 +381,9 @@ pub use plan_branch_commands::{
     EnableFeatureBranchInput, PlanBranchResponse,
 };
 // UI feature flag commands
-pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
+pub use ui_commands::{
+    get_ui_feature_flags, update_ui_feature_flags, UiFeatureFlagsResponse, UpdateUiFeatureFlagsInput,
+};
 pub use workspace_open_commands::{
     list_workspace_open_targets, open_agent_conversation_workspace,
     open_agent_conversation_workspace_path, WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,

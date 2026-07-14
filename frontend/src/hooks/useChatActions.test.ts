@@ -102,6 +102,7 @@ interface SetupOptions {
   messageCount?: number;
   activeConversationId?: string | null | undefined;
   onUserMessageSent?: Parameters<typeof useChatActions>[0]["onUserMessageSent"];
+  onPersonaUnavailable?: Parameters<typeof useChatActions>[0]["onPersonaUnavailable"];
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -116,6 +117,7 @@ function setup(opts: SetupOptions = {}) {
     messageCount = 5,
     activeConversationId = undefined,
     onUserMessageSent = undefined,
+    onPersonaUnavailable = undefined,
   } = opts;
 
   const mutateAsync = vi.fn().mockResolvedValue({
@@ -138,6 +140,7 @@ function setup(opts: SetupOptions = {}) {
       activeConversationId,
       messageCount,
       onUserMessageSent,
+      onPersonaUnavailable,
     })
   );
 
@@ -277,6 +280,23 @@ describe("useChatActions", () => {
       });
 
       expect(mutateAsync).not.toHaveBeenCalled();
+    });
+
+    it("suppresses the generic toast and reports persona-unavailable sends inline", async () => {
+      const onPersonaUnavailable = vi.fn();
+      const { result, mutateAsync } = setup({ onPersonaUnavailable });
+      mutateAsync.mockRejectedValue(
+        new Error("[Persona unavailable: Reviewer Voice was archived]"),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("continue the review");
+      });
+
+      expect(onPersonaUnavailable).toHaveBeenCalledWith(
+        "[Persona unavailable: Reviewer Voice was archived]",
+      );
+      expect(mockToastError).not.toHaveBeenCalled();
     });
 
     it("review mode sends via chatApi.sendAgentMessage directly", async () => {
