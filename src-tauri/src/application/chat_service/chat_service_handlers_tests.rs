@@ -2254,6 +2254,124 @@ async fn seed_current_validation_run(
         .unwrap();
 }
 
+fn validation_with_results_fixture(
+    task: &Task,
+    head_sha: &str,
+    episode_entered_at: DateTime<Utc>,
+) -> ValidationRunWithResults {
+    let run_id = format!("validation-{}", task.id.as_str());
+    ValidationRunWithResults {
+        run: ValidationRun {
+            id: run_id.clone(),
+            task_id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            purpose: ValidationPurpose::Final,
+            context_type: ValidationContextType::Execution,
+            requested_by_agent: Some("ralphx-execution-worker".to_string()),
+            status: ValidationRunStatus::Passed,
+            mode: ValidationRunMode::Force,
+            policy_enabled: true,
+            head_sha: Some(head_sha.to_string()),
+            start_content_fingerprint: None,
+            validated_content_fingerprint: Some("validated-tree".to_string()),
+            promoted_commit_sha: Some(head_sha.to_string()),
+            base_ref: Some("main".to_string()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            started_at: episode_entered_at,
+            completed_at: Some(episode_entered_at + chrono::Duration::seconds(1)),
+        },
+        commands: vec![ValidationCommandResult {
+            id: format!("command-{}", task.id.as_str()),
+            validation_run_id: run_id,
+            task_id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test focused".to_string(),
+            cwd: task
+                .worktree_path
+                .clone()
+                .unwrap_or_else(|| ".".to_string()),
+            label: Some("Focused tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: Some("completion authority".to_string()),
+            related_files: Vec::new(),
+            cache_key: "current-validation".to_string(),
+            cache_decision: ValidationCacheDecision::Ran,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: Some("test".to_string()),
+            resolved_shell_path: None,
+            head_sha: Some(head_sha.to_string()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(episode_entered_at),
+            created_at: episode_entered_at,
+        }],
+    }
+}
+
+#[test]
+fn validation_run_proves_completion_accepts_head_sha_when_promoted_commit_missing() {
+    let episode_entered_at = Utc::now();
+    let task = Task::new(ProjectId::new(), "head-sha fallback".into());
+    let mut validation = validation_with_results_fixture(&task, "head-sha", episode_entered_at);
+    validation.run.promoted_commit_sha = None;
+
+    assert!(
+        validation_run_proves_completion(&validation, "head-sha", episode_entered_at),
+        "a passed non-baseline validation with matching head_sha and successful test command authorizes completion"
+    );
+}
+
+#[test]
+fn validation_run_proves_completion_rejects_non_authoritative_evidence() {
+    let episode_entered_at = Utc::now();
+    let task = Task::new(ProjectId::new(), "validation authority matrix".into());
+    let valid = validation_with_results_fixture(&task, "head-sha", episode_entered_at);
+
+    let mut wrong_commit = valid.clone();
+    wrong_commit.run.promoted_commit_sha = Some("older-sha".to_string());
+    wrong_commit.run.head_sha = Some("older-sha".to_string());
+    assert!(
+        !validation_run_proves_completion(&wrong_commit, "head-sha", episode_entered_at),
+        "validation for a different commit must not authorize completion"
+    );
+
+    let mut missing_episode = valid.clone();
+    missing_episode.run.status_episode_entered_at = None;
+    assert!(
+        !validation_run_proves_completion(&missing_episode, "head-sha", episode_entered_at),
+        "validation without current-attempt status timestamp must fail closed"
+    );
+
+    let mut baseline = valid.clone();
+    baseline.run.purpose = ValidationPurpose::Baseline;
+    assert!(
+        !validation_run_proves_completion(&baseline, "head-sha", episode_entered_at),
+        "baseline validation cannot prove final execution completion"
+    );
+
+    let mut no_test_command = valid.clone();
+    no_test_command.commands[0].category = ValidationCommandCategory::Other;
+    assert!(
+        !validation_run_proves_completion(&no_test_command, "head-sha", episode_entered_at),
+        "completion requires at least one validation test command"
+    );
+
+    let mut failed_command = valid;
+    failed_command.commands[0].status = ValidationCommandStatus::Failed;
+    assert!(
+        !validation_run_proves_completion(&failed_command, "head-sha", episode_entered_at),
+        "failed validation commands must not authorize completion"
+    );
+}
+
 #[tokio::test]
 async fn current_attempt_validation_run_proves_completion_without_legacy_metadata() {
     let state = AppState::new_test();
@@ -2267,6 +2385,35 @@ async fn current_attempt_validation_run_proves_completion_without_legacy_metadat
     assert!(
         validated_completion_override(&task, episode_entered_at, &validation_run_repo).await,
         "current-attempt validation_runs evidence must authorize completion without metadata cache"
+    );
+}
+
+#[tokio::test]
+async fn validation_completion_override_fails_closed_without_repo_or_worktree() {
+    let (worktree, head_sha) = git_worktree_with_initial_commit();
+    let episode_entered_at = Utc::now();
+    let mut task = Task::new(ProjectId::new(), "validation override prerequisites".into());
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+
+    assert!(
+        !validated_completion_override(&task, episode_entered_at, &None).await,
+        "missing validation repository must not authorize completion"
+    );
+
+    let state = AppState::new_test();
+    seed_current_validation_run(&state, &task, &head_sha, episode_entered_at).await;
+    let validation_run_repo = Some(Arc::clone(&state.validation_run_repo));
+
+    task.worktree_path = None;
+    assert!(
+        !validated_completion_override(&task, episode_entered_at, &validation_run_repo).await,
+        "validation evidence without a worktree HEAD check must fail closed"
+    );
+
+    task.worktree_path = Some("relative/path".to_string());
+    assert!(
+        !validated_completion_override(&task, episode_entered_at, &validation_run_repo).await,
+        "unsafe worktree paths must fail closed before resolving HEAD"
     );
 }
 

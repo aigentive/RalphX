@@ -48,6 +48,8 @@ fn build_scheduler(
     )
     .with_execution_settings_repo(Arc::clone(&app_state.execution_settings_repo))
     .with_execution_plan_repo(Arc::clone(&app_state.execution_plan_repo))
+    .with_task_step_repo(Arc::clone(&app_state.task_step_repo))
+    .with_validation_run_repo(Arc::clone(&app_state.validation_run_repo))
 }
 
 #[tokio::test]
