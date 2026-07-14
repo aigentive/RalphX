@@ -24,6 +24,15 @@ export interface ConfirmOptions {
   prepare?: () =>
     | Promise<Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>>
     | Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>;
+  /** Return updated copy after a recoverable action error to keep the dialog open for reconfirmation. */
+  recoverFromError?: (
+    error: unknown,
+  ) =>
+    | Promise<
+        Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">> | null
+      >
+    | Partial<Pick<ConfirmOptions, "title" | "description" | "confirmText">>
+    | null;
 }
 
 interface ConfirmationDialogProps {
@@ -167,20 +176,33 @@ export function useConfirmation(): UseConfirmationReturn {
     }
 
     const action = options?.onConfirm;
+    const recoverFromError = options?.recoverFromError;
     if (!action) {
       settle(true);
       return;
     }
 
+    const requestId = requestIdRef.current;
     setIsSubmitting(true);
     void Promise.resolve()
       .then(action)
       .then(() => {
         settle(true);
       })
-      .catch(() => {
-        settle(false);
-      })
+      .catch((error: unknown) =>
+        Promise.resolve(recoverFromError?.(error))
+          .catch(() => null)
+          .then((recovery) => {
+            if (requestId !== requestIdRef.current) return;
+            if (recovery) {
+              setOptions((current) =>
+                current ? { ...current, ...recovery } : current,
+              );
+              return;
+            }
+            settle(false);
+          }),
+      )
       .finally(() => {
         setIsSubmitting(false);
       });

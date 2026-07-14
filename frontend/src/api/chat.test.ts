@@ -3469,6 +3469,25 @@ describe("getConversationActiveState", () => {
     expect(result.monitor.status).toBe("reviewing");
   });
 
+  it("preserves workspace review HTTP conflicts for a receipt refresh", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: () =>
+        Promise.resolve({
+          error: "workspace Review target or GitHub auto-merge state changed",
+        }),
+    });
+
+    await expect(startAgentWorkspaceReview("conversation-1")).rejects.toEqual(
+      expect.objectContaining({
+        name: "AgentWorkspaceHttpError",
+        status: 409,
+      }),
+    );
+  });
+
   it("fetches the target-bound workspace review start preview", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
