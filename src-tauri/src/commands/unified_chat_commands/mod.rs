@@ -4559,18 +4559,19 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
     auto_merge_desired: bool,
     auto_merge_method: &str,
 ) -> Result<(), String> {
+    if !auto_merge_desired {
+        crate::application::agent_workspace_review_auto_merge::
+            cancel_workspace_review_auto_merge_guard(state, workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+    }
     let (Some(github), Some(target)) = (state.github_service.as_ref(), target) else {
         return Ok(());
     };
 
     let pr_number = target.pr_number;
     let working_dir = target.working_dir.as_path();
-    if !auto_merge_desired {
-        crate::application::agent_workspace_review_auto_merge::
-            cancel_workspace_review_auto_merge_guard(state, workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-    } else {
+    if auto_merge_desired {
         let monitor = state
             .agent_conversation_workspace_repo
             .get_workspace_review_monitor(conversation_id)
@@ -4589,7 +4590,9 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                     conversation_id,
                     Some(false),
                     Some("review_paused"),
-                    Some("GitHub auto-merge is paused while the workspace Review is authoritative."),
+                    Some(
+                        "GitHub auto-merge is paused while the workspace Review is authoritative.",
+                    ),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -4979,6 +4982,13 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
         )
         .await
         .map_err(|e| e.to_string())?;
+
+    if !input.auto_publish_enabled {
+        crate::application::agent_workspace_review_auto_merge::
+            cancel_workspace_review_auto_merge_guard(state, &workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+    }
 
     if input.auto_publish_enabled && pr_auto_merge_desired {
         reconcile_agent_workspace_auto_merge_for_supervision_toggle(
@@ -6692,7 +6702,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         "published",
         "succeeded",
         "Plan branch pull request is up to date",
-        None,
+        Some(format!("published:{pr_number}")),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -6703,6 +6713,25 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+
+    if let Err(error) = crate::application::agent_workspace_review_auto_merge::
+        restore_guarded_auto_merge_after_publish(state, &refreshed)
+        .await
+    {
+        tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_publish",
+            conversation_id = %refreshed.conversation_id,
+            pr_number,
+            error = %error,
+            "Deferred workspace Review auto-merge restoration after publish"
+        );
+    }
+    refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&refreshed.conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(refreshed);
 
     if refreshed.auto_publish_enabled && refreshed.pr_auto_merge_desired {
         match sync_agent_workspace_auto_merge_preference_for_workspace(
@@ -7357,7 +7386,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         "published",
         "succeeded",
         "Draft pull request is ready",
-        None,
+        Some(format!("published:{}", outcome.pr_number)),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -7368,6 +7397,25 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+
+    if let Err(error) = crate::application::agent_workspace_review_auto_merge::
+        restore_guarded_auto_merge_after_publish(state, &refreshed)
+        .await
+    {
+        tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_publish",
+            conversation_id = %refreshed.conversation_id,
+            pr_number = outcome.pr_number,
+            error = %error,
+            "Deferred workspace Review auto-merge restoration after publish"
+        );
+    }
+    refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&refreshed.conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(refreshed);
 
     if refreshed.auto_publish_enabled && refreshed.pr_auto_merge_desired {
         match sync_agent_workspace_auto_merge_preference_for_workspace(

@@ -430,6 +430,10 @@ pub async fn start_http_server(
             get(get_agent_workspace_review_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-start-preview",
+            get(get_agent_workspace_review_start_preview),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-runs",
             post(start_agent_workspace_review_run),
         )

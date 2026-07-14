@@ -2,7 +2,9 @@ use super::MemoryAgentConversationWorkspaceRepository;
 use crate::domain::entities::{
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, ChatConversationId, ProjectId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewTargetScope, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
@@ -268,5 +270,66 @@ async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_termi
     assert_eq!(
         submitted.status,
         AgentWorkspacePrReviewActionStatus::Submitted
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_auto_merge_guard_survives_monitor_updates_and_requires_its_owner() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-guard");
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: Some("head-sha".to_string()),
+        last_error: None,
+    };
+    let mut guarded = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+    guarded.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(guarded)
+        .await
+        .expect("guarded monitor should persist");
+
+    repo.upsert_workspace_review_monitor(AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        project_id,
+    ))
+    .await
+    .expect("normal monitor update should persist");
+
+    let stale_guard = AgentWorkspaceReviewAutoMergeGuard {
+        last_error: Some("stale writer".to_string()),
+        ..guard.clone()
+    };
+    assert!(!repo
+        .compare_and_set_workspace_review_auto_merge_guard(
+            &conversation_id,
+            Some(stale_guard),
+            None,
+        )
+        .await
+        .expect("stale guard update should be rejected"));
+    let restoring_guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        ..guard.clone()
+    };
+    assert!(repo
+        .compare_and_set_workspace_review_auto_merge_guard(
+            &conversation_id,
+            Some(guard),
+            Some(restoring_guard.clone()),
+        )
+        .await
+        .expect("guard owner should update it"));
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor should load")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(restoring_guard)
     );
 }
