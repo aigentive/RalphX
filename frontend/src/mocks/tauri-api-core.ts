@@ -1610,6 +1610,34 @@ const commandHandlers: Record<
       fetchedAt: "2026-06-19T22:00:00.000Z",
     };
   },
+  list_ticket_filter_options: async (args) => {
+    const query = args.query as { provider?: string } | undefined;
+    const provider = query?.provider ?? "jira";
+    const assignees = Array.from(
+      new Set(
+        mockTicketingTickets
+          .filter((ticket) => ticket.ref.provider === provider)
+          .flatMap((ticket) => {
+            const assignees =
+              "assignees" in ticket && Array.isArray(ticket.assignees)
+                ? ticket.assignees
+                : [];
+            const assignee =
+              "assignee" in ticket && ticket.assignee ? [ticket.assignee] : [];
+            return [...assignees, ...assignee] as Array<{ name?: string | null }>;
+          })
+          .map((assignee) => assignee.name)
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+
+    return {
+      assignees,
+      sprints: [],
+      complete: true,
+      truncated: false,
+    };
+  },
   get_ticket_detail: async (args) => {
     const ticketRef = args.ticketRef as { id?: string } | undefined;
     const ticket =
