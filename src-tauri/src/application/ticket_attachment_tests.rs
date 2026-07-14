@@ -57,6 +57,28 @@ fn content_pointer_is_deterministic_and_opaque() {
 }
 
 #[test]
+fn content_pointer_from_id_accepts_only_opaque_pointer_ids() {
+    let pointer = TicketAttachmentContentPointer::from_id("ta_123abc").unwrap();
+    assert_eq!(pointer.id(), "ta_123abc");
+
+    let url = TicketAttachmentContentPointer::from_id("https://example.test/download");
+    assert!(matches!(
+        url,
+        Err(TicketAttachmentError::UnsafeField {
+            field: "content_pointer"
+        })
+    ));
+
+    let raw_id = TicketAttachmentContentPointer::from_id("jira-attachment-1");
+    assert!(matches!(
+        raw_id,
+        Err(TicketAttachmentError::UnsafeField {
+            field: "content_pointer"
+        })
+    ));
+}
+
+#[test]
 fn identifiers_reject_urls_paths_and_oversized_values() {
     for ticket_id in [
         "https://example.test/secret",
