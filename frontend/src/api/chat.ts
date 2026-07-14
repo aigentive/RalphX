@@ -1680,6 +1680,7 @@ export const chatApi = {
   closeAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
   setAgentWorkspacePrReviewAutoApprove,
+  setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
@@ -1998,6 +1999,7 @@ export type AgentWorkspacePrReviewMonitorStatus =
   | "watching"
   | "submitting"
   | "blocked"
+  | "paused"
   | "terminal";
 
 export type AgentWorkspaceReviewMonitorStatus =
@@ -2016,7 +2018,13 @@ export type AgentWorkspacePrReviewActionKind =
   "request_changes" | "approve" | "comment";
 
 export type AgentWorkspacePrReviewActionStatus =
-  "pending" | "approved" | "skipped" | "submitting" | "submitted" | "failed";
+  | "pending"
+  | "approved"
+  | "skipped"
+  | "submitting"
+  | "submitted"
+  | "failed"
+  | "superseded";
 
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
@@ -2314,6 +2322,7 @@ const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
     "watching",
     "submitting",
     "blocked",
+    "paused",
     "terminal",
   ]),
   monitor_enabled: z.boolean(),
@@ -2349,6 +2358,7 @@ const AgentWorkspacePrReviewActionResponseSchema = z.object({
     "submitting",
     "submitted",
     "failed",
+    "superseded",
   ]),
   submitted_review_id: z.string().nullable(),
   created_by_run_id: z.string().nullable(),
@@ -3528,6 +3538,31 @@ export async function setAgentWorkspacePrReviewAutoApprove(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ auto_approve_enabled: autoApproveEnabled }),
+    },
+  );
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspacePrReviewMonitor(raw.monitor),
+  };
+}
+
+export async function setAgentWorkspacePrReviewMonitoring(
+  conversationId: string,
+  monitorEnabled: boolean,
+  activeReviewPolicy?: "finish_current" | "cancel_current",
+): Promise<SetAgentWorkspacePrReviewAutoApproveResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-settings`,
+    SetAgentWorkspacePrReviewAutoApproveResponseSchema,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        monitor_enabled: monitorEnabled,
+        ...(activeReviewPolicy
+          ? { active_review_policy: activeReviewPolicy }
+          : {}),
+      }),
     },
   );
   return {

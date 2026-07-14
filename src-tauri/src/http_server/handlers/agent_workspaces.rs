@@ -33,7 +33,7 @@ use crate::application::publish_resilience::{
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
 };
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
-use crate::application::{AppState, GitService};
+use crate::application::{AppState, ChatService, GitService};
 use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
     get_agent_conversation_workspace_freshness_for_app_state,
@@ -797,7 +797,9 @@ pub struct SubmitAgentWorkspacePrReviewActionRequest {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateAgentWorkspacePrReviewSettingsRequest {
-    pub auto_approve_enabled: bool,
+    pub auto_approve_enabled: Option<bool>,
+    pub monitor_enabled: Option<bool>,
+    pub active_review_policy: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1229,7 +1231,7 @@ pub async fn update_agent_workspace_pr_review_settings(
     if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
-            "Auto Approve is available only in Review PR workspaces",
+            "PR Review settings are available only in Review PR workspaces",
             None,
         ));
     }
@@ -1240,11 +1242,19 @@ pub async fn update_agent_workspace_pr_review_settings(
             None,
         )
     })?;
+    if req.auto_approve_enabled.is_none() && req.monitor_enabled.is_none() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "At least one PR Review setting is required",
+            None,
+        ));
+    }
     let monitor = load_or_create_pr_review_monitor(
         state.app_state.as_ref(),
         &workspace,
         pr_number,
         review_pr_head_sha(&workspace),
+        req.monitor_enabled == Some(true),
     )
     .await?;
     let monitor = state
@@ -1253,12 +1263,101 @@ pub async fn update_agent_workspace_pr_review_settings(
         .upsert_pr_review_monitor(monitor)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let monitor = state
-        .app_state
-        .agent_conversation_workspace_repo
-        .set_pr_review_auto_approve_enabled(&monitor.conversation_id, req.auto_approve_enabled)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let monitor = if let Some(enabled) = req.auto_approve_enabled {
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .set_pr_review_auto_approve_enabled(&monitor.conversation_id, enabled)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    } else {
+        monitor
+    };
+    let monitor = if let Some(enabled) = req.monitor_enabled {
+        if !enabled
+            && matches!(
+                monitor.status,
+                AgentWorkspacePrReviewMonitorStatus::Reviewing
+                    | AgentWorkspacePrReviewMonitorStatus::Submitting
+            )
+            && req.active_review_policy.is_none()
+        {
+            return Err(json_error(
+                StatusCode::CONFLICT,
+                "active_review_choice_required",
+                Some("Choose whether to finish or cancel the active PR review".to_string()),
+            ));
+        }
+        if let Some(policy) = req.active_review_policy.as_deref() {
+            if !matches!(policy, "finish_current" | "cancel_current") {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    "active_review_policy must be finish_current or cancel_current",
+                    None,
+                ));
+            }
+        }
+        let mut monitor = state
+            .app_state
+            .agent_conversation_workspace_repo
+            .set_pr_review_monitor_enabled(&monitor.conversation_id, enabled)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        if enabled {
+            if let Some(head_sha) = monitor.last_seen_head_sha.as_deref() {
+                let pending_action = state
+                    .app_state
+                    .agent_conversation_workspace_repo
+                    .get_pending_pr_review_action_for_head(
+                        &workspace.conversation_id,
+                        monitor.pr_number,
+                        head_sha,
+                    )
+                    .await
+                    .map_err(|error| {
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                    })?;
+                if pending_action.is_some() {
+                    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+                    monitor = state
+                        .app_state
+                        .agent_conversation_workspace_repo
+                        .upsert_pr_review_monitor(monitor)
+                        .await
+                        .map_err(|error| {
+                            json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                        })?;
+                }
+            }
+            maybe_start_pr_review_monitor_polling(state.app_state.as_ref(), &workspace, &monitor)
+                .await;
+        } else {
+            state
+                .app_state
+                .pr_poller_registry
+                .stop_agent_workspace_polling(&workspace.conversation_id);
+            if req.active_review_policy.as_deref() == Some("cancel_current") {
+                let chat_service = state.app_state.build_chat_service();
+                chat_service
+                    .stop_agent(ChatContextType::Project, &workspace.conversation_id.as_str())
+                    .await
+                    .map_err(|error| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Monitoring was paused, but the active PR review could not be cancelled",
+                            Some(error.to_string()),
+                        )
+                    })?;
+            }
+        }
+        monitor
+    } else {
+        monitor
+    };
 
     Ok(Json(UpdateAgentWorkspacePrReviewSettingsResponse {
         success: true,
@@ -1283,7 +1382,7 @@ pub async fn get_agent_workspace_review_context(
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
     let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
         .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+        .map_err(workspace_review_action_error)?;
     let target_scope = workspace_review_target_scope_log(context.target.as_ref());
     let diff_fingerprint = compact_workspace_review_log_fingerprint(
         context
@@ -1348,9 +1447,7 @@ pub async fn start_agent_workspace_review_run(
     let start =
         start_agent_workspace_review(std::sync::Arc::clone(&state.app_state), &workspace, force)
             .await
-            .map_err(|error| {
-                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-            })?;
+            .map_err(workspace_review_action_error)?;
     let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
     let diff_fingerprint = compact_workspace_review_log_fingerprint(
         start
@@ -1930,6 +2027,7 @@ pub async fn write_agent_workspace_pr_review_artifact(
         &workspace,
         pr_number,
         head_sha.clone(),
+        true,
     )
     .await?;
     let previous_artifact = match monitor.review_artifact_id.clone() {
@@ -2070,6 +2168,7 @@ pub async fn propose_agent_workspace_pr_review_action(
         &workspace,
         pr_number,
         Some(head_sha.clone()),
+        true,
     )
     .await?;
     ensure_review_artifact_for_head(&monitor, &head_sha)?;
@@ -2120,9 +2219,13 @@ pub async fn propose_agent_workspace_pr_review_action(
             }
         }
     }
-    let entering_awaiting_user =
-        monitor.status != AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    let entering_awaiting_user = monitor.monitor_enabled
+        && monitor.status != AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+    monitor.status = if monitor.monitor_enabled {
+        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+    } else {
+        AgentWorkspacePrReviewMonitorStatus::Paused
+    };
     monitor.first_review_completed = true;
     monitor.last_reviewed_head_sha = Some(action.head_sha.clone());
     monitor.last_review_run_id = req.created_by_run_id;
@@ -2192,6 +2295,7 @@ pub async fn complete_agent_workspace_pr_review_run(
         &workspace,
         pr_number,
         head_sha.clone(),
+        true,
     )
     .await?;
     monitor.first_review_completed = true;
@@ -2206,13 +2310,7 @@ pub async fn complete_agent_workspace_pr_review_run(
             None
         }
     });
-    monitor.status = if monitor.last_error.is_some() {
-        AgentWorkspacePrReviewMonitorStatus::Blocked
-    } else if monitor.monitor_enabled {
-        AgentWorkspacePrReviewMonitorStatus::Watching
-    } else {
-        AgentWorkspacePrReviewMonitorStatus::Terminal
-    };
+    monitor.status = monitor.settlement_status();
     let monitor = state
         .app_state
         .agent_conversation_workspace_repo
@@ -2306,6 +2404,7 @@ pub async fn submit_agent_workspace_pr_review_action(
         &workspace,
         pr_number,
         Some(action.head_sha.clone()),
+        true,
     )
     .await?;
     ensure_review_artifact_for_head(&monitor, &action.head_sha)?;
@@ -2416,6 +2515,7 @@ pub async fn submit_agent_workspace_pr_review_action(
         &workspace,
         pr_number,
         Some(action.head_sha.clone()),
+        true,
     )
     .await?;
     monitor.first_review_completed = true;
@@ -2424,20 +2524,7 @@ pub async fn submit_agent_workspace_pr_review_action(
     monitor.last_review_outcome = Some(action_kind.to_string());
     monitor.last_submitted_review_id = Some(submitted.id.clone());
     monitor.last_error = None;
-    if matches!(
-        action_kind,
-        AgentWorkspacePrReviewActionKind::RequestChanges
-            | AgentWorkspacePrReviewActionKind::Approve
-    ) {
-        monitor.monitor_enabled = true;
-        monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
-    } else {
-        monitor.status = if monitor.monitor_enabled {
-            AgentWorkspacePrReviewMonitorStatus::Watching
-        } else {
-            AgentWorkspacePrReviewMonitorStatus::Terminal
-        };
-    }
+    monitor.status = monitor.settlement_status();
     let monitor = state
         .app_state
         .agent_conversation_workspace_repo
@@ -2512,6 +2599,7 @@ pub async fn skip_agent_workspace_pr_review_action(
         &workspace,
         action.pr_number,
         Some(action.head_sha.clone()),
+        true,
     )
     .await?;
     monitor.first_review_completed = true;
@@ -2522,7 +2610,7 @@ pub async fn skip_agent_workspace_pr_review_action(
     monitor.status = if monitor.monitor_enabled {
         AgentWorkspacePrReviewMonitorStatus::Watching
     } else {
-        AgentWorkspacePrReviewMonitorStatus::Terminal
+        AgentWorkspacePrReviewMonitorStatus::Paused
     };
     let monitor = state
         .app_state
@@ -4157,7 +4245,11 @@ async fn maybe_start_pr_review_monitor_polling(
 ) {
     if workspace.mode != AgentConversationWorkspaceMode::ReviewPr
         || !monitor.monitor_enabled
-        || monitor.status != AgentWorkspacePrReviewMonitorStatus::Watching
+        || matches!(
+            monitor.status,
+            AgentWorkspacePrReviewMonitorStatus::Paused
+                | AgentWorkspacePrReviewMonitorStatus::Terminal
+        )
     {
         return;
     }
@@ -4296,6 +4388,7 @@ async fn load_or_create_pr_review_monitor(
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
     head_sha: Option<String>,
+    enable_new_monitor: bool,
 ) -> Result<AgentWorkspacePrReviewMonitor, JsonError> {
     let existing = state
         .agent_conversation_workspace_repo
@@ -4303,12 +4396,17 @@ async fn load_or_create_pr_review_monitor(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     Ok(existing.unwrap_or_else(|| {
-        AgentWorkspacePrReviewMonitor::new(
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
             workspace.conversation_id.clone(),
             workspace.project_id.clone(),
             pr_number,
             head_sha,
-        )
+        );
+        if enable_new_monitor {
+            monitor.monitor_enabled = true;
+            monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        }
+        monitor
     }))
 }
 
@@ -4948,8 +5046,12 @@ fn monitor_for_retryable_submission_failure(
     mut monitor: AgentWorkspacePrReviewMonitor,
     error: String,
 ) -> AgentWorkspacePrReviewMonitor {
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
     monitor.last_error = Some(error);
+    monitor.status = if monitor.monitor_enabled {
+        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+    } else {
+        AgentWorkspacePrReviewMonitorStatus::Paused
+    };
     monitor
 }
 
@@ -7074,6 +7176,7 @@ mod tests {
             411,
             Some("head-sha".to_string()),
         );
+        monitor.monitor_enabled = true;
         monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
         monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-1"));
         monitor.review_artifact_head_sha = Some("head-sha".to_string());

@@ -30,10 +30,10 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
-    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatContextType, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchId, Project, TaskId,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::domain::services::github_service::{
@@ -1788,7 +1788,7 @@ async fn review_pr_monitor_skips_when_monitor_missing_or_disabled() {
 }
 
 #[tokio::test]
-async fn review_pr_monitor_skips_terminal_and_submitting_without_fetching_health() {
+async fn review_pr_monitor_skips_paused_terminal_and_submitting_without_fetching_health() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
         "review-monitor-terminal-skip-conversation",
@@ -1841,6 +1841,26 @@ async fn review_pr_monitor_skips_terminal_and_submitting_without_fetching_health
     )
     .await
     .expect("submitting monitor should skip cleanly");
+    assert!(!routed);
+
+    let mut paused = watching_review_monitor(&workspace, "old-head");
+    paused.monitor_enabled = false;
+    paused.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    workspace_repo
+        .upsert_pr_review_monitor(paused)
+        .await
+        .expect("paused monitor should persist");
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("paused monitor should skip cleanly");
     assert!(!routed);
     assert_eq!(github.state().fetch_pr_health_calls, 0);
     assert!(chat.get_sent_messages().await.is_empty());
@@ -2128,7 +2148,7 @@ async fn review_pr_monitor_skips_same_head_and_active_runs() {
 }
 
 #[tokio::test]
-async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
+async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
         "review-monitor-awaiting-conversation",
@@ -2149,7 +2169,23 @@ async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
         .await
         .expect("monitor should persist");
 
+    let stale_action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        101,
+        "old-head".to_string(),
+        AgentWorkspacePrReviewActionKind::RequestChanges,
+        "Old review requires a decision".to_string(),
+        "This action belongs to the superseded head.".to_string(),
+        None,
+        Some("old-review-run".to_string()),
+    );
+    workspace_repo
+        .create_or_update_pr_review_action(stale_action.clone())
+        .await
+        .expect("stale action should persist");
+
     let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("new-head")));
     let chat = Arc::new(MockChatService::new());
     let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
         github.clone() as Arc<dyn GithubServiceTrait>,
@@ -2161,10 +2197,19 @@ async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
-    .expect("awaiting-user route should skip cleanly");
-    assert!(!routed);
-    assert_eq!(github.state().fetch_pr_health_calls, 0);
-    assert!(chat.get_sent_messages().await.is_empty());
+    .expect("awaiting-user route should dispatch a new-head re-review");
+    assert!(routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let stale_action = workspace_repo
+        .get_pr_review_action(&stale_action.id)
+        .await
+        .expect("stale action lookup should succeed")
+        .expect("stale action should remain available for history");
+    assert_eq!(
+        stale_action.status,
+        AgentWorkspacePrReviewActionStatus::Superseded
+    );
 }
 
 #[tokio::test]
