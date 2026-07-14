@@ -702,7 +702,7 @@ async fn ipc_contract_start_service_review_pr_preserves_existing_monitor() {
         .await
         .expect("conversation should persist");
     let mut existing_monitor = AgentWorkspacePrReviewMonitor::new(
-        conversation.id.clone(),
+        conversation.id,
         project.id.clone(),
         88,
         Some("previous-head".to_string()),
