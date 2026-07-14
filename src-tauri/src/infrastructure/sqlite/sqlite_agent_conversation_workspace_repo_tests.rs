@@ -1259,6 +1259,88 @@ async fn pr_review_actions_update_existing_pending_action_for_same_head() {
 }
 
 #[tokio::test]
+async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_terminal_actions() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let stale = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            267,
+            "old-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Old blocking issues".to_string(),
+            "Please address old issues.".to_string(),
+            None,
+            Some("run-old".to_string()),
+        ))
+        .await
+        .unwrap();
+    let current = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            267,
+            "current-head".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "Current head passes".to_string(),
+            "Approved.".to_string(),
+            None,
+            Some("run-current".to_string()),
+        ))
+        .await
+        .unwrap();
+    let submitted = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            267,
+            "submitted-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Already submitted".to_string(),
+            "Submitted.".to_string(),
+            None,
+            Some("run-submitted".to_string()),
+        ))
+        .await
+        .unwrap();
+    repo.update_pr_review_action_status(
+        &submitted.id,
+        AgentWorkspacePrReviewActionStatus::Submitted,
+        Some("review-submitted"),
+    )
+    .await
+    .unwrap();
+
+    repo.supersede_pending_pr_review_actions_except_head(&conversation_id, 267, "current-head")
+        .await
+        .unwrap();
+
+    let stale = repo
+        .get_pr_review_action(&stale.id)
+        .await
+        .unwrap()
+        .expect("stale action should exist");
+    assert_eq!(stale.status, AgentWorkspacePrReviewActionStatus::Superseded);
+    assert!(stale.resolved_at.is_some());
+    let current = repo
+        .get_pr_review_action(&current.id)
+        .await
+        .unwrap()
+        .expect("current action should exist");
+    assert_eq!(current.status, AgentWorkspacePrReviewActionStatus::Pending);
+    let submitted = repo
+        .get_pr_review_action(&submitted.id)
+        .await
+        .unwrap()
+        .expect("submitted action should exist");
+    assert_eq!(
+        submitted.status,
+        AgentWorkspacePrReviewActionStatus::Submitted
+    );
+}
+
+#[tokio::test]
 async fn delete_removes_pr_review_state_for_conversation() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))

@@ -19,8 +19,7 @@ use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, ChatContextType,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, ChatContextType,
     ChatConversation, ChatConversationId, PersonaDirective, PersonaId, ProjectId, TeamIntent,
 };
 use crate::domain::services::{
@@ -40,7 +39,7 @@ use self::helpers::{
     linked_setup_failure_error, log_start_agent_conversation_phase,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
-    trim_optional_input,
+    review_pr_monitor_for_workspace, trim_optional_input,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -555,32 +554,17 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             },
             None => None,
         };
-        if let Some(workspace) = workspace.as_ref().filter(|workspace| {
-            workspace.mode == crate::domain::entities::AgentConversationWorkspaceMode::ReviewPr
-        }) {
-            let pr_number = workspace
-                .source_pull_request
-                .as_ref()
-                .map(|pull_request| pull_request.number)
-                .or(workspace.publication_pr_number)
-                .ok_or_else(|| "Review PR workspace requires a linked pull request".to_string())?;
-            let head_sha = workspace
-                .source_pull_request
-                .as_ref()
-                .and_then(|pull_request| pull_request.head_ref_oid.clone());
-            let mut monitor = AgentWorkspacePrReviewMonitor::new(
-                workspace.conversation_id.clone(),
-                workspace.project_id.clone(),
-                pr_number,
-                head_sha,
-            );
-            monitor.monitor_enabled = true;
-            monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        if let Some(monitor) = workspace
+            .as_ref()
+            .map(review_pr_monitor_for_workspace)
+            .transpose()?
+            .flatten()
+        {
             if self
                 .deps
                 .state
                 .agent_conversation_workspace_repo
-                .get_pr_review_monitor(&workspace.conversation_id)
+                .get_pr_review_monitor(&monitor.conversation_id)
                 .await
                 .map_err(|error| error.to_string())?
                 .is_none()

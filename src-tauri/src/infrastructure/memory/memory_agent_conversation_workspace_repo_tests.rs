@@ -191,3 +191,82 @@ async fn pr_review_monitor_rejects_stale_disabled_upserts_after_pause_and_restar
     );
     assert_eq!(stale_after_restart.review_artifact_version, Some(2));
 }
+
+#[tokio::test]
+async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_terminal_actions() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-actions");
+    let stale = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            703,
+            "old-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Old blocking issues".to_string(),
+            "Please address old issues.".to_string(),
+            None,
+            Some("run-old".to_string()),
+        ))
+        .await
+        .expect("insert stale action");
+    let current = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            703,
+            "current-head".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "Current head passes".to_string(),
+            "Approved.".to_string(),
+            None,
+            Some("run-current".to_string()),
+        ))
+        .await
+        .expect("insert current action");
+    let submitted = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            703,
+            "submitted-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Already submitted".to_string(),
+            "Submitted.".to_string(),
+            None,
+            Some("run-submitted".to_string()),
+        ))
+        .await
+        .expect("insert submitted action");
+    repo.update_pr_review_action_status(
+        &submitted.id,
+        AgentWorkspacePrReviewActionStatus::Submitted,
+        Some("review-submitted"),
+    )
+    .await
+    .expect("mark submitted");
+
+    repo.supersede_pending_pr_review_actions_except_head(&conversation_id, 703, "current-head")
+        .await
+        .expect("supersede old pending actions");
+
+    let stale = repo
+        .get_pr_review_action(&stale.id)
+        .await
+        .expect("load stale action")
+        .expect("stale action should exist");
+    assert_eq!(stale.status, AgentWorkspacePrReviewActionStatus::Superseded);
+    assert!(stale.resolved_at.is_some());
+    let current = repo
+        .get_pr_review_action(&current.id)
+        .await
+        .expect("load current action")
+        .expect("current action should exist");
+    assert_eq!(current.status, AgentWorkspacePrReviewActionStatus::Pending);
+    let submitted = repo
+        .get_pr_review_action(&submitted.id)
+        .await
+        .expect("load submitted action")
+        .expect("submitted action should exist");
+    assert_eq!(
+        submitted.status,
+        AgentWorkspacePrReviewActionStatus::Submitted
+    );
+}
