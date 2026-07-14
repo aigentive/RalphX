@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import {
+  AgentWorkspaceHttpError,
   chatApi,
   type AgentWorkspaceReviewStartConfirmation,
   type AgentWorkspaceReviewStartPreview,
@@ -25,6 +26,10 @@ function reviewStartDescription(preview: AgentWorkspaceReviewStartPreview): stri
     ? "It will resume after the reviewed local changes are published."
     : "It will resume after this remote-head Review passes.";
   return `GitHub auto-merge is enabled${pr}. RalphX will temporarily disable it before starting a reviewer run for ${target}. ${restoreTiming}`;
+}
+
+function isWorkspaceReviewStartConflict(error: unknown): boolean {
+  return error instanceof AgentWorkspaceHttpError && error.status === 409;
 }
 
 export function useWorkspaceReviewActions({
@@ -58,6 +63,17 @@ export function useWorkspaceReviewActions({
             throw new Error("Workspace Review preparation did not finish");
           }
           await onStartReview({ force, confirmation: preview.confirmation });
+        },
+        recoverFromError: async (error) => {
+          if (!isWorkspaceReviewStartConflict(error)) {
+            return null;
+          }
+          const refreshedPreview =
+            await chatApi.getAgentWorkspaceReviewStartPreview(conversationId);
+          preview = refreshedPreview;
+          return {
+            description: `The review target changed. ${reviewStartDescription(refreshedPreview)} Confirm the updated details to start the review.`,
+          };
         },
       });
     },

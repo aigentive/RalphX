@@ -3277,6 +3277,18 @@ export async function listAgentConversationWorkspacePublicationEvents(
   return raw.map(transformAgentConversationWorkspacePublicationEvent);
 }
 
+export class AgentWorkspaceHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, statusText: string, detail: string | null) {
+    super(
+      detail ? `${status} ${statusText}: ${detail}` : `${status} ${statusText}`,
+    );
+    this.name = "AgentWorkspaceHttpError";
+    this.status = status;
+  }
+}
+
 async function fetchAgentWorkspaceJson<T>(
   path: string,
   schema: z.ZodType<T>,
@@ -3295,10 +3307,10 @@ async function fetchAgentWorkspaceJson<T>(
     } catch {
       detail = null;
     }
-    throw new Error(
-      detail
-        ? `${response.status} ${response.statusText}: ${detail}`
-        : `${response.status} ${response.statusText}`,
+    throw new AgentWorkspaceHttpError(
+      response.status,
+      response.statusText,
+      detail,
     );
   }
   return schema.parse(await response.json());
