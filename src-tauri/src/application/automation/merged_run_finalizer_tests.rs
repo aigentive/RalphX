@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::merged_run_finalizer::{
     AppStateAutomationMergedRunFinalizer, AutomationMergedRunFinalizer,
+    NoopAutomationMergedRunFinalizer,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -71,6 +72,53 @@ async fn setup_finalizer_state(
 }
 
 #[tokio::test]
+async fn merged_run_finalizer_errors_when_conversation_is_missing() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let finalizer = AppStateAutomationMergedRunFinalizer::new(state);
+
+    let error = finalizer
+        .finalize_merged_conversation(&conversation_id)
+        .await
+        .expect_err("missing conversation must keep finalization retryable");
+
+    assert!(matches!(error, crate::error::AppError::NotFound(_)));
+    assert!(error.to_string().contains(&conversation_id.as_str()));
+}
+
+#[tokio::test]
+async fn merged_run_finalizer_archives_conversation_without_workspace() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let project = Project::new(
+        "Automation merged cleanup".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    let conversation_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id);
+    conversation.id = conversation_id.clone();
+    let state = AppState::new_test();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should be persisted");
+    let finalizer = AppStateAutomationMergedRunFinalizer::new(state.clone());
+
+    finalizer
+        .finalize_merged_conversation(&conversation_id)
+        .await
+        .expect("conversation without workspace should still archive");
+
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(conversation.archived_at.is_some());
+}
+
+#[tokio::test]
 async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_pr() {
     let (_temp, state, workspace_repo, conversation_id) = setup_finalizer_state(true).await;
     let finalizer = AppStateAutomationMergedRunFinalizer::new(state.clone());
@@ -105,6 +153,14 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
             .as_deref(),
         Some("unsafe")
     );
+}
+
+#[tokio::test]
+async fn noop_merged_run_finalizer_succeeds_without_side_effect_requirements() {
+    NoopAutomationMergedRunFinalizer
+        .finalize_merged_conversation(&ChatConversationId::new())
+        .await
+        .expect("noop finalizer should never block scheduler construction");
 }
 
 #[tokio::test]
