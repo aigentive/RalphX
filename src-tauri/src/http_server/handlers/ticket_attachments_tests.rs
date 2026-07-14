@@ -136,6 +136,31 @@ fn provider_item_keeps_unsafe_fetch_urls_unsupported_and_private() {
 }
 
 #[test]
+fn provider_item_drops_unsafe_optional_metadata_before_public_descriptor() {
+    let item = provider_item(
+        TicketAttachmentProvider::Linear,
+        "LIN-1",
+        "attachment-1".to_string(),
+        "evidence.txt".to_string(),
+        Some("https://example.test/content-type?token=secret"),
+        Some(512),
+        Some("Authorization: Bearer provider-secret".to_string()),
+        Some("https://uploads.linear.app/evidence.txt".to_string()),
+    )
+    .expect("safe required metadata should still produce a descriptor");
+    let serialized = serde_json::to_string(&item.descriptor).expect("descriptor serializes");
+
+    assert_eq!(item.descriptor.media_type, None);
+    assert_eq!(item.descriptor.created_at, None);
+    assert!(!serialized.contains("https://example.test"));
+    assert!(!serialized.contains("token=secret"));
+    assert!(!serialized.contains("Authorization"));
+    assert!(!serialized.contains("Bearer"));
+    assert!(item.content_fetch_supported);
+    assert!(item.source.fetch_url().is_some());
+}
+
+#[test]
 fn attachment_fetch_target_allows_only_provider_https_hosts() {
     let cases = [
         (
