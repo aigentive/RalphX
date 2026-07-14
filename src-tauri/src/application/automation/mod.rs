@@ -1,5 +1,6 @@
 pub mod api;
 pub mod delete;
+pub mod integration_pr;
 pub mod judge;
 pub mod plan_judge;
 pub mod plan_gate;

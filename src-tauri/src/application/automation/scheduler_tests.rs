@@ -9,6 +9,10 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
+use super::integration_pr::{
+    AutomationIntegrationPrPublisher, GithubAutomationIntegrationPrPublisher,
+    NoopAutomationIntegrationPrPublisher,
+};
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::plan_gate::{
     clear_plan_phase_publication_metadata, AutomationPlanVerificationStartOutcome,
@@ -45,10 +49,10 @@ use crate::domain::entities::{
     AgentRunId, AgentRunStatus, AgentRunUsage, Artifact, ArtifactId, ArtifactType, Automation,
     AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
     AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, InterruptedConversation, ProjectId,
-    VerificationGap, VerificationRunSnapshot, VerificationStatus,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AutomationRunStatus, AutomationStatus, ChatConversation, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    InterruptedConversation, Project, ProjectId, VerificationGap, VerificationRunSnapshot,
+    VerificationStatus, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -434,6 +438,36 @@ impl RecordingSignalChecker {
 struct RecordingJudgeInvoker {
     calls: Mutex<Vec<AutomationRunId>>,
     responses: Mutex<VecDeque<Result<String, String>>>,
+}
+
+#[derive(Default)]
+struct RecordingIntegrationPrPublisher {
+    calls: Mutex<Vec<AutomationId>>,
+    responses: Mutex<VecDeque<Result<(), String>>>,
+}
+
+impl RecordingIntegrationPrPublisher {
+    fn with_responses(responses: Vec<Result<(), String>>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(responses)),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl AutomationIntegrationPrPublisher for RecordingIntegrationPrPublisher {
+    async fn ensure_integration_pr(&self, automation: &Automation) -> AppResult<()> {
+        self.calls.lock().unwrap().push(automation.id.clone());
+        match self.responses.lock().unwrap().pop_front() {
+            Some(Ok(())) | None => Ok(()),
+            Some(Err(error)) => Err(AppError::Infrastructure(error)),
+        }
+    }
 }
 
 impl RecordingJudgeInvoker {
@@ -1312,13 +1346,54 @@ fn scheduler_with_judge(
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     config: AutomationSchedulerConfig,
 ) -> AutomationScheduler {
-    scheduler_with_judge_and_agent_runs(
+    scheduler_with_judge_and_integration_pr_publisher(
         automation_repo,
         run_repo,
         workspace_repo,
-        Arc::new(MemoryAgentRunRepository::new()),
         signal_checker,
+        Arc::new(NoopAutomationIntegrationPrPublisher),
         judge_invoker,
+        config,
+    )
+}
+
+fn scheduler_with_judge_and_integration_pr_publisher(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    integration_pr_publisher: Arc<dyn AutomationIntegrationPrPublisher>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
+    let plan_approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
+    let artifact_repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+    let plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter> =
+        Arc::new(MemoryPlanArtifactApprovalWriter {
+            approval_repo: Arc::clone(&plan_approval_repo),
+            artifact_repo: Arc::clone(&artifact_repo),
+        });
+    let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> = plan_approval_repo;
+    AutomationScheduler::new(
+        automation_repo,
+        run_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryChatConversationRepository::new()),
+        workspace_repo,
+        Arc::new(MemoryIdeationSessionRepository::new()),
+        plan_approval_repo_trait,
+        plan_approval_writer,
+        Arc::new(RecordingStarter),
+        Arc::new(RecordingResumer::default()),
+        signal_checker,
+        integration_pr_publisher,
+        judge_invoker,
+        Arc::new(RecordingPlanJudgeInvoker::default()),
+        Arc::new(NoopAutomationPlanVerificationStarter),
+        Arc::new(NoopAutomationEventEmitter),
+        artifact_repo,
+        notification_service(),
+        Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
 }
@@ -1473,6 +1548,7 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
         Arc::new(RecordingStarter),
         resumer,
         signal_checker,
+        Arc::new(NoopAutomationIntegrationPrPublisher),
         judge_invoker,
         plan_judge_invoker,
         plan_verification_starter,
@@ -1865,6 +1941,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(RecordingStarter),
         Arc::new(RecordingResumer::default()),
         Arc::new(RecordingSignalChecker::default()),
+        Arc::new(NoopAutomationIntegrationPrPublisher),
         Arc::new(RecordingJudgeInvoker::default()),
         Arc::new(RecordingPlanJudgeInvoker::default()),
         Arc::new(NoopAutomationPlanVerificationStarter),
@@ -2329,6 +2406,9 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
     let automation_id = AutomationId::from_string("automation-1");
     let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
     automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation.setup_conversation_id = Some(ChatConversationId::from_string("automation-setup"));
+    automation.base_ref_kind = "local_branch".to_string();
+    automation.base_ref = "ralphx/project/automation-1".to_string();
     automation_repo.create(automation).await.unwrap();
     let conversation_id = ChatConversationId::from_string("conversation-1");
     let mut run = automation_run(
@@ -2352,17 +2432,21 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
             merged_at: Some("2026-07-05T12:00:00Z".to_string()),
         },
     )]));
-    let scheduler = scheduler_with(
+    let integration_pr_publisher = Arc::new(RecordingIntegrationPrPublisher::default());
+    let scheduler = scheduler_with_judge_and_integration_pr_publisher(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
         Arc::clone(&workspace_repo),
         checker,
+        integration_pr_publisher.clone(),
+        Arc::new(RecordingJudgeInvoker::default()),
         AutomationSchedulerConfig::default(),
     );
 
     let summary = scheduler.tick_once().await.unwrap();
 
     assert_eq!(summary.merged_runs, 1);
+    assert_eq!(integration_pr_publisher.call_count(), 1);
     let latest = run_repo
         .latest_for_automation(&automation_id)
         .await
@@ -2391,10 +2475,11 @@ async fn automation_scheduler_does_not_write_merge_metadata_when_merged_status_c
     ));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
-    automation_repo
-        .create(automation(automation_id.as_str(), AutomationStatus::Active))
-        .await
-        .unwrap();
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.setup_conversation_id = Some(ChatConversationId::from_string("automation-setup"));
+    automation.base_ref_kind = "local_branch".to_string();
+    automation.base_ref = "ralphx/project/automation-1".to_string();
+    automation_repo.create(automation).await.unwrap();
     let conversation_id = ChatConversationId::from_string("conversation-1");
     let mut run = automation_run(
         "run-1",
@@ -2418,11 +2503,14 @@ async fn automation_scheduler_does_not_write_merge_metadata_when_merged_status_c
             merged_at: Some("2026-07-05T12:00:00Z".to_string()),
         },
     )]));
-    let scheduler = scheduler_with(
+    let integration_pr_publisher = Arc::new(RecordingIntegrationPrPublisher::default());
+    let scheduler = scheduler_with_judge_and_integration_pr_publisher(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
         Arc::clone(&workspace_repo),
         checker,
+        integration_pr_publisher.clone(),
+        Arc::new(RecordingJudgeInvoker::default()),
         AutomationSchedulerConfig::default(),
     );
 
@@ -2443,6 +2531,7 @@ async fn automation_scheduler_does_not_write_merge_metadata_when_merged_status_c
         .unwrap()
         .unwrap();
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(integration_pr_publisher.call_count(), 0);
 }
 
 #[tokio::test]
@@ -7230,6 +7319,407 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("publish_failed"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_retries_first_merged_run_integration_pr_before_judging() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let setup_conversation_id = ChatConversationId::from_string("automation-setup");
+    let mut active = automation(automation_id.as_str(), AutomationStatus::Active);
+    active.setup_conversation_id = Some(setup_conversation_id);
+    active.base_ref_kind = "malformed-modern-base-kind".to_string();
+    active.base_ref = "ralphx/project/automation-1".to_string();
+    automation_repo.create(active).await.unwrap();
+    let run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run_repo.create_run(run).await.unwrap();
+    let judge = Arc::new(RecordingJudgeInvoker::default());
+    let integration_pr_publisher = Arc::new(RecordingIntegrationPrPublisher::with_responses(vec![
+        Err("GitHub unavailable".to_string()),
+        Ok(()),
+    ]));
+    let scheduler = scheduler_with_judge_and_integration_pr_publisher(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        integration_pr_publisher.clone(),
+        judge.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let failed_summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(failed_summary.automation_errors, 1);
+    assert_eq!(failed_summary.judges_started, 0);
+    assert_eq!(judge.call_count(), 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.judge_state, AutomationJudgeState::None);
+
+    let recovered_summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(recovered_summary.automation_errors, 0);
+    assert_eq!(recovered_summary.judges_started, 1);
+    assert_eq!(integration_pr_publisher.call_count(), 2);
+}
+
+async fn seed_automation_integration_pr_setup(
+    state: &AppState,
+    ownership_matches: bool,
+) -> (Automation, ChatConversationId) {
+    let project = Project::new(
+        "Automation project".to_string(),
+        "/tmp/automation-integration-pr-project".to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut automation = automation("automation-integration-pr", AutomationStatus::Active);
+    automation.project_id = project.id.clone();
+    automation.base_ref_kind = "local_branch".to_string();
+    automation.base_ref = "ralphx/project/automation-integration-pr".to_string();
+
+    let mut setup_conversation = ChatConversation::new_project(project.id.clone());
+    setup_conversation.automation_id = Some(if ownership_matches {
+        automation.id.clone()
+    } else {
+        AutomationId::from_string("different-automation")
+    });
+    setup_conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Automation));
+    let setup_conversation = state
+        .chat_conversation_repo
+        .create(setup_conversation)
+        .await
+        .unwrap();
+    automation.setup_conversation_id = Some(setup_conversation.id.clone());
+
+    let setup_workspace = AgentConversationWorkspace::new(
+        setup_conversation.id.clone(),
+        project.id,
+        AgentConversationWorkspaceMode::Automation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        automation.base_ref.clone(),
+        "/tmp/automation-integration-pr-worktree".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(setup_workspace)
+        .await
+        .unwrap();
+
+    (automation, setup_conversation.id)
+}
+
+#[tokio::test]
+async fn automation_integration_pr_publisher_recovers_duplicate_and_persists_once() {
+    let state = AppState::new_test();
+    let (automation, setup_conversation_id) =
+        seed_automation_integration_pr_setup(&state, true).await;
+    let github = Arc::new(MockGithubService::new());
+    {
+        let mut github_state = github.state();
+        github_state.create_draft_pr_result = Some(Err(AppError::DuplicatePr));
+        github_state.find_pr_by_head_branch_result = Some(Ok(Some((
+            918,
+            "https://github.com/acme/project/pull/918".to_string(),
+        ))));
+    }
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let publisher = GithubAutomationIntegrationPrPublisher::new(
+        Some(github_trait),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+    );
+
+    publisher.ensure_integration_pr(&automation).await.unwrap();
+    publisher.ensure_integration_pr(&automation).await.unwrap();
+
+    {
+        let github_state = github.state();
+        assert_eq!(github_state.create_draft_pr_calls, 1);
+        assert_eq!(github_state.find_pr_by_head_branch_calls, 1);
+        assert_eq!(
+            github_state
+                .last_create_draft_pr_args
+                .as_ref()
+                .map(|args| args.0.as_str()),
+            Some("main")
+        );
+        assert_eq!(
+            github_state
+                .last_create_draft_pr_args
+                .as_ref()
+                .map(|args| args.1.as_str()),
+            Some(automation.base_ref.as_str())
+        );
+    }
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&setup_conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.publication_pr_number, Some(918));
+    assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+    assert_eq!(workspace.publication_push_status.as_deref(), Some("pushed"));
+}
+
+#[tokio::test]
+async fn automation_integration_pr_publisher_rejects_mismatched_setup_ownership() {
+    let state = AppState::new_test();
+    let (automation, setup_conversation_id) =
+        seed_automation_integration_pr_setup(&state, false).await;
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let publisher = GithubAutomationIntegrationPrPublisher::new(
+        Some(github_trait),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+    );
+
+    let error = publisher
+        .ensure_integration_pr(&automation)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert_eq!(github.state().create_draft_pr_calls, 0);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&setup_conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(workspace.publication_pr_number.is_none());
+}
+
+#[tokio::test]
+async fn automation_integration_pr_publisher_rejects_terminal_setup_publication() {
+    let state = AppState::new_test();
+    let (automation, setup_conversation_id) =
+        seed_automation_integration_pr_setup(&state, true).await;
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &setup_conversation_id,
+            Some(917),
+            Some("https://github.com/acme/project/pull/917"),
+            Some("closed"),
+            Some("pushed"),
+        )
+        .await
+        .unwrap();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let publisher = GithubAutomationIntegrationPrPublisher::new(
+        Some(github_trait),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+    );
+
+    let error = publisher
+        .ensure_integration_pr(&automation)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert_eq!(github.state().create_draft_pr_calls, 0);
+}
+
+#[tokio::test]
+async fn automation_integration_pr_publisher_rejects_non_local_or_malformed_base_kind() {
+    for base_ref_kind in ["project_default", "not-a-base-kind"] {
+        let state = AppState::new_test();
+        let (mut automation, _) = seed_automation_integration_pr_setup(&state, true).await;
+        automation.base_ref_kind = base_ref_kind.to_string();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let publisher = GithubAutomationIntegrationPrPublisher::new(
+            Some(github_trait),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.project_repo),
+        );
+
+        let error = publisher
+            .ensure_integration_pr(&automation)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "base_ref_kind: {base_ref_kind}"
+        );
+        assert_eq!(
+            github.state().create_draft_pr_calls,
+            0,
+            "base_ref_kind: {base_ref_kind}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn automation_integration_pr_publisher_rejects_non_active_setup_publication_statuses() {
+    for status in [None, Some("failed"), Some("unknown"), Some("merged")] {
+        let state = AppState::new_test();
+        let (automation, setup_conversation_id) =
+            seed_automation_integration_pr_setup(&state, true).await;
+        state
+            .agent_conversation_workspace_repo
+            .update_publication(
+                &setup_conversation_id,
+                Some(917),
+                Some("https://github.com/acme/project/pull/917"),
+                status,
+                Some("pushed"),
+            )
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let publisher = GithubAutomationIntegrationPrPublisher::new(
+            Some(github_trait),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.project_repo),
+        );
+
+        let error = publisher
+            .ensure_integration_pr(&automation)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "status: {status:?}"
+        );
+        assert_eq!(
+            github.state().create_draft_pr_calls,
+            0,
+            "status: {status:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn automation_integration_pr_publisher_accepts_normalized_draft_publication_status() {
+    let state = AppState::new_test();
+    let (automation, setup_conversation_id) =
+        seed_automation_integration_pr_setup(&state, true).await;
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &setup_conversation_id,
+            Some(917),
+            Some("https://github.com/acme/project/pull/917"),
+            Some(" DRAFT "),
+            Some("pushed"),
+        )
+        .await
+        .unwrap();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let publisher = GithubAutomationIntegrationPrPublisher::new(
+        Some(github_trait),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+    );
+
+    publisher.ensure_integration_pr(&automation).await.unwrap();
+
+    assert_eq!(github.state().create_draft_pr_calls, 0);
+}
+
+#[tokio::test]
+async fn automation_scheduler_legacy_first_merged_run_without_setup_workspace_still_judges() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("legacy-automation");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Merged,
+            None,
+        ))
+        .await
+        .unwrap();
+    let integration_pr_publisher = Arc::new(RecordingIntegrationPrPublisher::default());
+    let judge = Arc::new(RecordingJudgeInvoker::default());
+    let scheduler = scheduler_with_judge_and_integration_pr_publisher(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        integration_pr_publisher.clone(),
+        judge,
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(integration_pr_publisher.call_count(), 0);
+}
+
+#[tokio::test]
+async fn automation_scheduler_does_not_publish_integration_pr_for_first_closed_run() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut active = automation(automation_id.as_str(), AutomationStatus::Active);
+    active.setup_conversation_id = Some(ChatConversationId::from_string("automation-setup"));
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "ralphx/project/automation-1".to_string();
+    automation_repo.create(active).await.unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::PrClosed,
+            None,
+        ))
+        .await
+        .unwrap();
+    let integration_pr_publisher = Arc::new(RecordingIntegrationPrPublisher::default());
+    let scheduler = scheduler_with_judge_and_integration_pr_publisher(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        integration_pr_publisher.clone(),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(integration_pr_publisher.call_count(), 0);
 }
 
 #[tokio::test]
