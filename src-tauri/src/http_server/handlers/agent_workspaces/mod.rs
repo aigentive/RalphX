@@ -24,8 +24,8 @@ use crate::application::agent_workspace_pr_description::validate_agent_workspace
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
     review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer,
-    AgentWorkspaceReviewGoalContext,
-    AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart,
+    AgentWorkspaceReviewTarget,
 };
 use crate::application::agent_workspace_review_auto_merge::{
     preview_manual_workspace_review_start, start_guarded_agent_workspace_review,
@@ -617,7 +617,10 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
                 .auto_merge_guard
                 .as_ref()
                 .map(|guard| guard.status.to_string()),
-            auto_merge_guard_pr_number: value.auto_merge_guard.as_ref().map(|guard| guard.pr_number),
+            auto_merge_guard_pr_number: value
+                .auto_merge_guard
+                .as_ref()
+                .map(|guard| guard.pr_number),
             auto_merge_guard_method: value
                 .auto_merge_guard
                 .as_ref()
@@ -677,9 +680,7 @@ pub struct StartAgentWorkspaceReviewConfirmationRequest {
     pub will_disable_auto_merge: bool,
 }
 
-impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest>
-    for WorkspaceReviewStartConfirmation
-{
+impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest> for WorkspaceReviewStartConfirmation {
     type Error = AppError;
 
     fn try_from(value: StartAgentWorkspaceReviewConfirmationRequest) -> Result<Self, Self::Error> {
@@ -1555,10 +1556,9 @@ pub async fn get_agent_workspace_review_start_preview(
         .as_ref()
         .map(|effect| effect.restore_after_publish)
         .unwrap_or_else(|| {
-            preview
-                .target
-                .as_ref()
-                .is_some_and(|target| target.scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+            preview.target.as_ref().is_some_and(|target| {
+                target.scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
+            })
         });
     Ok(Json(AgentWorkspaceReviewStartPreviewResponse {
         success: true,
@@ -2570,6 +2570,7 @@ pub async fn submit_agent_workspace_pr_review_action(
     if !claimed {
         return Err(claim_conflict);
     }
+    monitor.monitor_enabled = true;
     monitor.status = AgentWorkspacePrReviewMonitorStatus::Submitting;
     monitor.last_error = None;
     let monitor = state
