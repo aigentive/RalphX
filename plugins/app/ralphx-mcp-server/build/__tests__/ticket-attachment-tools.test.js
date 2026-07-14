@@ -14,6 +14,17 @@ describe("ticket attachment MCP tools", () => {
     });
     it("registers exactly the read-only attachment tool schemas", () => {
         const allTools = getAllTools();
+        const forbiddenSchemaTerms = [
+            "url",
+            "token",
+            "credential",
+            "authorization",
+            "download",
+            "cache",
+            "path",
+            "source",
+            "handle",
+        ];
         for (const name of TOOL_NAMES) {
             const tool = allTools.find((candidate) => candidate.name === name);
             expect(tool, `${name} registered`).toBeDefined();
@@ -28,6 +39,10 @@ describe("ticket attachment MCP tools", () => {
                 "content_url",
                 "cache_path",
             ]));
+            const schemaText = JSON.stringify(tool).toLowerCase();
+            for (const term of forbiddenSchemaTerms) {
+                expect(schemaText, `${name} schema must not expose ${term}`).not.toContain(term);
+            }
         }
         const listTool = allTools.find((candidate) => candidate.name === "list_ticket_attachments");
         expect(listTool.inputSchema.required).toEqual(["provider", "ticket_id"]);
@@ -139,6 +154,64 @@ describe("ticket attachment MCP tools", () => {
         expect(JSON.stringify(shaped)).not.toContain("Bearer");
         expect(JSON.stringify(shaped)).not.toContain("/tmp/cache");
         expect(JSON.stringify(shaped)).not.toContain("authorization");
+    });
+    it("redacts unsafe scalar values even under otherwise allowed result keys", () => {
+        const shaped = safeTicketAttachmentResult({
+            attachments: [
+                {
+                    provider: "jira",
+                    id: "https://example.test/raw-id",
+                    fileName: "Bearer direct-secret",
+                    contentPointer: {
+                        id: "ta_123",
+                        available: true,
+                    },
+                },
+                {
+                    provider: "linear",
+                    id: "ta_456",
+                    fileName: "evidence.txt",
+                    contentPointer: {
+                        id: "https://example.test/direct-download",
+                    },
+                },
+                {
+                    provider: "click_up",
+                    id: "ta_789",
+                    fileName: "/tmp/cache/content",
+                    contentPointer: {
+                        id: "ta_789",
+                    },
+                },
+            ],
+        });
+        expect(shaped).toEqual({
+            attachments: [
+                {
+                    provider: "jira",
+                    contentPointer: {
+                        id: "ta_123",
+                        available: true,
+                    },
+                },
+                {
+                    provider: "linear",
+                    id: "ta_456",
+                    fileName: "evidence.txt",
+                    contentPointer: {},
+                },
+                {
+                    provider: "click_up",
+                    id: "ta_789",
+                    contentPointer: {
+                        id: "ta_789",
+                    },
+                },
+            ],
+        });
+        expect(JSON.stringify(shaped)).not.toContain("https://");
+        expect(JSON.stringify(shaped)).not.toContain("Bearer");
+        expect(JSON.stringify(shaped)).not.toContain("/tmp/cache");
     });
     it("identifies only ticket attachment tool names", () => {
         expect(isTicketAttachmentToolName("list_ticket_attachments")).toBe(true);

@@ -271,6 +271,65 @@ async fn fetch_content_does_not_persist_provider_failures() {
     assert_eq!(store.persist_count(), 0);
 }
 
+#[tokio::test]
+async fn fetch_content_does_not_persist_over_limit_downloads() {
+    let item = provider_item(true, Some(3));
+    let pointer = item.source.content_pointer().expect("pointer");
+    let reader = RecordingReader::new(
+        vec![item],
+        Ok(vec![4; MAX_TICKET_ATTACHMENT_CONTENT_BYTES + 1]),
+    );
+    let store = RecordingStore::default();
+
+    let result = fetch_ticket_attachment_content(
+        &reader,
+        &store,
+        TicketAttachmentProvider::Jira,
+        "JRA-1",
+        &pointer,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(TicketAttachmentError::ContentTooLarge { .. })
+    ));
+    assert_eq!(reader.fetch_count(), 1);
+    assert_eq!(store.persist_count(), 0);
+}
+
+#[tokio::test]
+async fn runtime_store_cleans_temporary_file_when_atomic_rename_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_root = temp.path().join("app-data").join("attachments");
+    let store = TicketAttachmentRuntimeStore::new(&app_root);
+    let source =
+        TicketAttachmentSourceHandle::new(TicketAttachmentProvider::Linear, "LIN-1", "att-1")
+            .expect("source");
+    let location = build_ticket_attachment_content_location(&app_root, &source, "artifact.txt")
+        .expect("location");
+    let parent = location.path().parent().expect("content parent");
+    fs::create_dir_all(parent).expect("content parent should be created");
+    fs::create_dir(location.path()).expect("final path directory should force rename failure");
+    let bytes = BoundedTicketAttachmentBytes::new(vec![9, 9, 9]).expect("bounded bytes");
+
+    let result = store.persist_content(&source, "artifact.txt", &bytes).await;
+
+    assert!(matches!(
+        result,
+        Err(TicketAttachmentError::StorageWriteFailed)
+    ));
+    let leaked_temp = fs::read_dir(parent)
+        .expect("content parent should remain readable")
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().starts_with(".content-"));
+    assert!(!leaked_temp, "failed atomic writes must remove temp files");
+    assert!(
+        location.path().is_dir(),
+        "failed rename must not replace the existing final path"
+    );
+}
+
 fn provider_item(
     content_fetch_supported: bool,
     declared_size_bytes: Option<u64>,
