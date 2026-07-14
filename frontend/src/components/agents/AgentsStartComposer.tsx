@@ -1127,7 +1127,9 @@ export function AgentsStartComposer({
             placeholder={
               mode === "review_pr"
                 ? REVIEW_PR_DEFAULT_PROMPT
-                : "Ask the agent to plan, build, debug, or review something"
+                : mode === "automation"
+                  ? "Describe your goal for the new automation"
+                  : "Ask the agent to plan, build, debug, or review something"
             }
             isSubmitting={isSubmitting}
             autoFocus
@@ -1140,8 +1142,20 @@ export function AgentsStartComposer({
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}
             attachmentsUploading={isSubmitting && attachments.length > 0}
-            submitLabel={isExecutionHalted ? "Queue Prompt" : "Start Agent"}
-            submittingLabel={isExecutionHalted ? "Queuing..." : "Starting..."}
+            submitLabel={
+              isExecutionHalted
+                ? "Queue Prompt"
+                : mode === "automation"
+                  ? "Start Automation"
+                  : "Start Agent"
+            }
+            submittingLabel={
+              isExecutionHalted
+                ? "Queuing..."
+                : mode === "automation"
+                  ? "Starting automation..."
+                  : "Starting..."
+            }
             {...(reviewPrDefaultPrompt
               ? { emptySubmitMessage: reviewPrDefaultPrompt }
               : {})}
