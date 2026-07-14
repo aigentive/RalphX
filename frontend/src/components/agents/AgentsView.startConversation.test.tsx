@@ -203,6 +203,28 @@ describe("AgentsView start conversation", () => {
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 
+  it("preselects Automation drafts without creating an automation before submission", async () => {
+    mockAgentViewData();
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "",
+      mode: "automation",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Automation")
+    );
+    expect(screen.getByTestId("agents-start-textarea")).toHaveAttribute(
+      "placeholder",
+      "Describe your goal for the new automation",
+    );
+    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Setup Automation");
+    expect(createAutomationDraftMock).not.toHaveBeenCalled();
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
+  });
+
   it("restores unsent starter composer text and attachments from the draft store", async () => {
     mockAgentViewData();
     const file = new File(["draft"], "notes.md", { type: "text/markdown" });

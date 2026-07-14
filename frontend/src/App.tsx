@@ -62,8 +62,7 @@ import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
-import { useAutomationEvents, useCreateAutomationDraft } from "@/hooks/useAutomations";
-import { extractErrorMessage } from "@/lib/errors";
+import { useAutomationEvents } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
 import {
   navigateToAgentTask,
@@ -881,31 +880,24 @@ function AppContent() {
     [handleOpenAutomationDetail],
   );
 
-  const createAutomationDraft = useCreateAutomationDraft();
   const handleNewAutomation = useCallback(() => {
-    if (!currentProjectId || createAutomationDraft.isPending) {
+    if (!currentProjectId) {
       return;
     }
-    createAutomationDraft.mutate(
-      { projectId: currentProjectId },
-      {
-        onSuccess: ({ automation, setupConversationId }) => {
-          if (setupConversationId) {
-            handleNavigateToWorkspace(currentProjectId, setupConversationId);
-          } else {
-            handleOpenAutomationDetail(automation.id);
-          }
-        },
-        onError: (error) => {
-          toast.error(extractErrorMessage(error, "Failed to create automation"));
-        },
-      },
-    );
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: currentProjectId,
+      content: "",
+      mode: "automation",
+    });
+    clearAgentSelection();
+    setFocusedAgentProject(currentProjectId);
+    useChatStore.getState().setActiveConversation(`project:${currentProjectId}`, null);
+    setCurrentView("agents");
   }, [
+    clearAgentSelection,
     currentProjectId,
-    createAutomationDraft,
-    handleNavigateToWorkspace,
-    handleOpenAutomationDetail,
+    setCurrentView,
+    setFocusedAgentProject,
   ]);
 
   useEffect(() => {

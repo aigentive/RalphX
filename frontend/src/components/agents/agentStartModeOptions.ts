@@ -1,6 +1,6 @@
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
 
-export const AGENT_MODE_OPTIONS: Array<{
+export const AGENT_START_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
   label: string;
   description: string;

@@ -7,7 +7,7 @@ import {
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { AgentConversation } from "./agentConversations";
-import { AGENT_MODE_OPTIONS } from "./agentStartModeOptions";
+import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
 
 function conversation(
   overrides: Partial<AgentConversation> = {},
@@ -112,7 +112,7 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
       "persona_builder",
     );
-    expect(AGENT_MODE_OPTIONS.map((option) => option.id)).not.toContain(
+    expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
       "persona_builder",
     );
   });
