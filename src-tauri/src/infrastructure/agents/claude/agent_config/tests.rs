@@ -20,7 +20,30 @@ use crate::infrastructure::agents::harness_agent_catalog::{
     AgentPromptHarness,
 };
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 #[test]
 fn test_yaml_loaded_has_unique_names() {
@@ -432,6 +455,13 @@ fn early_file_logging_environment_override_has_highest_precedence() {
         None,
         "file_logging: true"
     ));
+}
+
+#[test]
+fn early_file_logging_public_resolver_reads_environment_override() {
+    let _env = EnvGuard::set("RALPHX_FILE_LOGGING", "0");
+
+    assert!(!resolve_file_logging_early());
 }
 
 #[test]
