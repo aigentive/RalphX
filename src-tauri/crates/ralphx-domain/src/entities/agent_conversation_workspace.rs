@@ -1072,6 +1072,36 @@ mod monitor_and_action_constructor_tests {
     }
 
     #[test]
+    fn monitor_settlement_status_preserves_terminal_and_reports_live_state() {
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            ChatConversationId::new(),
+            ProjectId("p".to_string()),
+            42,
+            Some("abc".to_string()),
+        );
+
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Paused
+        );
+        monitor.monitor_enabled = true;
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Watching
+        );
+        monitor.last_error = Some("review failed".to_string());
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Blocked
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Terminal
+        );
+    }
+
+    #[test]
     fn action_new_starts_pending_with_generated_id() {
         let action = AgentWorkspacePrReviewAction::new(
             ChatConversationId::new(),

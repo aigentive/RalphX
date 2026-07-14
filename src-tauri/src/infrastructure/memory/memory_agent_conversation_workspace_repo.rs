@@ -1009,6 +1009,16 @@ fn is_active_pr_poller_recovery_workspace(workspace: &AgentConversationWorkspace
         return true;
     }
 
+    if workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+        && workspace.source_pull_request.is_some()
+        && workspace.auto_publish_enabled
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
+    {
+        return true;
+    }
+
     workspace.status == AgentConversationWorkspaceStatus::Active
         && workspace.mode == AgentConversationWorkspaceMode::Ideation
         && workspace.linked_plan_branch_id.is_some()

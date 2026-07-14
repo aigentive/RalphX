@@ -148,6 +148,97 @@ fn review_pr_workspace(
     workspace
 }
 
+struct ReviewPrPollerRecoveryFixture {
+    _temp_dir: tempfile::TempDir,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    registry: Arc<PrPollerRegistry>,
+    conversation_id: ChatConversationId,
+    workspace: AgentConversationWorkspace,
+}
+
+async fn setup_review_pr_poller_recovery_fixture(
+    conversation_id: &str,
+    branch_name: &str,
+) -> ReviewPrPollerRecoveryFixture {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    run_git(&repo_path, &["checkout", "-b", "main"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Startup Review PR Monitor".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = review_pr_workspace(&project, conversation_id.clone(), branch_name);
+    GitService::create_worktree(
+        &repo_path,
+        Path::new(&workspace.worktree_path),
+        branch_name,
+        "main",
+    )
+    .await
+    .expect("create workspace worktree");
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    ReviewPrPollerRecoveryFixture {
+        _temp_dir: temp_dir,
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        registry,
+        conversation_id,
+        workspace,
+    }
+}
+
+async fn recover_review_pr_poller_fixture(fixture: &ReviewPrPollerRecoveryFixture) {
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        fixture.workspace_repo.clone();
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        Arc::clone(&fixture.project_repo),
+        Arc::clone(&fixture.plan_branch_repo),
+        Arc::clone(&fixture.registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+}
+
 fn terminal_workspace(project: &Project, pr_status: Option<&str>) -> AgentConversationWorkspace {
     let conversation_id = ChatConversationId::new();
     let mut workspace = AgentConversationWorkspace::new(
@@ -308,51 +399,14 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
 async fn startup_agent_workspace_pr_recovery_restarts_review_pr_monitor_poller() {
     init_tracing();
 
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let repo_path = temp_dir.path().join("repo");
-    std::fs::create_dir_all(&repo_path).expect("create repo dir");
-    run_git(&repo_path, &["init"]);
-    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
-    run_git(&repo_path, &["config", "user.name", "Test User"]);
-    run_git(&repo_path, &["checkout", "-b", "main"]);
-    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
-    run_git(&repo_path, &["add", "."]);
-    run_git(&repo_path, &["commit", "-m", "initial"]);
-
-    let mut project = Project::new(
-        "Startup Review PR Monitor".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.base_branch = Some("main".to_string());
-    project.github_pr_enabled = true;
-    project.worktree_parent_directory = Some(
-        temp_dir
-            .path()
-            .join("worktrees")
-            .to_string_lossy()
-            .to_string(),
-    );
-
-    let conversation_id = ChatConversationId::from_string("abababab-7777-8888-9999-cdcdcdcdcdcd");
-    let branch_name = "ralphx/test/startup-review-pr-monitor";
-    let workspace = review_pr_workspace(&project, conversation_id.clone(), branch_name);
-    GitService::create_worktree(
-        &repo_path,
-        Path::new(&workspace.worktree_path),
-        branch_name,
-        "main",
+    let fixture = setup_review_pr_poller_recovery_fixture(
+        "abababab-7777-8888-9999-cdcdcdcdcdcd",
+        "ralphx/test/startup-review-pr-monitor",
     )
-    .await
-    .expect("create workspace worktree");
-
-    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
-    workspace_repo
-        .create_or_update(workspace.clone())
-        .await
-        .expect("workspace should persist");
+    .await;
     let mut monitor = AgentWorkspacePrReviewMonitor::new(
-        conversation_id.clone(),
-        workspace.project_id.clone(),
+        fixture.conversation_id.clone(),
+        fixture.workspace.project_id.clone(),
         101,
         Some("old-head".to_string()),
     );
@@ -360,34 +414,135 @@ async fn startup_agent_workspace_pr_recovery_restarts_review_pr_monitor_poller()
     monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
     monitor.first_review_completed = true;
     monitor.last_reviewed_head_sha = Some("old-head".to_string());
-    workspace_repo
+    fixture
+        .workspace_repo
         .upsert_pr_review_monitor(monitor)
         .await
         .expect("monitor should persist");
 
-    let project_repo: Arc<dyn ProjectRepository> =
-        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
-    let github = Arc::new(MockGithubService::new());
-    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
-        Arc::new(MemoryPlanBranchRepository::new());
-    let registry = Arc::new(PrPollerRegistry::new(
-        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
-        Arc::clone(&plan_branch_repo),
-    ));
+    recover_review_pr_poller_fixture(&fixture).await;
 
-    recover_agent_workspace_pr_pollers(
-        workspace_repo,
-        project_repo,
-        plan_branch_repo,
-        Arc::clone(&registry),
-        Arc::new(MemoryAgentRunRepository::new()),
-        Arc::new(MockChatService::new()),
-        Arc::new(HashSet::new()),
+    assert!(fixture
+        .registry
+        .is_agent_workspace_polling(&fixture.conversation_id));
+    fixture
+        .registry
+        .stop_agent_workspace_polling(&fixture.conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_creates_missing_review_pr_monitor() {
+    init_tracing();
+
+    let fixture = setup_review_pr_poller_recovery_fixture(
+        "abababab-1313-1414-1515-cdcdcdcdcdcd",
+        "ralphx/test/startup-review-pr-missing-monitor",
     )
     .await;
 
-    assert!(registry.is_agent_workspace_polling(&conversation_id));
-    registry.stop_agent_workspace_polling(&conversation_id);
+    recover_review_pr_poller_fixture(&fixture).await;
+
+    let monitor = fixture
+        .workspace_repo
+        .get_pr_review_monitor(&fixture.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("legacy Review PR workspace should be armed");
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert_eq!(monitor.pr_number, 101);
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("old-head"));
+    assert!(fixture
+        .registry
+        .is_agent_workspace_polling(&fixture.conversation_id));
+    fixture
+        .registry
+        .stop_agent_workspace_polling(&fixture.conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_rearms_legacy_terminal_review_pr_monitor() {
+    init_tracing();
+
+    let fixture = setup_review_pr_poller_recovery_fixture(
+        "abababab-1616-1717-1818-cdcdcdcdcdcd",
+        "ralphx/test/startup-review-pr-terminal-monitor",
+    )
+    .await;
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        fixture.conversation_id.clone(),
+        fixture.workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = false;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+    fixture
+        .workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("legacy terminal monitor should persist");
+
+    recover_review_pr_poller_fixture(&fixture).await;
+
+    let monitor = fixture
+        .workspace_repo
+        .get_pr_review_monitor(&fixture.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("legacy terminal monitor should remain present");
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert!(fixture
+        .registry
+        .is_agent_workspace_polling(&fixture.conversation_id));
+    fixture
+        .registry
+        .stop_agent_workspace_polling(&fixture.conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_preserves_paused_review_pr_monitor() {
+    init_tracing();
+
+    let fixture = setup_review_pr_poller_recovery_fixture(
+        "abababab-1919-2020-2121-cdcdcdcdcdcd",
+        "ralphx/test/startup-review-pr-paused-monitor",
+    )
+    .await;
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        fixture.conversation_id.clone(),
+        fixture.workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = false;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    fixture
+        .workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("paused monitor should persist");
+
+    recover_review_pr_poller_fixture(&fixture).await;
+
+    let monitor = fixture
+        .workspace_repo
+        .get_pr_review_monitor(&fixture.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("paused monitor should remain present");
+    assert!(!monitor.monitor_enabled);
+    assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Paused);
+    assert!(!fixture
+        .registry
+        .is_agent_workspace_polling(&fixture.conversation_id));
 }
 
 #[tokio::test]

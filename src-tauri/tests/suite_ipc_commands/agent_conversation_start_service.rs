@@ -17,10 +17,11 @@ use ralphx_lib::application::startup_background::AgentConversationAutomationRunS
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, Artifact, ArtifactType,
-    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus,
-    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionFlow, Persona, PersonaId, PersonaStatus, Project, ProjectId, TaskId,
+    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
+    AgentWorkspacePrReviewMonitorStatus, Artifact, ArtifactType, Automation, AutomationId,
+    AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationStatus, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionFlow,
+    Persona, PersonaId, PersonaStatus, Project, ProjectId, TaskId,
 };
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -596,6 +597,78 @@ async fn ipc_contract_start_service_pr_backed_local_branch_prepares_isolated_wor
             .as_ref()
             .map(|source| source.number),
         Some(42)
+    );
+}
+
+#[tokio::test]
+async fn ipc_contract_start_service_review_pr_creates_enabled_monitor() {
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let branch = "feature/service-review-pr-monitor";
+    git(&repo_path, &["checkout", "-b", branch]);
+    std::fs::write(repo_path.join("README.md"), "review pr\n")
+        .expect("fixture update should be written");
+    git(&repo_path, &["add", "README.md"]);
+    git(&repo_path, &["commit", "-m", "review pr"]);
+    let head_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+    git(&repo_path, &["checkout", "main"]);
+
+    let state = AppState::new_test();
+    let project = seed_project(
+        &state,
+        "project-start-service-review-pr-monitor",
+        &repo_path,
+        &worktree_parent,
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_app(state, execution_state);
+
+    let result = start_with_app(
+        &app,
+        service_start_input(
+            &project.id,
+            "Review this PR",
+            "review_pr",
+            Some(branch),
+            None,
+            None,
+            Some(AgentWorkspaceSourcePullRequestInput {
+                number: 77,
+                url: Some("https://github.com/owner/repo/pull/77".to_string()),
+                title: Some("Review PR monitor".to_string()),
+                head_ref_name: branch.to_string(),
+                base_ref_name: Some("main".to_string()),
+                head_ref_oid: Some(head_sha.clone()),
+            }),
+        ),
+    )
+    .await
+    .expect("Review PR start should queue while execution is paused");
+
+    assert!(result.send_result.was_queued);
+    let workspace = result.workspace.expect("Review PR mode creates workspace");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::ReviewPr);
+    let monitor = app
+        .state::<AppState>()
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("Review PR start should arm monitor");
+    assert_eq!(monitor.pr_number, 77);
+    assert_eq!(
+        monitor.last_seen_head_sha.as_deref(),
+        Some(head_sha.as_str())
+    );
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
     );
 }
 

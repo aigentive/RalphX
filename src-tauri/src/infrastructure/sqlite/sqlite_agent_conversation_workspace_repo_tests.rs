@@ -1406,7 +1406,7 @@ async fn list_active_direct_published_workspaces_excludes_archived_conversation_
 }
 
 #[tokio::test]
-async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_prs() {
+async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_and_review_prs() {
     let (db, repo, conversation_id) = setup_repo();
     let mut direct = make_workspace(conversation_id);
     direct.publication_pr_number = Some(72);
@@ -1424,6 +1424,23 @@ async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_
     ideation.publication_push_status = Some("pushed".to_string());
     ideation.pr_autofix_enabled = true;
     repo.create_or_update(ideation.clone()).await.unwrap();
+
+    let review_pr_id = ChatConversationId::from_string("30303030-3030-3030-3030-303030303030");
+    seed_conversation(&db, &review_pr_id);
+    let mut review_pr = make_workspace(review_pr_id);
+    review_pr.mode = AgentConversationWorkspaceMode::ReviewPr;
+    review_pr.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 75,
+        url: Some("https://github.com/owner/repo/pull/75".to_string()),
+        title: Some("Review PR source".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head-75".to_string()),
+    });
+    review_pr.publication_pr_number = None;
+    review_pr.publication_pr_status = None;
+    review_pr.publication_push_status = None;
+    repo.create_or_update(review_pr.clone()).await.unwrap();
 
     let unsupervised_id = ChatConversationId::from_string("20202020-2020-2020-2020-202020202020");
     seed_conversation(&db, &unsupervised_id);
@@ -1445,9 +1462,13 @@ async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_
             .into_iter()
             .map(|workspace| workspace.conversation_id)
             .collect::<std::collections::HashSet<_>>(),
-        [direct.conversation_id, ideation.conversation_id]
-            .into_iter()
-            .collect()
+        [
+            direct.conversation_id,
+            ideation.conversation_id,
+            review_pr.conversation_id,
+        ]
+        .into_iter()
+        .collect()
     );
 }
 
