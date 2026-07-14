@@ -12,6 +12,7 @@ use crate::application::agent_conversation_start_service::{
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::merged_run_finalizer::AppStateAutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
     AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
     AutomationPlanVerificationStarter, AutomationRunResumer, ResumeDelivery,
@@ -472,6 +473,7 @@ pub fn spawn_automation_scheduler(
             app_handle.clone(),
         ));
     let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
+    let merged_run_finalizer = Arc::new(AppStateAutomationMergedRunFinalizer::new(state.clone()));
 
     let scheduler = AutomationScheduler::new(
         Arc::clone(&state.automation_repo),
@@ -488,6 +490,7 @@ pub fn spawn_automation_scheduler(
         judge_invoker,
         plan_judge_invoker,
         plan_verification_starter,
+        merged_run_finalizer,
         event_emitter,
         Arc::clone(&state.artifact_repo),
         state.notification_service(),
