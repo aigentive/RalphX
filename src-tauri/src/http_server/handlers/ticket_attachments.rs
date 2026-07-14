@@ -307,9 +307,15 @@ pub(super) fn provider_item(
         ticket_id,
         &attachment_id,
         &file_name,
-        media_type,
+        safe_optional_attachment_text(media_type),
         declared_size_bytes,
-        created_at,
+        created_at.and_then(|value| {
+            if is_safe_ticket_attachment_text(&value) {
+                Some(value)
+            } else {
+                None
+            }
+        }),
     )
     .ok()?;
     let mut source = TicketAttachmentSourceHandle::new(provider, ticket_id, &attachment_id).ok()?;
@@ -343,11 +349,15 @@ pub(super) fn safe_file_name(file_name: &str, index: usize) -> String {
     }
 }
 
+fn safe_optional_attachment_text(value: Option<&str>) -> Option<&str> {
+    value.filter(|candidate| is_safe_ticket_attachment_text(candidate))
+}
+
 fn is_safe_ticket_attachment_text(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     !value.is_empty()
         && !value.contains("://")
-        && !lower.starts_with("bearer ")
+        && !lower.contains("bearer ")
         && !lower.contains("token=")
         && !lower.contains("access_token=")
 }
