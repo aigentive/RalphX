@@ -59,6 +59,8 @@ pub mod branch_update_workflow;
 mod branch_update_executor_tests;
 #[cfg(test)]
 mod git_mutation_recovery_tests;
+#[cfg(test)]
+mod git_service_strict_worktree_tests;
 pub mod granola_integration_service;
 pub mod harness_runtime_registry;
 pub mod http_shutdown;

@@ -488,6 +488,8 @@ async fn restart_preparation_refuses_branch_checked_out_in_another_worktree() {
 
 #[test]
 fn restart_cleanup_proof_requires_merged_terminal_state_with_cleaned_marker() {
+    use crate::domain::entities::plan_branch::PrStatus;
+
     let project = Project::new("Cleanup proof".to_string(), "/owned/project".to_string());
     let conversation_id = ChatConversationId::new();
     let mut workspace = AgentConversationWorkspace::new(
@@ -528,4 +530,44 @@ fn restart_cleanup_proof_requires_merged_terminal_state_with_cleaned_marker() {
         resolve_restart_workspace_cleanup_proof(&workspace, None, &plan_branch, Some("cleaned"),),
         RestartWorkspaceCleanupProof::OwnedMergedCleanup
     );
+
+    plan_branch.status = crate::domain::entities::PlanBranchStatus::Active;
+    plan_branch.pr_status = Some(PrStatus::Merged);
+    assert_eq!(
+        resolve_restart_workspace_cleanup_proof(&workspace, None, &plan_branch, Some("cleaned"),),
+        RestartWorkspaceCleanupProof::OwnedMergedCleanup
+    );
+}
+
+#[test]
+fn restart_preparation_errors_map_to_user_safe_validation_messages() {
+    let unsafe_error = RestartWorkspacePreparationError::UnsafeOwnership {
+        detail: "/tmp/private/worktree".to_string(),
+    };
+    let operation_error = RestartWorkspacePreparationError::Operation {
+        detail: "git failed".to_string(),
+    };
+    let missing_error = RestartWorkspacePreparationError::MissingBranchWithoutCleanupProof;
+
+    assert_eq!(
+        unsafe_error.to_string(),
+        "unsafe ownership: /tmp/private/worktree"
+    );
+    assert!(unsafe_error
+        .into_app_error()
+        .to_string()
+        .contains("could not safely restore"));
+    assert_eq!(operation_error.to_string(), "operation failed: git failed");
+    assert!(operation_error
+        .into_app_error()
+        .to_string()
+        .contains("Check Git access"));
+    assert_eq!(
+        missing_error.to_string(),
+        "missing branch has no owned cleanup proof"
+    );
+    assert!(missing_error
+        .into_app_error()
+        .to_string()
+        .contains("ownership of the missing branch could not be verified"));
 }
