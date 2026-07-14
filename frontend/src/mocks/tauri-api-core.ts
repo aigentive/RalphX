@@ -60,7 +60,7 @@ const mockReviewSettings = {
   ai_review_enabled: true,
   ai_review_auto_fix: true,
   require_fix_approval: false,
-  auto_create_followup_agent_conversation: true,
+  auto_create_followup_agent_conversation: false,
   autofix_workspace_review_blocking_findings: true,
   run_task_validations: true,
 };

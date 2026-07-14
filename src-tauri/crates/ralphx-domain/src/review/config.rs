@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 fn default_auto_create_followup_agent_conversation() -> bool {
-    true
+    false
 }
 
 fn default_require_workspace_review() -> bool {
@@ -70,7 +70,7 @@ pub struct ReviewSettings {
     pub max_revision_cycles: u32,
 
     /// Automatically create visible follow-up Agent conversations for eligible drift/issues
-    /// Default: true
+    /// Default: false
     #[serde(default = "default_auto_create_followup_agent_conversation")]
     pub auto_create_followup_agent_conversation: bool,
 }
@@ -87,7 +87,7 @@ impl Default for ReviewSettings {
             run_task_validations: true,
             max_fix_attempts: 3,
             max_revision_cycles: 5,
-            auto_create_followup_agent_conversation: true,
+            auto_create_followup_agent_conversation: false,
         }
     }
 }

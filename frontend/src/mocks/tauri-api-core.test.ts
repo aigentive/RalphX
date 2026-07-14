@@ -150,3 +150,25 @@ describe("notification command mocks", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe("review settings command mocks", () => {
+  afterEach(async () => {
+    await invoke("update_review_settings", {
+      input: { autoCreateFollowupAgentConversation: false },
+    });
+  });
+
+  it("defaults automatic follow-up conversations to disabled and allows an explicit opt-in", async () => {
+    const initial = await invoke<{
+      auto_create_followup_agent_conversation: boolean;
+    }>("get_review_settings", {});
+    expect(initial.auto_create_followup_agent_conversation).toBe(false);
+
+    const updated = await invoke<{
+      auto_create_followup_agent_conversation: boolean;
+    }>("update_review_settings", {
+      input: { autoCreateFollowupAgentConversation: true },
+    });
+    expect(updated.auto_create_followup_agent_conversation).toBe(true);
+  });
+});
