@@ -82,7 +82,7 @@ pub async fn fetch_ticket_attachment_http(
     Ok(Json(fetch_response(result)))
 }
 
-fn fetch_response(result: TicketAttachmentFetchResult) -> TicketAttachmentFetchResponse {
+pub(super) fn fetch_response(result: TicketAttachmentFetchResult) -> TicketAttachmentFetchResponse {
     let pointer = result.descriptor.content_pointer.id().to_string();
     TicketAttachmentFetchResponse {
         attachment: result.descriptor,
@@ -239,7 +239,7 @@ fn ticket_reference(provider: &str, kind: &str, ticket_id: &str) -> ComposerInte
     }
 }
 
-fn provider_item(
+pub(super) fn provider_item(
     provider: TicketAttachmentProvider,
     ticket_id: &str,
     attachment_id: String,
@@ -262,14 +262,14 @@ fn provider_item(
     Some(TicketAttachmentProviderItem::new(descriptor, source, false))
 }
 
-fn safe_attachment_id(id: Option<&str>, index: usize) -> String {
+pub(super) fn safe_attachment_id(id: Option<&str>, index: usize) -> String {
     match id {
         Some(value) if is_safe_ticket_attachment_text(value) => value.to_string(),
         _ => format!("attachment-{index}"),
     }
 }
 
-fn safe_file_name(file_name: &str, index: usize) -> String {
+pub(super) fn safe_file_name(file_name: &str, index: usize) -> String {
     if is_safe_ticket_attachment_text(file_name)
         && !file_name.contains('/')
         && !file_name.contains('\\')

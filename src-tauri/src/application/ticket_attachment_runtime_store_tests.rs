@@ -190,6 +190,37 @@ async fn fetch_content_rejects_stale_or_unsupported_pointer_before_provider_fetc
 }
 
 #[tokio::test]
+async fn fetch_content_rejects_cross_scope_pointer_before_provider_fetch() {
+    let current = provider_item(true, Some(3));
+    let cross_ticket_pointer =
+        TicketAttachmentContentPointer::new(TicketAttachmentProvider::Jira, "JRA-2", "att-1")
+            .expect("cross-ticket pointer");
+    let cross_provider_pointer =
+        TicketAttachmentContentPointer::new(TicketAttachmentProvider::Linear, "JRA-1", "att-1")
+            .expect("cross-provider pointer");
+    let reader = RecordingReader::new(vec![current], Ok(vec![4, 5, 6]));
+    let store = RecordingStore::default();
+
+    for pointer in [&cross_ticket_pointer, &cross_provider_pointer] {
+        let result = fetch_ticket_attachment_content(
+            &reader,
+            &store,
+            TicketAttachmentProvider::Jira,
+            "JRA-1",
+            pointer,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(TicketAttachmentError::PointerNotFound)
+        ));
+        assert_eq!(reader.fetch_count(), 0);
+        assert_eq!(store.persist_count(), 0);
+    }
+}
+
+#[tokio::test]
 async fn fetch_content_rechecks_declared_size_before_provider_fetch() {
     let item = provider_item(true, Some(MAX_TICKET_ATTACHMENT_CONTENT_BYTES as u64 + 1));
     let pointer = item.source.content_pointer().expect("pointer");

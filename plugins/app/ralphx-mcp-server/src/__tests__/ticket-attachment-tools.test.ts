@@ -39,8 +39,18 @@ describe("ticket attachment MCP tools", () => {
     for (const name of TOOL_NAMES) {
       const tool = allTools.find((candidate) => candidate.name === name);
       expect(tool, `${name} registered`).toBeDefined();
-      expect(Object.keys(tool!.inputSchema.properties ?? {})).not.toEqual(
-        expect.arrayContaining(["url", "path", "token", "credential"])
+      const properties = Object.keys(tool!.inputSchema.properties ?? {});
+      expect(properties).not.toEqual(
+        expect.arrayContaining([
+          "url",
+          "path",
+          "token",
+          "credential",
+          "authorization",
+          "download_url",
+          "content_url",
+          "cache_path",
+        ])
       );
     }
 
@@ -132,8 +142,22 @@ describe("ticket attachment MCP tools", () => {
           content_url: "https://example.test/download",
           token: "Bearer abcdefghijklmnopqrstuvwxyz",
           location: "/tmp/cache/file",
+          nested: {
+            downloadUrl: "https://example.test/direct",
+            authorization: "Bearer nested-secret",
+            path: "/tmp/cache/nested",
+          },
         },
       ],
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+        directDownloadUrl: "https://example.test/direct",
+        bearerToken: "Bearer secret",
+        cachePath: "/tmp/cache/content",
+      },
     });
 
     expect(shaped).toEqual({
@@ -145,10 +169,17 @@ describe("ticket attachment MCP tools", () => {
           contentPointer: { id: "ta_123" },
         },
       ],
+      content: {
+        kind: "ticket_attachment_content",
+        id: "ta_456",
+        trust: "untrusted_external_content",
+        available: true,
+      },
     });
     expect(JSON.stringify(shaped)).not.toContain("https://");
     expect(JSON.stringify(shaped)).not.toContain("Bearer");
     expect(JSON.stringify(shaped)).not.toContain("/tmp/cache");
+    expect(JSON.stringify(shaped)).not.toContain("authorization");
   });
 
   it("identifies only ticket attachment tool names", () => {
