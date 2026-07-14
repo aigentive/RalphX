@@ -6,9 +6,10 @@ use chrono::Utc;
 
 use crate::application::{PendingPermissionInfo, QuestionOption};
 use crate::domain::entities::{
-    AgentWorkspacePrReviewMonitor, Automation, AutomationId, AutomationJudgeState,
-    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, ChatConversation, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+    AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSession, Project, Task,
 };
 use crate::domain::repositories::{PlanApprovalActor, PlanArtifactApprovalRepository};
@@ -618,6 +619,29 @@ async fn attention_items_include_only_workspace_plans_awaiting_approval() {
         .create(eligible.clone())
         .await
         .unwrap();
+    let conversation = ChatConversation::new_project(project.id.clone());
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/test/attention-plan".to_string(),
+        "/tmp/ralphx-test-attention-plan".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(eligible.id.clone());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
     let owned_by_automation = IdeationSession::builder()
         .project_id(project.id.clone())
         .plan_artifact_id(crate::domain::entities::ArtifactId::from_string(
@@ -653,10 +677,15 @@ async fn attention_items_include_only_workspace_plans_awaiting_approval() {
     state.task_repo.create(implementation_task).await.unwrap();
 
     let items = attention_items(&state, None).await;
-    assert!(items.iter().any(|item| {
-        item.id == format!("plan:{}:approval", eligible.id)
-            && item.category == NotificationCategory::PlanApproval
-    }));
+    let eligible_item = items
+        .iter()
+        .find(|item| item.id == format!("plan:{}:approval", eligible.id))
+        .expect("eligible plan should require approval");
+    assert_eq!(eligible_item.category, NotificationCategory::PlanApproval);
+    assert_eq!(
+        eligible_item.target.conversation_id,
+        Some(conversation.id.to_string())
+    );
     assert!(!items
         .iter()
         .any(|item| item.id == format!("plan:{}:approval", owned_by_automation.id)));
