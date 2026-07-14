@@ -10,6 +10,9 @@ use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
+use super::merged_run_finalizer::{
+    AutomationMergedRunFinalizer, NoopAutomationMergedRunFinalizer,
+};
 use super::plan_gate::{
     clear_plan_phase_publication_metadata, AutomationPlanVerificationStartOutcome,
     AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
@@ -427,6 +430,39 @@ impl RecordingSignalChecker {
 
     fn call_count(&self) -> usize {
         self.calls.lock().unwrap().len()
+    }
+}
+
+#[derive(Default)]
+struct RecordingMergedRunFinalizer {
+    calls: Mutex<Vec<ChatConversationId>>,
+    responses: Mutex<VecDeque<Result<(), String>>>,
+}
+
+impl RecordingMergedRunFinalizer {
+    fn with_responses(responses: Vec<Result<(), String>>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(responses)),
+        }
+    }
+
+    fn calls(&self) -> Vec<ChatConversationId> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl AutomationMergedRunFinalizer for RecordingMergedRunFinalizer {
+    async fn finalize_merged_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.calls.lock().unwrap().push(conversation_id.clone());
+        match self.responses.lock().unwrap().pop_front() {
+            Some(Err(error)) => Err(AppError::Infrastructure(error)),
+            Some(Ok(())) | None => Ok(()),
+        }
     }
 }
 
@@ -1476,6 +1512,7 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
         judge_invoker,
         plan_judge_invoker,
         plan_verification_starter,
+        Arc::new(NoopAutomationMergedRunFinalizer),
         Arc::new(NoopAutomationEventEmitter),
         artifact_repo,
         notification_service(),
@@ -1868,6 +1905,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(RecordingJudgeInvoker::default()),
         Arc::new(RecordingPlanJudgeInvoker::default()),
         Arc::new(NoopAutomationPlanVerificationStarter),
+        Arc::new(NoopAutomationMergedRunFinalizer),
         Arc::new(NoopAutomationEventEmitter),
         artifact_repo,
         notification_service(),
@@ -2352,13 +2390,15 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
             merged_at: Some("2026-07-05T12:00:00Z".to_string()),
         },
     )]));
+    let finalizer = Arc::new(RecordingMergedRunFinalizer::default());
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
         Arc::clone(&workspace_repo),
         checker,
         AutomationSchedulerConfig::default(),
-    );
+    )
+    .with_merged_run_finalizer(finalizer.clone());
 
     let summary = scheduler.tick_once().await.unwrap();
 
@@ -2381,6 +2421,7 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
         .unwrap()
         .unwrap();
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(finalizer.calls(), vec![conversation_id]);
 }
 
 #[tokio::test]
@@ -2418,13 +2459,15 @@ async fn automation_scheduler_does_not_write_merge_metadata_when_merged_status_c
             merged_at: Some("2026-07-05T12:00:00Z".to_string()),
         },
     )]));
+    let finalizer = Arc::new(RecordingMergedRunFinalizer::default());
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
         Arc::clone(&workspace_repo),
         checker,
         AutomationSchedulerConfig::default(),
-    );
+    )
+    .with_merged_run_finalizer(finalizer.clone());
 
     let summary = scheduler.tick_once().await.unwrap();
 
@@ -2443,6 +2486,7 @@ async fn automation_scheduler_does_not_write_merge_metadata_when_merged_status_c
         .unwrap()
         .unwrap();
     assert_eq!(workspace.publication_pr_status.as_deref(), Some("merged"));
+    assert!(finalizer.calls().is_empty());
 }
 
 #[tokio::test]
@@ -2471,6 +2515,7 @@ async fn automation_scheduler_marks_published_run_closed_from_github_signal() {
     workspace.publication_pr_status = Some("open".to_string());
     workspace.publication_push_status = Some("pushed".to_string());
     workspace_repo.create_or_update(workspace).await.unwrap();
+    let finalizer = Arc::new(RecordingMergedRunFinalizer::default());
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -2479,7 +2524,8 @@ async fn automation_scheduler_marks_published_run_closed_from_github_signal() {
             PrStatus::Closed,
         )])),
         AutomationSchedulerConfig::default(),
-    );
+    )
+    .with_merged_run_finalizer(finalizer.clone());
 
     let summary = scheduler.tick_once().await.unwrap();
 
@@ -2492,6 +2538,53 @@ async fn automation_scheduler_marks_published_run_closed_from_github_signal() {
     assert_eq!(latest.status, AutomationRunStatus::PrClosed);
     assert_eq!(latest.error_code.as_deref(), Some("pr_closed"));
     assert!(latest.finished_at.is_some());
+    assert!(finalizer.calls().is_empty());
+}
+
+#[tokio::test]
+async fn automation_scheduler_retries_merged_finalization_before_starting_judge() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Merged,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let finalizer = Arc::new(RecordingMergedRunFinalizer::with_responses(vec![
+        Err("archive unavailable".to_string()),
+        Ok(()),
+    ]));
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    )
+    .with_merged_run_finalizer(finalizer.clone());
+
+    let first = scheduler.tick_once().await.unwrap();
+    let second = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(first.judges_started, 0);
+    assert_eq!(second.judges_started, 1);
+    assert_eq!(
+        finalizer.calls(),
+        vec![conversation_id.clone(), conversation_id]
+    );
 }
 
 #[tokio::test]
@@ -2867,6 +2960,7 @@ async fn automation_scheduler_completes_agent_completed_run_from_agent_run_statu
     agent_run.status = crate::domain::entities::AgentRunStatus::Completed;
     agent_run.completed_at = Some(Utc::now());
     agent_run_repo.create(agent_run).await.unwrap();
+    let finalizer = Arc::new(RecordingMergedRunFinalizer::default());
     let scheduler = scheduler_with_judge_and_agent_runs(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -2875,7 +2969,8 @@ async fn automation_scheduler_completes_agent_completed_run_from_agent_run_statu
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
         AutomationSchedulerConfig::default(),
-    );
+    )
+    .with_merged_run_finalizer(finalizer.clone());
 
     let summary = scheduler.tick_once().await.unwrap();
 
@@ -2887,6 +2982,7 @@ async fn automation_scheduler_completes_agent_completed_run_from_agent_run_statu
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::Completed);
     assert!(latest.finished_at.is_some());
+    assert!(finalizer.calls().is_empty());
 }
 
 #[tokio::test]
