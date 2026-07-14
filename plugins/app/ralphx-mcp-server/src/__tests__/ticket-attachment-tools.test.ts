@@ -12,7 +12,10 @@ import {
 } from "../tools.js";
 import {
   CODER,
+  GENERAL_WORKER,
+  MERGER,
   ORCHESTRATOR_IDEATION,
+  REVIEWER,
   WORKER,
   WORKER_TEAM_LEAD,
 } from "../agentNames.js";
@@ -75,6 +78,18 @@ describe("ticket attachment MCP tools", () => {
     expect(toolNames).not.toContain("list_ticket_attachments");
     expect(toolNames).not.toContain("fetch_ticket_attachment");
   });
+
+  it.each([ORCHESTRATOR_IDEATION, REVIEWER, MERGER, GENERAL_WORKER])(
+    "keeps attachment tools off unrelated %s discovery",
+    (agent) => {
+      setAgentType(agent);
+
+      const toolNames = getFilteredTools().map((tool) => tool.name);
+
+      expect(toolNames).not.toContain("list_ticket_attachments");
+      expect(toolNames).not.toContain("fetch_ticket_attachment");
+    }
+  );
 
   it("dispatches through the internal ticket attachment endpoints", async () => {
     const callTauri = vi.fn().mockResolvedValue({
