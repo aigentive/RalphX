@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { callTicketAttachmentTool, isTicketAttachmentToolName, safeTicketAttachmentResult, } from "../ticket-attachment-tools.js";
 import { getAllTools, getFilteredTools, setAgentType, } from "../tools.js";
-import { CODER, ORCHESTRATOR_IDEATION, WORKER, WORKER_TEAM_LEAD, } from "../agentNames.js";
+import { CODER, GENERAL_WORKER, MERGER, ORCHESTRATOR_IDEATION, REVIEWER, WORKER, WORKER_TEAM_LEAD, } from "../agentNames.js";
 const TOOL_NAMES = ["list_ticket_attachments", "fetch_ticket_attachment"];
 describe("ticket attachment MCP tools", () => {
     beforeEach(() => {
@@ -39,6 +39,12 @@ describe("ticket attachment MCP tools", () => {
     it("keeps attachment tools off Plan-mode ideation discovery", () => {
         setAgentType(ORCHESTRATOR_IDEATION);
         process.env.RALPHX_AGENT_PROFILE = "plan";
+        const toolNames = getFilteredTools().map((tool) => tool.name);
+        expect(toolNames).not.toContain("list_ticket_attachments");
+        expect(toolNames).not.toContain("fetch_ticket_attachment");
+    });
+    it.each([ORCHESTRATOR_IDEATION, REVIEWER, MERGER, GENERAL_WORKER])("keeps attachment tools off unrelated %s discovery", (agent) => {
+        setAgentType(agent);
         const toolNames = getFilteredTools().map((tool) => tool.name);
         expect(toolNames).not.toContain("list_ticket_attachments");
         expect(toolNames).not.toContain("fetch_ticket_attachment");
