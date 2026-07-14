@@ -15,7 +15,7 @@ use crate::application::{
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, ProviderSessionRef};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatConversationId, ChatMessage, ChatTimelineItemStatus, ExecutionFailureSource,
+    ChatConversationId, ChatMessage, ChatTimelineItemStatus, EventType, ExecutionFailureSource,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
     IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
     NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, Task,
@@ -33,9 +33,31 @@ use crate::domain::repositories::{
     TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
+use crate::domain::state_machine::services::WebhookPublisher;
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, SpawnableCommand, ToolCall};
 use tauri::{AppHandle, Runtime};
+
+#[derive(Default)]
+struct RecordingWebhookPublisher {
+    calls: Mutex<Vec<(EventType, String, serde_json::Value)>>,
+}
+
+impl RecordingWebhookPublisher {
+    fn calls(&self) -> Vec<(EventType, String, serde_json::Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl WebhookPublisher for RecordingWebhookPublisher {
+    async fn publish(&self, event_type: EventType, project_id: &str, payload: serde_json::Value) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((event_type, project_id.to_string(), payload));
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_stream_success<R: Runtime>(
@@ -2418,6 +2440,33 @@ async fn validation_completion_override_fails_closed_without_repo_or_worktree() 
 }
 
 #[tokio::test]
+async fn validation_completion_override_fails_closed_without_run_or_head_sha() {
+    let state = AppState::new_test();
+    let (worktree, _head_sha) = git_worktree_with_initial_commit();
+    let episode_entered_at = Utc::now();
+    let mut task = Task::new(
+        ProjectId::new(),
+        "validation override missing evidence".into(),
+    );
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo = Some(Arc::clone(&state.validation_run_repo));
+
+    assert!(
+        !validated_completion_override(&task, episode_entered_at, &validation_run_repo).await,
+        "no validation run must fail closed before HEAD evidence can authorize completion"
+    );
+
+    let non_git_worktree = tempfile::tempdir().unwrap();
+    task.worktree_path = Some(non_git_worktree.path().to_string_lossy().to_string());
+    seed_current_validation_run(&state, &task, "unresolved-head", episode_entered_at).await;
+
+    assert!(
+        !validated_completion_override(&task, episode_entered_at, &validation_run_repo).await,
+        "validation evidence in a non-git worktree must fail closed when HEAD cannot be resolved"
+    );
+}
+
+#[tokio::test]
 async fn stale_validation_run_same_commit_does_not_prove_current_attempt_completion() {
     let state = AppState::new_test();
     let (worktree, head_sha) = git_worktree_with_initial_commit();
@@ -2491,6 +2540,33 @@ async fn publish_execution_completed_persists_external_event_from_managed_state(
             .is_some_and(|value| !value.is_empty()),
         "completion payload should include a timestamp"
     );
+}
+
+#[tokio::test]
+async fn publish_execution_completed_invokes_managed_webhook_publisher() {
+    let mut state = AppState::new_test();
+    let publisher = Arc::new(RecordingWebhookPublisher::default());
+    state.webhook_publisher = Some(Arc::clone(&publisher) as Arc<dyn WebhookPublisher>);
+    let project_id = ProjectId::new();
+    let task = Task::new(
+        project_id.clone(),
+        "managed webhook completion publish".into(),
+    );
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    publish_execution_completed(&app_handle, &task).await;
+
+    let calls = publisher.calls();
+    assert_eq!(calls.len(), 1, "completion should publish exactly once");
+    assert_eq!(calls[0].0, EventType::TaskExecutionCompleted);
+    assert_eq!(calls[0].1, project_id.as_str());
+    assert_eq!(calls[0].2["task_id"], task.id.as_str());
+    assert_eq!(calls[0].2["project_id"], project_id.as_str());
+    assert_eq!(calls[0].2["outcome"], "completed");
 }
 
 /// Non-AgentExit errors should not trigger the override, even with complete steps.

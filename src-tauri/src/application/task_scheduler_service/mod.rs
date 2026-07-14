@@ -736,4 +736,20 @@ mod tests {
         );
         let _service = scheduler.build_transition_service();
     }
+
+    #[test]
+    fn scheduler_build_transition_service_defaults_without_completion_authority_repositories() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state);
+
+        assert!(
+            scheduler.task_step_repo.is_none(),
+            "scheduler fallback transitions should not invent task-step completion authority"
+        );
+        assert!(
+            scheduler.validation_run_repo.is_none(),
+            "scheduler fallback transitions should not invent validation-run completion authority"
+        );
+        let _service = scheduler.build_transition_service();
+    }
 }
