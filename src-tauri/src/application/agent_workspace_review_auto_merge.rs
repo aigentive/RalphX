@@ -374,8 +374,7 @@ pub async fn restore_guarded_auto_merge_after_publish(
         guard.status,
         AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
             | AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
-    )
-        || !workspace_delta_publish_proves_guard(state, &monitor, workspace, guard).await?
+    ) || !workspace_delta_publish_proves_guard(state, &monitor, workspace, guard).await?
     {
         return Ok(());
     }
