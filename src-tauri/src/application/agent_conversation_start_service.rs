@@ -43,11 +43,12 @@ use self::helpers::{
     archive_empty_seeded_draft_after_setup_failure,
     archive_supplied_seeded_draft_after_setup_failure, clickup_task_lookup_key_from_references,
     emit_start_agent_conversation_progress, ensure_linked_branch_workspace_available,
-    ensure_plan_workspace_planning_session_link, first_ticket_branch_name_hint,
-    hydrate_linked_branch_source_pull_request, linked_setup_failure_error,
-    log_start_agent_conversation_phase, normalize_agent_runtime_selection,
-    normalize_agent_workspace_source_pull_request, parse_agent_workspace_base_kind,
-    parse_agent_workspace_branch_mode, parse_agent_workspace_mode, trim_optional_input,
+    ensure_plan_workspace_planning_session_link, ensure_review_pr_monitor_for_workspace,
+    first_ticket_branch_name_hint, hydrate_linked_branch_source_pull_request,
+    linked_setup_failure_error, log_start_agent_conversation_phase,
+    normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
+    parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
+    trim_optional_input,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -632,6 +633,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             },
             None => None,
         };
+        ensure_review_pr_monitor_for_workspace(
+            self.deps.state.agent_conversation_workspace_repo.as_ref(),
+            workspace.as_ref(),
+        )
+        .await?;
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),

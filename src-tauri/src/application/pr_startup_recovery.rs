@@ -31,9 +31,9 @@ use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ExecutionPlanId,
-    ExecutionPlanStatus, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-    ProjectId, Task, TaskCategory, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, ExecutionPlanId, ExecutionPlanStatus, InternalStatus,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -1223,6 +1223,62 @@ async fn recover_one_agent_workspace_pr_poller(
     let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
         return;
     };
+
+    if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+        let existing = match workspace_repo
+            .get_pr_review_monitor(&workspace.conversation_id)
+            .await
+        {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to load Review PR monitor"
+                );
+                return;
+            }
+        };
+        if existing.is_none() {
+            let head_sha = workspace
+                .source_pull_request
+                .as_ref()
+                .and_then(|pull_request| pull_request.head_ref_oid.clone());
+            let mut monitor = AgentWorkspacePrReviewMonitor::new(
+                workspace.conversation_id.clone(),
+                workspace.project_id.clone(),
+                pr_number,
+                head_sha,
+            );
+            monitor.monitor_enabled = true;
+            monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+            if let Err(error) = workspace_repo.upsert_pr_review_monitor(monitor).await {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to rearm legacy Review PR monitor"
+                );
+                return;
+            }
+        } else if existing.as_ref().is_some_and(|monitor| {
+            !monitor.monitor_enabled
+                && monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
+        }) {
+            if let Err(error) = workspace_repo
+                .set_pr_review_monitor_enabled(&workspace.conversation_id, true)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to rearm legacy Review PR monitor"
+                );
+                return;
+            }
+        } else if existing.is_some_and(|monitor| !monitor.monitor_enabled) {
+            return;
+        }
+    }
 
     let project = match project_repo.get_by_id(&workspace.project_id).await {
         Ok(Some(project)) => project,
@@ -3615,10 +3671,7 @@ mod tests {
         ));
         let transition_service = Arc::new(
             app_state
-                .build_transition_service_for_runtime(
-                    Arc::new(ExecutionState::new()),
-                    None,
-                )
+                .build_transition_service_for_runtime(Arc::new(ExecutionState::new()), None)
                 .with_github_service(Arc::clone(&github) as Arc<dyn GithubServiceTrait>)
                 .with_pr_poller_registry(Arc::clone(&registry)),
         );
@@ -3676,10 +3729,7 @@ mod tests {
         ));
         let transition_service = Arc::new(
             app_state
-                .build_transition_service_for_runtime(
-                    Arc::new(ExecutionState::new()),
-                    None,
-                )
+                .build_transition_service_for_runtime(Arc::new(ExecutionState::new()), None)
                 .with_github_service(Arc::clone(&github) as Arc<dyn GithubServiceTrait>)
                 .with_pr_poller_registry(Arc::clone(&registry)),
         );

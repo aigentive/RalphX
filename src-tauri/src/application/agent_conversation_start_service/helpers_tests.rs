@@ -11,8 +11,10 @@ use super::*;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, Project, ProjectId,
 };
 use crate::domain::services::PrSearchResult;
 use crate::tests::mock_github_service::MockGithubService;
@@ -445,6 +447,200 @@ fn should_create_workspace_covers_chat_with_source_pr() {
         Some(&source),
         false
     ));
+}
+
+fn review_pr_workspace() -> AgentConversationWorkspace {
+    AgentConversationWorkspace::new(
+        ChatConversationId::from_string("review-pr-monitor-workspace"),
+        ProjectId::from_string("review-pr-monitor-project".to_string()),
+        AgentConversationWorkspaceMode::ReviewPr,
+        IdeationAnalysisBaseRefKind::LocalBranch,
+        "feature/review-pr".to_string(),
+        Some("PR #42: Review me".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/review-pr".to_string(),
+        "/tmp/ralphx-review-pr".to_string(),
+    )
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_arms_source_pr_head() {
+    let mut workspace = review_pr_workspace();
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        title: Some("Review me".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    let monitor = review_pr_monitor_for_workspace(&workspace)
+        .expect("source PR monitor should build")
+        .expect("Review PR workspace should create monitor");
+
+    assert_eq!(monitor.conversation_id, workspace.conversation_id);
+    assert_eq!(monitor.project_id, workspace.project_id);
+    assert_eq!(monitor.pr_number, 42);
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("head-sha-42"));
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_falls_back_to_publication_pr() {
+    let mut workspace = review_pr_workspace();
+    workspace.publication_pr_number = Some(43);
+
+    let monitor = review_pr_monitor_for_workspace(&workspace)
+        .expect("publication PR monitor should build")
+        .expect("Review PR workspace should create monitor");
+
+    assert_eq!(monitor.pr_number, 43);
+    assert!(monitor.last_seen_head_sha.is_none());
+    assert!(monitor.monitor_enabled);
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_rejects_unlinked_review_pr() {
+    let workspace = review_pr_workspace();
+
+    let error = review_pr_monitor_for_workspace(&workspace)
+        .expect_err("Review PR workspace without PR metadata is invalid");
+
+    assert!(error.contains("requires a linked pull request"));
+}
+
+#[test]
+fn review_pr_monitor_for_workspace_ignores_other_modes() {
+    let mut workspace = review_pr_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: None,
+        title: None,
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: None,
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    assert!(review_pr_monitor_for_workspace(&workspace)
+        .expect("non-Review PR workspace is supported")
+        .is_none());
+}
+
+#[tokio::test]
+async fn ensure_review_pr_monitor_for_workspace_creates_missing_monitor() {
+    let state = AppState::new_test();
+    let mut workspace = review_pr_workspace();
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        title: Some("Review me".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    ensure_review_pr_monitor_for_workspace(
+        state.agent_conversation_workspace_repo.as_ref(),
+        Some(&workspace),
+    )
+    .await
+    .expect("missing Review PR monitor should be created");
+
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(monitor.pr_number, 42);
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("head-sha-42"));
+    assert!(monitor.monitor_enabled);
+    assert_eq!(
+        monitor.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+}
+
+#[tokio::test]
+async fn ensure_review_pr_monitor_for_workspace_preserves_existing_monitor() {
+    let state = AppState::new_test();
+    let mut workspace = review_pr_workspace();
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.com/owner/repo/pull/42".to_string()),
+        title: Some("Review me".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("new-head".to_string()),
+    });
+    let mut existing_monitor = AgentWorkspacePrReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+        42,
+        Some("existing-head".to_string()),
+    );
+    existing_monitor.monitor_enabled = false;
+    existing_monitor.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(existing_monitor)
+        .await
+        .expect("existing monitor should persist");
+
+    ensure_review_pr_monitor_for_workspace(
+        state.agent_conversation_workspace_repo.as_ref(),
+        Some(&workspace),
+    )
+    .await
+    .expect("existing monitor should be preserved");
+
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should remain");
+    assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("existing-head"));
+    assert!(!monitor.monitor_enabled);
+    assert_eq!(monitor.status, AgentWorkspacePrReviewMonitorStatus::Paused);
+}
+
+#[tokio::test]
+async fn ensure_review_pr_monitor_for_workspace_ignores_missing_or_non_review_pr_workspace() {
+    let state = AppState::new_test();
+    let mut workspace = review_pr_workspace();
+    workspace.mode = AgentConversationWorkspaceMode::Edit;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: None,
+        title: None,
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: None,
+        head_ref_oid: Some("head-sha-42".to_string()),
+    });
+
+    ensure_review_pr_monitor_for_workspace(state.agent_conversation_workspace_repo.as_ref(), None)
+        .await
+        .expect("missing workspace should be a no-op");
+    ensure_review_pr_monitor_for_workspace(
+        state.agent_conversation_workspace_repo.as_ref(),
+        Some(&workspace),
+    )
+    .await
+    .expect("non-Review PR workspace should be a no-op");
+
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
 }
 
 // ── linked branch availability / PR hydration ────────────────────────────────

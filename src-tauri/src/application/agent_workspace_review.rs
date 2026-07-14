@@ -418,6 +418,7 @@ pub async fn load_agent_workspace_review_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewContext> {
+    ensure_workspace_review_supported_mode(workspace)?;
     let started = Instant::now();
     let project = state
         .project_repo
@@ -476,6 +477,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     force: bool,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewStart> {
+    ensure_workspace_review_supported_mode(workspace)?;
     let request_started = Instant::now();
     info!(
         target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -2030,6 +2032,7 @@ async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatSe
     workspace: &AgentConversationWorkspace,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewFixerStart> {
+    ensure_workspace_review_supported_mode(workspace)?;
     let context = load_agent_workspace_review_context(state, workspace).await?;
     let Some(target) = context.target.as_ref() else {
         return Err(AppError::Validation(
@@ -2517,7 +2520,6 @@ fn build_context(
             crate::domain::entities::AgentConversationWorkspaceMode::Edit
                 | crate::domain::entities::AgentConversationWorkspaceMode::Ideation
                 | crate::domain::entities::AgentConversationWorkspaceMode::Plan
-                | crate::domain::entities::AgentConversationWorkspaceMode::ReviewPr
         );
     AgentWorkspaceReviewContext {
         monitor,
@@ -2999,10 +3001,25 @@ pub(crate) async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    ensure_workspace_review_supported_mode(workspace)?;
     if let Some(workspace_target) = resolve_workspace_delta_target(workspace).await? {
         return Ok(Some(workspace_target));
     }
     resolve_selected_source_target(workspace, project).await
+}
+
+fn ensure_workspace_review_supported_mode(workspace: &AgentConversationWorkspace) -> AppResult<()> {
+    if matches!(
+        workspace.mode,
+        crate::domain::entities::AgentConversationWorkspaceMode::Edit
+            | crate::domain::entities::AgentConversationWorkspaceMode::Ideation
+            | crate::domain::entities::AgentConversationWorkspaceMode::Plan
+    ) {
+        return Ok(());
+    }
+    Err(AppError::Validation(
+        "Workspace Review is unavailable in Review PR mode".to_string(),
+    ))
 }
 
 async fn resolve_workspace_delta_target(
