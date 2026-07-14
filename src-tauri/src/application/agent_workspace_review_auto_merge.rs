@@ -370,7 +370,11 @@ pub async fn restore_guarded_auto_merge_after_publish(
     let Some(guard) = monitor.auto_merge_guard.as_ref() else {
         return Ok(());
     };
-    if guard.status != AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
+    if !matches!(
+        guard.status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::AwaitingPublish
+            | AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    )
         || !workspace_delta_publish_proves_guard(state, &monitor, workspace, guard).await?
     {
         return Ok(());
@@ -505,7 +509,14 @@ async fn ensure_guarded_auto_merge_is_paused(
     guard: &AgentWorkspaceReviewAutoMergeGuard,
 ) -> AppResult<bool> {
     let Some(target) = resolve_current_target(state, workspace).await? else {
-        return Ok(false);
+        return cancel_guard_without_restoring(
+            state,
+            workspace,
+            guard,
+            "Workspace Review target no longer exists, so GitHub auto-merge will remain disabled.",
+        )
+        .await
+        .map(|_| true);
     };
     if !guard_matches_target(guard, &target, guard.pr_number) {
         return cancel_guard_without_restoring(
