@@ -160,6 +160,9 @@ ignore:
   - "src-tauri/src/**/tests/**"
   - "src-tauri/src/**/*_test.rs"
   - "src-tauri/src/**/*_tests.rs"
+  # Startup composition roots wire long-lived services; behavior is covered
+  # through extracted helpers/services and focused scheduler/finalizer tests.
+  - "src-tauri/src/application/startup_background.rs"
   # Merge recovery controller/composition surfaces coordinate long-lived Git
   # worktrees, agent routing, Tauri command glue, and startup reconciliation.
   # Deterministic PR-branch publication behavior is covered by helper and

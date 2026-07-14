@@ -1595,7 +1595,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
     delete_branch_if_merged: bool,
     cleanup_local_artifacts: bool,
     pr_status: &str,
-) {
+) -> bool {
     let active_run = match agent_run_repo
         .get_active_for_conversation(conversation_id)
         .await
@@ -1607,7 +1607,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
                 error = %error,
                 "Agent workspace terminal PR cleanup: failed to inspect active run; leaving cleanup pending"
             );
-            return;
+            return false;
         }
     };
 
@@ -1618,7 +1618,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
                 pr_status,
                 "Agent workspace terminal PR cleanup: active run exists but no chat service is available; leaving cleanup pending"
             );
-            return;
+            return false;
         };
 
         let context_id = conversation_id.as_str();
@@ -1641,7 +1641,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
                     error = %error,
                     "Agent workspace terminal PR cleanup: failed to stop project runtime; leaving cleanup pending"
                 );
-                return;
+                return false;
             }
         }
     }
@@ -1656,7 +1656,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
                 error = %error,
                 "Agent workspace terminal PR cleanup: failed to persist terminal PR stop reason"
             );
-            return;
+            return false;
         }
     }
 
@@ -1671,7 +1671,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
                 pr_status,
                 "Agent workspace terminal PR cleanup: active run remains after stop; leaving cleanup pending"
             );
-            return;
+            return false;
         }
         Ok(None) => {}
         Err(error) => {
@@ -1680,12 +1680,12 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
                 error = %error,
                 "Agent workspace terminal PR cleanup: failed to verify stopped runtime; leaving cleanup pending"
             );
-            return;
+            return false;
         }
     }
 
     if !cleanup_local_artifacts {
-        return;
+        return true;
     }
 
     cleanup_terminal_agent_workspace_after_pr(
@@ -1696,6 +1696,7 @@ pub(crate) async fn terminalize_agent_workspace_after_pr(
         delete_branch_if_merged,
     )
     .await;
+    true
 }
 
 fn terminal_pr_agent_stop_reason(pr_status: &str) -> String {
