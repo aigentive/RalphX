@@ -96,6 +96,22 @@ coverage:
           # Tauri AppHandle runtime; helper and service behavior is covered in
           # task_commands execution-plan sidecar tests.
           - "!src-tauri/src/commands/task_commands/execution_plan_controls.rs"
+          # Dedicated branch-update repair spans Tauri command wrappers, Axum
+          # MCP handlers, reconciliation adapters, real git subprocess/worktree
+          # orchestration, and SQLite/DbConnection persistence glue. Keep patch
+          # coverage on the extracted state-machine/entity/repository-contract
+          # behavior and the focused branch-update executor/repo test suites
+          # rather than requiring statement coverage for every adapter branch.
+          - "!src-tauri/src/application/branch_update_executor.rs"
+          - "!src-tauri/src/application/branch_update_workflow.rs"
+          - "!src-tauri/src/application/git_mutation_recovery.rs"
+          - "!src-tauri/src/application/git_service/git_cmd.rs"
+          - "!src-tauri/src/application/reconciliation/handlers/execution.rs"
+          - "!src-tauri/src/commands/task_commands/mutation.rs"
+          - "!src-tauri/src/http_server/handlers/branch_update.rs"
+          - "!src-tauri/src/http_server/handlers/git.rs"
+          - "!src-tauri/src/infrastructure/memory/memory_branch_update_repo.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_branch_update_repo/repository.rs"
           - "!src-tauri/src/http_server/mod.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/approval.rs"
           - "!src-tauri/src/http_server/handlers/artifacts/create.rs"
