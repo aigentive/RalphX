@@ -254,9 +254,7 @@ pub async fn start_guarded_agent_workspace_review(
         Err(error) => {
             let restore_result =
                 restore_guarded_auto_merge(state.as_ref(), workspace, &paused).await;
-            if let Err(restore_error) = restore_result {
-                return Err(restore_error);
-            }
+            restore_result?;
             Err(error)
         }
     }
