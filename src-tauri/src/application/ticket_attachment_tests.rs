@@ -280,8 +280,7 @@ fn error_messages_do_not_echo_sensitive_values() {
         "https://example.test/download?token=secret",
         "att-1",
     )
-    .err()
-    .expect("unsafe URL-like ticket id should fail");
+    .expect_err("unsafe URL-like ticket id should fail");
 
     let rendered = error.to_string();
 

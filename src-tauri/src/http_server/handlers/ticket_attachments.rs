@@ -1,10 +1,22 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use base64::Engine;
+use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request, Uri};
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
+use tokio_util::bytes::Bytes;
 
 use super::*;
+use crate::application::atlassian_integration_service::{
+    AtlassianAuthContext, AtlassianCredential,
+};
 use crate::application::ticket_attachment::{
     fetch_ticket_attachment_content, BoundedTicketAttachmentBytes, TicketAttachmentContentPointer,
     TicketAttachmentDescriptor, TicketAttachmentError, TicketAttachmentFetchResult,
@@ -13,6 +25,8 @@ use crate::application::ticket_attachment::{
 };
 use crate::application::ticket_attachment_runtime_store::TicketAttachmentRuntimeStore;
 use crate::domain::services::ComposerIntegrationReference;
+
+const ATTACHMENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Deserialize)]
 pub struct TicketAttachmentListRequest {
@@ -121,14 +135,50 @@ impl TicketAttachmentProviderReader for IntegrationTicketAttachmentReader {
 
     async fn fetch_attachment(
         &self,
-        _source: &TicketAttachmentSourceHandle,
-        _max_bytes: usize,
+        source: &TicketAttachmentSourceHandle,
+        max_bytes: usize,
     ) -> Result<BoundedTicketAttachmentBytes, TicketAttachmentError> {
-        Err(TicketAttachmentError::UnsupportedContentFetch)
+        let target = self.fetch_target(source).await?;
+        download_ticket_attachment_bytes(target, max_bytes).await
     }
 }
 
 impl IntegrationTicketAttachmentReader {
+    async fn fetch_target(
+        &self,
+        source: &TicketAttachmentSourceHandle,
+    ) -> Result<AttachmentFetchTarget, TicketAttachmentError> {
+        let url = source
+            .fetch_url()
+            .ok_or(TicketAttachmentError::UnsupportedContentFetch)?;
+        let mut target = AttachmentFetchTarget::new(source.provider(), url)?;
+        match source.provider() {
+            TicketAttachmentProvider::Jira => {
+                let auth = self
+                    .app_state
+                    .atlassian_integration_service
+                    .enabled_auth_context()
+                    .await
+                    .map_err(|_| TicketAttachmentError::ProviderRequestFailed)?;
+                ensure_jira_attachment_host(&target, &auth)?;
+                target.authorization = Some(atlassian_authorization_header(&auth));
+            }
+            TicketAttachmentProvider::Linear => {}
+            TicketAttachmentProvider::ClickUp => {
+                if target.host() == "api.clickup.com" {
+                    let auth = self
+                        .app_state
+                        .clickup_integration_service
+                        .enabled_auth_context()
+                        .await
+                        .map_err(|_| TicketAttachmentError::ProviderRequestFailed)?;
+                    target.authorization = Some(auth.api_token);
+                }
+            }
+        }
+        Ok(target)
+    }
+
     async fn list_jira(
         &self,
         ticket_id: &str,
@@ -155,6 +205,7 @@ impl IntegrationTicketAttachmentReader {
                     attachment.mime_type.as_deref(),
                     non_negative_size(attachment.size),
                     attachment.created_at,
+                    attachment.content_url,
                 )
             })
             .collect();
@@ -187,6 +238,7 @@ impl IntegrationTicketAttachmentReader {
                     None,
                     None,
                     None,
+                    Some(attachment.url),
                 )
             })
             .collect();
@@ -218,6 +270,7 @@ impl IntegrationTicketAttachmentReader {
                     attachment.mime_type.as_deref(),
                     non_negative_size(attachment.size),
                     None,
+                    attachment.url,
                 )
             })
             .collect();
@@ -247,6 +300,7 @@ pub(super) fn provider_item(
     media_type: Option<&str>,
     declared_size_bytes: Option<u64>,
     created_at: Option<String>,
+    fetch_url: Option<String>,
 ) -> Option<TicketAttachmentProviderItem> {
     let descriptor = TicketAttachmentDescriptor::new(
         provider,
@@ -258,8 +312,17 @@ pub(super) fn provider_item(
         created_at,
     )
     .ok()?;
-    let source = TicketAttachmentSourceHandle::new(provider, ticket_id, &attachment_id).ok()?;
-    Some(TicketAttachmentProviderItem::new(descriptor, source, false))
+    let mut source = TicketAttachmentSourceHandle::new(provider, ticket_id, &attachment_id).ok()?;
+    let fetch_url = fetch_url.and_then(|url| safe_attachment_fetch_url(provider, &url));
+    let content_fetch_supported = fetch_url.is_some();
+    if let Some(fetch_url) = fetch_url {
+        source = source.with_fetch_url(fetch_url);
+    }
+    Some(TicketAttachmentProviderItem::new(
+        descriptor,
+        source,
+        content_fetch_supported,
+    ))
 }
 
 pub(super) fn safe_attachment_id(id: Option<&str>, index: usize) -> String {
@@ -291,6 +354,163 @@ fn is_safe_ticket_attachment_text(value: &str) -> bool {
 
 fn non_negative_size(size: Option<i64>) -> Option<u64> {
     size.and_then(|value| u64::try_from(value).ok())
+}
+
+fn safe_attachment_fetch_url(provider: TicketAttachmentProvider, url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    AttachmentFetchTarget::new(provider, trimmed)
+        .ok()
+        .map(|_| trimmed.to_string())
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AttachmentFetchTarget {
+    uri: Uri,
+    host: String,
+    authorization: Option<String>,
+}
+
+impl AttachmentFetchTarget {
+    pub(super) fn new(
+        provider: TicketAttachmentProvider,
+        url: &str,
+    ) -> Result<Self, TicketAttachmentError> {
+        let uri = url
+            .parse::<Uri>()
+            .map_err(|_| TicketAttachmentError::UnsafeField {
+                field: "attachment_url",
+            })?;
+        let Some(host) = uri.host().map(str::to_ascii_lowercase) else {
+            return Err(TicketAttachmentError::UnsafeField {
+                field: "attachment_url",
+            });
+        };
+        if uri.scheme_str() != Some("https")
+            || uri
+                .authority()
+                .is_some_and(|authority| authority.as_str().contains('@'))
+            || is_blocked_attachment_host(&host)
+            || !is_allowed_attachment_host(provider, &host)
+        {
+            return Err(TicketAttachmentError::UnsafeField {
+                field: "attachment_url",
+            });
+        }
+        Ok(Self {
+            uri,
+            host,
+            authorization: None,
+        })
+    }
+
+    pub(super) fn host(&self) -> &str {
+        &self.host
+    }
+}
+
+fn is_blocked_attachment_host(host: &str) -> bool {
+    host == "localhost" || host.ends_with(".localhost") || host.parse::<std::net::IpAddr>().is_ok()
+}
+
+fn is_allowed_attachment_host(provider: TicketAttachmentProvider, host: &str) -> bool {
+    match provider {
+        TicketAttachmentProvider::Jira => {
+            host == "api.atlassian.com" || host.ends_with(".atlassian.net")
+        }
+        TicketAttachmentProvider::Linear => host == "linear.app" || host.ends_with(".linear.app"),
+        TicketAttachmentProvider::ClickUp => {
+            host == "clickup.com" || host.ends_with(".clickup.com")
+        }
+    }
+}
+
+fn ensure_jira_attachment_host(
+    target: &AttachmentFetchTarget,
+    auth: &AtlassianAuthContext,
+) -> Result<(), TicketAttachmentError> {
+    let site_host = auth
+        .site_url
+        .parse::<Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(str::to_ascii_lowercase));
+    let allowed = match &auth.credential {
+        AtlassianCredential::ApiToken { .. } => site_host
+            .as_deref()
+            .is_some_and(|host| target.host() == host),
+        AtlassianCredential::OAuth { .. } => target.host() == "api.atlassian.com",
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(TicketAttachmentError::UnsafeField {
+            field: "attachment_url",
+        })
+    }
+}
+
+fn atlassian_authorization_header(auth: &AtlassianAuthContext) -> String {
+    match &auth.credential {
+        AtlassianCredential::ApiToken { email, token } => {
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
+            format!("Basic {encoded}")
+        }
+        AtlassianCredential::OAuth { access_token, .. } => {
+            format!("Bearer {access_token}")
+        }
+    }
+}
+
+async fn download_ticket_attachment_bytes(
+    target: AttachmentFetchTarget,
+    max_bytes: usize,
+) -> Result<BoundedTicketAttachmentBytes, TicketAttachmentError> {
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .map_err(|_| TicketAttachmentError::ProviderRequestFailed)?
+        .https_only()
+        .enable_http1()
+        .build();
+    let client: Client<HttpsConnector<HttpConnector>, Full<Bytes>> =
+        Client::builder(TokioExecutor::new()).build(https);
+    let mut builder = Request::builder()
+        .method(Method::GET)
+        .uri(target.uri)
+        .header("Accept", "application/octet-stream");
+    if let Some(authorization) = target.authorization {
+        builder = builder.header("Authorization", authorization);
+    }
+    let request = builder
+        .body(Full::new(Bytes::new()))
+        .map_err(|_| TicketAttachmentError::ProviderRequestFailed)?;
+    let response = tokio::time::timeout(ATTACHMENT_DOWNLOAD_TIMEOUT, client.request(request))
+        .await
+        .map_err(|_| TicketAttachmentError::ProviderRequestFailed)?
+        .map_err(|_| TicketAttachmentError::ProviderRequestFailed)?;
+    if !response.status().is_success() {
+        return Err(TicketAttachmentError::ProviderRequestFailed);
+    }
+    if response
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(TicketAttachmentError::ContentTooLarge { max: max_bytes });
+    }
+    let mut body = response.into_body();
+    let mut bytes = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| TicketAttachmentError::ProviderRequestFailed)?;
+        if let Some(data) = frame.data_ref() {
+            if bytes.len().saturating_add(data.len()) > max_bytes {
+                return Err(TicketAttachmentError::ContentTooLarge { max: max_bytes });
+            }
+            bytes.extend_from_slice(data);
+        }
+    }
+    BoundedTicketAttachmentBytes::new(bytes)
 }
 
 #[derive(Debug)]
