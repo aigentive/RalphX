@@ -19,6 +19,7 @@ use crate::infrastructure::memory::{
     MemorySecretStore,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 fn identity(id: &str, custom_id: Option<&str>) -> ClickUpTaskIdentity {
@@ -94,6 +95,45 @@ impl ClickUpApiClient for PartialFailureClickUpClient {
     }
 }
 
+#[derive(Default)]
+struct StaticClickUpClient {
+    tasks_by_lookup: HashMap<String, ClickUpTaskContent>,
+}
+
+#[async_trait]
+impl ClickUpApiClient for StaticClickUpClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        self.tasks_by_lookup
+            .get(&task_id.to_ascii_lowercase())
+            .cloned()
+            .ok_or_else(|| "HTTP 404: task not found".to_string())
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        auth: &ClickUpAuthContext,
+        _team_id: &str,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        self.fetch_task(auth, task_id).await
+    }
+}
+
 fn clickup_task(id: &str, custom_id: &str) -> ClickUpTaskContent {
     ClickUpTaskContent {
         id: id.to_string(),
@@ -114,6 +154,38 @@ fn clickup_task(id: &str, custom_id: &str) -> ClickUpTaskContent {
         space_id: None,
         list_name: None,
     }
+}
+
+async fn static_clickup_service(tasks: Vec<ClickUpTaskContent>) -> ClickUpIntegrationService {
+    let mut tasks_by_lookup = HashMap::new();
+    for task in tasks {
+        tasks_by_lookup.insert(task.id.to_ascii_lowercase(), task.clone());
+        if let Some(custom_id) = task.custom_id.as_deref() {
+            tasks_by_lookup.insert(custom_id.to_ascii_lowercase(), task.clone());
+        }
+    }
+    let settings = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    secrets
+        .put_secret("clickup-test-token", "pk_test")
+        .await
+        .unwrap();
+    settings
+        .upsert(&ClickUpIntegrationSettings {
+            enabled: true,
+            token_secret_ref: Some("clickup-test-token".to_string()),
+            workspace_id: Some("workspace-1".to_string()),
+            validation_status: IntegrationValidationStatus::Valid,
+            task_search_available: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    ClickUpIntegrationService::new(
+        settings,
+        secrets,
+        Arc::new(StaticClickUpClient { tasks_by_lookup }),
+    )
 }
 
 async fn partial_failure_clickup_service() -> ClickUpIntegrationService {
@@ -263,6 +335,70 @@ fn ticket_start_fails_closed_for_multiple_pull_requests_or_branches() {
     ));
 }
 
+#[test]
+fn ticket_start_filters_cross_repo_duplicate_and_unmatched_prs_before_branch_fallback() {
+    let resolution = select_clickup_ticket_start_candidate(
+        &identity("8689abc", Some("DEV-42")),
+        vec![
+            pull_request(42, "feature/unrelated", "No ticket here"),
+            PrSearchResult {
+                is_cross_repository: true,
+                ..pull_request(43, "feature/DEV-42-cross", "DEV-42 fork")
+            },
+        ],
+        vec!["feature/DEV-42-branch".to_string()],
+    );
+
+    let ClickUpTicketStartResolution::Unique(candidate) = resolution else {
+        panic!("expected branch fallback after PR filtering");
+    };
+    assert_eq!(candidate.branch_name, "feature/DEV-42-branch");
+    assert!(candidate.pull_request.is_none());
+}
+
+#[test]
+fn ticket_start_deduplicates_branch_names_case_insensitively() {
+    let resolution = select_clickup_ticket_start_candidate(
+        &identity("8689abc", Some("DEV-42")),
+        Vec::new(),
+        vec![
+            " feature/DEV-42 ".to_string(),
+            "FEATURE/dev-42".to_string(),
+            String::new(),
+        ],
+    );
+
+    let ClickUpTicketStartResolution::Unique(candidate) = resolution else {
+        panic!("expected case-insensitive duplicate branches to collapse");
+    };
+    assert_eq!(candidate.branch_name, "feature/DEV-42");
+}
+
+#[test]
+fn candidate_extraction_covers_body_commits_opaque_ids_and_invalid_tokens() {
+    let candidates = clickup_task_candidates(&evidence(
+        "--CU-ab12--",
+        "not-a-ticket DEV-abc and cu-",
+        Some("Body references OPS-7"),
+        &["Commit mentions CU-xyz9-extra and ab-12"],
+    ));
+
+    let lookup_keys = candidates
+        .iter()
+        .map(|candidate| candidate.lookup_key.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(lookup_keys, vec!["ab12", "OPS-7", "xyz9"]);
+    assert_eq!(candidates[0].matched_token, "CU-ab12");
+    assert_eq!(
+        candidates[1].source,
+        ClickUpGitEvidenceSource::PullRequestBody
+    );
+    assert_eq!(
+        candidates[2].source,
+        ClickUpGitEvidenceSource::CommitSubject
+    );
+}
+
 #[tokio::test]
 async fn pr_reconciliation_does_not_link_when_another_candidate_cannot_be_validated() {
     let clickup = partial_failure_clickup_service().await;
@@ -292,4 +428,154 @@ async fn pr_reconciliation_does_not_link_when_another_candidate_cannot_be_valida
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn pr_reconciliation_reports_no_candidate_without_persisting_links() {
+    let clickup = static_clickup_service(vec![clickup_task("8689abc", "DEV-42")]).await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-no-candidate".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence("feature/no-ticket", "No ticket", None, &[]),
+            pr_number: 50,
+            pr_url: None,
+            pr_status: "open".to_string(),
+            head_sha: None,
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(outcome, ClickUpPrAssociationOutcome::NoCandidate);
+    assert!(links
+        .list_ticket_links_for_conversation("conversation-no-candidate")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn pr_reconciliation_reports_no_validated_candidate_for_not_found_task() {
+    let clickup = static_clickup_service(Vec::new()).await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-missing".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence("feature/DEV-42", "DEV-42: fix", None, &[]),
+            pr_number: 51,
+            pr_url: None,
+            pr_status: "open".to_string(),
+            head_sha: None,
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(outcome, ClickUpPrAssociationOutcome::NoValidatedCandidate);
+    assert!(links
+        .list_ticket_links_for_conversation("conversation-missing")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn pr_reconciliation_fails_closed_for_ambiguous_validated_tasks() {
+    let clickup = static_clickup_service(vec![
+        clickup_task("8689abc", "DEV-42"),
+        clickup_task("99xyz", "OPS-7"),
+    ])
+    .await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-ambiguous".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence("feature/DEV-42", "Also OPS-7", None, &[]),
+            pr_number: 52,
+            pr_url: None,
+            pr_status: "open".to_string(),
+            head_sha: None,
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        ClickUpPrAssociationOutcome::Ambiguous {
+            task_ids: vec!["8689abc".to_string(), "99xyz".to_string()]
+        }
+    );
+    assert!(links
+        .list_ticket_links_for_conversation("conversation-ambiguous")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn pr_reconciliation_persists_link_and_sync_record_for_single_validated_task() {
+    let clickup = static_clickup_service(vec![clickup_task("8689abc", "DEV-42")]).await;
+    let links = ExternalIssueLinkService::new(Arc::new(MemoryExternalIssueLinkRepository::new()));
+
+    let outcome = reconcile_clickup_pr_to_conversation(
+        &clickup,
+        &links,
+        ClickUpPrAssociationInput {
+            conversation_id: "conversation-linked".to_string(),
+            project_id: "project-1".to_string(),
+            evidence: evidence(
+                "feature/no-branch-ticket",
+                "No title ticket",
+                Some("Body links DEV-42 for context"),
+                &[],
+            ),
+            pr_number: 53,
+            pr_url: Some("https://github.com/owner/repo/pull/53".to_string()),
+            pr_status: "merged".to_string(),
+            head_sha: Some("abc123".to_string()),
+        },
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    let ClickUpPrAssociationOutcome::Linked { task_id, link_id } = outcome else {
+        panic!("expected link outcome");
+    };
+    assert_eq!(task_id, "8689abc");
+
+    let ticket_links = links
+        .list_ticket_links_for_conversation("conversation-linked")
+        .await
+        .unwrap();
+    assert_eq!(ticket_links.len(), 1);
+    assert_eq!(ticket_links[0].id, link_id);
+    assert_eq!(ticket_links[0].external_id, "8689abc");
+    assert_eq!(ticket_links[0].external_key.as_deref(), Some("DEV-42"));
+    assert_eq!(ticket_links[0].local_sha.as_deref(), Some("abc123"));
+    assert_eq!(ticket_links[0].local_state.as_deref(), Some("merged"));
+    assert!(ticket_links[0]
+        .metadata_json
+        .as_deref()
+        .unwrap()
+        .contains("\"source\":\"pr_body\""));
+
+    let sync_records = links.list_sync_records_for_link(&link_id).await.unwrap();
+    assert_eq!(sync_records.len(), 1);
+    assert_eq!(sync_records[0].sync_kind, "clickup_git_association");
+    assert_eq!(sync_records[0].local_sha.as_deref(), Some("abc123"));
+    assert_eq!(sync_records[0].local_state.as_deref(), Some("merged"));
 }
