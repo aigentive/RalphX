@@ -586,6 +586,14 @@ async fn register_issue_attach_to_issue_id_appends_candidate_occurrence() {
 #[tokio::test]
 async fn register_issue_attempts_auto_followup_when_enabled() {
     let app_state = Arc::new(AppState::new_test());
+    app_state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            auto_create_followup_agent_conversation: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let state = test_http_state(Arc::clone(&app_state));
     let (_project_id, origin) = seed_project_conversation(&app_state).await;
 
