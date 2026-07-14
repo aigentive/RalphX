@@ -22,6 +22,7 @@ use crate::domain::entities::{
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, Project, ProjectId,
 };
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::ComposerIntegrationReference;
 
 pub(crate) fn parse_agent_workspace_mode(
@@ -194,6 +195,32 @@ pub(crate) fn review_pr_monitor_for_workspace(
     monitor.monitor_enabled = true;
     monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
     Ok(Some(monitor))
+}
+
+pub(crate) async fn ensure_review_pr_monitor_for_workspace(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    workspace: Option<&AgentConversationWorkspace>,
+) -> Result<(), String> {
+    let Some(monitor) = workspace
+        .map(review_pr_monitor_for_workspace)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+
+    if workspace_repo
+        .get_pr_review_monitor(&monitor.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn ensure_linked_branch_workspace_available(
