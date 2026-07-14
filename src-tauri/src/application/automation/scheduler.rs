@@ -20,6 +20,7 @@ use crate::application::automation::judge::{
     AutomationJudgeAttachmentContext, AutomationJudgeContextRefSummary,
     AutomationJudgeValidationContext, BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
+use crate::application::automation::merged_run_finalizer::AutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, clear_plan_phase_publication_metadata,
     current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
@@ -1378,6 +1379,7 @@ pub struct AutomationScheduler {
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
+    merged_run_finalizer: Arc<dyn AutomationMergedRunFinalizer>,
     registry: Arc<AutomationSchedulerRegistry>,
     config: AutomationSchedulerConfig,
 }
@@ -1399,6 +1401,7 @@ impl AutomationScheduler {
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
         plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
+        merged_run_finalizer: Arc<dyn AutomationMergedRunFinalizer>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
         notification_service: Arc<NotificationService>,
@@ -1445,6 +1448,7 @@ impl AutomationScheduler {
             judge_invoker,
             plan_judge_invoker,
             plan_verification_starter,
+            merged_run_finalizer,
             registry,
             config,
         }
@@ -1452,6 +1456,15 @@ impl AutomationScheduler {
 
     pub fn config(&self) -> &AutomationSchedulerConfig {
         &self.config
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_merged_run_finalizer(
+        mut self,
+        merged_run_finalizer: Arc<dyn AutomationMergedRunFinalizer>,
+    ) -> Self {
+        self.merged_run_finalizer = merged_run_finalizer;
+        self
     }
 
     pub async fn tick_once(&self) -> AppResult<AutomationSchedulerTickSummary> {
@@ -1753,6 +1766,11 @@ impl AutomationScheduler {
             | AutomationRunStatus::Completed
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed => {
+                if run.status == AutomationRunStatus::Merged
+                    && !self.finalize_merged_run_conversation(automation, run).await
+                {
+                    return Ok(());
+                }
                 self.observe_signal_terminal_run(automation, runs, run, summary)
                     .await?;
             }
@@ -3493,6 +3511,7 @@ impl AutomationScheduler {
                         AutomationRunStatus::Merged,
                     )
                     .await?;
+                    self.finalize_merged_run_conversation(automation, run).await;
                 } else {
                     tracing::warn!(
                         automation_id = %automation.id,
@@ -3592,6 +3611,33 @@ impl AutomationScheduler {
                 error = %error,
                 "Automation scheduler could not arm automatic PR auto-merge preference; continuing publication"
             );
+        }
+    }
+
+    async fn finalize_merged_run_conversation(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+    ) -> bool {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return true;
+        };
+        match self
+            .merged_run_finalizer
+            .finalize_merged_conversation(conversation_id)
+            .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation.id,
+                    run_id = %run.id,
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Automation merged-run cleanup/archive remains pending"
+                );
+                false
+            }
         }
     }
 
