@@ -167,6 +167,23 @@ ignore:
   - "src-tauri/src/domain/state_machine/transition_handler/merge_orchestrator.rs"
   - "src-tauri/src/domain/state_machine/transition_handler/merge_outcome_handler.rs"
   - "src-tauri/src/domain/state_machine/transition_handler/on_enter_states/merge.rs"
+  # Dedicated branch-update repair similarly spans command wrappers, Axum/MCP
+  # handlers, reconciliation adapters, real git subprocess/worktree
+  # orchestration, and persistence glue. Deterministic behavior is covered by
+  # extracted entity, state-machine, executor, and repository-contract tests.
+  - "src-tauri/src/application/branch_update_executor.rs"
+  - "src-tauri/src/application/branch_update_workflow.rs"
+  - "src-tauri/src/application/chat_service/chat_service_context.rs"
+  - "src-tauri/src/application/git_mutation_recovery.rs"
+  - "src-tauri/src/application/git_service/git_cmd.rs"
+  - "src-tauri/src/application/reconciliation/handlers/execution.rs"
+  - "src-tauri/src/application/task_transition_service.rs"
+  - "src-tauri/src/commands/task_commands/mutation.rs"
+  - "src-tauri/src/domain/state_machine/transition_handler/freshness.rs"
+  - "src-tauri/src/http_server/handlers/branch_update.rs"
+  - "src-tauri/src/http_server/handlers/git.rs"
+  - "src-tauri/src/infrastructure/memory/memory_branch_update_repo.rs"
+  - "src-tauri/src/infrastructure/sqlite/sqlite_branch_update_repo/repository.rs"
   # Frontend test sources, snapshots, fixtures, and mocks.
   - "frontend/tests/**"
   - "frontend/src/**/__tests__/**"
