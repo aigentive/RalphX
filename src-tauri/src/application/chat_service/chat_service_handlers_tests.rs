@@ -2448,6 +2448,51 @@ async fn validation_run_read_error_fails_closed_for_completion() {
     );
 }
 
+#[tokio::test]
+async fn publish_execution_completed_without_app_handle_has_no_side_effects() {
+    let task = Task::new(ProjectId::new(), "no app handle completion publish".into());
+
+    publish_execution_completed::<MockRuntime>(&None, &task).await;
+}
+
+#[tokio::test]
+async fn publish_execution_completed_persists_external_event_from_managed_state() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let task = Task::new(
+        project_id.clone(),
+        "managed state completion publish".into(),
+    );
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    publish_execution_completed(&app_handle, &task).await;
+
+    let events = state
+        .external_events_repo
+        .get_events_after_cursor(&[project_id.as_str().to_string()], 0, 100)
+        .await
+        .expect("completion event query should succeed");
+    let event = events
+        .iter()
+        .find(|event| event.event_type == "task:execution_completed")
+        .expect("completion event should be persisted");
+    let payload: serde_json::Value =
+        serde_json::from_str(&event.payload).expect("completion payload should be JSON");
+    assert_eq!(payload["task_id"], task.id.as_str());
+    assert_eq!(payload["project_id"], project_id.as_str());
+    assert_eq!(payload["outcome"], "completed");
+    assert!(
+        payload["timestamp"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "completion payload should include a timestamp"
+    );
+}
+
 /// Non-AgentExit errors should not trigger the override, even with complete steps.
 #[test]
 fn test_timeout_error_does_not_override_even_with_complete_steps() {

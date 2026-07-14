@@ -718,4 +718,22 @@ mod tests {
         assert!(scheduler.plan_pr_description_drafter.is_some());
         let _service = scheduler.build_transition_service();
     }
+
+    #[test]
+    fn scheduler_build_transition_service_carries_completion_authority_repositories() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state)
+            .with_task_step_repo(Arc::clone(&state.task_step_repo))
+            .with_validation_run_repo(Arc::clone(&state.validation_run_repo));
+
+        assert!(
+            scheduler.task_step_repo.is_some(),
+            "scheduler fallback transitions must retain task-step completion authority"
+        );
+        assert!(
+            scheduler.validation_run_repo.is_some(),
+            "scheduler fallback transitions must retain validation-run completion authority"
+        );
+        let _service = scheduler.build_transition_service();
+    }
 }
