@@ -39,6 +39,17 @@ open src-tauri/target/release/bundle/dmg/RalphX_*.dmg
 
 For signed builds, verify there are no Gatekeeper warnings when opening the app.
 
+Release artifacts can be inspected without submitting or publishing them:
+
+```bash
+./scripts/validate-macos-release-artifacts.sh \
+  --app src-tauri/target/aarch64-apple-darwin/release/bundle/macos/RalphX.app \
+  --dmg /absolute/path/to/RalphX_0.67.0_aarch64.dmg \
+  --expected-arch aarch64
+```
+
+Pass one exact app, one exact DMG, and the matrix architecture (`aarch64` or `x86_64`). The validator is read-only: it checks signatures, stapled tickets, Gatekeeper policy, app metadata, and executable architecture without submitting to Apple or removing quarantine.
+
 ---
 
 ## Release Versioning Policy
@@ -267,10 +278,14 @@ What `Release Build` does:
 
 1. **Build**: Compiles frontend and Tauri app
 2. **Sign**: Applies Developer ID certificate
-3. **Notarize**: Submits to Apple for notarization
+3. **Notarize app**: Submits the app to Apple and staples its accepted ticket
 4. **Package**: Creates per-architecture DMGs and signed updater bundles
-5. **Artifacts**: Uploads `release-aarch64`, `release-x86_64`, trace logs, and `release-metadata`
-6. **Trigger**: A successful `Release Build` on `main` automatically triggers `Release Publish`
+5. **Notarize DMG**: Submits and staples the finished, signed DMG
+6. **Validate**: Blocks artifact collection unless the app and DMG pass signature, ticket, Gatekeeper, metadata, and architecture policy checks
+7. **Artifacts**: Uploads only validated `release-aarch64`, `release-x86_64`, trace logs, and `release-metadata`
+8. **Trigger**: A successful `Release Build` on `main` automatically triggers `Release Publish`
+
+The DMG is validated after stapling, so downstream checksums and publication always use the final byte-level deliverable. Local validation on the current macOS 26 host is supported; no clean VM is required. A notarization rejection, timeout, missing ticket, wrong architecture, or Gatekeeper failure stops the build before artifact collection.
 
 ### Step 7: Verify The Publish Workflow
 
@@ -350,6 +365,7 @@ security find-identity -v -p codesigning
 - Verify `APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_KEY_P8`
 - Ensure `APPLE_TEAM_ID` matches the signing team
 - Check Apple's notarization service status at [developer.apple.com/system-status](https://developer.apple.com/system-status/)
+- Check the release trace for separate app/DMG submission, acceptance, stapling, and policy-validation stages
 
 **Cargo build errors**
 ```bash
@@ -390,9 +406,9 @@ cargo tauri build
 ### Gatekeeper Issues
 
 **"App is damaged and can't be opened"**
-- App wasn't properly signed or notarized
-- Check the release workflow logs for signing/notarization errors
-- For local testing, temporarily allow: `xattr -cr /path/to/RalphX.app`
+- The app or enclosing DMG may not have passed signing, notarization, stapling, or Gatekeeper policy checks
+- Run `scripts/validate-macos-release-artifacts.sh` against the exact downloaded artifacts and check the release trace
+- Quarantine removal is not an installation fix. If needed for diagnosis, use `xattr -cr` only on a disposable copy and compare behavior; never modify the installed production app as routine remediation.
 
 **"Developer cannot be verified"**
 - Notarization may not have completed
@@ -409,6 +425,7 @@ cargo tauri build
 | `.github/workflows/release-publish.yml` | Publish workflow: consume release artifacts, publish public assets, and update Homebrew |
 | `scripts/build-local-release.sh` | Local internal release-like build script |
 | `scripts/build-prod-release.sh` | Internal CI release artifact entrypoint |
+| `scripts/validate-macos-release-artifacts.sh` | Read-only app/DMG signature, ticket, Gatekeeper, metadata, and architecture validator |
 | `scripts/release.sh` | Guided local release-prep wrapper that orchestrates proposal, version bump, and release-note generation |
 | `scripts/propose-release.sh` | Codex-assisted version recommendation generator |
 | `scripts/release-analysis-common.sh` | Shared release evidence and Codex logging helper used by the proposal and notes scripts |
@@ -418,5 +435,4 @@ cargo tauri build
 | `release-notes/` | Curated release notes consumed automatically by the release workflow when present |
 | `src-tauri/tauri.conf.json` | Bundle config, updater config |
 | `src-tauri/Cargo.toml` | Release profile, updater dependency |
-| `src-tauri/entitlements.plist` | Hardened runtime entitlements |
 | `src/components/UpdateChecker.tsx` | Update notification UI |

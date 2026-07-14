@@ -383,6 +383,7 @@ jobs:
           set -euo pipefail
           install -m 0755 workflow-support/scripts/build-prod-release.sh scripts/build-prod-release.sh
           install -m 0755 workflow-support/scripts/prepare-release-runtime.sh scripts/prepare-release-runtime.sh
+          install -m 0755 workflow-support/scripts/validate-macos-release-artifacts.sh scripts/validate-macos-release-artifacts.sh
 
       - name: Import Apple certificate
         shell: bash
@@ -493,7 +494,10 @@ jobs:
           }} using pre-imported build.keychain; clearing APPLE_CERTIFICATE env to avoid duplicate Tauri keychain import" | tee -a "${heartbeat_log}"
           unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
 
-          ./scripts/build-prod-release.sh --target "${{ matrix.rust_target }}" 2>&1 | tee -a "${build_log}"
+          ./scripts/build-prod-release.sh \
+            --target "${{ matrix.rust_target }}" \
+            --expected-arch "${{ matrix.arch }}" \
+            2>&1 | tee -a "${build_log}"
 
           printf '[release-heartbeat] %s build script completed for %s\n' \
             "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
@@ -518,18 +522,24 @@ jobs:
           mkdir -p "${dist_dir}"
 
           release_target_dir="src-tauri/target/${{ matrix.rust_target }}/release"
-          dmg_path="$(find "${release_target_dir}/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
-          updater_path="$(find "${release_target_dir}/bundle/macos" -maxdepth 1 -type f -name '*.app.tar.gz' | head -n 1)"
+          select_single_artifact() {
+            local directory="$1"
+            local pattern="$2"
+            local label="$3"
+            local matches=()
+            local path
+            while IFS= read -r -d '' path; do
+              matches+=("${path}")
+            done < <(find "${directory}" -maxdepth 1 -type f -name "${pattern}" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "Expected exactly one ${label} under ${directory}; found ${#matches[@]}" >&2
+              return 1
+            fi
+            printf '%s\n' "${matches[0]}"
+          }
 
-          if [[ -z "${dmg_path}" ]]; then
-            echo "No DMG artifact found under ${release_target_dir}/bundle/dmg" >&2
-            exit 1
-          fi
-
-          if [[ -z "${updater_path}" ]]; then
-            echo "No updater artifact found under ${release_target_dir}/bundle/macos" >&2
-            exit 1
-          fi
+          dmg_path="$(select_single_artifact "${release_target_dir}/bundle/dmg" '*.dmg' 'DMG artifact')"
+          updater_path="$(select_single_artifact "${release_target_dir}/bundle/macos" '*.app.tar.gz' 'updater artifact')"
 
           sig_path="${updater_path}.sig"
           if [[ ! -f "${sig_path}" ]]; then

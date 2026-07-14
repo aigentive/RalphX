@@ -421,6 +421,66 @@ fn test_runtime_config_dir_path_resolution_uses_bundled_config_dir() {
 }
 
 #[test]
+fn early_file_logging_environment_override_has_highest_precedence() {
+    assert!(resolve_file_logging_from_sources(
+        Some("YES"),
+        None,
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        Some("0"),
+        None,
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_prefers_configured_runtime_file() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(&config_path, "file_logging: false\n").expect("write runtime config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&config_path),
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_uses_embedded_config_before_runtime_setup() {
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        None,
+        "file_logging: false"
+    ));
+}
+
+#[test]
+fn early_file_logging_falls_back_from_missing_or_malformed_runtime_config() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing_path = temp_dir.path().join("missing.yaml");
+    let malformed_path = temp_dir.path().join("malformed.yaml");
+    std::fs::write(&malformed_path, "file_logging: [\n").expect("write malformed config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&missing_path),
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: false"
+    ));
+    assert!(resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: ["
+    ));
+}
+
+#[test]
 fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths() {
     for agent in agent_configs() {
         if agent.name == SHORT_IDEATION_TEAM_MEMBER {
