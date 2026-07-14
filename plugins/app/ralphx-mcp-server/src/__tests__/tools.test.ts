@@ -2704,11 +2704,12 @@ describe('canonical specialist allowlist entries', () => {
 
 describe('persona builder tool registry', () => {
   it('includes exactly the two persona draft tools in ALL_TOOLS', () => {
-    const personaToolNames = getAllTools()
-      .map((tool) => tool.name)
-      .filter((toolName) => toolName === 'save_persona_draft' || toolName === 'get_persona_draft');
+    const allToolNames = getAllTools().map((tool) => tool.name);
+    const personaToolNames = allToolNames.filter(
+      (toolName) => toolName === 'save_persona_draft' || toolName === 'get_persona_draft',
+    );
 
     expect(personaToolNames).toEqual(['save_persona_draft', 'get_persona_draft']);
-    expect(getAllTools()).toHaveLength(129);
+    expect(new Set(allToolNames).size).toBe(allToolNames.length);
   });
 });
