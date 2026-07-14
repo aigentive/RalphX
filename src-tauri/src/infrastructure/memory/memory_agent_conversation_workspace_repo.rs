@@ -647,9 +647,23 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
     ) -> AppResult<AgentWorkspacePrReviewMonitor> {
         let mut monitors = self.pr_review_monitors.write().await;
         if let Some(existing) = monitors.get(&monitor.conversation_id) {
+            if monitor.updated_at < existing.updated_at {
+                return Ok(existing.clone());
+            }
             monitor.created_at = existing.created_at;
             monitor.auto_approve_enabled = existing.auto_approve_enabled;
             monitor.first_action_resolved = existing.first_action_resolved;
+            if !existing.monitor_enabled
+                && monitor.monitor_enabled
+                && matches!(
+                    existing.status,
+                    AgentWorkspacePrReviewMonitorStatus::Paused
+                        | AgentWorkspacePrReviewMonitorStatus::Terminal
+                )
+            {
+                monitor.monitor_enabled = false;
+                monitor.status = existing.status;
+            }
             if monitor.review_artifact_id.is_none() {
                 monitor.review_artifact_id = existing.review_artifact_id.clone();
                 monitor.review_artifact_head_sha = existing.review_artifact_head_sha.clone();
@@ -686,6 +700,46 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         monitor.auto_approve_enabled = enabled;
         monitor.updated_at = Utc::now();
         Ok(monitor.clone())
+    }
+
+    async fn set_pr_review_monitor_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        let mut monitors = self.pr_review_monitors.write().await;
+        let monitor = monitors
+            .get_mut(conversation_id)
+            .expect("PR review monitor must exist before updating monitoring");
+        monitor.monitor_enabled = enabled;
+        monitor.status = if enabled {
+            AgentWorkspacePrReviewMonitorStatus::Watching
+        } else {
+            AgentWorkspacePrReviewMonitorStatus::Paused
+        };
+        monitor.updated_at = Utc::now();
+        Ok(monitor.clone())
+    }
+
+    async fn supersede_pending_pr_review_actions_except_head(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        head_sha: &str,
+    ) -> AppResult<()> {
+        let mut actions = self.pr_review_actions.write().await;
+        for action in actions.values_mut() {
+            if action.conversation_id == *conversation_id
+                && action.pr_number == pr_number
+                && action.head_sha != head_sha
+                && action.status == AgentWorkspacePrReviewActionStatus::Pending
+            {
+                action.status = AgentWorkspacePrReviewActionStatus::Superseded;
+                action.resolved_at = Some(Utc::now());
+                action.updated_at = Utc::now();
+            }
+        }
+        Ok(())
     }
 
     async fn mark_pr_review_first_action_resolved(
@@ -936,6 +990,7 @@ fn pr_review_action_terminal_status(status: AgentWorkspacePrReviewActionStatus) 
         AgentWorkspacePrReviewActionStatus::Skipped
             | AgentWorkspacePrReviewActionStatus::Submitted
             | AgentWorkspacePrReviewActionStatus::Failed
+            | AgentWorkspacePrReviewActionStatus::Superseded
     )
 }
 
@@ -951,6 +1006,16 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
 
 fn is_active_pr_poller_recovery_workspace(workspace: &AgentConversationWorkspace) -> bool {
     if is_active_direct_published_workspace(workspace) {
+        return true;
+    }
+
+    if workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::ReviewPr
+        && workspace.source_pull_request.is_some()
+        && workspace.auto_publish_enabled
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
+    {
         return true;
     }
 

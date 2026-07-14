@@ -8,6 +8,8 @@ pub mod agent_conversation_issue_repository;
 pub mod agent_conversation_jira_issue_repository;
 pub mod agent_conversation_linear_issue_repository;
 pub mod agent_conversation_workspace_repository;
+#[cfg(test)]
+mod agent_conversation_workspace_repository_tests;
 pub mod agent_lane_settings_repository;
 pub mod agent_model_registry_repository;
 pub mod agent_profile_repository;

@@ -386,6 +386,33 @@ describe("AgentWorkspacePrReviewCard", () => {
     expect(screen.getByText("GitHub review submission failed")).toBeInTheDocument();
   });
 
+  it.each([
+    ["approved", "Approved"],
+    ["superseded", "Superseded"],
+  ] as const)(
+    "shows %s actions as the last resolved action",
+    (status, label) => {
+      renderCard({
+        context: reviewContext({
+          monitor: monitor({ status: "watching" }),
+          pendingAction: null,
+          recentActions: [
+            reviewAction({
+              id: `${status}-action`,
+              status,
+              resolvedAt: now,
+            }),
+          ],
+        }),
+      });
+
+      expect(screen.getByText(`Last action: ${label}`)).toBeInTheDocument();
+      expect(
+        screen.queryByText("Waiting for a reviewer proposal"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("shows mutation errors from review action submission", async () => {
     const user = userEvent.setup();
     vi.mocked(chatApi.submitAgentWorkspacePrReviewAction).mockRejectedValue(
