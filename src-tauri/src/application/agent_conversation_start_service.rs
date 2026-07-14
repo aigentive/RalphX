@@ -6,10 +6,16 @@ use tauri::{Emitter, Runtime};
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
     prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint,
+    resolve_valid_agent_conversation_workspace_path,
     validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
-    AgentConversationWorkspaceSetupMode,
+    AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::clickup_git_association::{
+    clickup_identity_from_task, resolve_clickup_ticket_start, ClickUpTicketStartResolution,
+};
+use crate::application::external_issue_link_service::TicketConversationLinkInput;
+use crate::application::git_service::GitService;
 use crate::application::personas::PersonaService;
 use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
@@ -19,8 +25,10 @@ use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, ChatContextType,
-    ChatConversation, ChatConversationId, PersonaDirective, PersonaId, ProjectId, TeamIntent,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, PersonaDirective, PersonaId,
+    ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -33,13 +41,13 @@ mod helpers;
 use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
     archive_empty_seeded_draft_after_setup_failure,
-    archive_supplied_seeded_draft_after_setup_failure, emit_start_agent_conversation_progress,
-    ensure_linked_branch_workspace_available, ensure_plan_workspace_planning_session_link,
-    first_ticket_branch_name_hint, hydrate_linked_branch_source_pull_request,
-    linked_setup_failure_error, log_start_agent_conversation_phase,
-    normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
-    parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
-    trim_optional_input,
+    archive_supplied_seeded_draft_after_setup_failure, clickup_task_lookup_key_from_references,
+    emit_start_agent_conversation_progress, ensure_linked_branch_workspace_available,
+    ensure_plan_workspace_planning_session_link, first_ticket_branch_name_hint,
+    hydrate_linked_branch_source_pull_request, linked_setup_failure_error,
+    log_start_agent_conversation_phase, normalize_agent_runtime_selection,
+    normalize_agent_workspace_source_pull_request, parse_agent_workspace_base_kind,
+    parse_agent_workspace_branch_mode, parse_agent_workspace_mode, trim_optional_input,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -186,11 +194,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
 
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
-        let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-        let base_branch_mode =
+        let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+        let mut base_branch_mode =
             parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
-        let base_ref = trim_optional_input(input.base_ref);
-        let base_display_name = trim_optional_input(input.base_display_name);
+        let mut base_ref = trim_optional_input(input.base_ref);
+        let mut base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
         let conversation_title = trim_optional_input(input.title);
         let persona_id = trim_optional_input(input.persona_id).map(PersonaId::from_string);
@@ -200,7 +208,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .map(str::trim)
             .filter(|conversation_id| !conversation_id.is_empty())
             .map(ChatConversationId::from_string);
-        let ticket_branch_name_hint =
+        let mut ticket_branch_name_hint =
             first_ticket_branch_name_hint(&input.composer_integration_references);
         let mut source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
@@ -242,6 +250,76 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "load_project",
             project_lookup_started,
         );
+
+        let validated_clickup_task = if let Some(lookup_key) =
+            clickup_task_lookup_key_from_references(&input.composer_integration_references)?
+        {
+            let task = self
+                .deps
+                .state
+                .clickup_integration_service
+                .fetch_task(&lookup_key)
+                .await?;
+            let identity = clickup_identity_from_task(&task);
+            ticket_branch_name_hint = Some(AgentConversationWorkspaceBranchNameHint {
+                provider: "clickup".to_string(),
+                ticket_token: identity.preferred_token(),
+            });
+
+            let should_auto_resolve_ticket_base = should_create_workspace
+                && matches!(
+                    mode,
+                    AgentConversationWorkspaceMode::Edit
+                        | AgentConversationWorkspaceMode::Plan
+                        | AgentConversationWorkspaceMode::Ideation
+                )
+                && matches!(
+                    base_ref_kind,
+                    None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
+                        | Some(IdeationAnalysisBaseRefKind::CurrentBranch)
+                );
+            if should_auto_resolve_ticket_base {
+                match resolve_clickup_ticket_start(
+                    &identity,
+                    std::path::Path::new(&project.working_directory),
+                    self.deps.state.github_service.as_deref(),
+                )
+                .await?
+                {
+                    ClickUpTicketStartResolution::NoMatch => {}
+                    ClickUpTicketStartResolution::Unique(candidate) => {
+                        base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+                        base_branch_mode = Some(AgentConversationWorkspaceBranchMode::Linked);
+                        base_ref = Some(candidate.branch_name.clone());
+                        base_display_name = Some(format!(
+                            "ClickUp {} ({})",
+                            identity.preferred_token(),
+                            candidate.branch_name
+                        ));
+                        source_pull_request = candidate.pull_request.map(|pull_request| {
+                            AgentWorkspaceSourcePullRequest {
+                                number: pull_request.number,
+                                url: Some(pull_request.url),
+                                title: Some(pull_request.title),
+                                head_ref_name: pull_request.head_ref_name,
+                                base_ref_name: Some(pull_request.base_ref_name),
+                                head_ref_oid: pull_request.head_ref_oid,
+                            }
+                        });
+                    }
+                    ClickUpTicketStartResolution::Ambiguous { branch_names } => {
+                        return Err(format!(
+                            "ClickUp task {} matches multiple open PRs or branches ({}); select the intended branch explicitly",
+                            identity.preferred_token(),
+                            branch_names.join(", ")
+                        ));
+                    }
+                }
+            }
+            Some(task)
+        } else {
+            None
+        };
 
         if let Some(persona_id) = persona_id.as_ref() {
             if let Some(conversation_id) = draft_conversation_id.as_ref() {
@@ -560,6 +638,57 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "persist_workspace",
             workspace_persist_started,
         );
+
+        if let Some(clickup_task) = validated_clickup_task.as_ref() {
+            let head_sha = match workspace.as_ref() {
+                Some(workspace) => {
+                    match resolve_valid_agent_conversation_workspace_path(&project, workspace).await
+                    {
+                        Ok(worktree_path) => GitService::get_head_sha(&worktree_path).await.ok(),
+                        Err(_) => None,
+                    }
+                }
+                None => None,
+            };
+            let metadata_json = serde_json::json!({
+                "source": "ticket_start",
+                "title": clickup_task.name,
+                "branch": workspace.as_ref().map(|workspace| workspace.branch_name.as_str()),
+                "pr_number": workspace.as_ref().and_then(|workspace| {
+                    workspace.source_pull_request.as_ref().map(|pull_request| pull_request.number)
+                }),
+                "validated_at": chrono::Utc::now().to_rfc3339(),
+            })
+            .to_string();
+            self.deps
+                .state
+                .external_issue_link_service
+                .upsert_ticket_conversation_link(TicketConversationLinkInput {
+                    provider: "clickup".to_string(),
+                    external_kind: "clickup".to_string(),
+                    external_id: clickup_task.id.clone(),
+                    external_key: clickup_task.custom_id.clone(),
+                    external_url: clickup_task.url.clone(),
+                    conversation_id: conversation.id.as_str(),
+                    project_id: project.id.to_string(),
+                    local_sha: head_sha,
+                    local_state: Some("active".to_string()),
+                    metadata_json: Some(metadata_json),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = self.deps.app_handle.emit(
+                "ticketing:cache_invalidated",
+                serde_json::json!({
+                    "provider": "clickup",
+                    "ticketId": clickup_task.id,
+                    "ticketKey": clickup_task.custom_id,
+                    "projectId": project.id.to_string(),
+                    "reason": "conversation_started",
+                    "invalidatedAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        }
 
         let event_emit_started = Instant::now();
         if should_create_conversation {

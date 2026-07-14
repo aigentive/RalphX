@@ -349,6 +349,22 @@ fn first_ticket_branch_name_hint_supports_linear_and_clickup_tokens() {
 }
 
 #[test]
+fn clickup_task_lookup_key_prefers_custom_key_and_rejects_multiple_tasks() {
+    let reference = integration_ref("clickup", "clickup", "8689abc", Some("DEV-42"));
+    assert_eq!(
+        clickup_task_lookup_key_from_references(&[reference]).unwrap(),
+        Some("DEV-42".to_string())
+    );
+
+    let error = clickup_task_lookup_key_from_references(&[
+        integration_ref("clickup", "clickup", "8689abc", Some("DEV-42")),
+        integration_ref("clickup", "clickup", "8689def", Some("DEV-43")),
+    ])
+    .expect_err("multiple ClickUp tasks should fail closed");
+    assert!(error.contains("only start from one ClickUp task"));
+}
+
+#[test]
 fn first_ticket_branch_name_hint_ignores_unsupported_and_blank_ticket_refs() {
     assert!(first_ticket_branch_name_hint(&[integration_ref(
         "atlassian",
