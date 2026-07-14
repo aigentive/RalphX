@@ -6,6 +6,29 @@ impl GitService {
     // Query Operations
     // =========================================================================
 
+    /// Resolve the common ancestor used to review changes introduced by `head`.
+    pub async fn get_merge_base(repo: &Path, base: &str, head: &str) -> AppResult<String> {
+        let output = git_cmd::run(&["merge-base", base, head], repo).await?;
+        if !output.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "Failed to resolve merge base between '{}' and '{}': {}",
+                base,
+                head,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+
+        let merge_base = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if merge_base.is_empty() {
+            return Err(AppError::GitOperation(format!(
+                "Git returned an empty merge base between '{}' and '{}'",
+                base, head
+            )));
+        }
+
+        Ok(merge_base)
+    }
+
     /// Get the number of commits on a branch
     ///
     /// # Arguments
