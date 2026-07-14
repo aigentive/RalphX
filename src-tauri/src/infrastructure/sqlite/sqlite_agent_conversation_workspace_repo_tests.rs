@@ -369,6 +369,37 @@ async fn terminal_cleanup_candidates_skip_marked_rows() {
 }
 
 #[tokio::test]
+async fn local_cleanup_status_can_be_read_and_cleared() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    repo.mark_local_cleanup_status(&conversation_id, "workspace_dirty", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("workspace_dirty")
+    );
+
+    repo.clear_local_cleanup_status(&conversation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
     let (_db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id.clone());
