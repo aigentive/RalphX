@@ -448,6 +448,8 @@ Most agents extend `base_tools` and add Write, Edit, or Task as needed.
 | `create_plan_artifact` / `update_plan_artifact` | ralphx-ideation only |
 | `list_session_proposals` / `get_proposal` | ralphx-ideation, ralphx-ideation-readonly |
 | `get_session_plan` | ralphx-ideation, ralphx-ideation-readonly |
+
+Ticket attachment tools are read-only and pointer-based: `list_ticket_attachments` returns bounded metadata plus opaque content pointers, while `fetch_ticket_attachment` returns an untrusted content reference. These tools must not expose provider transport details, credentials, direct download links, source handles, cache paths, or raw attachment bytes.
 | `create_child_session` | ralphx-ideation, ralphx-ideation-readonly |
 | `analyze_session_dependencies` | ralphx-ideation only |
 | `update_session_title` | ralphx-utility-session-namer only |

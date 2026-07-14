@@ -68,12 +68,19 @@ const ALLOWED_ATTACHMENT_KEYS = new Set([
     "available",
 ]);
 const FORBIDDEN_ATTACHMENT_KEYS = /(?:url|token|credential|secret|authorization|source|path|location|handle)/i;
+const FORBIDDEN_ATTACHMENT_VALUES = /(?:https?:\/\/|bearer\s+|token=|access_token=|\/tmp\/|\/var\/|\/users\/|[a-z]:\\|\\\\)/i;
+const REDACTED_ATTACHMENT_VALUE = Symbol("redacted-ticket-attachment-value");
 function isPlainObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function safeAttachmentValue(value) {
     if (Array.isArray(value)) {
-        return value.map(safeAttachmentValue);
+        return value
+            .map(safeAttachmentValue)
+            .filter((child) => child !== REDACTED_ATTACHMENT_VALUE);
+    }
+    if (typeof value === "string" && FORBIDDEN_ATTACHMENT_VALUES.test(value)) {
+        return REDACTED_ATTACHMENT_VALUE;
     }
     if (!isPlainObject(value)) {
         return value;
@@ -83,12 +90,16 @@ function safeAttachmentValue(value) {
         if (!ALLOWED_ATTACHMENT_KEYS.has(key) || FORBIDDEN_ATTACHMENT_KEYS.test(key)) {
             continue;
         }
-        shaped[key] = safeAttachmentValue(child);
+        const safeChild = safeAttachmentValue(child);
+        if (safeChild !== REDACTED_ATTACHMENT_VALUE) {
+            shaped[key] = safeChild;
+        }
     }
     return shaped;
 }
 export function safeTicketAttachmentResult(result) {
-    return safeAttachmentValue(result);
+    const safeResult = safeAttachmentValue(result);
+    return safeResult === REDACTED_ATTACHMENT_VALUE ? undefined : safeResult;
 }
 export async function callTicketAttachmentTool(name, callTauri, args) {
     const requestArgs = isPlainObject(args) ? args : {};
