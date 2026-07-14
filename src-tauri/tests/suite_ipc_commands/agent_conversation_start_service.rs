@@ -143,6 +143,7 @@ for argument in "$@"; do
   fi
   previous="$argument"
 done
+cat >/dev/null
 "#,
         )
         .expect("fake CLI should be written");
