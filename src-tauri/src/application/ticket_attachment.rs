@@ -41,6 +41,16 @@ pub struct TicketAttachmentContentPointer {
 }
 
 impl TicketAttachmentContentPointer {
+    pub fn from_id(id: &str) -> Result<Self, TicketAttachmentError> {
+        validate_identifier("content_pointer", id, MAX_TICKET_ATTACHMENT_ID_BYTES)?;
+        if !id.starts_with("ta_") {
+            return Err(TicketAttachmentError::UnsafeField {
+                field: "content_pointer",
+            });
+        }
+        Ok(Self { id: id.to_string() })
+    }
+
     pub fn new(
         provider: TicketAttachmentProvider,
         ticket_id: &str,
