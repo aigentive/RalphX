@@ -75,7 +75,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, BranchUpdateRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
@@ -457,6 +457,7 @@ pub fn uses_execution_slot(context_type: ChatContextType) -> bool {
         ChatContextType::TaskExecution
             | ChatContextType::Review
             | ChatContextType::Merge
+            | ChatContextType::BranchUpdate
             | ChatContextType::Ideation
     )
 }
@@ -1245,6 +1246,10 @@ pub trait ChatService: Send + Sync {
     /// Default is a no-op; AppChatService uses std::sync::Mutex.
     fn set_plan_branch_repo(&self, _repo: Arc<dyn PlanBranchRepository>) {}
 
+    /// Override branch-update authority at runtime. Production chat binds the
+    /// exact conversation/run before any updater process is registered or spawned.
+    fn set_branch_update_repo(&self, _repo: Arc<dyn BranchUpdateRepository>) {}
+
     /// Override the InteractiveProcessRegistry at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses std::sync::Mutex.
     fn set_interactive_process_registry(&self, _registry: Arc<InteractiveProcessRegistry>) {}
@@ -1292,6 +1297,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     execution_state: Option<Arc<crate::commands::ExecutionState>>,
     question_state: Option<Arc<QuestionState>>,
     plan_branch_repo: std::sync::Mutex<Option<Arc<dyn PlanBranchRepository>>>,
+    branch_update_repo: std::sync::Mutex<Option<Arc<dyn BranchUpdateRepository>>>,
     agent_conversation_workspace_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationWorkspaceRepository>>>,
     agent_conversation_jira_issue_repo:
@@ -1385,6 +1391,7 @@ impl<R: Runtime> AppChatService<R> {
             execution_state: None,
             question_state: None,
             plan_branch_repo: std::sync::Mutex::new(None),
+            branch_update_repo: std::sync::Mutex::new(None),
             agent_conversation_workspace_repo: std::sync::Mutex::new(None),
             agent_conversation_jira_issue_repo: std::sync::Mutex::new(None),
             agent_conversation_linear_issue_repo: std::sync::Mutex::new(None),
@@ -3934,7 +3941,8 @@ impl<R: Runtime> AppChatService<R> {
             ChatContextType::Task
             | ChatContextType::TaskExecution
             | ChatContextType::Review
-            | ChatContextType::Merge => {
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => {
                 let task_id = TaskId::from_string(context_id.to_string());
                 if let Ok(Some(task)) = self.task_repo.get_by_id(&task_id).await {
                     Some(task.internal_status.as_str().to_string())
@@ -4840,6 +4848,50 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let agent_run_id = agent_run.id.as_str().to_string();
         let run_chain_id = agent_run.run_chain_id.clone();
 
+        let branch_update_binding = if context_type == ChatContextType::BranchUpdate {
+            let branch_update_repo = self
+                .branch_update_repo
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| {
+                    ChatServiceError::SpawnFailed(
+                        "Branch updater has no durable authority repository".to_string(),
+                    )
+                })?;
+            let task_id = TaskId::from_string(context_id.to_string());
+            let operation = branch_update_repo
+                .get_active_operation(&task_id)
+                .await
+                .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?
+                .ok_or_else(|| {
+                    ChatServiceError::SpawnFailed(
+                        "Branch updater has no active durable operation".to_string(),
+                    )
+                })?;
+            let update_status = match operation.direction {
+                crate::domain::entities::BranchUpdateDirection::PlanBranch => {
+                    InternalStatus::UpdatingPlanBranch
+                }
+                crate::domain::entities::BranchUpdateDirection::TaskBranch => {
+                    InternalStatus::UpdatingTaskBranch
+                }
+            };
+            Some((
+                branch_update_repo,
+                crate::domain::repositories::BindBranchUpdateRun {
+                    operation_id: operation.id,
+                    task_id,
+                    originating_history_id: operation.originating_history_id,
+                    update_status,
+                    conversation_id: conversation.id.as_str().to_string(),
+                    agent_run_id: agent_run_id.clone(),
+                },
+            ))
+        } else {
+            None
+        };
+
         let registry_key = RunningAgentKey::new(context_type.to_string(), &runtime_context_id);
         tracing::info!(
             %context_type,
@@ -4942,6 +4994,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let mut running_incremented = false;
         let mut user_message_persisted = false;
         let mut agent_run_persisted = false;
+        let mut branch_update_run_bound = false;
         let mut pre_spawn_assistant_attribution: Option<ChatMessageAttribution> = None;
 
         // Cleanup macro: unregisters slot + decrements running count on failure.
@@ -4957,6 +5010,33 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         exec.decrement_running();
                         if let Some(ref handle) = self.app_handle {
                             exec.emit_status_changed(handle, "slot_cleanup");
+                        }
+                    }
+                }
+                if branch_update_run_bound {
+                    if let Some((repository, request)) = branch_update_binding.as_ref() {
+                        match repository
+                            .unbind_agent_run(crate::domain::repositories::UnbindBranchUpdateRun {
+                                operation_id: request.operation_id.clone(),
+                                task_id: request.task_id.clone(),
+                                originating_history_id: request.originating_history_id.clone(),
+                                update_status: request.update_status,
+                                conversation_id: request.conversation_id.clone(),
+                                agent_run_id: request.agent_run_id.clone(),
+                            })
+                            .await
+                        {
+                            Ok(crate::domain::repositories::BranchUpdateCasOutcome::Applied) => {}
+                            Ok(outcome) => tracing::error!(
+                                ?outcome,
+                                agent_run_id = %agent_run_id,
+                                "Failed to release exact branch-update run binding after pre-spawn failure"
+                            ),
+                            Err(unbind_error) => tracing::error!(
+                                error = %unbind_error,
+                                agent_run_id = %agent_run_id,
+                                "Branch-update run binding cleanup failed closed"
+                            ),
                         }
                     }
                 }
@@ -5762,6 +5842,20 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
         }
         agent_run_persisted = true;
+        if let Some((repository, request)) = branch_update_binding.as_ref() {
+            let binding = match repository.bind_agent_run(request.clone()).await {
+                Ok(binding) => binding,
+                Err(error) => {
+                    cleanup_and_err!(ChatServiceError::SpawnFailed(error.to_string()));
+                }
+            };
+            if binding != crate::domain::repositories::BranchUpdateCasOutcome::Applied {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(format!(
+                    "Branch updater run binding lost authority: {binding:?}"
+                )));
+            }
+            branch_update_run_bound = true;
+        }
         log_send_message_spawn_prep_phase(
             context_type,
             context_id,
@@ -6779,6 +6873,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
     fn set_plan_branch_repo(&self, repo: Arc<dyn PlanBranchRepository>) {
         *self.plan_branch_repo.lock().unwrap() = Some(repo);
+    }
+
+    fn set_branch_update_repo(&self, repo: Arc<dyn BranchUpdateRepository>) {
+        *self.branch_update_repo.lock().unwrap() = Some(repo);
     }
 
     fn set_interactive_process_registry(&self, registry: Arc<InteractiveProcessRegistry>) {

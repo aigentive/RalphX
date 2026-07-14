@@ -24,6 +24,7 @@ export const CONTEXT_TYPE_VALUES = [
   "task_execution",
   "review",
   "merge",
+  "branch_update",
   "delegation",
 ] as const;
 

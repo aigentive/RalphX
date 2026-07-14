@@ -290,8 +290,8 @@ pub use review_commands::{
 pub use task_commands::{
     answer_user_question, archive_task, cancel_tasks_in_group, create_task, emit_queue_changed,
     get_archived_count, get_task, get_task_state_transitions, get_valid_transitions, inject_task,
-    list_tasks, move_task, pause_task, restore_task, search_tasks, stop_task, update_task,
-    StateTransitionResponse,
+    list_tasks, move_task, pause_task, restore_task, retry_branch_update, search_tasks, stop_task,
+    update_task, StateTransitionResponse,
 };
 pub use task_context_commands::{
     get_artifact_full, get_artifact_version, get_related_artifacts, get_task_context,

@@ -331,7 +331,8 @@ async fn resolve_conversation_project_id(
         ChatContextType::Task
         | ChatContextType::TaskExecution
         | ChatContextType::Review
-        | ChatContextType::Merge => {
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => {
             let task = state
                 .task_repo
                 .get_by_id(&TaskId::from_string(conversation.context_id.clone()))

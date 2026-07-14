@@ -84,6 +84,7 @@ macro_rules! register_tauri_commands {
             commands::task_commands::execution_plan_controls::stop_execution_plan,
             commands::task_commands::mutation::pause_task,
             commands::task_commands::mutation::resume_task,
+            commands::task_commands::mutation::retry_branch_update,
             commands::task_commands::mutation::stop_task,
             commands::task_commands::query::get_archived_count,
             commands::task_commands::query::search_tasks,

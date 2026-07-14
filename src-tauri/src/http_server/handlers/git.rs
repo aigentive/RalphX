@@ -141,6 +141,7 @@ pub async fn complete_merge(
             None,
         ));
     }
+    reject_legacy_branch_update_merge_endpoint(&task)?;
 
     // 5. Get project for cleanup info and verification
     let project = state
@@ -614,6 +615,7 @@ pub async fn report_conflict(
             None,
         ));
     }
+    reject_legacy_branch_update_merge_endpoint(&task)?;
 
     // 2. Store conflict metadata for historical navigation
     // This ensures conflict_files are persisted even when navigating historical tasks
@@ -784,6 +786,7 @@ pub async fn report_incomplete(
             None,
         ));
     }
+    reject_legacy_branch_update_merge_endpoint(&task)?;
 
     // 2. Persist error context to task metadata.
     // Mark as agent-reported so reconciler skips auto-retry (agent made a deliberate decision).
@@ -1004,6 +1007,34 @@ pub async fn get_merge_target(
 /// JSON error response type for git handlers
 pub type JsonError = (StatusCode, Json<serde_json::Value>);
 
+fn reject_legacy_branch_update_merge_endpoint(
+    task: &crate::domain::entities::Task,
+) -> Result<(), JsonError> {
+    let metadata = task
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let has_evidence = metadata.as_ref().is_some_and(|metadata| {
+        [
+            "branch_freshness_conflict",
+            "plan_update_conflict",
+            "source_update_conflict",
+            "pr_branch_update_conflict",
+            "pr_branch_publication_conflict",
+        ]
+        .iter()
+        .any(|key| metadata.get(*key).and_then(|value| value.as_bool()) == Some(true))
+    });
+    if has_evidence {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Legacy branch-update evidence is not valid merge authority",
+            Some("Run branch-update remediation before using merge completion tools".to_string()),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a JSON error response with an error message and optional details
 #[doc(hidden)]
 pub fn json_error(
@@ -1051,6 +1082,18 @@ fn build_transition_service(state: &HttpServerState) -> TaskTransitionService {
 fn build_pr_sync_services(state: &HttpServerState) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(&state.app_state.task_repo)),
+        branch_update_repo: Some(Arc::clone(&state.app_state.branch_update_repo)),
+        branch_update_workflow: Some(Arc::new(
+            crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+                Arc::new(
+                    state
+                        .app_state
+                        .build_chat_service_with_execution_state(Arc::clone(
+                            &state.execution_state,
+                        )),
+                ),
+            ),
+        )),
         plan_branch_repo: Some(Arc::clone(&state.app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::clone(
             &state.app_state.pr_poller_registry.pr_creation_guard,

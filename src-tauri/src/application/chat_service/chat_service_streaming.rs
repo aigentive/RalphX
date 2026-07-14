@@ -139,7 +139,8 @@ async fn record_agent_waiting_if_user_attended<R: Runtime>(
         ChatContextType::Delegation
         | ChatContextType::TaskExecution
         | ChatContextType::Review
-        | ChatContextType::Merge => return,
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => return,
     };
 
     if !is_user_attended_turn_completion(

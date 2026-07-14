@@ -32,8 +32,8 @@ use crate::domain::services::payload_enrichment::{
 };
 
 use super::merge_helpers::{
-    compute_merge_worktree_path, merge_metadata_into, sync_plan_branch_pr_after_regular_task_merge,
-    PlanBranchPrSyncOutcome, PlanBranchPrSyncServices, PrBranchPublicationConflict,
+    merge_metadata_into, sync_plan_branch_pr_after_regular_task_merge, PlanBranchPrSyncOutcome,
+    PlanBranchPrSyncServices, PrBranchPublicationConflict,
 };
 use super::merge_validation::emit_merge_progress;
 
@@ -234,7 +234,7 @@ async fn complete_merge_internal_impl(
                     remote_ref = %conflict.remote_ref,
                     "complete_merge_internal: PR branch publication requires conflict resolution before Merged status"
                 );
-                route_pr_branch_publication_conflict(
+                let finalized = route_pr_branch_publication_conflict(
                     task,
                     project,
                     &conflict,
@@ -242,9 +242,20 @@ async fn complete_merge_internal_impl(
                     source_branch,
                     target_branch,
                     task_repo,
+                    pr_sync_services,
                     old_status.clone(),
                 )
                 .await?;
+                if finalized {
+                    emit_merge_progress(
+                        event_sink,
+                        task_id_str,
+                        MergePhase::finalize(),
+                        MergePhaseStatus::Passed,
+                        format!("Merge finalized successfully: {commit_sha}"),
+                    );
+                    return Ok(());
+                }
                 return Err(conflict.routed_error());
             }
             Err(error) => {
@@ -557,18 +568,10 @@ async fn route_pr_branch_publication_conflict(
     source_branch: &str,
     target_branch: &str,
     task_repo: &Arc<dyn TaskRepository>,
+    services: &PlanBranchPrSyncServices,
     old_status: InternalStatus,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let repo_path = Path::new(&project.working_directory);
-    let merge_worktree = compute_merge_worktree_path(project, task.id.as_str());
-    let merge_worktree_path = PathBuf::from(&merge_worktree);
-
-    if merge_worktree_path.exists() {
-        let _ = GitService::delete_worktree(repo_path, &merge_worktree_path).await;
-    }
-    GitService::checkout_existing_branch_worktree(repo_path, &merge_worktree_path, target_branch)
-        .await?;
-
     merge_metadata_into(
         task,
         &serde_json::json!({
@@ -589,22 +592,113 @@ async fn route_pr_branch_publication_conflict(
             "conflict_files": conflict.conflict_files_as_strings(),
         }),
     );
-    task.internal_status = InternalStatus::Merging;
-    task.worktree_path = Some(merge_worktree);
     task.touch();
     task_repo.update(task).await?;
-    if old_status != InternalStatus::Merging {
-        let _ = task_repo
-            .persist_status_change(
-                &task.id,
-                old_status,
-                InternalStatus::Merging,
-                "pr_branch_publication_conflict",
-            )
-            .await;
-    }
 
-    Ok(())
+    let repository = services.branch_update_repo.as_ref().ok_or_else(|| {
+        AppError::ExecutionBlocked(
+            "Branch update authority repository is unavailable for PR publication recovery"
+                .to_string(),
+        )
+    })?;
+    let workflow = services.branch_update_workflow.as_ref().ok_or_else(|| {
+        AppError::ExecutionBlocked(
+            "Branch update workflow adapter is unavailable for PR publication recovery".to_string(),
+        )
+    })?;
+    let identity = GitService::canonical_target_identity(repo_path, &conflict.branch_name).await?;
+    let mut operation = crate::domain::entities::BranchUpdateOperation::new(
+        task.id.clone(),
+        crate::domain::entities::BranchUpdateDirection::PlanBranch,
+        crate::domain::entities::BranchUpdateContinuation::FinalizePostMergePrPublication,
+        uuid::Uuid::new_v4().to_string(),
+        conflict.remote_ref.clone(),
+        conflict.branch_name.clone(),
+        crate::domain::entities::BranchUpdateWorkspaceOwnership::OperationWorktree,
+        crate::domain::entities::BranchUpdateCapacityOwnership::Inherited,
+        identity,
+        chrono::Utc::now(),
+    );
+    operation.workspace_path = Some(PathBuf::from(
+        super::merge_helpers::compute_plan_update_worktree_path(project, task.id.as_str()),
+    ));
+    operation.observed_source_sha =
+        Some(GitService::resolve_ref_sha(repo_path, &operation.source_branch).await?);
+    operation.observed_target_sha =
+        Some(GitService::resolve_ref_sha(repo_path, &operation.target_branch).await?);
+    let operation_for_execution = operation.clone();
+    let fencing_epoch = match repository
+        .activate(crate::domain::repositories::BranchUpdateActivation {
+            operation,
+            expected_status: old_status,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "pr_branch_publication_conflict".to_string(),
+        })
+        .await?
+    {
+        crate::domain::repositories::BranchUpdateActivationOutcome::Applied {
+            fencing_epoch,
+            ..
+        } => fencing_epoch,
+        outcome => {
+            return Err(AppError::Conflict(format!(
+                "PR publication branch-update activation lost authority: {outcome:?}"
+            )))
+        }
+    };
+    task.internal_status = InternalStatus::UpdatingPlanBranch;
+    let finalized = match workflow
+        .execute_programmatic(
+            Arc::clone(repository),
+            Arc::clone(task_repo),
+            repo_path,
+            &operation_for_execution,
+            InternalStatus::UpdatingPlanBranch,
+            fencing_epoch,
+        )
+        .await?
+    {
+        crate::domain::state_machine::services::BranchUpdateWorkflowOutcome::ContinuationPending => {
+            let pending = repository
+                .get_operation(&operation_for_execution.id)
+                .await?
+                .ok_or_else(|| AppError::Conflict("Publication branch update disappeared".to_string()))?;
+            workflow
+                .publish_post_merge(
+                    Arc::clone(repository),
+                    repo_path,
+                    &pending,
+                    InternalStatus::UpdatingPlanBranch,
+                )
+                .await?;
+            if let Some(plan_branch_repo) = services.plan_branch_repo.as_ref() {
+                if let Some(plan_branch) =
+                    super::merge_helpers::resolve_task_plan_branch_record(task, plan_branch_repo)
+                        .await
+                {
+                    let _ = plan_branch_repo
+                        .update_pr_push_status(
+                            &plan_branch.id,
+                            crate::domain::entities::plan_branch::PrPushStatus::Pushed,
+                        )
+                        .await;
+                }
+            }
+            if let Some(stored) = task_repo.get_by_id(&task.id).await? {
+                *task = stored;
+            }
+            true
+        }
+        crate::domain::state_machine::services::BranchUpdateWorkflowOutcome::NeedsAgent
+        | crate::domain::state_machine::services::BranchUpdateWorkflowOutcome::Blocked => false,
+        crate::domain::state_machine::services::BranchUpdateWorkflowOutcome::Completed { .. } => {
+            return Err(AppError::Conflict(
+                "PR publication branch update resumed an invalid continuation".to_string(),
+            ));
+        }
+    };
+
+    Ok(finalized)
 }
 
 // NOTE: The old `cleanup_branch_and_worktree_internal` function has been replaced

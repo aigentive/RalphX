@@ -202,15 +202,14 @@ async fn test_merge_missing_source_branch_with_real_repo() {
     );
 }
 
-/// Verify a source-update git error stops the programmatic merge at branch freshness.
+/// Verify the dedicated update workspace is isolated from an unrelated dirty checkout.
 ///
 /// The source branch and target branch exist, but the source branch is checked out
-/// in a dirty worktree. That makes update_source_from_target return SourceUpdateResult::Error
-/// when it tries to merge the target into that existing worktree. The merge pipeline
-/// must route directly to MergeIncomplete with freshness metadata instead of
-/// treating branch freshness as passed and continuing into strategy dispatch.
+/// in a dirty worktree. The old implementation reused that checkout and failed.
+/// The dedicated workflow must update through its operation-owned worktree, merge
+/// successfully, and leave the unrelated dirty checkout untouched.
 #[tokio::test]
-async fn test_source_update_error_routes_to_merge_incomplete() {
+async fn test_isolated_source_update_ignores_unrelated_dirty_checkout() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
 
@@ -265,32 +264,15 @@ async fn test_source_update_error_routes_to_merge_incomplete() {
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
         updated_task.internal_status,
-        InternalStatus::MergeIncomplete,
-        "Source-update errors should stop at MergeIncomplete, got {:?}. Metadata: {:?}",
+        InternalStatus::Merged,
+        "Operation-owned source update should merge despite an unrelated dirty checkout. Got {:?}. Metadata: {:?}",
         updated_task.internal_status,
         updated_task.metadata,
     );
-
-    let meta: serde_json::Value =
-        serde_json::from_str(updated_task.metadata.as_deref().unwrap_or("{}")).unwrap();
-    let error = meta.get("error").and_then(|v| v.as_str()).unwrap_or("");
-    assert!(
-        error.contains("Source branch update failed"),
-        "MergeIncomplete should preserve source-update error context. Metadata: {:?}",
-        meta
-    );
     assert_eq!(
-        meta.get("source_branch"),
-        Some(&serde_json::json!(git_repo.task_branch))
-    );
-    assert_eq!(meta.get("target_branch"), Some(&serde_json::json!("main")));
-    assert_eq!(
-        meta.get("source_update_error"),
-        Some(&serde_json::json!(true))
-    );
-    assert_eq!(
-        meta.get("merge_failure_source"),
-        Some(&serde_json::json!("transient_git"))
+        std::fs::read_to_string(source_wt.join("README.md")).unwrap(),
+        "# test repo\nlocal dirty source edit\n",
+        "Dedicated update must not modify the unrelated dirty checkout"
     );
 
     let _ = std::process::Command::new("git")
@@ -304,12 +286,12 @@ async fn test_source_update_error_routes_to_merge_incomplete() {
         .output();
 }
 
-/// Verify that merge with conflict (diverged branches) transitions to Merging
-/// and spawns a merger agent.
+/// Verify that a conflict discovered while refreshing a stale source branch
+/// routes to the dedicated branch-update workflow before merge dispatch.
 ///
 /// Setup: main and task branch both modify the same file (creating a conflict).
 #[tokio::test]
-async fn test_merge_with_conflict_transitions_to_merging() {
+async fn test_stale_source_conflict_transitions_to_task_branch_update() {
     let git_repo = setup_real_git_repo();
 
     // Create a conflicting commit on main (modify feature.rs on main too)
@@ -339,10 +321,10 @@ async fn test_merge_with_conflict_transitions_to_merging() {
     let _ = handler.on_enter(&State::PendingMerge).await;
 
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    assert!(
-        updated_task.internal_status == InternalStatus::Merging
-            || updated_task.internal_status == InternalStatus::MergeIncomplete,
-        "Conflicting merge should transition to Merging (for agent) or MergeIncomplete, got {:?}. Metadata: {:?}",
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::UpdatingTaskBranch,
+        "Stale source conflict should transition to UpdatingTaskBranch, got {:?}. Metadata: {:?}",
         updated_task.internal_status,
         updated_task.metadata,
     );

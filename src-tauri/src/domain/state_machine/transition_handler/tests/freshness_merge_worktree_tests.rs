@@ -1,9 +1,8 @@
-// Integration tests for the freshness-conflict merge worktree fix.
+// Compatibility tests for tasks persisted by the pre-dedicated branch-update workflow.
 //
-// The BranchFreshnessConflict path routes to Merging WITHOUT creating a merge
-// worktree (unlike the normal merge pipeline). on_enter(Merging) now detects this
-// case (wt_path doesn't exist but repo_path exists + metadata flags set) and creates
-// the merge worktree before spawning the merger agent.
+// New freshness conflicts use UpdatingPlanBranch/UpdatingTaskBranch and never enter
+// Merging. These cases preserve safe recovery for legacy Merging rows whose metadata
+// still identifies the old freshness-conflict route.
 //
 // Test matrix:
 //   Test 1: source_update_conflict flag → task branch checked out in merge-{id}
@@ -486,6 +485,8 @@ fn test_clear_routing_flags_preserves_counts() {
         freshness_backoff_until: Some(chrono::Utc::now()),
         freshness_auto_reset_count: 1,
         last_freshness_check_at: Some("2026-03-10T12:00:00Z".to_string()),
+        last_plan_freshness_check_at: Some("2026-03-10T12:00:00Z".to_string()),
+        last_task_freshness_check_at: Some("2026-03-10T12:00:00Z".to_string()),
         freshness_count_incremented_by: None,
     };
 

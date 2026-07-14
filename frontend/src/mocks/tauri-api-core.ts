@@ -484,6 +484,7 @@ const mockAgentLanes = [
   "execution_reviewer",
   "execution_reexecutor",
   "execution_merger",
+  "execution_branch_updater",
 ] as const;
 
 function mockAgentLaneSettings(projectId: string | null) {
@@ -1609,6 +1610,34 @@ const commandHandlers: Record<
       fetchedAt: "2026-06-19T22:00:00.000Z",
     };
   },
+  list_ticket_filter_options: async (args) => {
+    const query = args.query as { provider?: string } | undefined;
+    const provider = query?.provider ?? "jira";
+    const assignees = Array.from(
+      new Set(
+        mockTicketingTickets
+          .filter((ticket) => ticket.ref.provider === provider)
+          .flatMap((ticket) => {
+            const assignees =
+              "assignees" in ticket && Array.isArray(ticket.assignees)
+                ? ticket.assignees
+                : [];
+            const assignee =
+              "assignee" in ticket && ticket.assignee ? [ticket.assignee] : [];
+            return [...assignees, ...assignee] as Array<{ name?: string | null }>;
+          })
+          .map((assignee) => assignee.name)
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+
+    return {
+      assignees,
+      sprints: [],
+      complete: true,
+      truncated: false,
+    };
+  },
   get_ticket_detail: async (args) => {
     const ticketRef = args.ticketRef as { id?: string } | undefined;
     const ticket =
@@ -2091,6 +2120,27 @@ const commandHandlers: Record<
       project_id: task.projectId,
       blocked_reason: task.blockedReason,
     }));
+  },
+  retry_branch_update: async (args) => {
+    const task = await mockTasksApi.retryBranchUpdate(args.taskId as string);
+    return {
+      id: task.id,
+      project_id: task.projectId,
+      category: task.category,
+      title: task.title,
+      description: task.description,
+      internal_status: task.internalStatus,
+      priority: task.priority,
+      needs_review_point: task.needsReviewPoint,
+      created_at: task.createdAt,
+      updated_at: task.updatedAt,
+      started_at: task.startedAt,
+      completed_at: task.completedAt,
+      archived_at: task.archivedAt,
+      blocked_reason: task.blockedReason,
+      task_branch: task.taskBranch ?? null,
+      metadata: task.metadata ?? null,
+    };
   },
 
   // Chat commands

@@ -822,7 +822,10 @@ fn categorize_status(status: &InternalStatus, summary: &mut StatusSummary) {
         InternalStatus::Backlog => summary.backlog += 1,
         InternalStatus::Ready => summary.ready += 1,
         InternalStatus::Blocked => summary.blocked += 1,
-        InternalStatus::Executing | InternalStatus::ReExecuting => summary.executing += 1,
+        InternalStatus::Executing
+        | InternalStatus::ReExecuting
+        | InternalStatus::UpdatingPlanBranch
+        | InternalStatus::UpdatingTaskBranch => summary.executing += 1,
         InternalStatus::QaRefining
         | InternalStatus::QaTesting
         | InternalStatus::QaPassed
@@ -842,7 +845,7 @@ fn categorize_status(status: &InternalStatus, summary: &mut StatusSummary) {
             summary.terminal += 1
         }
         // Paused tasks are in a suspended state (not terminal, can resume)
-        InternalStatus::Paused => summary.blocked += 1,
+        InternalStatus::Paused | InternalStatus::BranchUpdateBlocked => summary.blocked += 1,
     }
 }
 

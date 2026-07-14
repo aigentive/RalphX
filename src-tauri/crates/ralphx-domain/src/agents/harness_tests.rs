@@ -77,6 +77,10 @@ fn test_agent_lane_display_and_parse() {
     assert_eq!(AgentLane::IdeationPrimary.to_string(), "ideation_primary");
     assert_eq!(AgentLane::ExecutionMerger.to_string(), "execution_merger");
     assert_eq!(
+        AgentLane::ExecutionBranchUpdater.to_string(),
+        "execution_branch_updater"
+    );
+    assert_eq!(
         "ideation_verifier_subagent".parse::<AgentLane>().unwrap(),
         AgentLane::IdeationVerifierSubagent
     );

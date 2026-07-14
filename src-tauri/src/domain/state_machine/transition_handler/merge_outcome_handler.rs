@@ -511,17 +511,17 @@ impl<'a> super::TransitionHandler<'a> {
                 tracing::info!(
                     task_id = task_id_str,
                     strategy = opts.strategy_label,
-                    "PR branch publication conflict routed to merger; skipping MergeIncomplete fallback"
+                    "PR branch publication conflict routed to branch updater; skipping MergeIncomplete fallback"
                 );
                 if let Some(transition_service) = &self.machine.context.services.transition_service
                 {
                     transition_service
-                        .execute_entry_actions(task_id, task, InternalStatus::Merging)
+                        .execute_entry_actions(task_id, task, task.internal_status)
                         .await;
                 } else {
                     tracing::warn!(
                         task_id = task_id_str,
-                        "PR branch publication conflict routed but transition_service is unavailable to start merger"
+                        "PR branch publication conflict routed but transition_service is unavailable to start branch updater"
                     );
                 }
                 return;

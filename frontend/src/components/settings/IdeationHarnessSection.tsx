@@ -428,6 +428,10 @@ const LANE_META: Record<
     label: "Execution Merger",
     description: "Merge-conflict and merge completion lane",
   },
+  execution_branch_updater: {
+    label: "Branch Updater",
+    description: "Dedicated branch freshness and conflict-resolution lane",
+  },
 };
 
 const LANE_GROUPS: {

@@ -534,7 +534,10 @@ impl ChatResumptionRunner {
     /// are already handled by StartupJobRunner via entry actions.
     async fn is_handled_by_task_resumption(&self, conv: &InterruptedConversation) -> bool {
         match conv.conversation.context_type {
-            ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+            ChatContextType::TaskExecution
+            | ChatContextType::Review
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => {
                 // Check if the task is in an agent-active status
                 let task_id = TaskId::from_string(conv.conversation.context_id.clone());
                 match self.task_repo.get_by_id(&task_id).await {
@@ -700,6 +703,7 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
         ChatContextType::TaskExecution => 0, // Highest priority
         ChatContextType::Review => 1,
         ChatContextType::Merge => 2, // Same priority as review (agent-active)
+        ChatContextType::BranchUpdate => 2,
         ChatContextType::Task => 3,
         ChatContextType::Ideation => 4,
         ChatContextType::Delegation => 5,

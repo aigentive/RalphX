@@ -57,17 +57,17 @@ use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
     AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    AutomationRepository, AutomationRunRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
-    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
-    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
-    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    AutomationRepository, AutomationRunRepository, BranchUpdateRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
+    MemoryEventRepository, MethodologyRepository, NotificationRepository,
+    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
+    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
+    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
@@ -87,7 +87,7 @@ use crate::infrastructure::memory::{
     MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
     MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
     MemoryAtlassianIntegrationSettingsRepository, MemoryAutomationRepository,
-    MemoryAutomationRunRepository, MemoryChatAttachmentRepository,
+    MemoryAutomationRunRepository, MemoryBranchUpdateRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryClickUpIntegrationSettingsRepository, MemoryDelegatedSessionRepository,
     MemoryExecutionPlanRepository, MemoryExecutionSettingsRepository,
@@ -122,7 +122,7 @@ use crate::infrastructure::sqlite::{
     SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
     SqliteArtifactFlowRepository, SqliteArtifactRepository,
     SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
-    SqliteAutomationRunRepository, SqliteChatAttachmentRepository,
+    SqliteAutomationRunRepository, SqliteBranchUpdateRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteClickUpIntegrationSettingsRepository, SqliteDelegatedSessionRepository,
     SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
@@ -181,6 +181,8 @@ impl ResolvedBackgroundAgentRuntime {
 pub struct AppState {
     /// Task repository (SQLite in production, in-memory for tests)
     pub task_repo: Arc<dyn TaskRepository>,
+    /// Durable branch-update operation and canonical Git target authority.
+    pub branch_update_repo: Arc<dyn BranchUpdateRepository>,
     /// Task step repository for tracking execution progress
     pub task_step_repo: Arc<dyn TaskStepRepository>,
     /// Project repository (SQLite in production, in-memory for tests)
@@ -1255,6 +1257,9 @@ impl AppState {
 
         Ok(Self {
             task_repo: Arc::clone(&task_repo),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1550,6 +1555,9 @@ impl AppState {
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1719,6 +1727,9 @@ impl AppState {
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1893,6 +1904,9 @@ impl AppState {
 
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -2074,6 +2088,7 @@ impl AppState {
 
         Self {
             task_repo: Arc::clone(&task_repo),
+            branch_update_repo: Arc::new(MemoryBranchUpdateRepository::new()),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),

@@ -29,6 +29,7 @@ pub(crate) enum PlanUpdateResult {
 /// `PlanUpdateResult::Conflicts` so the caller can route to the merger agent.
 ///
 /// Only runs when `target_branch != base_branch` (i.e., target is a plan branch).
+#[cfg(test)]
 pub(crate) async fn update_plan_from_main(
     repo_path: &Path,
     target_branch: &str,

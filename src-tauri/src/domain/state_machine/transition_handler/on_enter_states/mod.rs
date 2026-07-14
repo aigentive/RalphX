@@ -7,7 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::domain::entities::InternalStatus;
-use crate::domain::state_machine::services::TaskNotification;
+use crate::domain::state_machine::services::{
+    BranchUpdateWorkflow, BranchUpdateWorkflowOutcome, TaskNotification,
+};
 use chrono::Utc;
 
 use super::super::machine::State;
@@ -37,6 +39,7 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 
 mod execution;
+mod branch_update;
 mod merge;
 mod outcomes;
 mod qa;
@@ -63,12 +66,23 @@ async fn get_task_plan_branch(
 
 /// Handle the result of ensure_branches_fresh() for an entry point.
 /// Returns Ok(()) if fresh or skipped, Err if needs routing or blocking.
-async fn apply_freshness_result(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FreshnessApplyOutcome {
+    Ready,
+    Updated(crate::domain::entities::BranchUpdateDirection),
+}
+
+pub(super) async fn apply_freshness_result(
     result: Result<freshness::FreshnessMetadata, FreshnessAction>,
     task: &crate::domain::entities::Task,
     task_id_str: &str,
     task_repo: &Arc<dyn TaskRepository>,
-) -> AppResult<()> {
+    branch_update_repo: Option<&Arc<dyn crate::domain::repositories::BranchUpdateRepository>>,
+    branch_update_workflow: Option<&Arc<dyn BranchUpdateWorkflow>>,
+    project: &crate::domain::entities::Project,
+    repo_path: &Path,
+    origin_state: &str,
+) -> AppResult<FreshnessApplyOutcome> {
     let task_id = TaskId::from_string(task_id_str.to_string());
     match result {
         Ok(updated_meta) => {
@@ -85,11 +99,12 @@ async fn apply_freshness_result(
             {
                 tracing::warn!(task_id = task_id_str, error = %e, "Failed to persist freshness metadata");
             }
-            Ok(())
+            Ok(FreshnessApplyOutcome::Ready)
         }
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             mut freshness_metadata,
-            ..
+            conflict_type,
+            conflict_files,
         }) => {
             // INVARIANT: freshness_count_incremented_by signals to the corrective handler
             // (task_transition_service.rs) that freshness_conflict_count was already
@@ -110,9 +125,129 @@ async fn apply_freshness_result(
             {
                 tracing::warn!(task_id = task_id_str, error = %e, "Failed to persist freshness conflict metadata");
             }
-            Err(AppError::BranchFreshnessConflict)
+            let branch_update_repo = branch_update_repo.ok_or_else(|| {
+                AppError::ExecutionBlocked(
+                    "Branch update authority repository is unavailable".to_string(),
+                )
+            })?;
+            let direction = if conflict_type == "plan_update" {
+                crate::domain::entities::BranchUpdateDirection::PlanBranch
+            } else {
+                crate::domain::entities::BranchUpdateDirection::TaskBranch
+            };
+            let continuation = match origin_state {
+                "re_executing" => crate::domain::entities::BranchUpdateContinuation::ResumeReExecution,
+                "reviewing" => crate::domain::entities::BranchUpdateContinuation::ResumeReview,
+                "waiting_on_pr" => crate::domain::entities::BranchUpdateContinuation::ResumeWaitingOnPr,
+                "pr_branch_publication" => crate::domain::entities::BranchUpdateContinuation::FinalizePostMergePrPublication,
+                "pending_merge" => crate::domain::entities::BranchUpdateContinuation::RetryPendingMerge,
+                _ => crate::domain::entities::BranchUpdateContinuation::ResumeExecution,
+            };
+            let (source_branch, target_branch) = if direction
+                == crate::domain::entities::BranchUpdateDirection::PlanBranch
+            {
+                (
+                    freshness_metadata.source_branch.clone(),
+                    freshness_metadata.target_branch.clone(),
+                )
+            } else {
+                (
+                    freshness_metadata.target_branch.clone(),
+                    freshness_metadata.source_branch.clone(),
+                )
+            };
+            let source_branch = source_branch.ok_or_else(|| {
+                AppError::ExecutionBlocked("Branch update source is missing".to_string())
+            })?;
+            let target_branch = target_branch.ok_or_else(|| {
+                AppError::ExecutionBlocked("Branch update target is missing".to_string())
+            })?;
+            let identity = GitService::canonical_target_identity(repo_path, &target_branch).await?;
+            let workspace_path = if direction
+                == crate::domain::entities::BranchUpdateDirection::PlanBranch
+            {
+                super::merge_helpers::compute_plan_update_worktree_path(project, task_id_str)
+            } else {
+                super::merge_helpers::compute_source_update_worktree_path(project, task_id_str)
+            };
+            let mut operation = crate::domain::entities::BranchUpdateOperation::new(
+                task.id.clone(),
+                direction,
+                continuation,
+                uuid::Uuid::new_v4().to_string(),
+                source_branch,
+                target_branch,
+                crate::domain::entities::BranchUpdateWorkspaceOwnership::OperationWorktree,
+                crate::domain::entities::BranchUpdateCapacityOwnership::Inherited,
+                identity,
+                chrono::Utc::now(),
+            );
+            operation.workspace_path = Some(std::path::PathBuf::from(workspace_path));
+            operation.conflict_files = conflict_files.into_iter().map(Into::into).collect();
+            operation.observed_source_sha =
+                Some(GitService::resolve_ref_sha(repo_path, &operation.source_branch).await?);
+            operation.observed_target_sha =
+                Some(GitService::resolve_ref_sha(repo_path, &operation.target_branch).await?);
+            let update_status = if direction
+                == crate::domain::entities::BranchUpdateDirection::PlanBranch
+            {
+                InternalStatus::UpdatingPlanBranch
+            } else {
+                InternalStatus::UpdatingTaskBranch
+            };
+            let operation_for_execution = operation.clone();
+            let fencing_epoch = match branch_update_repo
+                .activate(crate::domain::repositories::BranchUpdateActivation {
+                    operation,
+                    expected_status: task.internal_status,
+                    update_status,
+                    trigger: "branch_freshness_conflict".to_string(),
+                })
+                .await?
+            {
+                crate::domain::repositories::BranchUpdateActivationOutcome::Applied {
+                    fencing_epoch,
+                    ..
+                } => fencing_epoch,
+                outcome => {
+                    return Err(AppError::Conflict(format!(
+                        "Branch update activation lost authority: {outcome:?}"
+                    )))
+                }
+            };
+            let workflow = branch_update_workflow.ok_or_else(|| {
+                AppError::ExecutionBlocked(
+                    "Branch update workflow adapter is unavailable".to_string(),
+                )
+            })?;
+            match workflow
+                .execute_programmatic(
+                    Arc::clone(branch_update_repo),
+                    Arc::clone(task_repo),
+                    repo_path,
+                    &operation_for_execution,
+                    update_status,
+                    fencing_epoch,
+                )
+                .await?
+            {
+                BranchUpdateWorkflowOutcome::Completed { .. } => {
+                    Ok(FreshnessApplyOutcome::Updated(direction))
+                }
+                BranchUpdateWorkflowOutcome::ContinuationPending => {
+                    Err(AppError::ExecutionBlocked(
+                        "Branch update completed and is awaiting its durable publication continuation".to_string(),
+                    ))
+                }
+                BranchUpdateWorkflowOutcome::NeedsAgent => {
+                    Err(AppError::BranchFreshnessConflict)
+                }
+                BranchUpdateWorkflowOutcome::Blocked => {
+                    Err(AppError::Conflict("Branch update is blocked and requires attention".to_string()))
+                }
+            }
         }
-        Err(FreshnessAction::ExecutionBlocked { reason }) => {
+        Err(FreshnessAction::ExecutionBlocked { reason, .. }) => {
             Err(AppError::ExecutionBlocked(reason))
         }
     }
@@ -461,6 +596,9 @@ impl<'a> super::TransitionHandler<'a> {
             }
             State::Merging => {
                 Box::pin(self.enter_merging_state()).await?;
+            }
+            State::UpdatingPlanBranch | State::UpdatingTaskBranch => {
+                self.enter_branch_update_state().await?;
             }
             State::WaitingOnPr => {
                 self.maybe_start_pr_mode_merge_poller(&self.machine.context.task_id)

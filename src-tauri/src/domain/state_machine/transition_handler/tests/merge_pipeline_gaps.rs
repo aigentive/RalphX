@@ -39,6 +39,14 @@ fn make_services_with_tracked_chat(
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
+    .with_branch_update_repo(
+        crate::testing::memory_branch_update_repository_with_task_repository(
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+        ),
+    )
+    .with_branch_update_workflow(crate::testing::branch_update_workflow(
+        Arc::clone(&chat_service) as Arc<dyn ChatService>,
+    ))
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
@@ -509,7 +517,7 @@ async fn gap3_pre_merge_cleanup_deletes_all_worktree_types() {
 /// This test verifies the pipeline handles the scenario where the agent's work
 /// exists on the source branch but needs programmatic merge completion.
 #[tokio::test]
-async fn gap4_post_conflict_incomplete_resolution_goes_to_merge_incomplete_or_merged() {
+async fn gap4_post_conflict_incomplete_resolution_enters_dedicated_branch_update() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
 
@@ -587,34 +595,41 @@ async fn gap4_post_conflict_incomplete_resolution_goes_to_merge_incomplete_or_me
         make_services_with_tracked_chat(Arc::clone(&task_repo), Arc::clone(&project_repo));
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
-    let handler = TransitionHandler::new(&mut machine);
-
-    let _ = handler.on_enter(&State::PendingMerge).await;
+    {
+        let handler = TransitionHandler::new(&mut machine);
+        let _ = handler.on_enter(&State::PendingMerge).await;
+    }
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    // The task's source branch still conflicts with main (agent work is on merge-resolve,
-    // not on the task branch itself). So this should either:
-    // - Transition to Merging (conflict detected, agent needed) if merge fails
-    // - Transition to Merged if the programmatic merge somehow succeeds
-    // In practice with a real divergent merge, it will go to Merging (needs agent).
-    assert!(
-        updated.internal_status == InternalStatus::Merging
-            || updated.internal_status == InternalStatus::MergeIncomplete
-            || updated.internal_status == InternalStatus::Merged,
-        "Post-conflict incomplete resolution should transition to Merging, MergeIncomplete, or Merged. \
-         Got {:?}. Metadata: {:?}",
+    assert_eq!(
         updated.internal_status,
-        updated.metadata,
+        InternalStatus::UpdatingTaskBranch,
+        "Post-conflict incomplete resolution must enter the dedicated task-branch update state. Metadata: {:?}",
+        updated.metadata
     );
-
-    // If it went to Merging, verify that a merger agent was spawned
-    if updated.internal_status == InternalStatus::Merging {
-        assert!(
-            chat_service.call_count() >= 1,
-            "When transitioning to Merging, a merger agent should be spawned. call_count={}",
-            chat_service.call_count(),
-        );
-    }
+    assert_eq!(
+        chat_service.call_count(),
+        1,
+        "The dedicated branch updater should be spawned exactly once"
+    );
+    let operation = machine
+        .context
+        .services
+        .branch_update_repo
+        .as_ref()
+        .expect("branch update repository")
+        .get_active_operation(&task_id)
+        .await
+        .unwrap()
+        .expect("active branch update operation");
+    assert_eq!(
+        operation.phase,
+        crate::domain::entities::BranchUpdatePhase::Resolving
+    );
+    assert!(
+        !operation.conflict_files.is_empty(),
+        "The resolving operation must preserve the conflicting paths"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

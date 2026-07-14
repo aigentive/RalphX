@@ -21,11 +21,13 @@ use crate::application::GitService;
 use crate::commands::execution_commands::context_matches_running_status_for_gc;
 use crate::domain::entities::{
     task_metadata::StopRetryingReason, ActivityEvent, ActivityEventType, AgentRunStatus,
-    ChatContextType, ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
+    BranchUpdateContinuation, BranchUpdateDirection, BranchUpdatePhase, ChatContextType,
+    ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     ExecutionRecoveryState, InternalStatus, ProjectId, ReviewNote, ReviewOutcome, ReviewerType,
     Task, TaskId,
 };
+use crate::domain::repositories::{BranchUpdateCasOutcome, UnbindBranchUpdateRun};
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 
@@ -593,6 +595,9 @@ impl ReconciliationRunner {
                 self.reconcile_merging_task(task, status).await
             }
             InternalStatus::PendingMerge => self.reconcile_pending_merge_task(task, status).await,
+            InternalStatus::UpdatingPlanBranch | InternalStatus::UpdatingTaskBranch => {
+                self.reconcile_branch_update_task(task, status).await
+            }
             InternalStatus::MergeIncomplete => {
                 self.reconcile_merge_incomplete_task(task, status).await
             }
@@ -605,6 +610,160 @@ impl ReconciliationRunner {
             InternalStatus::Failed => self.reconcile_failed_execution_task(task, status).await,
             _ => false,
         }
+    }
+
+    async fn reconcile_branch_update_task(&self, task: &Task, status: InternalStatus) -> bool {
+        let Some(repository) = self.branch_update_repo.as_ref() else {
+            warn!(
+                task_id = task.id.as_str(),
+                "Branch-update reconciliation is unavailable without durable authority"
+            );
+            return false;
+        };
+        let operation = match repository.get_active_operation(&task.id).await {
+            Ok(Some(operation)) => operation,
+            Ok(None) => {
+                warn!(
+                    task_id = task.id.as_str(),
+                    status = status.as_str(),
+                    "Branch-update task has no active operation"
+                );
+                return false;
+            }
+            Err(error) => {
+                warn!(
+                    task_id = task.id.as_str(),
+                    error = %error,
+                    "Failed to load branch-update authority during reconciliation"
+                );
+                return false;
+            }
+        };
+        let expected_status = match operation.direction {
+            BranchUpdateDirection::PlanBranch => InternalStatus::UpdatingPlanBranch,
+            BranchUpdateDirection::TaskBranch => InternalStatus::UpdatingTaskBranch,
+        };
+        if expected_status != status {
+            warn!(
+                task_id = task.id.as_str(),
+                operation_id = operation.id.as_str(),
+                status = status.as_str(),
+                expected_status = expected_status.as_str(),
+                "Branch-update direction/status authority mismatch"
+            );
+            return false;
+        }
+
+        if matches!(
+            operation.phase,
+            BranchUpdatePhase::ContinuationPending | BranchUpdatePhase::ContinuationInProgress
+        ) {
+            let result = if operation.continuation
+                == BranchUpdateContinuation::FinalizePostMergePrPublication
+            {
+                let project = match self.project_repo.get_by_id(&task.project_id).await {
+                    Ok(Some(project)) => project,
+                    Ok(None) => return false,
+                    Err(error) => {
+                        warn!(task_id = task.id.as_str(), error = %error, "Failed to load project for branch publication recovery");
+                        return false;
+                    }
+                };
+                crate::application::branch_update_executor::publish_post_merge_branch_update(
+                    Arc::clone(repository),
+                    std::path::Path::new(&project.working_directory),
+                    &operation,
+                    status,
+                )
+                .await
+            } else {
+                crate::application::branch_update_executor::resume_branch_update_continuation(
+                    Arc::clone(repository),
+                    &operation,
+                    status,
+                )
+                .await
+            };
+            if let Err(error) = result {
+                warn!(
+                    task_id = task.id.as_str(),
+                    operation_id = operation.id.as_str(),
+                    error = %error,
+                    "Branch-update continuation reconciliation deferred"
+                );
+                return false;
+            }
+            return true;
+        }
+
+        if operation.phase == BranchUpdatePhase::Blocked {
+            return false;
+        }
+        if operation.phase == BranchUpdatePhase::Settled {
+            warn!(
+                task_id = task.id.as_str(),
+                operation_id = operation.id.as_str(),
+                "Settled branch-update operation still owns an update status"
+            );
+            return false;
+        }
+
+        if operation.phase == BranchUpdatePhase::Resolving {
+            if self
+                .is_ipr_process_alive(ChatContextType::BranchUpdate, task.id.as_str())
+                .await
+            {
+                return true;
+            }
+            if let (Some(run_id), Some(conversation_id)) = (
+                operation.agent_run_id.as_deref(),
+                operation.conversation_id.as_deref(),
+            ) {
+                let run = self
+                    .agent_run_repo
+                    .get_by_id(&crate::domain::entities::AgentRunId::from_string(run_id))
+                    .await;
+                if matches!(
+                    run.as_ref()
+                        .ok()
+                        .and_then(|run| run.as_ref())
+                        .map(|run| run.status),
+                    Some(AgentRunStatus::Running)
+                ) {
+                    return true;
+                }
+                match repository
+                    .unbind_agent_run(UnbindBranchUpdateRun {
+                        operation_id: operation.id.clone(),
+                        task_id: operation.task_id.clone(),
+                        originating_history_id: operation.originating_history_id.clone(),
+                        update_status: status,
+                        conversation_id: conversation_id.to_string(),
+                        agent_run_id: run_id.to_string(),
+                    })
+                    .await
+                {
+                    Ok(BranchUpdateCasOutcome::Applied) => {}
+                    Ok(outcome) => {
+                        tracing::debug!(
+                            task_id = task.id.as_str(),
+                            ?outcome,
+                            "Branch-update run unbind lost reconciliation race"
+                        );
+                        return false;
+                    }
+                    Err(error) => {
+                        warn!(task_id = task.id.as_str(), error = %error, "Failed to unbind terminal branch-update run");
+                        return false;
+                    }
+                }
+            }
+        }
+
+        self.transition_service
+            .execute_entry_actions(&task.id, task, status)
+            .await;
+        true
     }
 
     #[doc(hidden)]

@@ -190,6 +190,9 @@ pub fn status_to_label(status: InternalStatus) -> String {
         InternalStatus::Cancelled => "Cancel".to_string(),
         InternalStatus::Paused => "Paused".to_string(),
         InternalStatus::Stopped => "Stopped".to_string(),
+        InternalStatus::UpdatingPlanBranch => "Updating Plan Branch".to_string(),
+        InternalStatus::UpdatingTaskBranch => "Updating Task Branch".to_string(),
+        InternalStatus::BranchUpdateBlocked => "Branch Update Blocked".to_string(),
     }
 }
 

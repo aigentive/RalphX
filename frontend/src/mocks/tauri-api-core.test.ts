@@ -172,3 +172,23 @@ describe("review settings command mocks", () => {
     expect(updated.auto_create_followup_agent_conversation).toBe(true);
   });
 });
+
+describe("ticketing command mocks", () => {
+  it("returns ticket filter options in the same object shape as the Tauri command", async () => {
+    const options = await invoke<{
+      assignees: string[];
+      sprints: string[];
+      complete: boolean;
+      truncated: boolean;
+    }>("list_ticket_filter_options", {
+      query: { provider: "jira", projectId: "project-mock-1", containerId: "RX" },
+    });
+
+    expect(options).toEqual({
+      assignees: ["A. Dev"],
+      sprints: [],
+      complete: true,
+      truncated: false,
+    });
+  });
+});

@@ -23,6 +23,7 @@ fn test_context_type_serialization() {
     assert_eq!(ChatContextType::Project.to_string(), "project");
     assert_eq!(ChatContextType::TaskExecution.to_string(), "task_execution");
     assert_eq!(ChatContextType::Review.to_string(), "review");
+    assert_eq!(ChatContextType::BranchUpdate.to_string(), "branch_update");
 }
 
 #[test]
@@ -47,7 +48,20 @@ fn test_context_type_parsing() {
         "review".parse::<ChatContextType>().unwrap(),
         ChatContextType::Review
     );
+    assert_eq!(
+        "branch_update".parse::<ChatContextType>().unwrap(),
+        ChatContextType::BranchUpdate
+    );
     assert!("invalid".parse::<ChatContextType>().is_err());
+}
+
+#[test]
+fn test_new_branch_update_conversation() {
+    let task_id = TaskId::from_string("branch-update-task".to_string());
+    let conversation = ChatConversation::new_branch_update(task_id);
+    assert_eq!(conversation.context_type, ChatContextType::BranchUpdate);
+    assert_eq!(conversation.context_id, "branch-update-task");
+    assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
 }
 
 #[test]

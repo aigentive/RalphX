@@ -1269,7 +1269,7 @@ fn normalize_override_value(raw: Option<String>) -> Option<String> {
     })
 }
 
-fn all_agent_lanes() -> [AgentLane; 8] {
+fn all_agent_lanes() -> [AgentLane; 9] {
     [
         AgentLane::IdeationPrimary,
         AgentLane::IdeationVerifier,
@@ -1279,6 +1279,7 @@ fn all_agent_lanes() -> [AgentLane; 8] {
         AgentLane::ExecutionReviewer,
         AgentLane::ExecutionReexecutor,
         AgentLane::ExecutionMerger,
+        AgentLane::ExecutionBranchUpdater,
     ]
 }
 

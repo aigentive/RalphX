@@ -3,6 +3,7 @@ use std::process::Command;
 
 mod branch_tests;
 mod commit_tests;
+mod identity_tests;
 mod merge_tests;
 mod query_tests;
 mod rebase_tests;

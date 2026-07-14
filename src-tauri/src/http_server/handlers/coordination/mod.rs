@@ -551,7 +551,8 @@ async fn resolve_delegate_parent(
         ChatContextType::Task
         | ChatContextType::TaskExecution
         | ChatContextType::Review
-        | ChatContextType::Merge => {
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => {
             resolve_task_like_delegate_parent(
                 state,
                 caller_context_type,

@@ -11,7 +11,7 @@
 //  8. Targeted field removal: plan_update_conflict, branch_freshness_conflict, freshness_backoff_until cleared
 //
 // Integration test #7 (full chain):
-//  Reviewing → BranchFreshnessConflict → Merging → complete_merge (freshness_return_route)
+//  legacy Reviewing → Merging row → complete_merge compatibility recovery
 //  → back to Reviewing; verifies task is NOT Merged + merge_commit_sha not set
 
 use std::sync::Arc;
@@ -210,6 +210,10 @@ fn pr_sync_services(
 ) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(&app_state.task_repo)),
+        branch_update_repo: Some(Arc::clone(&app_state.branch_update_repo)),
+        branch_update_workflow: Some(crate::testing::branch_update_workflow(Arc::new(
+            app_state.build_chat_service(),
+        ))),
         plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
         github_service: Some(github as Arc<dyn GithubServiceTrait>),
@@ -222,6 +226,10 @@ fn pr_sync_services(
 fn pr_sync_services_without_github(app_state: &AppState) -> PlanBranchPrSyncServices {
     PlanBranchPrSyncServices {
         task_repo: Some(Arc::clone(&app_state.task_repo)),
+        branch_update_repo: Some(Arc::clone(&app_state.branch_update_repo)),
+        branch_update_workflow: Some(crate::testing::branch_update_workflow(Arc::new(
+            app_state.build_chat_service(),
+        ))),
         plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
         github_service: None,
@@ -1466,8 +1474,8 @@ fn test_normal_merge_returns_without_cleanup() {
 }
 
 // ============================================================================
-// Integration Test #7: Full chain — Reviewing → BranchFreshnessConflict → Merging
-//                       → complete_merge (freshness_return_route) → back to Reviewing
+// Integration Test #7: persisted legacy Reviewing → Merging row
+//                       → complete_merge compatibility recovery → back to Reviewing
 //
 // Simulates the complete_merge HTTP handler path:
 //   1. Task starts in Reviewing with no freshness metadata
@@ -1525,8 +1533,9 @@ async fn test_integration_full_chain_reviewing_through_freshness_conflict_return
         app_state.task_repo.update(&stored).await.unwrap();
     }
 
-    // --- Phase 3: Simulate the post-state-machine result of BranchFreshnessConflict → Merging ---
-    // The validated transition_task() surface no longer models this internal state-machine path.
+    // --- Phase 3: Simulate a persisted row from the retired freshness-as-merge path ---
+    // The validated transition_task() surface no longer models this path; the direct write
+    // exists only to prove safe recovery of legacy data.
     {
         let mut stored = app_state
             .task_repo

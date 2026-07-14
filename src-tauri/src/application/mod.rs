@@ -48,6 +48,13 @@ pub mod execution_settings_bootstrap;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_service;
+pub mod git_mutation_recovery;
+pub mod branch_update_executor;
+pub mod branch_update_workflow;
+#[cfg(test)]
+mod branch_update_executor_tests;
+#[cfg(test)]
+mod git_mutation_recovery_tests;
 pub mod granola_integration_service;
 pub mod harness_runtime_registry;
 pub mod http_shutdown;

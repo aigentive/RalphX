@@ -11,6 +11,49 @@ pub use test_prompts::{
     QA_PREP_TEST, QA_REFINER_TEST, QA_TESTER_TEST, REVIEWER_TEST, WORKER_SPAWN_TEST,
 };
 
+#[cfg(any(test, feature = "test-utils"))]
+pub use crate::infrastructure::sqlite::{
+    SqliteBranchUpdateRepository, SqliteTaskRepository,
+};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub fn memory_branch_update_repository(
+) -> std::sync::Arc<dyn crate::domain::repositories::BranchUpdateRepository> {
+    std::sync::Arc::new(crate::infrastructure::memory::MemoryBranchUpdateRepository::new())
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn seeded_memory_branch_update_repository(
+    task_id: crate::domain::entities::TaskId,
+    status: crate::domain::entities::InternalStatus,
+) -> std::sync::Arc<dyn crate::domain::repositories::BranchUpdateRepository> {
+    let repository =
+        std::sync::Arc::new(crate::infrastructure::memory::MemoryBranchUpdateRepository::new());
+    repository.seed_task_status(task_id, status).await;
+    repository
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub fn memory_branch_update_repository_with_task_repository(
+    task_repository: std::sync::Arc<dyn crate::domain::repositories::TaskRepository>,
+) -> std::sync::Arc<dyn crate::domain::repositories::BranchUpdateRepository> {
+    std::sync::Arc::new(
+        crate::infrastructure::memory::MemoryBranchUpdateRepository::new()
+            .with_task_repository(task_repository),
+    )
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub fn branch_update_workflow(
+    chat_service: std::sync::Arc<dyn crate::application::ChatService>,
+) -> std::sync::Arc<dyn crate::domain::state_machine::services::BranchUpdateWorkflow> {
+    std::sync::Arc::new(
+        crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+            chat_service,
+        ),
+    )
+}
+
 // Re-export merge validation helpers for integration testing
 pub use crate::domain::state_machine::transition_handler::{
     run_pre_execution_setup, PreExecSetupResult,

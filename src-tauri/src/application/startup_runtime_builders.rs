@@ -10,11 +10,11 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, AutomationRunRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskRepository,
+    AgentRunRepository, ArtifactRepository, AutomationRunRepository, BranchUpdateRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -155,6 +155,7 @@ pub(crate) struct StartupReconciliationDeps {
     pub execution_state: Arc<ExecutionState>,
     pub execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    pub branch_update_repo: Arc<dyn BranchUpdateRepository>,
     pub pr_poller_registry: Arc<PrPollerRegistry>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub review_repo: Arc<dyn ReviewRepository>,
@@ -186,6 +187,7 @@ pub(crate) fn build_startup_reconciliation_runner(
     .with_notification_service(deps.notification_service)
     .with_execution_settings_repo(deps.execution_settings_repo)
     .with_plan_branch_repo(deps.plan_branch_repo)
+    .with_branch_update_repo(deps.branch_update_repo)
     .with_pr_poller_registry(deps.pr_poller_registry)
     .with_interactive_process_registry(deps.interactive_process_registry)
     .with_review_repo(deps.review_repo)

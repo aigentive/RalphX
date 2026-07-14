@@ -8,9 +8,10 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{ChatContextType, MessageRole};
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_CHAT_TASK, AGENT_IDEATION_TEAM_LEAD, AGENT_MERGER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_ORCHESTRATOR_IDEATION_READONLY, AGENT_PLAN_VERIFIER,
-    AGENT_REVIEWER, AGENT_REVIEW_CHAT, AGENT_REVIEW_HISTORY, AGENT_WORKER, AGENT_WORKER_TEAM,
+    AGENT_BRANCH_UPDATER, AGENT_CHAT_PROJECT, AGENT_CHAT_TASK, AGENT_IDEATION_TEAM_LEAD,
+    AGENT_MERGER, AGENT_ORCHESTRATOR_IDEATION, AGENT_ORCHESTRATOR_IDEATION_READONLY,
+    AGENT_PLAN_VERIFIER, AGENT_REVIEWER, AGENT_REVIEW_CHAT, AGENT_REVIEW_HISTORY, AGENT_WORKER,
+    AGENT_WORKER_TEAM,
 };
 
 /// Agent Resolution System
@@ -90,6 +91,7 @@ pub fn resolve_agent_with_team_mode(
         ChatContextType::TaskExecution => AGENT_WORKER,
         ChatContextType::Review => AGENT_REVIEWER,
         ChatContextType::Merge => AGENT_MERGER,
+        ChatContextType::BranchUpdate => AGENT_BRANCH_UPDATER,
     }
 }
 
@@ -231,6 +233,7 @@ pub fn context_type_to_process(context_type: &ChatContextType) -> &'static str {
         ChatContextType::TaskExecution => "execution",
         ChatContextType::Review => "review",
         ChatContextType::Merge => "merge",
+        ChatContextType::BranchUpdate => "branch_update",
     }
 }
 
@@ -246,6 +249,7 @@ pub fn get_assistant_role(context_type: &ChatContextType) -> MessageRole {
         ChatContextType::TaskExecution => MessageRole::Worker,
         ChatContextType::Review => MessageRole::Reviewer,
         ChatContextType::Merge => MessageRole::Merger,
+        ChatContextType::BranchUpdate => MessageRole::Reviewer,
         _ => MessageRole::Orchestrator,
     }
 }
