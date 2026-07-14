@@ -129,6 +129,13 @@ fn content_size_limits_accept_exact_cap_and_reject_over_cap() {
     let bounded =
         BoundedTicketAttachmentBytes::new(vec![7; 16]).expect("small byte buffer should be valid");
     assert_eq!(bounded.as_slice(), &[7; 16]);
+
+    let oversized =
+        BoundedTicketAttachmentBytes::new(vec![7; MAX_TICKET_ATTACHMENT_CONTENT_BYTES + 1]);
+    assert!(matches!(
+        oversized,
+        Err(TicketAttachmentError::ContentTooLarge { .. })
+    ));
 }
 
 #[test]
