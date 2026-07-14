@@ -186,6 +186,187 @@ fn parses_valid_continue_verdict() {
 }
 
 #[test]
+fn continue_verdict_keeps_repeated_run_on_authoritative_goal_item_phase() {
+    let goal_items = json!([
+        { "id": "item-1", "status": "done", "title": "Contract" },
+        { "id": "item-2", "status": "done", "title": "Backend" },
+        { "id": "item-3", "status": "done", "title": "Cache" },
+        { "id": "item-4", "status": "done", "title": "MCP tools" },
+        { "id": "item-5", "status": "done", "title": "Prompt alignment" },
+        { "id": "item-6", "status": "in_progress", "title": "Verification" }
+    ])
+    .to_string();
+    let automation = automation_with_goal_items(Some(goal_items));
+    let run = automation_run(12, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "Verification still needs another focused run.",
+        "confidence": 0.95,
+        "goalProgress": { "completedItems": 5, "totalItems": 6, "summary": "Five of six items are complete." },
+        "updatedItemStatuses": [{ "id": "item-6", "status": "in_progress" }],
+        "nextRunPrompt": "Phase 7: finish verification with focused behavioral tests and a security review before publishing the scoped PR.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_run_prompt.as_deref(),
+        Some(
+            "Phase 6: finish verification with focused behavioral tests and a security review before publishing the scoped PR."
+        )
+    );
+}
+
+#[test]
+fn continue_verdict_leaves_non_phase_prompt_unchanged() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(2, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "Item 2 still needs the next scoped run.",
+        "confidence": 0.82,
+        "goalProgress": { "completedItems": 1, "totalItems": 2, "summary": "One item remains." },
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Continue item 2 with focused behavioral tests and publish the scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_run_prompt.as_deref(),
+        Some("Continue item 2 with focused behavioral tests and publish the scoped pull request.")
+    );
+}
+
+#[test]
+fn continue_verdict_leaves_malformed_phase_prompt_unchanged() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(2, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "Item 2 still needs the next scoped run.",
+        "confidence": 0.82,
+        "goalProgress": { "completedItems": 1, "totalItems": 2, "summary": "One item remains." },
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Phase next: continue item 2 with focused behavioral tests and publish the scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_run_prompt.as_deref(),
+        Some(
+            "Phase next: continue item 2 with focused behavioral tests and publish the scoped pull request."
+        )
+    );
+}
+
+#[test]
+fn continue_verdict_leaves_phase_prompt_without_goal_items_unchanged() {
+    let automation = automation_with_goal_items(None);
+    let run = automation_run(2, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "The automation has no structured goal items to map to a phase.",
+        "confidence": 0.82,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Phase 4: continue with focused behavioral tests and publish the scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_run_prompt.as_deref(),
+        Some(
+            "Phase 4: continue with focused behavioral tests and publish the scoped pull request."
+        )
+    );
+}
+
+#[test]
+fn continue_verdict_leaves_phase_prompt_when_all_goal_items_are_finished() {
+    let goal_items = json!([
+        { "id": "item-1", "status": "done", "title": "Contract" },
+        { "id": "item-2", "status": "skipped", "title": "Optional cleanup" }
+    ])
+    .to_string();
+    let automation = automation_with_goal_items(Some(goal_items));
+    let run = automation_run(2, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "The judge asked for one more audit run even though structured items are terminal.",
+        "confidence": 0.82,
+        "goalProgress": { "completedItems": 2, "totalItems": 2, "summary": "All items are terminal." },
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Phase 5: run a final audit with focused behavioral tests and publish the scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_run_prompt.as_deref(),
+        Some("Phase 5: run a final audit with focused behavioral tests and publish the scoped pull request.")
+    );
+}
+
+#[test]
+fn continue_verdict_normalizes_nested_status_only_goal_item_phase() {
+    let goal_items = json!({
+        "group": {
+            "items": [
+                { "status": "done", "title": "Implicit first item" },
+                { "status": "pending", "title": "Implicit second item" }
+            ]
+        }
+    })
+    .to_string();
+    let automation = automation_with_goal_items(Some(goal_items));
+    let run = automation_run(2, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "The nested second item still needs a focused run.",
+        "confidence": 0.82,
+        "goalProgress": { "completedItems": 1, "totalItems": 2, "summary": "One nested item remains." },
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Phase 5: continue the nested second item with focused behavioral tests and publish the scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_run_prompt.as_deref(),
+        Some(
+            "Phase 2: continue the nested second item with focused behavioral tests and publish the scoped pull request."
+        )
+    );
+}
+
+#[test]
 fn parses_valid_stop_verdict() {
     let automation = automation_with_goal_items(Some(goal_items_json()));
     let run = automation_run(1, AutomationRunStatus::Merged);
