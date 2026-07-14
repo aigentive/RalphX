@@ -8,9 +8,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
-use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, ChatConversationRepository, ProjectRepository,
-};
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::infrastructure::memory::MemoryAgentConversationWorkspaceRepository;
 
 async fn setup_finalizer_state(
@@ -106,6 +104,43 @@ async fn merged_run_finalizer_marks_unsafe_cleanup_and_archives_without_closing_
             .await
             .as_deref(),
         Some("unsafe")
+    );
+}
+
+#[tokio::test]
+async fn merged_run_finalizer_cleans_pre_archived_conversation_and_archives_workspace() {
+    let (_temp, state, workspace_repo, conversation_id) = setup_finalizer_state(true).await;
+    state
+        .chat_conversation_repo
+        .archive(&conversation_id)
+        .await
+        .expect("conversation should be pre-archived");
+    assert!(workspace_repo
+        .local_cleanup_status_for_test(&conversation_id)
+        .await
+        .is_none());
+    let finalizer = AppStateAutomationMergedRunFinalizer::new(state);
+
+    finalizer
+        .finalize_merged_conversation(&conversation_id)
+        .await
+        .expect("pre-archived merged finalization should still clean artifacts");
+
+    assert_eq!(
+        workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("unsafe")
+    );
+    assert_eq!(
+        workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentConversationWorkspaceStatus::Archived
     );
 }
 

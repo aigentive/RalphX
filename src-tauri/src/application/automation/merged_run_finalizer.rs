@@ -33,8 +33,7 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<()> {
-        let conversation = self
-            .state
+        self.state
             .chat_conversation_repo
             .get_by_id(conversation_id)
             .await?
@@ -44,9 +43,6 @@ impl AutomationMergedRunFinalizer for AppStateAutomationMergedRunFinalizer {
                     conversation_id.as_str()
                 ))
             })?;
-        if conversation.archived_at.is_some() {
-            return Ok(());
-        }
 
         if let Some(workspace) = self
             .state

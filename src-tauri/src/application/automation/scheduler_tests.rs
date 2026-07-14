@@ -10,9 +10,7 @@ use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
-use super::merged_run_finalizer::{
-    AutomationMergedRunFinalizer, NoopAutomationMergedRunFinalizer,
-};
+use super::merged_run_finalizer::{AutomationMergedRunFinalizer, NoopAutomationMergedRunFinalizer};
 use super::plan_gate::{
     clear_plan_phase_publication_metadata, AutomationPlanVerificationStartOutcome,
     AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
