@@ -13,7 +13,10 @@ import {
   useFeatureFlags,
 } from "./useFeatureFlags";
 import { invoke } from "@tauri-apps/api/core";
-import type { FeatureFlags } from "@/types/feature-flags";
+import {
+  featureFlagsSchema,
+  type FeatureFlags,
+} from "@/types/feature-flags";
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -40,6 +43,7 @@ describe("isViewEnabled", () => {
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: true,
+    agentPersonas: false,
   };
   const activityDisabled: FeatureFlags = {
     activityPage: false,
@@ -50,6 +54,7 @@ describe("isViewEnabled", () => {
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: true,
+    agentPersonas: false,
   };
   const extensibilityDisabled: FeatureFlags = {
     activityPage: true,
@@ -70,6 +75,7 @@ describe("isViewEnabled", () => {
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: false,
+    agentPersonas: false,
   };
 
   it("returns true for kanban regardless of flags", () => {
@@ -128,10 +134,22 @@ describe("applyFeatureFlagOverrides", () => {
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: true,
+    agentPersonas: false,
   };
 
   it("returns flags unchanged", () => {
     expect(applyFeatureFlagOverrides(baseFlags)).toEqual(baseFlags);
+  });
+});
+
+describe("featureFlagsSchema", () => {
+  it("defaults agentPersonas to false when the backend omits it", () => {
+    expect(
+      featureFlagsSchema.parse({
+        activityPage: true,
+        extensibilityPage: true,
+      }).agentPersonas,
+    ).toBe(false);
   });
 });
 
@@ -163,6 +181,7 @@ describe("useFeatureFlags", () => {
       teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
+      agentPersonas: false,
     });
   });
 
@@ -185,6 +204,7 @@ describe("useFeatureFlags", () => {
       teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
+      agentPersonas: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -213,6 +233,7 @@ describe("useFeatureFlags", () => {
       teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
+      agentPersonas: false,
     });
   });
 });

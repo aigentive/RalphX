@@ -16,6 +16,7 @@ import { AGENT_TASK_TOOLS } from "./agent-task-tools.js";
 import { SUPPORT_TOOLS } from "./support-tools.js";
 import { VALIDATION_TOOLS } from "./validation-tools.js";
 import { AUTOMATION_SETUP_TOOLS } from "./automation-tools.js";
+import { PERSONA_BUILDER_TOOLS } from "./persona-tools.js";
 import {
   formatToolErrorMessageFromRegistry,
   getToolRecoveryHintFromRegistry,
@@ -70,6 +71,11 @@ export const ALL_TOOLS: Tool[] = [
   // AUTOMATION SETUP TOOLS
   // ========================================================================
   ...AUTOMATION_SETUP_TOOLS,
+
+  // ========================================================================
+  // PERSONA BUILDER TOOLS
+  // ========================================================================
+  ...PERSONA_BUILDER_TOOLS,
 
   // ========================================================================
   // STEP TOOLS (worker agent)

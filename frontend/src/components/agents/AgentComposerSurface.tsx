@@ -316,6 +316,8 @@ export interface AgentComposerSurfaceProps {
   mode?: ModeFieldConfig;
   team?: TeamFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
+  /** Optional compact control appended to the composer toolbar. */
+  personaControl?: ReactNode;
   slashCommands?: AgentComposerSlashCommand[];
   onForkSession?: (() => Promise<unknown> | void) | undefined;
   forkSessionDisabled?: boolean;
@@ -374,6 +376,7 @@ export function AgentComposerSurface({
   mode,
   team,
   chatFocus,
+  personaControl,
   slashCommands = [],
   onForkSession,
   forkSessionDisabled = false,
@@ -1906,6 +1909,12 @@ export function AgentComposerSurface({
             )}
 
             {team && <ComposerTeamSwitch team={team} compact={compact} />}
+
+            {personaControl && (
+              <div className="agent-composer-persona-slot flex shrink-0">
+                {personaControl}
+              </div>
+            )}
 
             <Button
               type="button"

@@ -2060,8 +2060,7 @@ async fn test_restart_ideation_implementation_core_rebuilds_current_attempt_only
 }
 
 #[tokio::test]
-async fn test_restart_ideation_implementation_core_uses_linked_plan_worktree_when_workspace_path_is_stale(
-) {
+async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting() {
     use ralphx_lib::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, resolve_linked_plan_branch_agent_worktree_path,
         AgentConversationWorkspaceBaseSelection,
@@ -2181,31 +2180,46 @@ async fn test_restart_ideation_implementation_core_uses_linked_plan_worktree_whe
     let linked_worktree_path =
         resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
             .expect("linked plan branch path should resolve");
-    git_ok(
-        repo_dir.path(),
-        &[
-            "worktree",
-            "move",
-            workspace.worktree_path.as_str(),
-            linked_worktree_path
-                .to_str()
-                .expect("linked worktree path should be utf-8"),
-        ],
-    );
     assert!(
-        !std::path::Path::new(&workspace.worktree_path).is_dir(),
-        "stored conversation worktree path should now be stale"
-    );
-    assert!(
-        linked_worktree_path.is_dir(),
-        "linked plan branch worktree should own the branch"
+        std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "the owned conversation worktree should hold the plan branch before restart"
     );
     assert_eq!(
         git_stdout(
-            &linked_worktree_path,
+            std::path::Path::new(&workspace.worktree_path),
             &["rev-parse", "--abbrev-ref", "HEAD"]
         ),
         plan_branch.branch_name
+    );
+    git_ok(
+        std::path::Path::new(&workspace.worktree_path),
+        &["checkout", "-b", "restart-branch-mismatch"],
+    );
+    let error = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should reject an owned workspace on a different branch");
+    assert!(error
+        .to_string()
+        .contains("Owned agent conversation worktree"));
+    assert_eq!(
+        state
+            .execution_plan_repo
+            .get_active_for_session(&session.id)
+            .await
+            .expect("active plan should remain available after rejected restart")
+            .expect("active plan should remain available after rejected restart")
+            .id
+            .as_str(),
+        old_execution_plan_id.as_str(),
+        "restart must reject the mismatched worktree before replacing the active attempt"
+    );
+    assert!(
+        std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "restart must not relocate the conversation worktree when its branch is mismatched"
+    );
+    git_ok(
+        std::path::Path::new(&workspace.worktree_path),
+        &["checkout", plan_branch.branch_name.as_str()],
     );
     git_ok(
         repo_dir.path(),
@@ -2236,10 +2250,27 @@ async fn test_restart_ideation_implementation_core_uses_linked_plan_worktree_whe
         stored_workspace.linked_plan_branch_id.as_ref(),
         Some(&plan_branch.id)
     );
+    assert!(
+        !std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "restart should relocate the owned conversation worktree to the linked plan path"
+    );
+    assert!(
+        linked_worktree_path.is_dir(),
+        "restart should preserve the linked plan worktree"
+    );
     assert_eq!(
         git_stdout(&linked_worktree_path, &["rev-parse", "HEAD"]),
         latest_origin_base,
         "restart should reset the linked branch to the newest origin base revision"
+    );
+
+    let second_restart =
+        restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+            .await
+            .expect("restart should reuse the already-relocated linked worktree");
+    assert_eq!(
+        second_restart.old_execution_plan_id,
+        result.execution_plan_id
     );
 }
 

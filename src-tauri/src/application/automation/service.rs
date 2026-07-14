@@ -6,6 +6,7 @@ use ralphx_domain::entities::automation::is_signal_terminal_automation_run;
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde_json::Value;
 
+use crate::application::agent_conversation_workspace::reject_persona_builder_workspace_mode;
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
     revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
@@ -349,6 +350,9 @@ impl AutomationService {
                 "automation config can only be updated while draft or paused, not {}",
                 automation.status.as_str()
             )));
+        }
+        if let Some(run_mode) = input.run_mode.as_deref() {
+            reject_persona_builder_workspace_mode(run_mode).map_err(AppError::Validation)?;
         }
         let completion_signal = input.completion_signal.or_else(|| {
             input
@@ -1962,6 +1966,7 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
             to: AutomationStatus::Active.as_str().to_string(),
         });
     }
+    reject_persona_builder_workspace_mode(&automation.run_mode).map_err(AppError::Validation)?;
     if automation.goal_prompt.trim().is_empty() {
         return Err(AppError::Validation(
             "automation goal_prompt is required before approval".to_string(),

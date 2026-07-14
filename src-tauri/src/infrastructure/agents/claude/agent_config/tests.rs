@@ -9,10 +9,11 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD,
     SHORT_IDEATION_TEAM_MEMBER, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
     SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
-    SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
-    SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
-    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
+    SHORT_PERSONA_EXTRACTOR, SHORT_PLAN_CRITIC_COMPLETENESS,
+    SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER,
+    SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER, SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER,
+    SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY, SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM,
+    SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
@@ -116,6 +117,35 @@ fn test_get_allowed_tools_mcp_only_agent() {
         get_allowed_tools("ralphx-utility-session-namer"),
         Some(String::new())
     );
+}
+
+#[test]
+fn persona_extractor_resolved_cli_tools_exclude_native_fs_exec_and_are_nonempty() {
+    let config = get_agent_config(SHORT_PERSONA_EXTRACTOR)
+        .expect("persona extractor should resolve through the production config path");
+
+    assert!(
+        !config.resolved_cli_tools.is_empty(),
+        "A7 containment requires a non-empty --tools value so Claude cannot fall back to its native defaults"
+    );
+    for forbidden in [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ] {
+        assert!(
+            !config
+                .resolved_cli_tools
+                .iter()
+                .any(|tool| tool == forbidden),
+            "persona extractor must exclude native {forbidden}; got {:?}",
+            config.resolved_cli_tools
+        );
+    }
 }
 
 #[test]
@@ -319,6 +349,8 @@ fn test_all_agent_names_are_known() {
         SHORT_AUTOMATION_SETUP,
         SHORT_AUTOMATION_JUDGE,
         SHORT_AUTOMATION_PLAN_JUDGE,
+        // Persona extractor (agent persona system, PR-14)
+        "ralphx-persona-extractor",
     ]);
 
     for agent in agent_configs() {
@@ -3421,6 +3453,25 @@ ui:
 }
 
 #[test]
+fn agent_personas_flag_defaults_false_without_config_key() {
+    let yaml = r#"
+ui:
+  feature_flags:
+    ticketing_dashboard: true
+"#;
+    let cfg = parse_config_no_env_overrides(yaml)
+        .expect("should parse yaml without the agent_personas feature flag");
+
+    assert!(cfg.runtime.ui_feature_flags.ticketing_dashboard);
+    assert!(!cfg.runtime.ui_feature_flags.agent_personas);
+    assert!(
+        !cfg.runtime
+            .ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
+}
+
+#[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
     // YAML without ui section: core pages default visible, standalone Ideation stays hidden.
     let yaml = r#"
@@ -3519,6 +3570,8 @@ fn test_env_override_true_value_enables_flag() {
             team_mode: false,
             atlassian_oauth: false,
             ticketing_dashboard: false,
+            agent_personas: false,
+            persona_switch_forces_fresh_provider_session: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {

@@ -469,7 +469,7 @@ fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
     }
 }
 
-fn escape_prompt_context_text(value: &str) -> String {
+pub(crate) fn escape_prompt_context_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

@@ -69,7 +69,10 @@ import { ChatSessionChips } from "./ChatSessionChips";
 import { ConversationSelector } from "./ConversationSelector";
 import { QueuedMessageList } from "./QueuedMessageList";
 import { ChatInput, type QuestionMode } from "./ChatInput";
-import { ChatMessageList } from "./ChatMessageList";
+import {
+  ChatMessageList,
+  type PersonaAttributedRun,
+} from "./ChatMessageList";
 import {
   EmptyState,
   LoadingState,
@@ -101,7 +104,13 @@ import {
   useChatAttachments,
   type ChatAttachment as PendingChatAttachment,
 } from "@/hooks/useChatAttachments";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useSwitchConversationPersona } from "@/hooks/usePersonas";
+import { usePersonaRunEvents } from "@/hooks/usePersonaRunEvents";
 import { useIdeationStore } from "@/stores/ideationStore";
+import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
+import { extractErrorMessage } from "@/lib/errors";
+import { PERSONA_UNAVAILABLE_PREFIX } from "@/lib/personaErrors";
 import { getModelLabel } from "@/lib/model-utils";
 import { selectIsTeamActive, selectEffectiveModel } from "@/stores/chatStore";
 import {
@@ -125,6 +134,7 @@ import { TimeoutWarning } from "./TimeoutWarning";
 import { ChildSessionNavigationContext } from "./tool-widgets/ChildSessionNavigationContext";
 import { ChildSessionTranscriptModal } from "./ChildSessionTranscriptModal";
 import { cn } from "@/lib/utils";
+import { PersonaChip } from "./PersonaChip";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
@@ -137,6 +147,18 @@ type TranscriptWindowData =
       totalMessageCount?: number;
     }
   | undefined;
+
+type PersonaRetryAttempt = {
+  message: string;
+  options:
+    | {
+        projectReferences?: ComposerProjectReference[];
+        integrationReferences?: ComposerIntegrationReference[];
+        artifactReferences?: ComposerArtifactReference[];
+        teamIntent?: TeamIntent | null;
+      }
+    | undefined;
+};
 
 function transcriptWindowHasMessages(data: TranscriptWindowData): boolean {
   return (data?.totalMessageCount ?? data?.messages.length ?? 0) > 0;
@@ -275,6 +297,8 @@ export interface IntegratedChatComposerRenderProps {
   effectiveModel?: { id: string; label: string } | undefined;
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
+  /** Conversation persona confirmation for host-owned composer surfaces. */
+  personaControl?: React.ReactNode;
 }
 
 export function IntegratedChatPanel({
@@ -308,7 +332,20 @@ export function IntegratedChatPanel({
 }: IntegratedChatPanelProps) {
   const bus = useEventBus();
   const queryClient = useQueryClient();
+  const { data: featureFlags } = useFeatureFlags();
+  const openModal = useUiStore((s) => s.openModal);
+  const switchConversationPersona = useSwitchConversationPersona();
   const pollStartRef = useRef<number | null>(null);
+  const personaRetryAttemptRef = useRef<PersonaRetryAttempt | null>(null);
+  const [personaUnavailableError, setPersonaUnavailableError] = useState<
+    string | null
+  >(null);
+  const [isRetryingPersonaSend, setIsRetryingPersonaSend] = useState(false);
+  const handlePersonaUnavailable = useCallback((message: string) => {
+    setPersonaUnavailableError(
+      message.slice(PERSONA_UNAVAILABLE_PREFIX.length).replace(/\]$/, ""),
+    );
+  }, []);
   const [
     transcriptPaintCoverConversationId,
     setTranscriptPaintCoverConversationId,
@@ -447,6 +484,7 @@ export function IntegratedChatPanel({
     overrideAgentRunId: taskHistoryState?.agentRunId,
     isVisible,
   });
+  usePersonaRunEvents(activeConversationId);
   const agentProcessContextId =
     agentProcessContextIdOverride ?? currentContextId;
   useQueuedMessagesHydration({
@@ -1088,6 +1126,28 @@ export function IntegratedChatPanel({
     conversationsData,
     effectiveConversationId,
   ]);
+  const personaAttributedRun = useMemo<PersonaAttributedRun | null>(() => {
+    if (agentRunQuery.data) {
+      return agentRunQuery.data;
+    }
+    if (
+      isAgentRunning ||
+      !activeConversationMeta?.lastRunPersonaRunId ||
+      !activeConversationMeta.lastRunPersonaSlug ||
+      activeConversationMeta.lastRunPersonaInjected == null
+    ) {
+      return null;
+    }
+    return {
+      id: activeConversationMeta.lastRunPersonaRunId,
+      personaId: activeConversationMeta.lastRunPersonaId ?? null,
+      personaSlug: activeConversationMeta.lastRunPersonaSlug,
+      personaVersion: activeConversationMeta.lastRunPersonaVersion ?? null,
+      personaInjected: activeConversationMeta.lastRunPersonaInjected,
+      personaSkippedReason:
+        activeConversationMeta.lastRunPersonaSkippedReason ?? null,
+    };
+  }, [agentRunQuery.data, activeConversationMeta, isAgentRunning]);
 
   // Memoize messagesData to avoid dependency chain issues in useEffect hooks
   // No time-based filtering needed - we switch context types based on historical state
@@ -1168,6 +1228,7 @@ export function IntegratedChatPanel({
     sendOptions,
     messageCount: messagesData.length,
     onUserMessageSent,
+    onPersonaUnavailable: handlePersonaUnavailable,
   });
 
   // Wrap handleSend to include attachment IDs, team target, and clear attachments after send.
@@ -1183,6 +1244,7 @@ export function IntegratedChatPanel({
         teamIntent?: TeamIntent | null;
       },
     ) => {
+      personaRetryAttemptRef.current = { message, options };
       const attachmentIds = attachments.map((a) => a.id);
       logger.debug("[ChatScroll] handleSend firing", {
         hasAttachments: attachmentIds.length > 0,
@@ -1215,6 +1277,34 @@ export function IntegratedChatPanel({
   const handleEditLastQueuedWrapper = () => {
     handleEditLastQueued(queuedMessages);
   };
+
+  const handleRemovePersonaAndRetry = useCallback(async () => {
+    const retryAttempt = personaRetryAttemptRef.current;
+    if (!effectiveConversationId || !retryAttempt || isRetryingPersonaSend) {
+      return;
+    }
+
+    setIsRetryingPersonaSend(true);
+    try {
+      await switchConversationPersona.mutateAsync({
+        conversationId: effectiveConversationId,
+        personaId: null,
+      });
+      setPersonaUnavailableError(null);
+      await handleSend(retryAttempt.message, retryAttempt.options);
+    } catch (error) {
+      setPersonaUnavailableError(
+        extractErrorMessage(error, "Could not remove the unavailable persona."),
+      );
+    } finally {
+      setIsRetryingPersonaSend(false);
+    }
+  }, [
+    effectiveConversationId,
+    handleSend,
+    isRetryingPersonaSend,
+    switchConversationPersona,
+  ]);
 
   // Handle stopping agent - clear streaming state
   const handleStopAgentWrapper = useCallback(async () => {
@@ -1452,6 +1542,31 @@ export function IntegratedChatPanel({
           : isSending || agentStatus === "generating"
             ? "agent"
             : "idle";
+  const showPersonaChip =
+    currentContextType === "project" &&
+    featureFlags.agentPersonas === true &&
+    activeConversationMeta?.agentMode !== "persona_builder" &&
+    effectiveConversationId !== null;
+  const personaChip =
+    showPersonaChip && effectiveConversationId ? (
+      <PersonaChip
+        conversationId={effectiveConversationId}
+        personaId={activeConversationMeta?.personaId}
+        isAgentRunning={isAgentRunning}
+        lastRunPersonaId={
+          personaAttributedRun?.personaId ??
+          activeConversationMeta?.lastRunPersonaId ??
+          null
+        }
+        lastRunPersonaSlug={personaAttributedRun?.personaSlug ?? null}
+        lastRunPersonaInjected={
+          personaAttributedRun?.personaInjected ?? null
+        }
+        lastRunPersonaSkippedReason={
+          personaAttributedRun?.personaSkippedReason ?? null
+        }
+      />
+    ) : undefined;
 
   // Empty state: only show when we KNOW there are no messages (not while loading)
   // Also don't show empty if conversations are loading - we might auto-select one
@@ -1636,6 +1751,11 @@ export function IntegratedChatPanel({
               {...(effectiveModel !== undefined
                 ? { modelDisplay: effectiveModel }
                 : {})}
+              {...(personaChip !== undefined
+                ? {
+                    personaChip,
+                  }
+                : {})}
             />
           )}
 
@@ -1734,6 +1854,9 @@ export function IntegratedChatPanel({
                 providerSessionId={
                   activeConversationMeta?.providerSessionId ?? null
                 }
+                agentRun={personaAttributedRun}
+                personaRuns={activeConversationMeta?.personaRuns ?? []}
+                agentPersonasEnabled={featureFlags.agentPersonas === true}
                 contentWidthClassName={contentWidthClassName}
                 topInsetClassName={transcriptTopInsetClassName}
                 hasOlderMessages={
@@ -1905,6 +2028,21 @@ export function IntegratedChatPanel({
                     />
                   )}
 
+                  {personaUnavailableError && (
+                    <div className="px-3 pt-3">
+                      <PersonaUnavailableNotice
+                        message={personaUnavailableError}
+                        onRemoveAndRetry={() => {
+                          void handleRemovePersonaAndRetry();
+                        }}
+                        onOpenPersonas={() =>
+                          openModal("settings", { section: "personas" })
+                        }
+                        disabled={isRetryingPersonaSend}
+                      />
+                    </div>
+                  )}
+
                   {/* Chat Input — wrapper padding matches ExecutionControlBar's
                   outer `p-2` so the top border of the composer aligns with
                   the top border of the execution bar across the split pane. */}
@@ -1934,6 +2072,9 @@ export function IntegratedChatPanel({
                           activeConversationMeta?.providerHarness ??
                           fallbackProviderHarness ??
                           null,
+                        ...(personaChip !== undefined
+                          ? { personaControl: personaChip }
+                          : {}),
                         ...(activeQuestion
                           ? {
                               value: questionInputValue,
@@ -1997,6 +2138,9 @@ export function IntegratedChatPanel({
                         attachments={attachments}
                         onFilesSelected={uploadFiles}
                         onRemoveAttachment={removeAttachment}
+                        {...(personaChip !== undefined
+                          ? { personaControl: personaChip }
+                          : {})}
                       />
                     )}
                   </div>

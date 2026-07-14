@@ -1,4 +1,49 @@
 use super::*;
+use crate::domain::entities::{PersonaDirective, PersonaId};
+
+#[test]
+fn queued_message_pre_upgrade_payload_without_persona_keys_deserializes_to_inherit() {
+    let payload = r#"{
+        "id":"queued-legacy-1",
+        "content":"Continue the task after the current run.",
+        "created_at":"2026-07-11T10:00:00+00:00",
+        "is_editing":false,
+        "metadata_override":"{\"source\":\"queue\"}",
+        "force_new_provider_session":false,
+        "composer_project_references":[],
+        "composer_integration_references":[],
+        "composer_artifact_references":[],
+        "attachment_ids":[]
+    }"#;
+
+    let queued: QueuedMessage =
+        serde_json::from_str(payload).expect("pre-upgrade queued payload should deserialize");
+
+    assert_eq!(queued.persona_directive, PersonaDirective::Inherit);
+    assert_eq!(queued.agent_name_override, None);
+}
+
+#[test]
+fn queued_message_round_trips_persona_directive_and_agent_override() {
+    let directives = [
+        PersonaDirective::Inherit,
+        PersonaDirective::Suppress,
+        PersonaDirective::Explicit(PersonaId::from_string("persona-queued-1")),
+    ];
+
+    for directive in directives {
+        let mut queued = QueuedMessage::new("Continue the task".to_string());
+        queued.agent_name_override = Some("ralphx-persona-agent".to_string());
+        queued.persona_directive = directive;
+
+        let serialized = serde_json::to_string(&queued).expect("queued message should serialize");
+        let restored: QueuedMessage =
+            serde_json::from_str(&serialized).expect("queued message should deserialize");
+
+        assert_eq!(restored.persona_directive, queued.persona_directive);
+        assert_eq!(restored.agent_name_override, queued.agent_name_override);
+    }
+}
 
 #[test]
 fn test_queue_and_pop() {
@@ -418,6 +463,8 @@ fn test_remove_stale_drops_old_messages() {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
@@ -435,6 +482,8 @@ fn test_remove_stale_drops_old_messages() {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,
@@ -694,6 +743,8 @@ fn test_queue_standard_has_no_overrides() {
     assert_eq!(queued.metadata_override, None);
     assert_eq!(queued.created_at_override, None);
     assert_eq!(queued.harness_override, None);
+    assert_eq!(queued.agent_name_override, None);
+    assert_eq!(queued.persona_directive, PersonaDirective::Inherit);
     assert_eq!(queued.model_override, None);
     assert_eq!(queued.logical_effort_override, None);
     assert!(!queued.force_new_provider_session);
@@ -738,6 +789,8 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
         Some(r#"{"source":"runtime-picker"}"#.to_string()),
         Some("2026-06-12T12:00:00Z".to_string()),
         Some(AgentHarnessKind::Codex),
+        None,
+        PersonaDirective::Inherit,
         Some("gpt-5.5".to_string()),
         Some(LogicalEffort::XHigh),
         Some("fast".to_string()),
@@ -775,6 +828,8 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            agent_name_override: None,
+            persona_directive: PersonaDirective::Inherit,
             model_override: None,
             logical_effort_override: None,
             service_tier_override: None,

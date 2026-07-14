@@ -18,7 +18,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 import { callTauri, callTauriGet, TauriClientError } from "./tauri-client.js";
-import { getTraceLogPath, safeError, safeTrace } from "./redact.js";
+import { getTraceLogPath, redactToolArgsForLog, redactToolResultForLog, safeError, safeTrace, } from "./redact.js";
 import { getFilteredTools, isToolAllowed, getAllowedToolNames, parseAllowedToolsFromArgs, formatToolErrorMessage, logAllTools, getToolsByAgent, setAgentType, } from "./tools.js";
 import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolCall, } from "./filesystem-tools.js";
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
@@ -29,6 +29,7 @@ import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
+import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 /**
@@ -278,7 +279,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    safeTrace("tool.request", { name, args });
+    safeTrace("tool.request", { name, args: redactToolArgsForLog(name, args) });
     // Special handling for permission_request tool (always allowed, not scoped by agent type)
     if (name === "permission_request") {
         try {
@@ -481,7 +482,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     try {
         // Forward to Tauri backend
-        safeError(`[RalphX MCP] Calling Tauri: ${name} with args:`, JSON.stringify(args));
+        safeError(`[RalphX MCP] Calling Tauri: ${name} with args:`, JSON.stringify(redactToolArgsForLog(name, args)));
         safeTrace("tool.dispatch", { name });
         let result;
         const requestArgs = (args ?? {});
@@ -615,6 +616,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         else if (isAutomationSetupToolName(name)) {
             result = await callAutomationSetupTool(name, callTauri, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
+            });
+        }
+        else if (isPersonaToolName(name)) {
+            result = await callPersonaTool(name, callTauri, callTauriGet, args, {
                 conversationId: RALPHX_CONVERSATION_ID,
             });
         }
@@ -1027,7 +1033,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         safeError(`[RalphX MCP] Success: ${name}`);
         safeTrace("tool.success", {
             name,
-            result: summarizeResult(result),
+            result: summarizeResult(redactToolResultForLog(name, result)),
         });
         // Return result as JSON text
         return {
@@ -1040,11 +1046,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
     catch (error) {
-        safeError(`[RalphX MCP] Error calling ${name}:`, error);
+        const rawErrorMessage = error instanceof Error ? error.message : String(error);
+        const errorForLog = redactToolResultForLog(name, rawErrorMessage);
+        safeError(`[RalphX MCP] Error calling ${name}:`, errorForLog === rawErrorMessage ? error : errorForLog);
         safeTrace("tool.error", {
             name,
-            error: error instanceof Error ? error.message : String(error),
-            details: error instanceof TauriClientError ? error.details : undefined,
+            error: errorForLog,
+            details: error instanceof TauriClientError
+                ? redactToolResultForLog(name, error.details)
+                : undefined,
         });
         if (error instanceof TauriClientError) {
             return {

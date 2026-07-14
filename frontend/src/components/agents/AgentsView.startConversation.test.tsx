@@ -17,6 +17,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 import { chatKeys } from "@/hooks/useChat";
+import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
+import { personaKeys } from "@/hooks/usePersonas";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -462,6 +464,9 @@ describe("AgentsView start conversation", () => {
     expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
       "conversationId"
     );
+    expect(startAgentConversationMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "personaId",
+    );
     await waitFor(() =>
       expect(spawnConversationSessionNamerMock).toHaveBeenCalledWith(
         "conversation-2",
@@ -504,6 +509,53 @@ describe("AgentsView start conversation", () => {
       })
     );
     invalidateSpy.mockRestore();
+  });
+
+  it("threads a selected active persona to the start invoke only when personas are enabled", async () => {
+    mockAgentViewData();
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, {
+      activityPage: true,
+      extensibilityPage: true,
+      ideationPage: false,
+      automationsPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+      agentPersonas: true,
+    });
+    queryClient.setQueryData(personaKeys.list(), [
+      {
+        id: "persona-reviewer",
+        slug: "reviewer-voice",
+        name: "Reviewer Voice",
+        description: "Careful reviews",
+        content: "# Reviewer",
+        status: "active",
+        version: 1,
+        contentHash: "persona-hash",
+        sourceSessionId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Choose persona" })).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Choose persona" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Reviewer Voice" }));
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "Review the current changes" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({ personaId: "persona-reviewer" }),
+      ),
+    );
   });
 
   it("starts a new conversation with Team enabled", async () => {

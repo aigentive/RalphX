@@ -1276,6 +1276,33 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
 }
 
 #[tokio::test]
+async fn list_active_direct_published_workspaces_excludes_archived_conversation_owner() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut published = make_workspace(conversation_id.clone());
+    published.publication_pr_number = Some(72);
+    published.publication_pr_status = Some("open".to_string());
+    published.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(published).await.unwrap();
+
+    db.with_connection(|conn| {
+        conn.execute(
+            "UPDATE chat_conversations
+             SET archived_at = '2026-07-13T12:00:00Z'
+             WHERE id = ?1",
+            rusqlite::params![conversation_id.as_str()],
+        )
+        .unwrap();
+    });
+
+    let workspaces = repo
+        .list_active_direct_published_workspaces()
+        .await
+        .unwrap();
+
+    assert!(workspaces.is_empty());
+}
+
+#[tokio::test]
 async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_prs() {
     let (db, repo, conversation_id) = setup_repo();
     let mut direct = make_workspace(conversation_id);
