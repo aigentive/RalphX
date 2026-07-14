@@ -657,6 +657,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const prReviewConversationId =
     workspace?.mode === "review_pr" ? workspace.conversationId : null;
+  const isReviewPrWorkspace = workspace?.mode === "review_pr";
   const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
@@ -709,10 +710,46 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       );
     },
   });
+  const prReviewMonitoringMutation = useMutation({
+    mutationFn: ({
+      conversationId,
+      enabled,
+      activeReviewPolicy,
+    }: {
+      conversationId: string;
+      enabled: boolean;
+      activeReviewPolicy?: "finish_current" | "cancel_current";
+    }) =>
+      activeReviewPolicy
+        ? chatApi.setAgentWorkspacePrReviewMonitoring(
+            conversationId,
+            enabled,
+            activeReviewPolicy,
+          )
+        : chatApi.setAgentWorkspacePrReviewMonitoring(conversationId, enabled),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.prReview(variables.conversationId),
+        (previous: AgentWorkspacePrReviewContext | undefined) =>
+          previous ? { ...previous, monitor: result.monitor } : previous,
+      );
+      toast.success(
+        result.monitor.monitorEnabled
+          ? "PR review monitoring restarted"
+          : "PR review monitoring paused",
+      );
+      void invalidateWorkspaceQueries(queryClient, variables.conversationId);
+    },
+    onError: (error) => {
+      toast.error(
+        extractErrorMessage(error, "Failed to update PR review monitoring"),
+      );
+    },
+  });
   const shouldLoadWorkspaceReviewContext = Boolean(
     conversationId &&
     workspace &&
-    ["edit", "ideation", "plan", "review_pr"].includes(workspace.mode),
+    ["edit", "ideation", "plan"].includes(workspace.mode),
   );
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(conversationId ?? ""),
@@ -726,10 +763,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     workspaceReviewContextQuery.data,
     conversationId,
   );
-  const workspaceReviewArtifactId =
-    workspaceReviewContext?.monitor.reviewArtifactId ?? null;
+  const workspaceReviewArtifactId = isReviewPrWorkspace
+    ? null
+    : (workspaceReviewContext?.monitor.reviewArtifactId ?? null);
   const prReviewArtifactId = prReviewContext?.monitor?.reviewArtifactId ?? null;
-  const reviewArtifactId = workspaceReviewArtifactId ?? prReviewArtifactId;
+  const reviewArtifactId = isReviewPrWorkspace
+    ? prReviewArtifactId
+    : workspaceReviewArtifactId;
   const reviewArtifactQuery = useQuery({
     queryKey: ["agents", "artifact", reviewArtifactId],
     queryFn: () => artifactApi.get(reviewArtifactId!),
@@ -986,9 +1026,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       conversation?.contextType === "project" && hasConversationIssues
         ? (["issues", ...availableIdeationTabIds] as IdeationArtifactTab[])
         : availableIdeationTabIds;
-    const shouldShowReviewTab =
-      Boolean(reviewArtifactId) ||
-      Boolean(workspaceReviewContext?.shouldShowTab);
+    const shouldShowReviewTab = isReviewPrWorkspace
+      ? Boolean(prReviewContext)
+      : Boolean(reviewArtifactId) || Boolean(workspaceReviewContext?.shouldShowTab);
     if (!shouldShowReviewTab || tabs.includes("review")) {
       return tabs;
     }
@@ -997,6 +1037,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     availableIdeationTabIds,
     conversation?.contextType,
     hasConversationIssues,
+    isReviewPrWorkspace,
+    prReviewContext,
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
@@ -1035,7 +1077,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? automationRunTabPolicy.defaultTab
       : automationId && conversation?.agentMode === "automation"
       ? "automation"
-      : workspaceReviewContext?.shouldShowTab || reviewArtifactId
+      : isReviewPrWorkspace || workspaceReviewContext?.shouldShowTab || reviewArtifactId
         ? "review"
         : showPullRequestTab
           ? "pr"
@@ -1549,8 +1591,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
           reviewArtifact={reviewArtifact}
-          reviewContext={workspaceReviewContext}
-          isReviewPrWorkspace={workspace?.mode === "review_pr"}
+          reviewContext={isReviewPrWorkspace ? null : workspaceReviewContext}
+          isReviewPrWorkspace={isReviewPrWorkspace}
           autoApproveEnabled={autoApproveEnabled}
           isAutoApproveSaving={autoApproveMutation.isPending}
           onAutoApproveChange={(enabled) => {
@@ -1562,6 +1604,18 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             autoApproveMutation.mutate({
               conversationId: prReviewConversationId,
               enabled,
+            });
+          }}
+          prReviewMonitor={prReviewContext?.monitor ?? null}
+          isPrReviewMonitorSaving={prReviewMonitoringMutation.isPending}
+          onPrReviewMonitorChange={async (enabled, activeReviewPolicy) => {
+            if (!prReviewConversationId) {
+              throw new Error("PR review monitoring is unavailable");
+            }
+            await prReviewMonitoringMutation.mutateAsync({
+              conversationId: prReviewConversationId,
+              enabled,
+              ...(activeReviewPolicy ? { activeReviewPolicy } : {}),
             });
           }}
           reviewStartResult={workspaceReviewStartResult}
@@ -1645,6 +1699,12 @@ type ArtifactContentProps = {
   autoApproveEnabled: boolean;
   isAutoApproveSaving: boolean;
   onAutoApproveChange: (enabled: boolean) => void;
+  prReviewMonitor: AgentWorkspacePrReviewContext["monitor"];
+  isPrReviewMonitorSaving: boolean;
+  onPrReviewMonitorChange: (
+    enabled: boolean,
+    activeReviewPolicy?: "finish_current" | "cancel_current",
+  ) => Promise<void>;
   reviewStartResult: StartAgentWorkspaceReviewResult | null;
   reviewStartError: Error | null;
   isReviewLoading: boolean;
@@ -1722,6 +1782,9 @@ function ArtifactContent({
   autoApproveEnabled,
   isAutoApproveSaving,
   onAutoApproveChange,
+  prReviewMonitor,
+  isPrReviewMonitorSaving,
+  onPrReviewMonitorChange,
   reviewStartResult,
   reviewStartError,
   isReviewLoading,
@@ -1869,6 +1932,9 @@ function ArtifactContent({
         autoApproveEnabled={autoApproveEnabled}
         isAutoApproveSaving={isAutoApproveSaving}
         onAutoApproveChange={onAutoApproveChange}
+        prReviewMonitor={prReviewMonitor}
+        isPrReviewMonitorSaving={isPrReviewMonitorSaving}
+        onPrReviewMonitorChange={onPrReviewMonitorChange}
         reviewStartResult={reviewStartResult}
         reviewStartError={reviewStartError}
         isReviewLoading={isReviewLoading}

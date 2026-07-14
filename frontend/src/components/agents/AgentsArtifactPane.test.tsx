@@ -88,6 +88,7 @@ const {
   setWorkspaceAutoPublishMock,
   setWorkspacePrSupervisionMock,
   setPrReviewAutoApproveMock,
+  setPrReviewMonitoringMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
   sendAgentMessageMock,
@@ -153,6 +154,7 @@ const {
   setWorkspaceAutoPublishMock: vi.fn(),
   setWorkspacePrSupervisionMock: vi.fn(),
   setPrReviewAutoApproveMock: vi.fn(),
+  setPrReviewMonitoringMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
@@ -224,6 +226,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         setWorkspacePrSupervisionMock(...args),
       setAgentWorkspacePrReviewAutoApprove: (...args: unknown[]) =>
         setPrReviewAutoApproveMock(...args),
+      setAgentWorkspacePrReviewMonitoring: (...args: unknown[]) =>
+        setPrReviewMonitoringMock(...args),
       precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
         precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
@@ -1418,6 +1422,7 @@ describe("AgentsArtifactPane", () => {
         }),
     );
     setPrReviewAutoApproveMock.mockReset();
+    setPrReviewMonitoringMock.mockReset();
     setWorkspaceAutoPublishMock.mockImplementation(
       async (conversationId: string, input: { autoPublishEnabled: boolean }) =>
         workspace({
@@ -3409,6 +3414,7 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
     expect(await screen.findByText("PR Review")).toBeInTheDocument();
     expect(getPrReviewContextMock).toHaveBeenCalledWith("conversation-1");
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
     expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-1");
   });
 
@@ -3453,6 +3459,116 @@ describe("AgentsArtifactPane", () => {
       ),
     );
     expect(toggle).not.toBeChecked();
+  });
+
+  it("pauses and restarts Review PR monitoring from the Review tab", async () => {
+    const user = userEvent.setup();
+    const context = prReviewContext("conversation-1", "review-artifact-1");
+    const pausedContext = {
+      ...context,
+      monitor: {
+        ...context.monitor!,
+        monitorEnabled: false,
+        status: "paused" as const,
+      },
+    };
+    getPrReviewContextMock
+      .mockResolvedValueOnce(context)
+      .mockResolvedValue(pausedContext);
+    setPrReviewMonitoringMock
+      .mockResolvedValueOnce({
+        success: true,
+        monitor: pausedContext.monitor!,
+      })
+      .mockResolvedValueOnce({ success: true, monitor: context.monitor! });
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane("review", workspace({ mode: "review_pr" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "review_pr",
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop Monitoring" }),
+    );
+
+    await waitFor(() =>
+      expect(setPrReviewMonitoringMock).toHaveBeenCalledWith(
+        "conversation-1",
+        false,
+      ),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Restart Monitoring" }),
+    );
+    await waitFor(() =>
+      expect(setPrReviewMonitoringMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        true,
+      ),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("PR review monitoring paused");
+  });
+
+  it("asks whether to finish or cancel an active PR review before stopping", async () => {
+    const user = userEvent.setup();
+    const context = prReviewContext("conversation-1", "review-artifact-1");
+    context.monitor = { ...context.monitor!, status: "reviewing" };
+    getPrReviewContextMock.mockResolvedValue(context);
+    setPrReviewMonitoringMock.mockResolvedValue({
+      success: true,
+      monitor: {
+        ...context.monitor!,
+        monitorEnabled: false,
+        status: "paused",
+      },
+    });
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane("review", workspace({ mode: "review_pr" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "review_pr",
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop Monitoring" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Stop PR review monitoring?" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Stop After Review" }));
+
+    await waitFor(() =>
+      expect(setPrReviewMonitoringMock).toHaveBeenCalledWith(
+        "conversation-1",
+        false,
+        "finish_current",
+      ),
+    );
   });
 
   it("restores the Review PR Auto Approve preference when saving fails", async () => {

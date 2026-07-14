@@ -81,6 +81,7 @@ async fn setup_review_workspace(
         Some("head-sha".to_string()),
     );
     monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.monitor_enabled = true;
     monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-1".to_string()));
     monitor.review_artifact_head_sha = Some("head-sha".to_string());
     monitor.review_artifact_version = Some(1);
@@ -288,7 +289,9 @@ async fn review_pr_auto_approve_setting_persists_per_conversation() {
         State(state.clone()),
         Path(workspace.conversation_id.to_string()),
         Json(UpdateAgentWorkspacePrReviewSettingsRequest {
-            auto_approve_enabled: false,
+            auto_approve_enabled: Some(false),
+            monitor_enabled: None,
+            active_review_policy: None,
         }),
     )
     .await
@@ -300,12 +303,94 @@ async fn review_pr_auto_approve_setting_persists_per_conversation() {
         State(state),
         Path(workspace.conversation_id.to_string()),
         Json(UpdateAgentWorkspacePrReviewSettingsRequest {
-            auto_approve_enabled: true,
+            auto_approve_enabled: Some(true),
+            monitor_enabled: None,
+            active_review_policy: None,
         }),
     )
     .await
     .expect("setting should update");
     assert!(enabled.monitor.auto_approve_enabled);
+}
+
+#[tokio::test]
+async fn review_pr_monitoring_pause_and_restart_persist_independently_of_auto_approve() {
+    let (_app_state, state, workspace, _) = setup_review_workspace(false).await;
+
+    let Json(paused) = update_agent_workspace_pr_review_settings(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: None,
+            monitor_enabled: Some(false),
+            active_review_policy: None,
+        }),
+    )
+    .await
+    .expect("monitor should pause");
+    assert!(!paused.monitor.monitor_enabled);
+    assert_eq!(paused.monitor.status, "paused");
+    assert!(paused.monitor.auto_approve_enabled);
+
+    let Json(restarted) = update_agent_workspace_pr_review_settings(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: None,
+            monitor_enabled: Some(true),
+            active_review_policy: None,
+        }),
+    )
+    .await
+    .expect("monitor should restart");
+    assert!(restarted.monitor.monitor_enabled);
+    assert_eq!(restarted.monitor.status, "watching");
+    assert!(restarted.monitor.auto_approve_enabled);
+}
+
+#[tokio::test]
+async fn stopping_an_active_pr_review_requires_an_explicit_policy() {
+    let (app_state, state, workspace, _) = setup_review_workspace(false).await;
+    let mut monitor = app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
+    app_state
+        .agent_conversation_workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("active monitor should persist");
+
+    let (status, Json(body)) = update_agent_workspace_pr_review_settings(
+        State(state.clone()),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: None,
+            monitor_enabled: Some(false),
+            active_review_policy: None,
+        }),
+    )
+    .await
+    .expect_err("active Review PR monitor must require a stop policy");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "active_review_choice_required");
+
+    let Json(paused) = update_agent_workspace_pr_review_settings(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: None,
+            monitor_enabled: Some(false),
+            active_review_policy: Some("finish_current".to_string()),
+        }),
+    )
+    .await
+    .expect("finish-current stop policy should pause monitoring");
+    assert!(!paused.monitor.monitor_enabled);
+    assert_eq!(paused.monitor.status, "paused");
 }
 
 #[tokio::test]
@@ -322,7 +407,9 @@ async fn review_pr_auto_approve_setting_rejects_ineligible_workspaces() {
         State(state.clone()),
         Path(workspace.conversation_id.to_string()),
         Json(UpdateAgentWorkspacePrReviewSettingsRequest {
-            auto_approve_enabled: false,
+            auto_approve_enabled: Some(false),
+            monitor_enabled: None,
+            active_review_policy: None,
         }),
     )
     .await
@@ -340,7 +427,9 @@ async fn review_pr_auto_approve_setting_rejects_ineligible_workspaces() {
         State(state),
         Path(workspace.conversation_id.to_string()),
         Json(UpdateAgentWorkspacePrReviewSettingsRequest {
-            auto_approve_enabled: false,
+            auto_approve_enabled: Some(false),
+            monitor_enabled: None,
+            active_review_policy: None,
         }),
     )
     .await
@@ -405,7 +494,7 @@ async fn skipped_pr_review_action_resolves_first_action_without_enabling_monitor
         skipped.action.status,
         AgentWorkspacePrReviewActionStatus::Skipped.to_string()
     );
-    assert_eq!(skipped.monitor.status, "terminal");
+    assert_eq!(skipped.monitor.status, "watching");
     assert!(skipped.monitor.first_action_resolved);
 }
 
