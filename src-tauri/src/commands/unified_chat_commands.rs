@@ -76,6 +76,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
+use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
@@ -5989,6 +5990,21 @@ async fn resolve_agent_workspace_pr_description_review_base(
 ) -> Result<AgentWorkspacePrDescriptionReviewBaseResolution, String> {
     let captured_review_base =
         review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?.to_string();
+    let linked_review_base =
+        if workspace.branch_mode == AgentConversationWorkspaceBranchMode::Linked {
+            Some(
+                resolve_agent_workspace_review_base(
+                    worktree_path,
+                    workspace,
+                    "HEAD",
+                    &captured_review_base,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
 
     let base_resolution = match resolve_workspace_base(project, workspace).await {
         Ok(resolution) => Some(resolution),
@@ -6020,12 +6036,12 @@ async fn resolve_agent_workspace_pr_description_review_base(
 
     let Some(base_resolution) = base_resolution else {
         return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
-            captured_review_base,
+            linked_review_base.unwrap_or(captured_review_base),
         ));
     };
     if base_resolution.status == BaseStatus::Blocked {
         return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
-            captured_review_base,
+            linked_review_base.unwrap_or(captured_review_base),
         ));
     }
 
@@ -6033,7 +6049,7 @@ async fn resolve_agent_workspace_pr_description_review_base(
         Ok(checkout_ref) => checkout_ref.to_string(),
         Err(_) => {
             return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
-                captured_review_base,
+                linked_review_base.unwrap_or(captured_review_base),
             ));
         }
     };
@@ -6057,7 +6073,7 @@ async fn resolve_agent_workspace_pr_description_review_base(
                 "Branch freshness check failed while preparing PR description; using captured review base"
             );
             return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
-                captured_review_base,
+                linked_review_base.unwrap_or(captured_review_base),
             ));
         }
     };
@@ -6068,11 +6084,13 @@ async fn resolve_agent_workspace_pr_description_review_base(
         ));
     }
 
-    let review_base = freshness
-        .captured_base_commit
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(captured_review_base);
+    let review_base = linked_review_base.unwrap_or_else(|| {
+        freshness
+            .captured_base_commit
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(captured_review_base)
+    });
     Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
         review_base,
     ))
