@@ -17,7 +17,7 @@ use tauri::AppHandle;
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_continuation::{
-    classify_agent_workspace_continuation, AgentWorkspaceContinuationBlock,
+    classify_agent_workspace_continuation_with_plan_branch, AgentWorkspaceContinuationBlock,
 };
 use crate::application::chat_service::{
     should_recover_silent_completion, silent_completion_recovery_attempt,
@@ -488,9 +488,14 @@ impl ChatResumptionRunner {
             }
         };
 
-        classify_agent_workspace_continuation(&project, &workspace)
-            .blocked_reason()
-            .cloned()
+        classify_agent_workspace_continuation_with_plan_branch(
+            &project,
+            &workspace,
+            self.plan_branch_repo.as_deref(),
+        )
+        .await
+        .blocked_reason()
+        .cloned()
     }
 
     async fn has_active_runtime_for_context(

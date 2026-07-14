@@ -12,6 +12,7 @@ pub mod agent_conversation_linear_issue;
 pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
+pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
@@ -306,6 +307,10 @@ mod agent_conversation_archive_restart_tests;
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_restart_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
 #[cfg(test)]

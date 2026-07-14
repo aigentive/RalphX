@@ -369,6 +369,60 @@ async fn terminal_cleanup_candidates_skip_marked_rows() {
 }
 
 #[tokio::test]
+async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.status = AgentConversationWorkspaceStatus::Missing;
+    repo.create_or_update(workspace).await.unwrap();
+    repo.mark_local_cleanup_status(&conversation_id, "cleaned", chrono::Utc::now())
+        .await
+        .unwrap();
+    let session_id = IdeationSessionId::from_string("restart-session");
+    let plan_branch_id = PlanBranchId::from_string("restart-plan-branch");
+
+    repo.restore_after_restart(&conversation_id, &session_id, &plan_branch_id)
+        .await
+        .unwrap();
+
+    let restored = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should remain persisted");
+    assert_eq!(restored.status, AgentConversationWorkspaceStatus::Active);
+    assert_eq!(
+        restored.linked_ideation_session_id.as_ref(),
+        Some(&session_id)
+    );
+    assert_eq!(
+        restored.linked_plan_branch_id.as_ref(),
+        Some(&plan_branch_id)
+    );
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn restore_after_restart_rejects_a_missing_workspace() {
+    let (_db, repo, _) = setup_repo();
+    let missing_conversation_id = ChatConversationId::new();
+    let error = repo
+        .restore_after_restart(
+            &missing_conversation_id,
+            &IdeationSessionId::new(),
+            &PlanBranchId::new(),
+        )
+        .await
+        .expect_err("restart repair must not succeed without a workspace row");
+
+    assert!(error.to_string().contains("Workspace not found"));
+}
+
+#[tokio::test]
 async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     let (db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id);

@@ -116,6 +116,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(())
     }
 
+    async fn get_local_cleanup_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn clear_local_cleanup_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_active_direct_published_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
@@ -168,6 +182,23 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         ideation_session_id: Option<&IdeationSessionId>,
         plan_branch_id: Option<&PlanBranchId>,
     ) -> AppResult<()>;
+
+    async fn restore_after_restart(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: &IdeationSessionId,
+        plan_branch_id: &PlanBranchId,
+    ) -> AppResult<()> {
+        self.update_links(
+            conversation_id,
+            Some(ideation_session_id),
+            Some(plan_branch_id),
+        )
+        .await?;
+        self.update_status(conversation_id, AgentConversationWorkspaceStatus::Active)
+            .await?;
+        self.clear_local_cleanup_status(conversation_id).await
+    }
 
     async fn update_publication(
         &self,

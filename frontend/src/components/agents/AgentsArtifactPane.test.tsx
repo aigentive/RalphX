@@ -5452,6 +5452,14 @@ describe("AgentsArtifactPane", () => {
   it("confirms before restarting accepted implementation work", async () => {
     const user = userEvent.setup();
     const loadActivePlan = vi.fn().mockResolvedValue(undefined);
+    const restartResult = deferred<{
+      sessionId: string;
+      oldExecutionPlanId: string;
+      executionPlanId: string;
+      archivedTaskCount: number;
+      createdTaskIds: string[];
+    }>();
+    restartImplementationMock.mockReturnValueOnce(restartResult.promise);
     usePlanStore.setState({
       activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
@@ -5494,10 +5502,10 @@ describe("AgentsArtifactPane", () => {
     let dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Restart implementation?");
     expect(dialog).toHaveTextContent(
-      "RalphX will close the existing PR",
+      "RalphX will safely restore the linked implementation workspace if it was previously cleaned",
     );
     expect(dialog).toHaveTextContent(
-      "reset the implementation branch and workspace to the latest base branch from origin",
+      "reset the branch to the latest base from origin",
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -5515,7 +5523,22 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(restartImplementationMock).toHaveBeenCalledWith("session-1"),
     );
-    expect(loadActivePlan).toHaveBeenCalledWith("project-1");
+    const pendingButton = within(dialog).getByRole("button", {
+      name: "Restarting…",
+    });
+    expect(pendingButton).toBeDisabled();
+    await user.click(pendingButton);
+    expect(restartImplementationMock).toHaveBeenCalledTimes(1);
+
+    restartResult.resolve({
+      sessionId: "session-1",
+      oldExecutionPlanId: "exec-old",
+      executionPlanId: "exec-new",
+      archivedTaskCount: 1,
+      createdTaskIds: ["task-new"],
+    });
+
+    await waitFor(() => expect(loadActivePlan).toHaveBeenCalledWith("project-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith(
       "Implementation restarted with 1 task",
     );
@@ -5732,7 +5755,7 @@ describe("AgentsArtifactPane", () => {
   it("reports string restart implementation failures from the confirmation action", async () => {
     const user = userEvent.setup();
     restartImplementationMock.mockRejectedValueOnce(
-      "Linked plan branch worktree is missing",
+      "RalphX could not safely restore this implementation workspace because the linked branch is checked out elsewhere or no longer matches the plan",
     );
     usePlanStore.setState({
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
@@ -5779,9 +5802,10 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "Linked plan branch worktree is missing",
+        "RalphX could not safely restore this implementation workspace because the linked branch is checked out elsewhere or no longer matches the plan",
       ),
     );
+    expect(toastErrorMock.mock.calls[0]?.[0]).not.toContain("/Users/");
   });
 
   it("falls back to the Plan tab when Proposals is active but no proposals exist", async () => {
