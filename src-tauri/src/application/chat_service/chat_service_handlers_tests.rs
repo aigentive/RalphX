@@ -746,6 +746,44 @@ fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_a
     );
 }
 
+#[test]
+fn handler_task_scheduler_service_carries_completion_authority_repositories() {
+    let app_state = AppState::new_test();
+    let task_step_repo = Some(Arc::clone(&app_state.task_step_repo));
+    let validation_run_repo = Some(Arc::clone(&app_state.validation_run_repo));
+    let runtime_support = RuntimeSupportRepos::default();
+
+    let scheduler = build_task_scheduler_service::<MockRuntime>(
+        &None,
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::new(ExecutionState::new()),
+        Arc::clone(&app_state.memory_event_repo),
+        &task_step_repo,
+        &validation_run_repo,
+        runtime_support,
+    );
+
+    assert!(
+        scheduler.task_step_repo.is_some(),
+        "handler scheduler fallback must retain task-step authority"
+    );
+    assert!(
+        scheduler.validation_run_repo.is_some(),
+        "handler scheduler fallback must retain validation-run authority"
+    );
+}
+
 #[tokio::test]
 async fn cancelled_stream_preserves_already_terminal_agent_run() {
     let state = AppState::new_test();
@@ -2391,6 +2429,34 @@ fn validation_run_proves_completion_rejects_non_authoritative_evidence() {
     assert!(
         !validation_run_proves_completion(&failed_command, "head-sha", episode_entered_at),
         "failed validation commands must not authorize completion"
+    );
+}
+
+#[test]
+fn validation_run_proves_completion_requires_passed_run_and_successful_commands() {
+    let episode_entered_at = Utc::now();
+    let task = Task::new(ProjectId::new(), "validation command matrix".into());
+    let valid = validation_with_results_fixture(&task, "head-sha", episode_entered_at);
+
+    let mut cached_command = valid.clone();
+    cached_command.commands[0].status = ValidationCommandStatus::Cached;
+    assert!(
+        validation_run_proves_completion(&cached_command, "head-sha", episode_entered_at),
+        "cached successful test commands still carry completed validation evidence"
+    );
+
+    let mut error_run = valid.clone();
+    error_run.run.status = ValidationRunStatus::Error;
+    assert!(
+        !validation_run_proves_completion(&error_run, "head-sha", episode_entered_at),
+        "non-passed validation runs must not authorize completion"
+    );
+
+    let mut empty_commands = valid;
+    empty_commands.commands.clear();
+    assert!(
+        !validation_run_proves_completion(&empty_commands, "head-sha", episode_entered_at),
+        "a validation run with no command evidence must fail closed"
     );
 }
 
