@@ -2323,15 +2323,13 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
     };
     if monitor.pr_number != pr_number
         || !monitor.monitor_enabled
-        || monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
+        || matches!(
+            monitor.status,
+            AgentWorkspacePrReviewMonitorStatus::Paused
+                | AgentWorkspacePrReviewMonitorStatus::Terminal
+                | AgentWorkspacePrReviewMonitorStatus::Submitting
+        )
     {
-        return Ok(false);
-    }
-    if matches!(
-        monitor.status,
-        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
-            | AgentWorkspacePrReviewMonitorStatus::Submitting
-    ) {
         return Ok(false);
     }
     if agent_run_repo
@@ -2380,8 +2378,17 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
         return Ok(false);
     }
 
+    workspace_repo
+        .supersede_pending_pr_review_actions_except_head(conversation_id, pr_number, &head_sha)
+        .await?;
+
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
+    monitor.last_seen_head_sha = Some(head_sha.clone());
+    monitor.last_error = None;
+    workspace_repo.upsert_pr_review_monitor(monitor).await?;
+
     let message = build_agent_workspace_pr_monitor_review_message(pr_number, &workspace, &health);
-    let send_result = chat_service
+    let send_result = match chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
@@ -2396,14 +2403,33 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
             },
         )
         .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
-
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
-    monitor.last_seen_head_sha = Some(head_sha.clone());
-    monitor.last_review_run_id =
-        (!send_result.agent_run_id.trim().is_empty()).then_some(send_result.agent_run_id);
-    monitor.last_error = None;
-    workspace_repo.upsert_pr_review_monitor(monitor).await?;
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(mut current) = workspace_repo
+                .get_pr_review_monitor(conversation_id)
+                .await?
+            {
+                current.last_error = Some(error.to_string());
+                current.status = current.settlement_status();
+                workspace_repo.upsert_pr_review_monitor(current).await?;
+            }
+            return Err(AppError::Infrastructure(error.to_string()));
+        }
+    };
+    if let Some(mut current) = workspace_repo
+        .get_pr_review_monitor(conversation_id)
+        .await?
+    {
+        if current.monitor_enabled
+            && current.status == AgentWorkspacePrReviewMonitorStatus::Reviewing
+            && current.last_seen_head_sha.as_deref() == Some(head_sha.as_str())
+        {
+            current.last_review_run_id =
+                (!send_result.agent_run_id.trim().is_empty()).then_some(send_result.agent_run_id);
+            workspace_repo.upsert_pr_review_monitor(current).await?;
+        }
+    }
     workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),

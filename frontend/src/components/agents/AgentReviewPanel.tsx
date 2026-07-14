@@ -18,11 +18,21 @@ import {
 } from "react";
 
 import type {
+  AgentWorkspacePrReviewMonitor,
   AgentWorkspaceReviewContext,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -87,6 +97,12 @@ interface AgentReviewPanelProps {
   autoApproveEnabled?: boolean;
   isAutoApproveSaving?: boolean;
   onAutoApproveChange?: (enabled: boolean) => void;
+  prReviewMonitor?: AgentWorkspacePrReviewMonitor | null;
+  isPrReviewMonitorSaving?: boolean;
+  onPrReviewMonitorChange?: (
+    enabled: boolean,
+    activeReviewPolicy?: "finish_current" | "cancel_current",
+  ) => Promise<void>;
 }
 
 function reviewTargetLabel(
@@ -311,17 +327,24 @@ export function AgentReviewPanel({
   autoApproveEnabled = true,
   isAutoApproveSaving = false,
   onAutoApproveChange,
+  prReviewMonitor = null,
+  isPrReviewMonitorSaving = false,
+  onPrReviewMonitorChange,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
+  const [isStopMonitoringDialogOpen, setIsStopMonitoringDialogOpen] =
+    useState(false);
 
   useEffect(() => {
     setIsReviewExpanded(true);
   }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
 
   const displayContext = (
-    isReviewActionPending
-      ? (reviewStartResult ?? reviewContext)
-      : (reviewContext ?? reviewStartResult)
+    isReviewPrWorkspace
+      ? null
+      : isReviewActionPending
+        ? (reviewStartResult ?? reviewContext)
+        : (reviewContext ?? reviewStartResult)
   ) as ReviewDisplayContext | null;
   const isRunning =
     isReviewActionPending || displayContext?.monitor.status === "reviewing";
@@ -369,6 +392,21 @@ export function AgentReviewPanel({
     : null;
   const shouldShowConversationActiveSkippedReason =
     skippedReason === "conversation_active" && !actionDisabledReason;
+  const isPrReviewMonitorActive = ["reviewing", "submitting"].includes(
+    prReviewMonitor?.status ?? "",
+  );
+  const updatePrReviewMonitoring = async (
+    enabled: boolean,
+    activeReviewPolicy?: "finish_current" | "cancel_current",
+  ) => {
+    if (!onPrReviewMonitorChange) return;
+    try {
+      await onPrReviewMonitorChange(enabled, activeReviewPolicy);
+      setIsStopMonitoringDialogOpen(false);
+    } catch {
+      // The parent reports the failed mutation and leaves the dialog open to retry.
+    }
+  };
   const actionButton = useMemo(() => {
     if (isRunning && !action) {
       return (
@@ -613,45 +651,125 @@ export function AgentReviewPanel({
         )}
 
         {isReviewPrWorkspace && (
-          <div
-            className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-3 text-xs"
-            style={{ borderColor: "var(--border-subtle)", color: "var(--text-secondary)" }}
-            data-testid="agents-review-pr-auto-approve"
-          >
-            <label className="flex min-h-8 items-center gap-2">
+          <div className="mt-3 space-y-3 border-t pt-3">
+            <div
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"
+              style={{ color: "var(--text-secondary)" }}
+              data-testid="agents-review-pr-auto-approve"
+            >
+              <label className="flex min-h-8 items-center gap-2">
                 <Switch
                   checked={autoApproveEnabled}
                   disabled={isAutoApproveSaving || !onAutoApproveChange}
                   {...(onAutoApproveChange
                     ? { onCheckedChange: onAutoApproveChange }
                     : {})}
-                aria-label="Auto Approve"
-                data-testid="agents-review-pr-auto-approve-switch"
-              />
-              <span>Auto Approve</span>
-            </label>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
+                  aria-label="Auto Approve"
+                  data-testid="agents-review-pr-auto-approve-switch"
+                />
+                <span>Auto Approve</span>
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="About Auto Approve"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  >
+                    <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[320px] text-xs leading-relaxed">
+                  After you decide the first review, RalphX automatically approves
+                  later re-reviews when the reviewer passes the new PR changes.
+                  Comments and requested changes still wait for you.
+                </TooltipContent>
+              </Tooltip>
+              {isAutoApproveSaving && (
+                <span style={{ color: "var(--text-muted)" }}>Saving…</span>
+              )}
+            </div>
+            {prReviewMonitor && prReviewMonitor.status !== "terminal" ? (
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                data-testid="agents-review-pr-monitoring"
+              >
+                <span style={{ color: "var(--text-secondary)" }}>
+                  {prReviewMonitor.monitorEnabled
+                    ? "Monitoring new PR heads"
+                    : "Monitoring paused"}
+                </span>
+                <Button
                   type="button"
-                  aria-label="About Auto Approve"
-                  className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    isPrReviewMonitorSaving || !onPrReviewMonitorChange
+                  }
+                  onClick={() => {
+                    if (
+                      prReviewMonitor.monitorEnabled &&
+                      isPrReviewMonitorActive
+                    ) {
+                      setIsStopMonitoringDialogOpen(true);
+                      return;
+                    }
+                    void updatePrReviewMonitoring(
+                      !prReviewMonitor.monitorEnabled,
+                    );
+                  }}
                 >
-                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-[320px] text-xs leading-relaxed">
-                After you decide the first review, RalphX automatically approves
-                later re-reviews when the reviewer passes the new PR changes.
-                Comments and requested changes still wait for you.
-              </TooltipContent>
-            </Tooltip>
-            {isAutoApproveSaving && (
-              <span style={{ color: "var(--text-muted)" }}>Saving…</span>
-            )}
+                  {isPrReviewMonitorSaving
+                    ? "Saving…"
+                    : prReviewMonitor.monitorEnabled
+                      ? "Stop Monitoring"
+                      : "Restart Monitoring"}
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
       </div>
+
+      <AlertDialog
+        open={isStopMonitoringDialogOpen}
+        onOpenChange={setIsStopMonitoringDialogOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Stop PR review monitoring?</AlertDialogTitle>
+            <AlertDialogDescription>
+              A review is still running. You can keep its result, cancel it, or
+              leave monitoring on.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPrReviewMonitorSaving}>
+              Keep Monitoring
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isPrReviewMonitorSaving}
+              onClick={() =>
+                void updatePrReviewMonitoring(false, "finish_current")
+              }
+            >
+              Stop After Review
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isPrReviewMonitorSaving}
+              onClick={() =>
+                void updatePrReviewMonitoring(false, "cancel_current")
+              }
+            >
+              Stop and Cancel Review
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {reviewArtifact && displayContext?.isOutdated && (
         <div
