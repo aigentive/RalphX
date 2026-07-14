@@ -82,7 +82,7 @@ use crate::domain::repositories::{
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
     QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -1308,6 +1308,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
         std::sync::Mutex<Option<Arc<dyn AgentConversationGranolaNoteRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
     model: String,
     /// When true, agent resolution uses team-lead variants if configured.
@@ -1398,6 +1399,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_conversation_granola_note_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
             task_step_repo: None,
+            validation_run_repo: None,
             review_repo: None,
             model: "sonnet".to_string(),
             team_mode: AtomicBool::new(false),
@@ -1881,6 +1883,11 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_task_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
         self.task_step_repo = Some(repo);
+        self
+    }
+
+    pub fn with_validation_run_repo(mut self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        self.validation_run_repo = Some(repo);
         self
     }
 
@@ -6132,6 +6139,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 running_agent_registry: Arc::clone(&self.running_agent_registry),
                 task_proposal_repo: self.task_proposal_repo.clone(),
                 task_step_repo: self.task_step_repo.clone(),
+                validation_run_repo: self.validation_run_repo.clone(),
                 review_repo: self.review_repo.clone(),
             },
             execution_state: self.execution_state.clone(),

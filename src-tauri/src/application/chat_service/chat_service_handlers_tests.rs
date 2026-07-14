@@ -19,7 +19,10 @@ use crate::domain::entities::{
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
     IdeationSessionId, InternalStatus, NotificationCategory, NotificationSeverity,
     NotificationTargetKind, Persona, PersonaId, PersonaStatus, Project, ProjectId, Task,
-    VerificationStatus,
+    ValidationCacheDecision, ValidationCacheMetadata, ValidationCommandCategory,
+    ValidationCommandResult, ValidationCommandSource, ValidationCommandStatus,
+    ValidationContextType, ValidationPurpose, ValidationRun, ValidationRunMode,
+    ValidationRunStatus, ValidationRunWithResults, VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -27,7 +30,7 @@ use crate::domain::repositories::{
     ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
     PlanBranchRepository, ProjectRepository, ReviewRepository, StateHistoryMetadata,
     StatusTransition, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::error::AppResult;
@@ -64,6 +67,10 @@ async fn handle_stream_success<R: Runtime>(
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) {
+    let validation_run_repo = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.validation_run_repo));
     super::handle_stream_success(
         agent_run_id,
         context_type,
@@ -87,6 +94,7 @@ async fn handle_stream_success<R: Runtime>(
         memory_event_repo,
         plan_branch_repo,
         task_step_repo,
+        &validation_run_repo,
         execution_settings_repo,
         &None,
         &None,
@@ -145,6 +153,10 @@ async fn handle_stream_error<R: Runtime + 'static>(
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     verification_child_registry: &Option<Arc<VerificationChildProcessRegistry>>,
 ) -> bool {
+    let validation_run_repo = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.validation_run_repo));
     super::handle_stream_error(
         error,
         stream_error,
@@ -193,6 +205,7 @@ async fn handle_stream_error<R: Runtime + 'static>(
         interactive_process_registry,
         review_repo,
         task_step_repo,
+        &validation_run_repo,
         verification_child_registry,
         &None,
     )
@@ -631,6 +644,8 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
     let execution_settings_repo = Some(Arc::clone(&app_state.execution_settings_repo));
     let agent_lane_settings_repo = Some(Arc::clone(&app_state.agent_lane_settings_repo));
     let agent_provider_settings_repo = Some(Arc::clone(&app_state.agent_provider_settings_repo));
+    let task_step_repo = Some(Arc::clone(&app_state.task_step_repo));
+    let validation_run_repo = Some(Arc::clone(&app_state.validation_run_repo));
     let runtime_support = RuntimeSupportRepos::new(
         &execution_settings_repo,
         &agent_lane_settings_repo,
@@ -654,12 +669,16 @@ fn handler_runtime_factory_deps_keep_explicit_lane_and_provider_without_app_hand
         Arc::clone(&app_state.message_queue),
         Arc::clone(&app_state.running_agent_registry),
         Arc::clone(&app_state.memory_event_repo),
+        &task_step_repo,
+        &validation_run_repo,
         runtime_support,
     );
 
     assert!(deps.execution_settings_repo.is_some());
     assert!(deps.agent_lane_settings_repo.is_some());
     assert!(deps.agent_provider_settings_repo.is_some());
+    assert!(deps.task_step_repo.is_some());
+    assert!(deps.validation_run_repo.is_some());
 }
 
 #[test]
@@ -689,6 +708,8 @@ fn handler_runtime_factory_deps_do_not_backfill_missing_lane_and_provider_from_a
         Arc::clone(&app_state.message_queue),
         Arc::clone(&app_state.running_agent_registry),
         Arc::clone(&app_state.memory_event_repo),
+        &None,
+        &None,
         runtime_support,
     );
 
@@ -1454,101 +1475,6 @@ fn git_worktree_with_base_and_change() -> (tempfile::TempDir, String, String) {
 }
 
 #[test]
-fn test_validation_cache_proves_completion_requires_head_match_and_green_tests() {
-    let sha = "abc123def456";
-    // Green + SHA matches HEAD → proves completion.
-    assert!(validation_cache_proves_completion(
-        &validation_cache_fixture(sha, true, true),
-        sha
-    ));
-}
-
-#[test]
-fn test_validation_cache_does_not_prove_completion_on_sha_mismatch() {
-    // Cache was captured on a different commit than current HEAD → stale, no override.
-    assert!(!validation_cache_proves_completion(
-        &validation_cache_fixture("oldsha000", true, true),
-        "newsha111"
-    ));
-}
-
-#[test]
-fn test_validation_cache_does_not_prove_completion_when_tests_did_not_run() {
-    let sha = "abc123def456";
-    // tests_ran=false (e.g. a self-blocked no-op claiming success) must NOT rescue the task,
-    // even if tests_passed is opportunistically true.
-    assert!(!validation_cache_proves_completion(
-        &validation_cache_fixture(sha, false, true),
-        sha
-    ));
-}
-
-#[test]
-fn test_validation_cache_does_not_prove_completion_when_tests_failed() {
-    let sha = "abc123def456";
-    assert!(!validation_cache_proves_completion(
-        &validation_cache_fixture(sha, true, false),
-        sha
-    ));
-}
-
-#[test]
-fn test_validation_cache_fresh_for_episode_rejects_cache_captured_before_latest_entry() {
-    let head_sha = "abc123def456";
-    let episode_entered_at = Utc::now();
-    let cache = validation_cache_fixture_at(
-        head_sha,
-        true,
-        true,
-        episode_entered_at - chrono::Duration::seconds(1),
-    );
-
-    assert!(!validation_cache_fresh_for_episode(
-        &cache,
-        head_sha,
-        episode_entered_at
-    ));
-}
-
-#[test]
-fn test_validation_cache_fresh_for_episode_accepts_cache_captured_after_latest_entry() {
-    let head_sha = "abc123def456";
-    let episode_entered_at = Utc::now();
-    let cache = validation_cache_fixture_at(
-        head_sha,
-        true,
-        true,
-        episode_entered_at + chrono::Duration::milliseconds(1),
-    );
-
-    assert!(validation_cache_fresh_for_episode(
-        &cache,
-        head_sha,
-        episode_entered_at
-    ));
-}
-
-#[test]
-fn test_validation_cache_fresh_for_episode_rejects_sha_mismatch_and_red() {
-    let episode_entered_at = Utc::now();
-    assert!(!validation_cache_fresh_for_episode(
-        &validation_cache_fixture_at("oldsha000", true, true, episode_entered_at),
-        "abc123def456",
-        episode_entered_at
-    ));
-    assert!(!validation_cache_fresh_for_episode(
-        &validation_cache_fixture_at("abc123def456", false, true, episode_entered_at),
-        "abc123def456",
-        episode_entered_at
-    ));
-    assert!(!validation_cache_fresh_for_episode(
-        &validation_cache_fixture_at("abc123def456", true, false, episode_entered_at),
-        "abc123def456",
-        episode_entered_at
-    ));
-}
-
-#[test]
 fn test_incomplete_review_action_escalates_only_for_live_reviewing_tasks() {
     assert_eq!(
         incomplete_review_action(InternalStatus::Reviewing, false),
@@ -1976,6 +1902,65 @@ impl TaskStepRepository for StubErrorTaskStepRepo {
     }
 }
 
+struct StubErrorValidationRunRepo;
+
+#[async_trait]
+impl ValidationRunRepository for StubErrorValidationRunRepo {
+    async fn create_run(&self, _: &ValidationRun) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_run_status(
+        &self,
+        _: &str,
+        _: ValidationRunStatus,
+        _: Option<DateTime<Utc>>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn record_validated_content_fingerprint(
+        &self,
+        _: &str,
+        _: Option<String>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn promote_run_to_commit(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_running_runs_error(&self, _: DateTime<Utc>) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn add_command_result(&self, _: &ValidationCommandResult) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_command_results_for_task(
+        &self,
+        _: &TaskId,
+    ) -> AppResult<Vec<ValidationCommandResult>> {
+        Ok(Vec::new())
+    }
+
+    async fn latest_run_with_results_for_task(
+        &self,
+        _: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        Err(AppError::Database("simulated validation read error".into()))
+    }
+
+    async fn latest_non_baseline_run_with_results_for_task(
+        &self,
+        _: &TaskId,
+    ) -> AppResult<Option<ValidationRunWithResults>> {
+        Err(AppError::Database("simulated validation read error".into()))
+    }
+}
+
 struct StatusChangingTaskStepRepo {
     task_repo: Arc<dyn TaskRepository>,
     task_id: TaskId,
@@ -2207,70 +2192,113 @@ fn test_fetch_step_completion_state_returns_unknown_on_err_and_none() {
     );
 }
 
-#[test]
-fn test_validated_completion_override_false_when_no_metadata() {
-    let task = Task::new(ProjectId::new(), "no metadata".into());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
+async fn seed_current_validation_run(
+    state: &AppState,
+    task: &Task,
+    head_sha: &str,
+    status_episode_entered_at: DateTime<Utc>,
+) {
+    let run = ValidationRun {
+        id: format!("validation-{}", task.id.as_str()),
+        task_id: task.id.clone(),
+        project_id: task.project_id.clone(),
+        purpose: ValidationPurpose::Final,
+        context_type: ValidationContextType::Execution,
+        requested_by_agent: Some("ralphx-execution-worker".to_string()),
+        status: ValidationRunStatus::Passed,
+        mode: ValidationRunMode::Force,
+        policy_enabled: true,
+        head_sha: Some(head_sha.to_string()),
+        start_content_fingerprint: None,
+        validated_content_fingerprint: Some("validated-tree".to_string()),
+        promoted_commit_sha: Some(head_sha.to_string()),
+        base_ref: Some("main".to_string()),
+        analysis_fingerprint: None,
+        status_episode_entered_at: Some(status_episode_entered_at),
+        started_at: status_episode_entered_at,
+        completed_at: Some(status_episode_entered_at + chrono::Duration::seconds(1)),
+    };
+    state.validation_run_repo.create_run(&run).await.unwrap();
+    state
+        .validation_run_repo
+        .add_command_result(&ValidationCommandResult {
+            id: format!("command-{}", task.id.as_str()),
+            validation_run_id: run.id,
+            task_id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test focused".to_string(),
+            cwd: task.worktree_path.clone().unwrap(),
+            label: Some("Focused tests".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: Some("completion authority".to_string()),
+            related_files: Vec::new(),
+            cache_key: "current-validation".to_string(),
+            cache_decision: ValidationCacheDecision::Ran,
+            status: ValidationCommandStatus::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            stdout_snippet: None,
+            stderr_snippet: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
+            launcher_kind: Some("test".to_string()),
+            resolved_shell_path: None,
+            head_sha: Some(head_sha.to_string()),
+            analysis_fingerprint: None,
+            status_episode_entered_at: Some(status_episode_entered_at),
+            created_at: status_episode_entered_at,
+        })
+        .await
+        .unwrap();
 }
 
-#[test]
-fn test_validated_completion_override_false_when_no_validation_cache_key() {
-    let mut task = Task::new(ProjectId::new(), "other metadata".into());
-    task.metadata = Some(r#"{"some_other_key": true}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
-}
+#[tokio::test]
+async fn current_attempt_validation_run_proves_completion_without_legacy_metadata() {
+    let state = AppState::new_test();
+    let (worktree, head_sha) = git_worktree_with_initial_commit();
+    let episode_entered_at = Utc::now() - chrono::Duration::seconds(2);
+    let mut task = Task::new(ProjectId::new(), "first-class validation".into());
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    seed_current_validation_run(&state, &task, &head_sha, episode_entered_at).await;
+    let validation_run_repo = Some(Arc::clone(&state.validation_run_repo));
 
-#[test]
-fn test_validated_completion_override_false_on_malformed_validation_cache() {
-    let mut task = Task::new(ProjectId::new(), "malformed cache".into());
-    // validation_cache present but not a valid ValidationCacheMetadata shape → parse error path.
-    task.metadata = Some(r#"{"validation_cache": {"version": "not-a-number"}}"#.to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
-}
-
-#[test]
-fn test_validated_completion_override_false_when_worktree_path_missing() {
-    let mut task = Task::new(ProjectId::new(), "no worktree".into());
-    let cache = validation_cache_fixture("abc123", true, true);
-    task.metadata = Some(
-        cache
-            .update_task_metadata(task.metadata.as_deref())
-            .unwrap(),
+    assert!(
+        validated_completion_override(&task, episode_entered_at, &validation_run_repo).await,
+        "current-attempt validation_runs evidence must authorize completion without metadata cache"
     );
-    task.worktree_path = None;
-    assert!(!run(validated_completion_override(&task, Utc::now())));
 }
 
-#[test]
-fn test_validated_completion_override_false_for_unsafe_worktree_path() {
-    let mut task = Task::new(ProjectId::new(), "unsafe worktree".into());
-    let cache = validation_cache_fixture("abc123", true, true);
-    task.metadata = Some(
-        cache
-            .update_task_metadata(task.metadata.as_deref())
-            .unwrap(),
+#[tokio::test]
+async fn stale_validation_run_same_commit_does_not_prove_current_attempt_completion() {
+    let state = AppState::new_test();
+    let (worktree, head_sha) = git_worktree_with_initial_commit();
+    let current_episode = Utc::now();
+    let stale_episode = current_episode - chrono::Duration::minutes(5);
+    let mut task = Task::new(ProjectId::new(), "stale first-class validation".into());
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    seed_current_validation_run(&state, &task, &head_sha, stale_episode).await;
+    let validation_run_repo = Some(Arc::clone(&state.validation_run_repo));
+
+    assert!(
+        !validated_completion_override(&task, current_episode, &validation_run_repo).await,
+        "same-commit validation from an older execution episode must not authorize completion"
     );
-
-    task.worktree_path = Some("relative/worktree".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
-
-    task.worktree_path = Some("/tmp/../escape".to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
 }
 
-#[test]
-fn test_validated_completion_override_false_when_head_sha_unresolvable() {
-    let mut task = Task::new(ProjectId::new(), "non-git worktree".into());
-    let cache = validation_cache_fixture("abc123", true, true);
-    task.metadata = Some(
-        cache
-            .update_task_metadata(task.metadata.as_deref())
-            .unwrap(),
+#[tokio::test]
+async fn validation_run_read_error_fails_closed_for_completion() {
+    let (worktree, _head_sha) = git_worktree_with_initial_commit();
+    let mut task = Task::new(ProjectId::new(), "validation read error".into());
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let validation_run_repo: Option<Arc<dyn ValidationRunRepository>> =
+        Some(Arc::new(StubErrorValidationRunRepo));
+
+    assert!(
+        !validated_completion_override(&task, Utc::now(), &validation_run_repo).await,
+        "validation repository errors must not authorize completion"
     );
-    // A temp dir that is not a git repo → get_head_sha errors → fail-safe false.
-    let tmp = tempfile::tempdir().unwrap();
-    task.worktree_path = Some(tmp.path().to_string_lossy().to_string());
-    assert!(!run(validated_completion_override(&task, Utc::now())));
 }
 
 /// Non-AgentExit errors should not trigger the override, even with complete steps.
@@ -2611,7 +2639,7 @@ async fn test_zero_step_run_with_output_and_completion_signal_transitions_out_of
 }
 
 #[tokio::test]
-async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_steps() {
+async fn test_success_finalizer_uses_current_validation_run_for_failed_steps() {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
@@ -2631,15 +2659,8 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
-    let cache = validation_cache_fixture(&head_sha, true, true);
-    let metadata = cache
-        .update_task_metadata(None)
-        .expect("validation cache metadata should serialize");
-    state
-        .task_repo
-        .update_metadata(&task_id, Some(metadata))
-        .await
-        .unwrap();
+    let stored_task = state.task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    seed_current_validation_run(&state, &stored_task, &head_sha, Utc::now()).await;
 
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> = Some(Arc::new(StubTaskStepRepo {
         steps: vec![
@@ -2647,6 +2668,11 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
 
     handle_stream_success::<MockRuntime>(
         agent_run_id.as_str(),
@@ -2672,7 +2698,7 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &app_handle,
         &None,
         &None,
         &None,
@@ -2690,8 +2716,21 @@ async fn test_success_finalizer_uses_head_matched_validation_cache_for_failed_st
             updated.internal_status,
             InternalStatus::PendingReview | InternalStatus::Reviewing
         ),
-        "HEAD-matched green validation cache should rescue a failed-step completion gate, got {:?}",
+        "current validation_runs evidence should rescue a failed-step completion gate, got {:?}",
         updated.internal_status
+    );
+    let events = state
+        .external_events_repo
+        .get_events_after_cursor(&[project.id.as_str().to_string()], 0, 100)
+        .await
+        .expect("completion event query should succeed");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "task:execution_completed")
+            .count(),
+        1,
+        "accepted finalization must publish terminal execution completion exactly once"
     );
 }
 
@@ -2723,7 +2762,6 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
-
     handle_stream_success::<MockRuntime>(
         "missing-agent-run",
         ChatContextType::TaskExecution,
@@ -2769,7 +2807,7 @@ async fn test_identity_unknown_does_not_consult_validation_cache_rescue() {
 }
 
 #[tokio::test]
-async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_steps() {
+async fn test_legacy_validation_cache_does_not_rescue_failed_steps() {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
@@ -2784,7 +2822,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
-    let cache = validation_cache_fixture(&head_sha, false, true);
+    let cache = validation_cache_fixture(&head_sha, true, true);
     let metadata = cache
         .update_task_metadata(None)
         .expect("validation cache metadata should serialize");
@@ -2800,6 +2838,11 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
             make_step(&task_id, TaskStepStatus::Failed),
         ],
     }));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
 
     handle_stream_success::<MockRuntime>(
         agent_run_id.as_str(),
@@ -2825,7 +2868,7 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
         &None,
         &task_step_repo,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &app_handle,
         &None,
         &None,
         &None,
@@ -2841,7 +2884,18 @@ async fn test_success_finalizer_rejects_no_test_validation_cache_for_failed_step
     assert_eq!(
         updated.internal_status,
         InternalStatus::Failed,
-        "tests_ran=false cache must not rescue a failed-step completion gate"
+        "legacy validation_cache metadata must not rescue a failed-step completion gate"
+    );
+    let events = state
+        .external_events_repo
+        .get_events_after_cursor(&[project.id.as_str().to_string()], 0, 100)
+        .await
+        .expect("completion event query should succeed");
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != "task:execution_completed"),
+        "rejected finalization must not publish terminal execution completion"
     );
 }
 
@@ -3056,6 +3110,7 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
         false,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &Some(Arc::clone(&state.validation_run_repo)),
         &interactive_process_registry,
         &verification_child_registry,
     );
@@ -3065,6 +3120,10 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
     assert!(
         ctx.repos.task_step_repo.is_some(),
         "stale-session retry must preserve task_step_repo for execution-side completion handling"
+    );
+    assert!(
+        ctx.repos.validation_run_repo.is_some(),
+        "stale-session retry must preserve validation_run_repo for completion authority"
     );
     assert!(
         ctx.repos.agent_provider_settings_repo.is_some(),
@@ -3216,6 +3275,7 @@ async fn handle_stream_error_persona_recovery_attributes_retry_run() {
         &None,
         &Some(Arc::clone(&state.review_repo)),
         &Some(Arc::clone(&state.task_step_repo)),
+        &Some(Arc::clone(&state.validation_run_repo)),
         &None,
         &None,
     )
@@ -4968,8 +5028,7 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
 }
 
 #[tokio::test]
-async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cache_for_failed_steps(
-) {
+async fn test_task_execution_local_tool_failure_uses_current_validation_run_for_failed_steps() {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
@@ -4989,15 +5048,8 @@ async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cac
     let task_id = task.id.clone();
     state.task_repo.create(task).await.unwrap();
     let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
-    let cache = validation_cache_fixture(&head_sha, true, true);
-    let metadata = cache
-        .update_task_metadata(None)
-        .expect("validation cache metadata should serialize");
-    state
-        .task_repo
-        .update_metadata(&task_id, Some(metadata))
-        .await
-        .unwrap();
+    let stored_task = state.task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    seed_current_validation_run(&state, &stored_task, &head_sha, Utc::now()).await;
 
     let task_step_repo: Option<Arc<dyn TaskStepRepository>> = Some(Arc::new(StubTaskStepRepo {
         steps: vec![
@@ -5085,7 +5137,7 @@ async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cac
             updated.internal_status,
             InternalStatus::PendingReview | InternalStatus::Reviewing
         ),
-        "LocalToolFailed should route to review flow when validation cache proves completion, got {:?}",
+        "LocalToolFailed should route to review flow when current validation_runs evidence proves completion, got {:?}",
         updated.internal_status
     );
 
@@ -5108,6 +5160,19 @@ async fn test_task_execution_local_tool_failure_uses_head_matched_validation_cac
     assert!(
         agent_run.completed_at.is_some(),
         "completed execution run should have a terminal timestamp"
+    );
+    let events = state
+        .external_events_repo
+        .get_events_after_cursor(&[project.id.as_str().to_string()], 0, 100)
+        .await
+        .expect("completion event query should succeed");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "task:execution_completed")
+            .count(),
+        1,
+        "validation-proven AgentExit finalization must publish completion exactly once"
     );
 }
 
@@ -5326,6 +5391,7 @@ async fn task_execution_recovery_failed_records_one_task_stuck_notification() {
         None,
         false,
         None,
+        &None,
         &None,
         &None,
         &None,

@@ -192,14 +192,6 @@ pub async fn complete_step_http(
                             response.task_id
                         );
                     }
-                    crate::http_server::emit_http_event(
-                        &state,
-                        "execution:completed",
-                        serde_json::json!({
-                            "task_id": &response.task_id,
-                            "trigger": "all_steps_done_fallback",
-                        }),
-                    );
                 }
             }
             Err(e) => {
@@ -302,14 +294,6 @@ pub async fn skip_step_http(
                             response.task_id
                         );
                     }
-                    crate::http_server::emit_http_event(
-                        &state,
-                        "execution:completed",
-                        serde_json::json!({
-                            "task_id": &response.task_id,
-                            "trigger": "all_steps_done_fallback",
-                        }),
-                    );
                 }
             }
             Err(e) => {
@@ -786,45 +770,6 @@ pub async fn execution_complete_http(
             "No IPR entry found for task {} — agent may have already exited",
             task_id_str
         );
-    }
-
-    crate::http_server::emit_http_event(
-        &state,
-        "execution:completed",
-        serde_json::json!({
-            "task_id": task_id_str,
-            "summary": req.summary,
-        }),
-    );
-
-    // Dual-channel emission of task:execution_completed
-    let project_id_str = task.project_id.as_str().to_string();
-    let completed_payload = serde_json::json!({
-        "task_id": task_id_str,
-        "project_id": project_id_str,
-        "outcome": "completed",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    });
-    if let Err(e) = state
-        .app_state
-        .external_events_repo
-        .insert_event(
-            "task:execution_completed",
-            &project_id_str,
-            &completed_payload.to_string(),
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to persist task:execution_completed event");
-    }
-    if let Some(ref publisher) = state.app_state.webhook_publisher {
-        publisher
-            .publish(
-                ralphx_domain::entities::EventType::TaskExecutionCompleted,
-                &project_id_str,
-                completed_payload,
-            )
-            .await;
     }
 
     Ok(Json(ExecutionCompleteResponse {

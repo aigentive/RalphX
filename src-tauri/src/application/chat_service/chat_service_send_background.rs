@@ -42,7 +42,7 @@ use crate::domain::repositories::{
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -81,6 +81,7 @@ pub(super) struct BackgroundRunRepos {
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
 }
 
@@ -958,6 +959,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             message_queue,
             running_agent_registry,
             task_step_repo,
+            validation_run_repo,
             review_repo,
         } = repos;
 
@@ -1420,6 +1422,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &memory_event_repo,
                     &plan_branch_repo,
                     &task_step_repo,
+                    &validation_run_repo,
                     &execution_settings_repo,
                     &agent_lane_settings_repo,
                     &agent_provider_settings_repo,
@@ -1999,6 +2002,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &interactive_process_registry,
                     &review_repo,
                     &task_step_repo,
+                    &validation_run_repo,
                     &verification_child_registry,
                     &notification_service,
                 )

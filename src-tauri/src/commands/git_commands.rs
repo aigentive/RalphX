@@ -653,6 +653,14 @@ async fn execute_merge_retry_background(
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.review_repo)),
+        task_step_repo: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.task_step_repo)),
+        validation_run_repo: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.validation_run_repo)),
         plan_branch_repo: Some(Arc::clone(&plan_branch_repo)),
         branch_update_repo: app_handle_opt
             .as_ref()

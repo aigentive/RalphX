@@ -22,7 +22,7 @@ use crate::domain::repositories::{
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
     QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -51,6 +51,8 @@ pub(crate) struct RuntimeFactoryDeps {
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
+    pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
@@ -97,6 +99,8 @@ impl RuntimeFactoryDeps {
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
             review_repo: None,
+            task_step_repo: None,
+            validation_run_repo: None,
             plan_branch_repo: None,
             agent_conversation_workspace_repo: None,
             interactive_process_registry: None,
@@ -129,6 +133,22 @@ impl RuntimeFactoryDeps {
 
     pub(crate) fn with_review_repo(mut self, review_repo: Arc<dyn ReviewRepository>) -> Self {
         self.review_repo = Some(review_repo);
+        self
+    }
+
+    pub(crate) fn with_task_step_repo(
+        mut self,
+        task_step_repo: Arc<dyn TaskStepRepository>,
+    ) -> Self {
+        self.task_step_repo = Some(task_step_repo);
+        self
+    }
+
+    pub(crate) fn with_validation_run_repo(
+        mut self,
+        validation_run_repo: Arc<dyn ValidationRunRepository>,
+    ) -> Self {
+        self.validation_run_repo = Some(validation_run_repo);
         self
     }
 
@@ -195,6 +215,8 @@ impl RuntimeFactoryDeps {
         .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_execution_plan_repo(Arc::clone(&state.execution_plan_repo))
         .with_review_repo(Arc::clone(&state.review_repo))
+        .with_task_step_repo(Arc::clone(&state.task_step_repo))
+        .with_validation_run_repo(Arc::clone(&state.validation_run_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
             Some(Arc::clone(&state.agent_lane_settings_repo)),
@@ -261,6 +283,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    pub validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub streaming_state_cache: Option<StreamingStateCache>,
@@ -320,6 +343,7 @@ impl ChatRuntimeFactoryDeps {
             branch_update_repo: None,
             task_proposal_repo: None,
             task_step_repo: None,
+            validation_run_repo: None,
             review_repo: None,
             interactive_process_registry: None,
             streaming_state_cache: None,
@@ -441,6 +465,14 @@ impl ChatRuntimeFactoryDeps {
 
     pub(crate) fn with_task_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
         self.task_step_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_validation_run_repo(
+        mut self,
+        repo: Arc<dyn ValidationRunRepository>,
+    ) -> Self {
+        self.validation_run_repo = Some(repo);
         self
     }
 
@@ -608,6 +640,7 @@ impl ChatRuntimeFactoryDeps {
             Some(Arc::clone(&state.review_repo)),
             Some(state.streaming_state_cache.clone()),
         )
+        .with_validation_run_repo(Arc::clone(&state.validation_run_repo))
         .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
         .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
         .with_granola_integration_service(Arc::clone(&state.granola_integration_service))
@@ -695,6 +728,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.task_step_repo.as_ref() {
         service = service.with_task_step_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.validation_run_repo.as_ref() {
+        service = service.with_validation_run_repo(Arc::clone(repo));
     }
     if let Some(repo) = deps.review_repo.as_ref() {
         service = service.with_review_repo(Arc::clone(repo));
@@ -821,6 +857,12 @@ pub(crate) fn build_transition_service_from_deps(
     if let Some(repo) = deps.branch_update_repo.as_ref() {
         service = service.with_branch_update_repo(Arc::clone(repo));
     }
+    if let Some(repo) = deps.task_step_repo.as_ref() {
+        service = service.with_step_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.validation_run_repo.as_ref() {
+        service = service.with_validation_run_repo(Arc::clone(repo));
+    }
     if let Some(repo) = deps.agent_conversation_workspace_repo.as_ref() {
         service = service.with_agent_conversation_workspace_repo(Arc::clone(repo));
     }
@@ -878,6 +920,12 @@ pub(crate) fn build_task_scheduler_from_deps(
     }
     if let Some(repo) = deps.execution_plan_repo.as_ref() {
         scheduler = scheduler.with_execution_plan_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.task_step_repo.as_ref() {
+        scheduler = scheduler.with_task_step_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.validation_run_repo.as_ref() {
+        scheduler = scheduler.with_validation_run_repo(Arc::clone(repo));
     }
     if let Some(agent_clients) = deps.agent_clients.as_ref() {
         scheduler = scheduler.with_agent_clients(agent_clients.clone());

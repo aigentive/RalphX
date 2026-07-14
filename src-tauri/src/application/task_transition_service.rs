@@ -42,6 +42,7 @@ use crate::domain::repositories::{
     ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ValidationRunRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -882,6 +883,8 @@ pub struct TaskTransitionService {
     /// Task step repository for updating step statuses.
     /// Passed to TaskServices so TransitionHandler can fail in-progress steps.
     step_repo: Option<Arc<dyn TaskStepRepository>>,
+    /// Validation evidence repository used by worker post-stream completion finalization.
+    validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
 
     /// Ideation session repository for fetching live session titles.
     /// Passed to TaskServices so TransitionHandler can build descriptive plan merge commit messages.
@@ -1127,6 +1130,12 @@ impl TaskTransitionService {
         if let Some(repo) = self.plan_branch_repo.as_ref() {
             service = service.with_plan_branch_repo(Arc::clone(repo));
         }
+        if let Some(repo) = self.step_repo.as_ref() {
+            service = service.with_task_step_repo(Arc::clone(repo));
+        }
+        if let Some(repo) = self.validation_run_repo.as_ref() {
+            service = service.with_validation_run_repo(Arc::clone(repo));
+        }
         if let Some(ipr) = self.interactive_process_registry.as_ref() {
             service = service.with_interactive_process_registry(Arc::clone(ipr));
         }
@@ -1306,6 +1315,7 @@ impl TaskTransitionService {
             task_scheduler: None,
             plan_branch_repo: None,
             step_repo: None,
+            validation_run_repo: None,
             ideation_session_repo: Some(ideation_session_repo),
             artifact_repo: None,
             execution_settings_repo: None,
@@ -1395,6 +1405,13 @@ impl TaskTransitionService {
     /// Set the task step repository (builder pattern).
     pub fn with_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
         self.step_repo = Some(repo);
+        self.rebuild_chat_service();
+        self
+    }
+
+    pub fn with_validation_run_repo(mut self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        self.validation_run_repo = Some(repo);
+        self.rebuild_chat_service();
         self
     }
 

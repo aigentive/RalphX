@@ -30,10 +30,11 @@ use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState}
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
-    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
-    MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote, ReviewOutcome,
-    ReviewerType, SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata,
+    ChatConversationId, ChatMessageId, EventType, IdeationSessionId, InternalStatus,
+    MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
+    MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote,
+    ReviewOutcome, ReviewerType, SessionPurpose, Task, TaskId, TaskStepStatus,
+    ValidationCommandCategory, ValidationPurpose, ValidationRunStatus, ValidationRunWithResults,
     VerificationGap, VerificationStatus,
 };
 use crate::domain::repositories::{
@@ -43,7 +44,7 @@ use crate::domain::repositories::{
     ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -542,53 +543,59 @@ pub(crate) async fn fetch_step_completion_state(
     }
 }
 
-/// Pure predicate: does a HEAD-matched validation cache prove the run's work is
-/// validated-complete?
-///
-/// Requires the cache's commit SHA to match current HEAD **and** tests to have
-/// actually run and passed. A cache with `tests_ran=false` (e.g. a self-blocked
-/// no-op that claimed success without running tests) deliberately does NOT count —
-/// this prevents rescuing a task that never did real work. No git calls, no side
-/// effects — fully unit-testable.
-pub(crate) fn validation_cache_proves_completion(
-    cache: &ValidationCacheMetadata,
-    current_head_sha: &str,
-) -> bool {
-    cache.commit_sha == current_head_sha && cache.tests_ran && cache.tests_passed
-}
-
-pub(crate) fn validation_cache_fresh_for_episode(
-    cache: &ValidationCacheMetadata,
+fn validation_run_proves_completion(
+    validation: &ValidationRunWithResults,
     current_head_sha: &str,
     episode_entered_at: chrono::DateTime<chrono::Utc>,
 ) -> bool {
-    validation_cache_proves_completion(cache, current_head_sha)
-        && cache.captured_at >= episode_entered_at
+    let run = &validation.run;
+    let current_commit = run
+        .promoted_commit_sha
+        .as_deref()
+        .or(run.head_sha.as_deref())
+        == Some(current_head_sha);
+    let current_episode = run
+        .status_episode_entered_at
+        .is_some_and(|captured_at| captured_at >= episode_entered_at);
+    let has_tests = validation
+        .commands
+        .iter()
+        .any(|command| command.category == ValidationCommandCategory::Test);
+    let commands_passed = !validation.commands.is_empty()
+        && validation
+            .commands
+            .iter()
+            .all(|command| command.status.is_success_like());
+
+    run.purpose != ValidationPurpose::Baseline
+        && run.status == ValidationRunStatus::Passed
+        && current_commit
+        && current_episode
+        && has_tests
+        && commands_passed
 }
 
-/// Async wrapper around [`validation_cache_proves_completion`]: parses the task's
-/// `validation_cache` metadata, resolves the worktree HEAD SHA, and reports whether
-/// the cache proves completion for the current commit.
-///
-/// Used to override a would-be `Failed` transition when `execution_complete` already
-/// captured a green, HEAD-matched validation cache — the case where a lingering
-/// terminal `failed` step (which cannot be cleared) would otherwise trap a fully
-/// validated task in `Failed` and drive an endless auto-retry loop.
-///
-/// Safe-fallback: returns false if there is no cache, no worktree path, or the HEAD
-/// SHA cannot be resolved.
+/// Resolve completion authority from first-class validation evidence for the current
+/// execution episode. Missing repositories and read errors fail closed.
 async fn validated_completion_override(
     task: &Task,
     episode_entered_at: chrono::DateTime<chrono::Utc>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
 ) -> bool {
-    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
-        Ok(Some(cache)) => cache,
+    let Some(repo) = validation_run_repo.as_ref() else {
+        return false;
+    };
+    let validation = match repo
+        .latest_non_baseline_run_with_results_for_task(&task.id)
+        .await
+    {
+        Ok(Some(validation)) => validation,
         Ok(None) => return false,
-        Err(e) => {
+        Err(error) => {
             tracing::warn!(
                 task_id = task.id.as_str(),
-                error = %e,
-                "Failed to parse validation_cache for completion override"
+                error = %error,
+                "Failed to query validation runs for completion override"
             );
             return false;
         }
@@ -619,7 +626,61 @@ async fn validated_completion_override(
             return false;
         }
     };
-    validation_cache_fresh_for_episode(&cache, &current_head_sha, episode_entered_at)
+    validation_run_proves_completion(&validation, &current_head_sha, episode_entered_at)
+}
+
+/// Publish terminal execution completion only after the authoritative task transition
+/// has succeeded. The execution-complete HTTP endpoint merely closes stdin; it must not
+/// claim terminal success while the post-stream finalizer can still reject completion.
+async fn publish_execution_completed<R: Runtime>(app_handle: &Option<AppHandle<R>>, task: &Task) {
+    let Some(handle) = app_handle.as_ref() else {
+        return;
+    };
+
+    let task_id = task.id.as_str().to_string();
+    let project_id = task.project_id.as_str().to_string();
+    let payload = serde_json::json!({
+        "task_id": task_id,
+        "project_id": project_id,
+        "outcome": "completed",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+
+    if let Err(error) = handle.emit("execution:completed", payload.clone()) {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            error = %error,
+            "Failed to emit execution:completed after accepted transition"
+        );
+    }
+
+    let Some(state) = handle.try_state::<AppState>() else {
+        return;
+    };
+    if let Err(error) = state
+        .external_events_repo
+        .insert_event(
+            &EventType::TaskExecutionCompleted.to_string(),
+            task.project_id.as_str(),
+            &payload.to_string(),
+        )
+        .await
+    {
+        tracing::warn!(
+            task_id = task.id.as_str(),
+            error = %error,
+            "Failed to persist task:execution_completed after accepted transition"
+        );
+    }
+    if let Some(publisher) = state.webhook_publisher.as_ref() {
+        publisher
+            .publish(
+                EventType::TaskExecutionCompleted,
+                task.project_id.as_str(),
+                payload,
+            )
+            .await;
+    }
 }
 
 /// Parse an ISO 8601 retry_after string and set the execution-lane provider gate.
@@ -715,6 +776,8 @@ fn build_transition_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     runtime_support: RuntimeSupportRepos,
 ) -> TaskTransitionService {
     let deps = build_runtime_factory_deps(
@@ -732,6 +795,8 @@ fn build_transition_service<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        task_step_repo,
+        validation_run_repo,
         runtime_support,
     );
     build_transition_service_with_fallback(app_handle, execution_state, &deps)
@@ -754,6 +819,8 @@ fn build_task_scheduler_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     runtime_support: RuntimeSupportRepos,
 ) -> TaskSchedulerService {
     let deps = build_runtime_factory_deps(
@@ -771,6 +838,8 @@ fn build_task_scheduler_service<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
+        task_step_repo,
+        validation_run_repo,
         runtime_support,
     );
     build_task_scheduler_with_fallback(app_handle, execution_state, &deps)
@@ -792,9 +861,11 @@ fn build_runtime_factory_deps<R: Runtime>(
     message_queue: Arc<MessageQueue>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     runtime_support: RuntimeSupportRepos,
 ) -> RuntimeFactoryDeps {
-    RuntimeFactoryDeps::from_core(
+    let deps = RuntimeFactoryDeps::from_core(
         task_repo,
         task_dependency_repo,
         project_repo,
@@ -821,7 +892,17 @@ fn build_runtime_factory_deps<R: Runtime>(
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo)),
-    )
+    );
+    let deps = if let Some(repo) = task_step_repo.as_ref() {
+        deps.with_task_step_repo(Arc::clone(repo))
+    } else {
+        deps
+    };
+    if let Some(repo) = validation_run_repo.as_ref() {
+        deps.with_validation_run_repo(Arc::clone(repo))
+    } else {
+        deps
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -873,6 +954,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
     team_mode: bool,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
@@ -929,6 +1011,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),
+            validation_run_repo: validation_run_repo.clone(),
             review_repo: review_repo.clone(),
         },
         execution_state: execution_state.clone(),
@@ -1321,7 +1404,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
 /// For TaskExecution context:
 /// - If all task steps are completed → transition to PendingReview
 /// - If no steps are tracked but output exists → transition to PendingReview
-/// - If a HEAD-matched green validation cache exists → transition to PendingReview
+/// - If current-attempt validation evidence exists → transition to PendingReview
 /// - Otherwise → transition to Failed (text output alone is not sufficient)
 ///
 /// For Merge context:
@@ -1397,6 +1480,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     memory_event_repo: &Arc<dyn MemoryEventRepository>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
@@ -1482,6 +1566,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        task_step_repo,
+                        validation_run_repo,
                         runtime_support.clone(),
                     );
                     let scheduler_concrete = Arc::new(scheduler_svc);
@@ -1505,13 +1591,19 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        task_step_repo,
+                        validation_run_repo,
                         runtime_support.clone(),
                     )
                     .with_task_scheduler(task_scheduler);
                     let step_state = fetch_step_completion_state(task_step_repo, &task_id).await;
                     let validation_complete = if let Some(episode_entered_at) = episode_entered_at {
-                        validated_completion_override(&current_task_for_gate, episode_entered_at)
-                            .await
+                        validated_completion_override(
+                            &current_task_for_gate,
+                            episode_entered_at,
+                            validation_run_repo,
+                        )
+                        .await
                     } else {
                         false
                     };
@@ -1559,28 +1651,16 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         }
                     }
 
-                    if completion_action == ExecutionCompletionAction::PendingReview
-                        && step_state == StepCompletionState::AllComplete
-                    {
-                        tracing::info!(
+                    if completion_action == ExecutionCompletionAction::PendingReview {
+                        if step_state == StepCompletionState::AllComplete {
+                            tracing::info!(
                                 task_id = task_id.as_str(),
                                 "Worker run ended with all steps completed; transitioning to PendingReview"
                             );
-                        if let Err(e) = transition_service
-                            .transition_task(&task_id, InternalStatus::PendingReview)
-                            .await
-                        {
-                            tracing::error!(
-                                "Failed to transition all-steps-done task {} to PendingReview: {}",
-                                task_id.as_str(),
-                                e
-                            );
-                        }
-                    } else if completion_action == ExecutionCompletionAction::PendingReview {
-                        if validation_complete {
+                        } else if validation_complete {
                             tracing::info!(
                                 task_id = task_id.as_str(),
-                                "Worker run ended without all steps completed but a HEAD-matched green validation cache proves completion; transitioning to PendingReview"
+                                "Worker run ended without all steps completed but current-attempt validation evidence proves completion; transitioning to PendingReview"
                             );
                         } else if completion_tool_called {
                             tracing::info!(
@@ -1593,15 +1673,22 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 "Worker run reached completion gate; transitioning to PendingReview"
                             );
                         }
-                        if let Err(e) = transition_service
+
+                        match transition_service
                             .transition_task(&task_id, InternalStatus::PendingReview)
                             .await
                         {
-                            tracing::error!(
-                                "Failed to transition task {} to PendingReview: {}",
-                                task_id.as_str(),
-                                e
-                            );
+                            Ok(_) => {
+                                publish_execution_completed(app_handle, &current_task_for_gate)
+                                    .await;
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to transition task {} to PendingReview: {}",
+                                    task_id.as_str(),
+                                    e
+                                );
+                            }
                         }
                     } else {
                         let current_task = match resolve_current_execution_attempt(
@@ -1794,6 +1881,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             Arc::clone(running_agent_registry),
                             Arc::clone(exec_state),
                             Arc::clone(memory_event_repo),
+                            task_step_repo,
+                            validation_run_repo,
                             runtime_support.clone(),
                         );
 
@@ -2134,6 +2223,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    validation_run_repo: &Option<Arc<dyn ValidationRunRepository>>,
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
@@ -2216,6 +2306,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 memory_event_repo,
                 plan_branch_repo,
                 task_step_repo,
+                validation_run_repo,
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
@@ -2299,6 +2390,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 memory_event_repo,
                 plan_branch_repo,
                 task_step_repo,
+                validation_run_repo,
                 execution_settings_repo,
                 agent_lane_settings_repo,
                 agent_provider_settings_repo,
@@ -2643,6 +2735,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         team_mode,
                                         review_repo,
                                         task_step_repo,
+                                        validation_run_repo,
                                         interactive_process_registry,
                                         verification_child_registry,
                                     ),
@@ -2692,7 +2785,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     let redacted_error = redact(error);
 
     // A late agent-exit or local-tool diagnostic where the work is actually complete: the agent called
-    // execution_complete successfully, green validation was cached for the
+    // execution_complete successfully and current-attempt validation evidence exists for the
     // current attempt/HEAD, and the provider process exited before the normal
     // success finalizer ran. Treat this as a successful execution completion
     // before the generic failure path can persist stale stderr or emit
@@ -2705,8 +2798,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     {
         if let Some(ref exec_state) = execution_state {
             let task_id = TaskId::from_string(context_id.to_string());
-            let completion_proven = if exec_state.is_shutting_down.load(Ordering::SeqCst) {
-                false
+            let completion_task = if exec_state.is_shutting_down.load(Ordering::SeqCst) {
+                None
             } else {
                 match resolve_current_execution_attempt(
                     &task_id,
@@ -2719,12 +2812,24 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     AttemptResolution::Current {
                         task,
                         episode_entered_at,
-                    } => validated_completion_override(task.as_ref(), episode_entered_at).await,
-                    _ => false,
+                    } => {
+                        if validated_completion_override(
+                            task.as_ref(),
+                            episode_entered_at,
+                            validation_run_repo,
+                        )
+                        .await
+                        {
+                            Some(task)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
                 }
             };
 
-            if completion_proven {
+            if let Some(completed_task) = completion_task {
                 let transition_service = build_transition_service(
                     app_handle,
                     Arc::clone(task_repo),
@@ -2741,6 +2846,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(running_agent_registry),
                     Arc::clone(exec_state),
                     Arc::clone(memory_event_repo),
+                    task_step_repo,
+                    validation_run_repo,
                     runtime_support.clone(),
                 );
 
@@ -2749,6 +2856,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     .await
                     .is_ok()
                 {
+                    publish_execution_completed(app_handle, completed_task.as_ref()).await;
                     let _ = agent_run_repo
                         .complete(&AgentRunId::from_string(agent_run_id))
                         .await;
@@ -3224,7 +3332,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     // Late agent-exit/local-tool diagnostics where the work is actually complete → agent called
                     // execution_complete successfully but exited with signal (code=None).
                     // Override to PendingReview only when a current-attempt, HEAD-matched green
-                    // validation cache proves completion. Completed steps alone are not enough:
+                    // authoritative validation proves completion. Completed steps alone are not enough:
                     // a failed agent can mark steps done before leaving uncommitted or invalid
                     // working-tree changes behind.
                     let target_status = if target_status == InternalStatus::Failed
@@ -3234,13 +3342,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. }
                             )
                         ) {
-                        let validation_complete = if let Some(episode_entered_at) =
-                            episode_entered_at
-                        {
-                            validated_completion_override(&current_task, episode_entered_at).await
-                        } else {
-                            false
-                        };
+                        let validation_complete =
+                            if let Some(episode_entered_at) = episode_entered_at {
+                                validated_completion_override(
+                                    &current_task,
+                                    episode_entered_at,
+                                    validation_run_repo,
+                                )
+                                .await
+                            } else {
+                                false
+                            };
 
                         if validation_complete {
                             let all_steps_done =
@@ -3249,7 +3361,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 task_id = task_id.as_str(),
                                 all_steps_done,
                                 validation_complete,
-                                "Late execution diagnostic with current green validation cache — overriding Failed → PendingReview"
+                                "Late execution diagnostic with current validation evidence — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {
@@ -3275,6 +3387,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        task_step_repo,
+                        validation_run_repo,
                         runtime_support.clone(),
                     );
 
@@ -3300,44 +3414,57 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 task_id = task_id.as_str(),
                                 "Skipping merge retry — task already transitioned before retry fired"
                             );
-                        } else if let Err(retry_err) = transition_service
-                            .transition_task(&task_id, target_status)
-                            .await
-                        {
-                            tracing::error!(
-                                task_id = task_id.as_str(),
-                                original_error = %error,
-                                retry_error = %retry_err,
-                                target_status = %target_status,
-                                "Worker failed and fallback transition retry also failed — task may be stuck"
-                            );
-                            // Emit event so reconciliation can pick it up
-                            if let Some(ref handle) = app_handle {
-                                let _ = handle.emit(
-                                    "task:recovery_failed",
-                                    serde_json::json!({
-                                        "task_id": task_id.as_str(),
-                                        "original_error": error,
-                                        "transition_error": retry_err.to_string(),
-                                        "target_status": target_status.to_string(),
-                                    }),
-                                );
-                            }
-                            if let Some(notification_service) = notification_service {
-                                notification_service
-                                    .record(
-                                        TaskPipelineNotificationProducer::task_stuck_notification(
-                                            &current_task,
-                                            agent_run_id,
-                                            format!(
-                                                "The automatic recovery transition failed: {retry_err}"
-                                            ),
-                                        ),
-                                    )
-                                    .await;
+                        } else {
+                            match transition_service
+                                .transition_task(&task_id, target_status)
+                                .await
+                            {
+                                Ok(_) => {
+                                    if target_status == InternalStatus::PendingReview {
+                                        publish_execution_completed(app_handle, &current_task)
+                                            .await;
+                                    }
+                                }
+                                Err(retry_err) => {
+                                    tracing::error!(
+                                        task_id = task_id.as_str(),
+                                        original_error = %error,
+                                        retry_error = %retry_err,
+                                        target_status = %target_status,
+                                        "Worker failed and fallback transition retry also failed — task may be stuck"
+                                    );
+                                    // Emit event so reconciliation can pick it up
+                                    if let Some(ref handle) = app_handle {
+                                        let _ = handle.emit(
+                                            "task:recovery_failed",
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "original_error": error,
+                                                "transition_error": retry_err.to_string(),
+                                                "target_status": target_status.to_string(),
+                                            }),
+                                        );
+                                    }
+                                    if let Some(notification_service) = notification_service {
+                                        notification_service
+                                            .record(
+                                                TaskPipelineNotificationProducer::task_stuck_notification(
+                                                    &current_task,
+                                                    agent_run_id,
+                                                    format!(
+                                                        "The automatic recovery transition failed: {retry_err}"
+                                                    ),
+                                                ),
+                                            )
+                                            .await;
+                                    }
+                                }
                             }
                         }
                     } else {
+                        if target_status == InternalStatus::PendingReview {
+                            publish_execution_completed(app_handle, &current_task).await;
+                        }
                         tracing::warn!(
                             task_id = task_id.as_str(),
                             error = %error,
@@ -3639,6 +3766,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        task_step_repo,
+                        validation_run_repo,
                         runtime_support.clone(),
                     );
 

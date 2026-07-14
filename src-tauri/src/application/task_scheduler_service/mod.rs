@@ -45,7 +45,7 @@ use crate::domain::repositories::{
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    TaskDependencyRepository, TaskRepository,
+    TaskDependencyRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
@@ -93,6 +93,10 @@ pub struct TaskSchedulerService {
     pub(super) agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     /// Optional provider settings repository so fallback transition services honor onboarding.
     pub(super) agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    /// Task steps used by worker post-stream completion finalization.
+    pub(super) task_step_repo: Option<Arc<dyn TaskStepRepository>>,
+    /// Current-attempt validation evidence used by worker post-stream finalization.
+    pub(super) validation_run_repo: Option<Arc<dyn ValidationRunRepository>>,
     /// Optional provider-neutral client bundle for fallback transition construction.
     pub(super) agent_clients: Option<AgentClientBundle>,
     /// Optional PR poller registry so scheduled plan merges can start GitHub polling.
@@ -163,6 +167,8 @@ impl TaskSchedulerService {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            task_step_repo: None,
+            validation_run_repo: None,
             agent_clients: None,
             pr_poller_registry: None,
             github_service: None,
@@ -216,6 +222,16 @@ impl TaskSchedulerService {
         repo: Arc<dyn AgentProviderSettingsRepository>,
     ) -> Self {
         self.agent_provider_settings_repo = Some(repo);
+        self
+    }
+
+    pub fn with_task_step_repo(mut self, repo: Arc<dyn TaskStepRepository>) -> Self {
+        self.task_step_repo = Some(repo);
+        self
+    }
+
+    pub fn with_validation_run_repo(mut self, repo: Arc<dyn ValidationRunRepository>) -> Self {
+        self.validation_run_repo = Some(repo);
         self
     }
 
@@ -457,6 +473,16 @@ impl TaskSchedulerService {
             self.github_service.as_ref().map(Arc::clone),
             self.pr_poller_registry.as_ref().map(Arc::clone),
         );
+        let deps = if let Some(repo) = self.task_step_repo.as_ref() {
+            deps.with_task_step_repo(Arc::clone(repo))
+        } else {
+            deps
+        };
+        let deps = if let Some(repo) = self.validation_run_repo.as_ref() {
+            deps.with_validation_run_repo(Arc::clone(repo))
+        } else {
+            deps
+        };
         let deps = if let Some(drafter) = self.plan_pr_description_drafter.as_ref() {
             deps.with_plan_pr_description_drafter(Arc::clone(drafter))
         } else {
