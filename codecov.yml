@@ -153,6 +153,10 @@ parsers:
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.
   - "src-tauri/tests/**"
+  - "src-tauri/crates/**/tests/**"
+  - "src-tauri/crates/**/tests.rs"
+  - "src-tauri/crates/**/*_test.rs"
+  - "src-tauri/crates/**/*_tests.rs"
   - "src-tauri/src/testing/**"
   - "src-tauri/src/**/tests.rs"
   - "src-tauri/src/**/tests/**"

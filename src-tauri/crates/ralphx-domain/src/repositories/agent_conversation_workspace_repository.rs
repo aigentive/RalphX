@@ -342,6 +342,25 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         enabled: bool,
     ) -> AppResult<AgentWorkspacePrReviewMonitor>;
 
+    async fn set_pr_review_monitor_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(crate::error::AppError::Infrastructure(
+            "PR review monitor settings are unsupported by this repository".to_string(),
+        ))
+    }
+
+    async fn supersede_pending_pr_review_actions_except_head(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _head_sha: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn mark_pr_review_first_action_resolved(
         &self,
         conversation_id: &ChatConversationId,
