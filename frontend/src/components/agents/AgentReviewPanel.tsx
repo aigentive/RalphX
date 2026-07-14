@@ -340,9 +340,11 @@ export function AgentReviewPanel({
   }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
 
   const displayContext = (
-    isReviewActionPending
-      ? (reviewStartResult ?? reviewContext)
-      : (reviewContext ?? reviewStartResult)
+    isReviewPrWorkspace
+      ? null
+      : isReviewActionPending
+        ? (reviewStartResult ?? reviewContext)
+        : (reviewContext ?? reviewStartResult)
   ) as ReviewDisplayContext | null;
   const isRunning =
     isReviewActionPending || displayContext?.monitor.status === "reviewing";

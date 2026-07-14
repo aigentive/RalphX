@@ -3418,6 +3418,86 @@ describe("AgentsArtifactPane", () => {
     expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-1");
   });
 
+  it("does not leak stale Workspace Review actions into Review PR mode", async () => {
+    const queryClient = createTestQueryClient();
+    const startedContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "ready",
+      reviewOutcome: "blocking",
+      reviewGateStatus: "blocking",
+      reviewArtifactId: "review-artifact-2",
+      reviewArtifactVersion: 2,
+      reviewBlockingSummary: "Workspace review blocker.",
+      isCurrent: true,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    startWorkspaceReviewMock.mockResolvedValue(startedContext);
+    getPrReviewContextMock.mockResolvedValue(
+      prReviewContext("conversation-1", "review-artifact-1"),
+    );
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    const pane = (mode: "edit" | "review_pr") => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={conversation({
+                agentMode: mode,
+              })}
+              workspace={workspace({ mode })}
+              activeTab="review"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(pane("edit"));
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run review" }));
+    await waitFor(() => expect(startWorkspaceReviewMock).toHaveBeenCalled());
+
+    rerender(pane("review_pr"));
+
+    expect(await screen.findByText("PR Review")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Fix Issues" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Update review" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run review" }),
+    ).not.toBeInTheDocument();
+    expect(startWorkspaceReviewFixerMock).not.toHaveBeenCalled();
+  });
+
   it("persists the Review PR Auto Approve switch through the authoritative API", async () => {
     const user = userEvent.setup();
     const context = prReviewContext("conversation-1", "review-artifact-1");

@@ -1618,24 +1618,34 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               ...(activeReviewPolicy ? { activeReviewPolicy } : {}),
             });
           }}
-          reviewStartResult={workspaceReviewStartResult}
+          reviewStartResult={
+            isReviewPrWorkspace ? null : workspaceReviewStartResult
+          }
           reviewStartError={
-            isWorkspaceReviewActionPending
-              ? startWorkspaceReviewMutation.error
-              : isWorkspaceReviewFixIssuesPending
-                ? startWorkspaceReviewFixerMutation.error
-                : null
+            isReviewPrWorkspace
+              ? null
+              : isWorkspaceReviewActionPending
+                ? startWorkspaceReviewMutation.error
+                : isWorkspaceReviewFixIssuesPending
+                  ? startWorkspaceReviewFixerMutation.error
+                  : null
           }
           isReviewLoading={
             Boolean(reviewArtifactId) &&
             !reviewArtifact &&
             reviewArtifactQuery.isFetching
           }
-          isReviewActionPending={isWorkspaceReviewActionPending}
-          isFixIssuesActionPending={isWorkspaceReviewFixIssuesPending}
-          isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
-          onStartReview={handleStartReview}
-          onFixIssues={handleFixReviewIssues}
+          isReviewActionPending={
+            isReviewPrWorkspace ? false : isWorkspaceReviewActionPending
+          }
+          isFixIssuesActionPending={
+            isReviewPrWorkspace ? false : isWorkspaceReviewFixIssuesPending
+          }
+          isWorkspaceRuntimeGenerating={
+            isReviewPrWorkspace ? false : isWorkspaceRuntimeGenerating
+          }
+          onStartReview={isReviewPrWorkspace ? () => {} : handleStartReview}
+          onFixIssues={isReviewPrWorkspace ? () => {} : handleFixReviewIssues}
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
