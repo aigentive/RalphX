@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
@@ -3014,12 +3015,15 @@ async fn resolve_workspace_delta_target(
         return Ok(None);
     }
 
-    let base_ref = workspace
+    let captured_base = workspace
         .base_commit
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| workspace.base_ref.clone());
     let head_ref = "HEAD".to_string();
+    let base_ref =
+        resolve_agent_workspace_review_base(&worktree_path, workspace, &head_ref, &captured_base)
+            .await?;
     let committed_diff = git_stdout_lossy(
         &["diff", "--binary", "--no-ext-diff", &base_ref, &head_ref],
         &worktree_path,
