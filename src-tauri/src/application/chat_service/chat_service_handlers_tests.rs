@@ -1551,6 +1551,155 @@ fn test_incomplete_review_action_escalates_only_for_live_reviewing_tasks() {
 }
 
 #[tokio::test]
+async fn review_success_without_completion_builds_transition_with_completion_repos() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+    let project = Project::new("Review completion repos".into(), "/tmp/review-repos".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Reviewing task".into());
+    task.internal_status = InternalStatus::Reviewing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+    let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
+        Some(Arc::clone(&state.task_step_repo));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    handle_stream_success::<MockRuntime>(
+        "review-run-with-repos",
+        ChatContextType::Review,
+        task_id.as_str(),
+        true,
+        false,
+        false,
+        &execution_state,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &task_step_repo,
+        &None,
+        &app_handle,
+        &None,
+        &Some(Arc::clone(&state.review_repo)),
+        &None,
+    )
+    .await;
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated.internal_status, InternalStatus::Escalated);
+}
+
+#[tokio::test]
+async fn review_error_builds_transition_with_completion_repos() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+    let project = Project::new(
+        "Review error repos".into(),
+        "/tmp/review-error-repos".into(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Reviewing task".into());
+    task.internal_status = InternalStatus::Reviewing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+    let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
+        Some(Arc::clone(&state.task_step_repo));
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Review,
+        task_id.as_str(),
+    );
+    let stream_error = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: "review crashed".to_string(),
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "review crashed",
+        Some(&stream_error),
+        ChatContextType::Review,
+        task_id.as_str(),
+        conversation_id,
+        "review-run-error-repos",
+        "message-id-review-error-repos",
+        &event_ctx,
+        None,
+        AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &execution_state,
+        &None,
+        &None,
+        &None,
+        &app_handle,
+        None,
+        false,
+        None,
+        &None,
+        &Some(Arc::clone(&state.review_repo)),
+        &task_step_repo,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated.internal_status, InternalStatus::Escalated);
+}
+
+#[tokio::test]
 async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
@@ -2568,6 +2717,17 @@ async fn publish_execution_completed_without_app_handle_has_no_side_effects() {
     let task = Task::new(ProjectId::new(), "no app handle completion publish".into());
 
     publish_execution_completed::<MockRuntime>(&None, &task).await;
+}
+
+#[tokio::test]
+async fn publish_execution_completed_without_managed_state_has_no_persistent_side_effects() {
+    let task = Task::new(ProjectId::new(), "unmanaged completion publish".into());
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    publish_execution_completed(&app_handle, &task).await;
 }
 
 #[tokio::test]
@@ -5508,6 +5668,116 @@ async fn test_task_execution_local_tool_failure_uses_current_validation_run_for_
         1,
         "validation-proven AgentExit finalization must publish completion exactly once"
     );
+}
+
+#[tokio::test]
+async fn test_task_execution_local_tool_failure_without_validation_fails_closed() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+    let (_worktree, base_sha, _head_sha) = git_worktree_with_base_and_change();
+
+    let project = Project::new(
+        "Local Tool No Validation".into(),
+        "/tmp/local-tool-no-validation".into(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Executing task".into());
+    task.internal_status = InternalStatus::Executing;
+    task.worktree_path = Some(_worktree.path().to_string_lossy().to_string());
+    task.task_branch_base_ref = Some(base_sha.clone());
+    task.task_branch_base_sha = Some(base_sha);
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+    let agent_run_id = seed_current_execution_attempt(&state, &task_id).await;
+
+    let task_step_repo: Option<Arc<dyn TaskStepRepository>> = Some(Arc::new(StubTaskStepRepo {
+        steps: vec![
+            make_step(&task_id, TaskStepStatus::Completed),
+            make_step(&task_id, TaskStepStatus::Failed),
+        ],
+    }));
+
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let stream_error = StreamError::LocalToolFailed {
+        message: "late local diagnostic without validation".to_string(),
+    };
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "late local diagnostic without validation",
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        agent_run_id.as_str(),
+        "message-id-local-tool-no-validation",
+        &event_ctx,
+        None,
+        AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &execution_state,
+        &None,
+        &None,
+        &None,
+        &app_handle,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &task_step_repo,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated.internal_status, InternalStatus::Failed);
+    let events = state
+        .external_events_repo
+        .get_events_after_cursor(&[project.id.as_str().to_string()], 0, 100)
+        .await
+        .expect("completion event query should succeed");
+    assert!(events
+        .iter()
+        .all(|event| event.event_type != "task:execution_completed"));
 }
 
 #[tokio::test]
