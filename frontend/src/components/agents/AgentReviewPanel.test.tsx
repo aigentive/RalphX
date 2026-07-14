@@ -219,4 +219,29 @@ describe("AgentReviewPanel", () => {
       screen.queryByTestId("agents-review-pr-auto-approve"),
     ).not.toBeInTheDocument();
   });
+
+  it("ignores stale Workspace Review start results in Review PR Review tabs", () => {
+    renderPanel({
+      isReviewPrWorkspace: true,
+      reviewContext: null,
+      reviewStartResult: reviewStartResult({
+        isCurrent: false,
+        isOutdated: true,
+        shouldShowTab: true,
+      }),
+    });
+
+    expect(
+      screen.getByTestId("agents-review-pr-auto-approve"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Update review" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run review" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Fix Issues" }),
+    ).not.toBeInTheDocument();
+  });
 });

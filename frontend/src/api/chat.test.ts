@@ -14,6 +14,7 @@ import {
   getConversationStats,
   getAgentWorkspacePrReviewContext,
   setAgentWorkspacePrReviewAutoApprove,
+  setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
@@ -3097,6 +3098,9 @@ describe("chat api", () => {
     expect(chatApi.setAgentWorkspacePrReviewAutoApprove).toBe(
       setAgentWorkspacePrReviewAutoApprove,
     );
+    expect(chatApi.setAgentWorkspacePrReviewMonitoring).toBe(
+      setAgentWorkspacePrReviewMonitoring,
+    );
     expect(chatApi.switchAgentConversationMode).toBe(
       switchAgentConversationMode,
     );
@@ -3595,6 +3599,40 @@ describe("getConversationActiveState", () => {
     );
     expect(result.monitor.autoApproveEnabled).toBe(false);
     expect(result.monitor.firstActionResolved).toBe(false);
+  });
+
+  it("updates Review PR monitoring through the typed REST setting endpoint", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          monitor: rawMonitor({
+            monitor_enabled: false,
+            status: "paused",
+          }),
+        }),
+    });
+
+    const result = await setAgentWorkspacePrReviewMonitoring(
+      "conversation/1",
+      false,
+      "cancel_current",
+    );
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl("agent-workspaces/conversation%2F1/pr-review-settings"),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          monitor_enabled: false,
+          active_review_policy: "cancel_current",
+        }),
+      },
+    );
+    expect(result.monitor.monitorEnabled).toBe(false);
+    expect(result.monitor.status).toBe("paused");
   });
 
   it("lists and mutates agent conversation issues through REST endpoints", async () => {

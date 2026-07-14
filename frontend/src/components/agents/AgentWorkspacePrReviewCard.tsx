@@ -41,6 +41,7 @@ const MONITOR_STATUS_LABELS: Record<AgentWorkspacePrReviewMonitorStatus, string>
   watching: "Monitoring",
   submitting: "Submitting",
   blocked: "Blocked",
+  paused: "Monitoring paused",
   terminal: "Complete",
 };
 
@@ -92,7 +93,9 @@ function lastResolvedAction(
 ): AgentWorkspacePrReviewAction | null {
   return (
     actions.find((action) =>
-      ["submitted", "skipped", "failed"].includes(action.status),
+      ["approved", "submitted", "skipped", "failed", "superseded"].includes(
+        action.status,
+      ),
     ) ?? null
   );
 }
@@ -244,7 +247,6 @@ export function AgentWorkspacePrReviewCard({
     pendingAction && !hasReviewArtifactForPendingAction,
   );
   const submitFailureMessage = pendingAction ? context.monitor?.lastError : null;
-
   return (
     <section
       className="mx-2 mb-3 overflow-hidden rounded-md border text-[0.8125rem]"

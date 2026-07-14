@@ -97,6 +97,7 @@ pub enum AgentWorkspacePrReviewMonitorStatus {
     Watching,
     Submitting,
     Blocked,
+    Paused,
     Terminal,
 }
 
@@ -274,6 +275,7 @@ impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
             Self::Watching => write!(f, "watching"),
             Self::Submitting => write!(f, "submitting"),
             Self::Blocked => write!(f, "blocked"),
+            Self::Paused => write!(f, "paused"),
             Self::Terminal => write!(f, "terminal"),
         }
     }
@@ -290,6 +292,7 @@ impl FromStr for AgentWorkspacePrReviewMonitorStatus {
             "watching" => Ok(Self::Watching),
             "submitting" => Ok(Self::Submitting),
             "blocked" => Ok(Self::Blocked),
+            "paused" => Ok(Self::Paused),
             "terminal" => Ok(Self::Terminal),
             _ => Err(format!("unknown PR review monitor status: '{value}'")),
         }
@@ -336,6 +339,7 @@ pub enum AgentWorkspacePrReviewActionStatus {
     Submitting,
     Submitted,
     Failed,
+    Superseded,
 }
 
 impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
@@ -347,6 +351,7 @@ impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
             Self::Submitting => write!(f, "submitting"),
             Self::Submitted => write!(f, "submitted"),
             Self::Failed => write!(f, "failed"),
+            Self::Superseded => write!(f, "superseded"),
         }
     }
 }
@@ -362,6 +367,7 @@ impl FromStr for AgentWorkspacePrReviewActionStatus {
             "submitting" => Ok(Self::Submitting),
             "submitted" => Ok(Self::Submitted),
             "failed" => Ok(Self::Failed),
+            "superseded" => Ok(Self::Superseded),
             _ => Err(format!("unknown PR review action status: '{value}'")),
         }
     }
@@ -598,6 +604,21 @@ impl AgentWorkspacePrReviewMonitor {
             && self.last_review_run_id == action.created_by_run_id
             && self.review_artifact_id.is_some()
             && self.review_artifact_head_sha.as_deref() == Some(action.head_sha.as_str())
+    }
+
+    pub fn settlement_status(&self) -> AgentWorkspacePrReviewMonitorStatus {
+        if self.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+            return AgentWorkspacePrReviewMonitorStatus::Terminal;
+        }
+        if self.monitor_enabled {
+            if self.last_error.is_some() {
+                AgentWorkspacePrReviewMonitorStatus::Blocked
+            } else {
+                AgentWorkspacePrReviewMonitorStatus::Watching
+            }
+        } else {
+            AgentWorkspacePrReviewMonitorStatus::Paused
+        }
     }
 }
 
@@ -1051,6 +1072,36 @@ mod monitor_and_action_constructor_tests {
     }
 
     #[test]
+    fn monitor_settlement_status_preserves_terminal_and_reports_live_state() {
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            ChatConversationId::new(),
+            ProjectId("p".to_string()),
+            42,
+            Some("abc".to_string()),
+        );
+
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Paused
+        );
+        monitor.monitor_enabled = true;
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Watching
+        );
+        monitor.last_error = Some("review failed".to_string());
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Blocked
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Terminal
+        );
+    }
+
+    #[test]
     fn action_new_starts_pending_with_generated_id() {
         let action = AgentWorkspacePrReviewAction::new(
             ChatConversationId::new(),
@@ -1171,6 +1222,7 @@ mod enum_roundtrip_tests {
                 "submitting",
             ),
             (AgentWorkspacePrReviewMonitorStatus::Blocked, "blocked"),
+            (AgentWorkspacePrReviewMonitorStatus::Paused, "paused"),
             (AgentWorkspacePrReviewMonitorStatus::Terminal, "terminal"),
         ] {
             assert_eq!(variant.to_string(), text);
@@ -1293,6 +1345,7 @@ mod enum_roundtrip_tests {
             (AgentWorkspacePrReviewActionStatus::Submitting, "submitting"),
             (AgentWorkspacePrReviewActionStatus::Submitted, "submitted"),
             (AgentWorkspacePrReviewActionStatus::Failed, "failed"),
+            (AgentWorkspacePrReviewActionStatus::Superseded, "superseded"),
         ] {
             assert_eq!(variant.to_string(), text);
             assert_eq!(
