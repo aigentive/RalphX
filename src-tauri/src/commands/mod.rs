@@ -73,6 +73,8 @@ pub mod release_notes_commands;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
+#[cfg(test)]
+mod review_commands_types_tests;
 pub mod review_helpers;
 pub mod task_commands;
 pub mod task_context_commands;
