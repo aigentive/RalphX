@@ -1242,13 +1242,6 @@ pub async fn update_agent_workspace_pr_review_settings(
             None,
         )
     })?;
-    let monitor = load_or_create_pr_review_monitor(
-        state.app_state.as_ref(),
-        &workspace,
-        pr_number,
-        review_pr_head_sha(&workspace),
-    )
-    .await?;
     if req.auto_approve_enabled.is_none() && req.monitor_enabled.is_none() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
@@ -1256,6 +1249,14 @@ pub async fn update_agent_workspace_pr_review_settings(
             None,
         ));
     }
+    let monitor = load_or_create_pr_review_monitor(
+        state.app_state.as_ref(),
+        &workspace,
+        pr_number,
+        review_pr_head_sha(&workspace),
+        req.monitor_enabled == Some(true),
+    )
+    .await?;
     let monitor = state
         .app_state
         .agent_conversation_workspace_repo
@@ -2026,6 +2027,7 @@ pub async fn write_agent_workspace_pr_review_artifact(
         &workspace,
         pr_number,
         head_sha.clone(),
+        true,
     )
     .await?;
     let previous_artifact = match monitor.review_artifact_id.clone() {
@@ -2166,6 +2168,7 @@ pub async fn propose_agent_workspace_pr_review_action(
         &workspace,
         pr_number,
         Some(head_sha.clone()),
+        true,
     )
     .await?;
     ensure_review_artifact_for_head(&monitor, &head_sha)?;
@@ -2292,6 +2295,7 @@ pub async fn complete_agent_workspace_pr_review_run(
         &workspace,
         pr_number,
         head_sha.clone(),
+        true,
     )
     .await?;
     monitor.first_review_completed = true;
@@ -2400,6 +2404,7 @@ pub async fn submit_agent_workspace_pr_review_action(
         &workspace,
         pr_number,
         Some(action.head_sha.clone()),
+        true,
     )
     .await?;
     ensure_review_artifact_for_head(&monitor, &action.head_sha)?;
@@ -2510,6 +2515,7 @@ pub async fn submit_agent_workspace_pr_review_action(
         &workspace,
         pr_number,
         Some(action.head_sha.clone()),
+        true,
     )
     .await?;
     monitor.first_review_completed = true;
@@ -2593,6 +2599,7 @@ pub async fn skip_agent_workspace_pr_review_action(
         &workspace,
         action.pr_number,
         Some(action.head_sha.clone()),
+        true,
     )
     .await?;
     monitor.first_review_completed = true;
@@ -4381,6 +4388,7 @@ async fn load_or_create_pr_review_monitor(
     workspace: &AgentConversationWorkspace,
     pr_number: i64,
     head_sha: Option<String>,
+    enable_new_monitor: bool,
 ) -> Result<AgentWorkspacePrReviewMonitor, JsonError> {
     let existing = state
         .agent_conversation_workspace_repo
@@ -4394,8 +4402,10 @@ async fn load_or_create_pr_review_monitor(
             pr_number,
             head_sha,
         );
-        monitor.monitor_enabled = true;
-        monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        if enable_new_monitor {
+            monitor.monitor_enabled = true;
+            monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        }
         monitor
     }))
 }

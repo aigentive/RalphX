@@ -93,7 +93,9 @@ function lastResolvedAction(
 ): AgentWorkspacePrReviewAction | null {
   return (
     actions.find((action) =>
-      ["submitted", "skipped", "failed"].includes(action.status),
+      ["approved", "submitted", "skipped", "failed", "superseded"].includes(
+        action.status,
+      ),
     ) ?? null
   );
 }

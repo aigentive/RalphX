@@ -41,6 +41,18 @@ async fn setup_review_workspace(
     AgentConversationWorkspace,
     Option<Arc<MockGithubService>>,
 ) {
+    setup_review_workspace_with_monitor(with_github, true).await
+}
+
+async fn setup_review_workspace_with_monitor(
+    with_github: bool,
+    seed_monitor: bool,
+) -> (
+    Arc<AppState>,
+    HttpServerState,
+    AgentConversationWorkspace,
+    Option<Arc<MockGithubService>>,
+) {
     let mut app_state = AppState::new_test();
     let github = with_github.then(|| Arc::new(MockGithubService::new()));
     if let Some(github) = github.as_ref() {
@@ -74,22 +86,24 @@ async fn setup_review_workspace(
         .await
         .expect("workspace should persist");
 
-    let mut monitor = AgentWorkspacePrReviewMonitor::new(
-        conversation_id,
-        workspace.project_id.clone(),
-        411,
-        Some("head-sha".to_string()),
-    );
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
-    monitor.monitor_enabled = true;
-    monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-1".to_string()));
-    monitor.review_artifact_head_sha = Some("head-sha".to_string());
-    monitor.review_artifact_version = Some(1);
-    app_state
-        .agent_conversation_workspace_repo
-        .upsert_pr_review_monitor(monitor)
-        .await
-        .expect("review monitor should persist");
+    if seed_monitor {
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            conversation_id,
+            workspace.project_id.clone(),
+            411,
+            Some("head-sha".to_string()),
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+        monitor.monitor_enabled = true;
+        monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-1".to_string()));
+        monitor.review_artifact_head_sha = Some("head-sha".to_string());
+        monitor.review_artifact_version = Some(1);
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .expect("review monitor should persist");
+    }
 
     let state = test_http_state(Arc::clone(&app_state));
     (app_state, state, workspace, github)
@@ -311,6 +325,43 @@ async fn review_pr_auto_approve_setting_persists_per_conversation() {
     .await
     .expect("setting should update");
     assert!(enabled.monitor.auto_approve_enabled);
+}
+
+#[tokio::test]
+async fn review_pr_auto_approve_setting_without_monitor_does_not_enable_monitoring() {
+    let (app_state, state, workspace, _) = setup_review_workspace_with_monitor(false, false).await;
+
+    assert!(app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
+
+    let Json(response) = update_agent_workspace_pr_review_settings(
+        State(state),
+        Path(workspace.conversation_id.to_string()),
+        Json(UpdateAgentWorkspacePrReviewSettingsRequest {
+            auto_approve_enabled: Some(false),
+            monitor_enabled: None,
+            active_review_policy: None,
+        }),
+    )
+    .await
+    .expect("auto approve setting should save without starting monitoring");
+
+    assert!(!response.monitor.auto_approve_enabled);
+    assert!(!response.monitor.monitor_enabled);
+    assert_eq!(response.monitor.status, "idle");
+    let persisted = app_state
+        .agent_conversation_workspace_repo
+        .get_pr_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("settings row should persist");
+    assert!(!persisted.auto_approve_enabled);
+    assert!(!persisted.monitor_enabled);
+    assert_eq!(persisted.status, AgentWorkspacePrReviewMonitorStatus::Idle);
 }
 
 #[tokio::test]
