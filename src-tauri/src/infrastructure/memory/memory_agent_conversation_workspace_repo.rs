@@ -13,9 +13,9 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId, IdeationSessionId,
-    PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -867,6 +867,39 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|monitor| monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing)
+            .cloned()
+            .collect::<Vec<_>>();
+        monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(monitors)
+    }
+
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.auto_merge_guard != expected {
+            return Ok(false);
+        }
+        monitor.auto_merge_guard = next;
+        monitor.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self
+            .workspace_review_monitors
+            .read()
+            .await
+            .values()
+            .filter(|monitor| monitor.auto_merge_guard.is_some())
             .cloned()
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));

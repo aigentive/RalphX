@@ -32,6 +32,7 @@ mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
+pub mod agent_workspace_review_auto_merge;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
 pub mod app_setup;

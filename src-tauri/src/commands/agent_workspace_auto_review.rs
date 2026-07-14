@@ -7,8 +7,9 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use tauri::{Emitter, Listener, Manager, Runtime};
 
-use crate::application::agent_workspace_review::{
-    load_agent_workspace_review_context, start_agent_workspace_review,
+use crate::application::agent_workspace_review::load_agent_workspace_review_context;
+use crate::application::agent_workspace_review_auto_merge::{
+    start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
 };
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::git_service::git_cmd;
@@ -485,9 +486,14 @@ pub(crate) async fn maybe_start_auto_review(
         AutoReviewStartAction::Skip(reason) => return Ok(AutoReviewDecision::Skipped(reason)),
     }
 
-    let started = start_agent_workspace_review(Arc::new(state.clone()), workspace, false)
-        .await
-        .map_err(|error| error.to_string())?;
+    let started = start_guarded_agent_workspace_review(
+        Arc::new(state.clone()),
+        workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     if started.started {
         Ok(AutoReviewDecision::Started)
     } else {

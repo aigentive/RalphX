@@ -1917,6 +1917,11 @@ pub async fn complete_agent_workspace_review_run(
             route_workspace_review_blocking_fixer(state, workspace, &monitor, target.as_ref())
                 .await?;
     }
+    if monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed {
+        monitor = crate::application::agent_workspace_review_auto_merge::
+            handle_passing_workspace_review_auto_merge_guard(state, workspace, &monitor)
+                .await?;
+    }
     let scope = target_scope_label(target.as_ref());
     let fingerprint = target_fingerprint_label(target.as_ref());
     info!(

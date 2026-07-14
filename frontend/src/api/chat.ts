@@ -2014,6 +2014,13 @@ export type AgentWorkspaceReviewGateStatus =
 export type AgentWorkspaceReviewTargetScope =
   "selected_source" | "workspace_delta";
 
+export type AgentWorkspaceReviewAutoMergeGuardStatus =
+  | "pausing"
+  | "paused_for_review"
+  | "awaiting_publish"
+  | "restoring"
+  | "restore_failed";
+
 export type AgentWorkspacePrReviewActionKind =
   "request_changes" | "approve" | "comment";
 
@@ -2123,6 +2130,13 @@ export interface AgentWorkspaceReviewMonitor {
   reviewFixerStatus: string | null;
   lastRunId: string | null;
   lastError: string | null;
+  autoMergeGuardStatus: AgentWorkspaceReviewAutoMergeGuardStatus | null;
+  autoMergeGuardPrNumber: number | null;
+  autoMergeGuardMethod: string | null;
+  autoMergeGuardTargetScope: AgentWorkspaceReviewTargetScope | null;
+  autoMergeGuardDiffFingerprint: string | null;
+  autoMergeGuardHeadSha: string | null;
+  autoMergeGuardLastError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2438,6 +2452,21 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_fixer_status: z.string().nullable().optional().default(null),
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
+  auto_merge_guard_status: z
+    .enum(["pausing", "paused_for_review", "awaiting_publish", "restoring", "restore_failed"])
+    .nullable()
+    .optional()
+    .default(null),
+  auto_merge_guard_pr_number: z.number().nullable().optional().default(null),
+  auto_merge_guard_method: z.string().nullable().optional().default(null),
+  auto_merge_guard_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  auto_merge_guard_diff_fingerprint: z.string().nullable().optional().default(null),
+  auto_merge_guard_head_sha: z.string().nullable().optional().default(null),
+  auto_merge_guard_last_error: z.string().nullable().optional().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -2993,6 +3022,13 @@ function transformAgentWorkspaceReviewMonitor(
     reviewFixerStatus: raw.review_fixer_status,
     lastRunId: raw.last_run_id,
     lastError: raw.last_error,
+    autoMergeGuardStatus: raw.auto_merge_guard_status,
+    autoMergeGuardPrNumber: raw.auto_merge_guard_pr_number,
+    autoMergeGuardMethod: raw.auto_merge_guard_method,
+    autoMergeGuardTargetScope: raw.auto_merge_guard_target_scope,
+    autoMergeGuardDiffFingerprint: raw.auto_merge_guard_diff_fingerprint,
+    autoMergeGuardHeadSha: raw.auto_merge_guard_head_sha,
+    autoMergeGuardLastError: raw.auto_merge_guard_last_error,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   };
