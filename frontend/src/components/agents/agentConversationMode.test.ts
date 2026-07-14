@@ -7,7 +7,7 @@ import {
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { AgentConversation } from "./agentConversations";
-import { AGENT_MODE_OPTIONS } from "./AgentsStartComposer";
+import { AGENT_MODE_OPTIONS } from "./agentStartModeOptions";
 
 function conversation(
   overrides: Partial<AgentConversation> = {},

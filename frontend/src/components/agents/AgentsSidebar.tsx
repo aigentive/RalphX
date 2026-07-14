@@ -123,7 +123,7 @@ import {
 } from "./ArchiveConversationDialog";
 import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
 
-export const PERSONA_BUILDER_MODE_META = {
+const PERSONA_BUILDER_MODE_META = {
   label: "Persona Builder",
   icon: WandSparkles,
 } as const;

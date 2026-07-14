@@ -81,6 +81,7 @@ import {
 import { useUiStore } from "@/stores/uiStore";
 import { PersonaUnavailableNotice } from "@/components/personas/PersonaUnavailableNotice";
 import { PersonaPickerControl } from "./PersonaPickerControl";
+import { AGENT_MODE_OPTIONS } from "./agentStartModeOptions";
 
 interface PendingAttachment {
   id: string;
@@ -202,19 +203,6 @@ function composerIntegrationReferencesEqual(
     );
   });
 }
-
-export const AGENT_MODE_OPTIONS: Array<{
-  id: AgentConversationWorkspaceMode;
-  label: string;
-  description: string;
-}> = [
-  { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
-  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
-  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
-  { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },
-  { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
-  { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
-];
 
 export function AgentsStartComposer({
   projects,

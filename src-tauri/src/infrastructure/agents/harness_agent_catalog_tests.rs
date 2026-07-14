@@ -2115,6 +2115,34 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
 }
 
 #[test]
+fn branch_updater_uses_one_shared_prompt_for_both_harnesses() {
+    let root = project_root();
+    let expected_suffix = "agents/ralphx-execution-branch-updater/shared/prompt.md";
+    let mut loaded_prompts = Vec::new();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let path =
+            resolve_harness_agent_prompt_path(&root, "ralphx-execution-branch-updater", harness)
+                .unwrap_or_else(|| panic!("expected branch-updater prompt for {harness:?}"));
+
+        assert!(
+            path.ends_with(expected_suffix),
+            "expected {harness:?} branch-updater prompt to resolve through shared/prompt.md, got {}",
+            path.display()
+        );
+        loaded_prompts.push(
+            load_harness_agent_prompt(&root, "ralphx-execution-branch-updater", harness)
+                .unwrap_or_else(|| panic!("expected loaded branch-updater prompt for {harness:?}")),
+        );
+    }
+
+    assert_eq!(loaded_prompts[0], loaded_prompts[1]);
+    assert!(loaded_prompts[0].contains("get_branch_update_context(task_id)"));
+    assert!(loaded_prompts[0].contains("complete_branch_update(task_id)"));
+    assert!(loaded_prompts[0].contains("backend owns those mutations"));
+}
+
+#[test]
 fn legacy_agent_aliases_resolve_into_canonical_catalog_entries() {
     let root = project_root();
     let cases = [
