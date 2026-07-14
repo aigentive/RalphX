@@ -5,7 +5,8 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
@@ -682,6 +683,16 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     ));
     monitor.review_fixer_status = Some("running".to_string());
     monitor.last_run_id = Some("run-1".to_string());
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 483,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+        diff_fingerprint: "fingerprint".to_string(),
+        head_sha: Some("head-sha".to_string()),
+        last_error: None,
+    };
+    monitor.auto_merge_guard = Some(guard.clone());
 
     let saved = repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     assert_eq!(saved.status, AgentWorkspaceReviewMonitorStatus::Ready);
@@ -729,6 +740,7 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     );
     assert_eq!(saved.review_fixer_status.as_deref(), Some("running"));
     assert_eq!(saved.last_run_id.as_deref(), Some("run-1"));
+    assert_eq!(saved.auto_merge_guard.as_ref(), Some(&guard));
 
     let mut update = AgentWorkspaceReviewMonitor::new(
         conversation_id.clone(),
@@ -789,6 +801,7 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     assert_eq!(updated.review_fixer_run_id, None);
     assert_eq!(updated.review_fixer_conversation_id, None);
     assert_eq!(updated.review_fixer_status, None);
+    assert_eq!(updated.auto_merge_guard.as_ref(), Some(&guard));
 
     let loaded = repo
         .get_workspace_review_monitor(&conversation_id)
@@ -796,6 +809,39 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
         .unwrap()
         .expect("monitor should load");
     assert_eq!(loaded, updated);
+
+    let stale_guard = AgentWorkspaceReviewAutoMergeGuard {
+        last_error: Some("stale writer".to_string()),
+        ..guard.clone()
+    };
+    assert!(!repo
+        .compare_and_set_workspace_review_auto_merge_guard(
+            &conversation_id,
+            Some(stale_guard),
+            None,
+        )
+        .await
+        .unwrap());
+    let restoring_guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        ..guard.clone()
+    };
+    assert!(repo
+        .compare_and_set_workspace_review_auto_merge_guard(
+            &conversation_id,
+            Some(guard),
+            Some(restoring_guard.clone()),
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .expect("monitor should remain")
+            .auto_merge_guard,
+        Some(restoring_guard)
+    );
 }
 
 #[tokio::test]

@@ -1682,6 +1682,7 @@ export const chatApi = {
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
+  getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
   listAgentConversationIssues,
@@ -2152,6 +2153,24 @@ export interface AgentWorkspaceReviewContext {
   shouldShowTab: boolean;
 }
 
+export interface AgentWorkspaceReviewStartConfirmation {
+  targetScope: AgentWorkspaceReviewTargetScope | null;
+  diffFingerprint: string | null;
+  headSha: string | null;
+  prNumber: number | null;
+  willDisableAutoMerge: boolean;
+}
+
+export interface AgentWorkspaceReviewStartPreview {
+  success: boolean;
+  target: AgentWorkspaceReviewTarget | null;
+  willDisableAutoMerge: boolean;
+  prNumber: number | null;
+  mergeMethod: string | null;
+  restoreAfterPublish: boolean;
+  confirmation: AgentWorkspaceReviewStartConfirmation;
+}
+
 export interface StartAgentWorkspaceReviewResult {
   success: boolean;
   target: AgentWorkspaceReviewTarget | null;
@@ -2491,6 +2510,26 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   skipped_reason: z.string().nullable(),
   was_queued: z.boolean(),
 });
+const AgentWorkspaceReviewStartConfirmationSchema = z.object({
+  target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  diff_fingerprint: z.string().nullable().optional().default(null),
+  head_sha: z.string().nullable().optional().default(null),
+  pr_number: z.number().nullable().optional().default(null),
+  will_disable_auto_merge: z.boolean(),
+});
+const AgentWorkspaceReviewStartPreviewResponseSchema = z.object({
+  success: z.boolean(),
+  target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
+  will_disable_auto_merge: z.boolean(),
+  pr_number: z.number().nullable(),
+  merge_method: z.string().nullable(),
+  restore_after_publish: z.boolean(),
+  confirmation: AgentWorkspaceReviewStartConfirmationSchema,
+});
 const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
   success: z.boolean(),
   target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
@@ -2630,6 +2669,9 @@ type RawAgentWorkspaceReviewContext = z.infer<
 >;
 type RawStartAgentWorkspaceReviewResponse = z.infer<
   typeof StartAgentWorkspaceReviewResponseSchema
+>;
+type RawAgentWorkspaceReviewStartPreviewResponse = z.infer<
+  typeof AgentWorkspaceReviewStartPreviewResponseSchema
 >;
 type RawStartAgentWorkspaceReviewFixerResponse = z.infer<
   typeof StartAgentWorkspaceReviewFixerResponseSchema
@@ -3065,6 +3107,26 @@ function transformStartAgentWorkspaceReviewResponse(
   };
 }
 
+function transformAgentWorkspaceReviewStartPreview(
+  raw: RawAgentWorkspaceReviewStartPreviewResponse,
+): AgentWorkspaceReviewStartPreview {
+  return {
+    success: raw.success,
+    target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
+    willDisableAutoMerge: raw.will_disable_auto_merge,
+    prNumber: raw.pr_number,
+    mergeMethod: raw.merge_method,
+    restoreAfterPublish: raw.restore_after_publish,
+    confirmation: {
+      targetScope: raw.confirmation.target_scope,
+      diffFingerprint: raw.confirmation.diff_fingerprint,
+      headSha: raw.confirmation.head_sha,
+      prNumber: raw.confirmation.pr_number,
+      willDisableAutoMerge: raw.confirmation.will_disable_auto_merge,
+    },
+  };
+}
+
 function transformStartAgentWorkspaceReviewFixerResponse(
   raw: RawStartAgentWorkspaceReviewFixerResponse,
 ): StartAgentWorkspaceReviewFixerResult {
@@ -3262,9 +3324,22 @@ export async function getAgentWorkspaceReviewContext(
   return transformAgentWorkspaceReviewContext(raw);
 }
 
+export async function getAgentWorkspaceReviewStartPreview(
+  conversationId: string,
+): Promise<AgentWorkspaceReviewStartPreview> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-start-preview`,
+    AgentWorkspaceReviewStartPreviewResponseSchema,
+  );
+  return transformAgentWorkspaceReviewStartPreview(raw);
+}
+
 export async function startAgentWorkspaceReview(
   conversationId: string,
-  options: { force?: boolean } = {},
+  options: {
+    force?: boolean;
+    confirmation?: AgentWorkspaceReviewStartConfirmation;
+  } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-runs`,
@@ -3272,7 +3347,19 @@ export async function startAgentWorkspaceReview(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: options.force ?? false }),
+      body: JSON.stringify({
+        force: options.force ?? false,
+        confirmation: options.confirmation
+          ? {
+              target_scope: options.confirmation.targetScope,
+              diff_fingerprint: options.confirmation.diffFingerprint,
+              head_sha: options.confirmation.headSha,
+              pr_number: options.confirmation.prNumber,
+              will_disable_auto_merge:
+                options.confirmation.willDisableAutoMerge,
+            }
+          : undefined,
+      }),
     },
   );
   return transformStartAgentWorkspaceReviewResponse(raw);

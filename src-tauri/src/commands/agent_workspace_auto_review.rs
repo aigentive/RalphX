@@ -491,6 +491,7 @@ pub(crate) async fn maybe_start_auto_review(
         workspace,
         false,
         WorkspaceReviewStartOrigin::Automated,
+        None,
     )
     .await
     .map_err(|error| error.to_string())?;

@@ -1128,54 +1128,54 @@
         "text": "use crate::commands::ExecutionState;"
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_changes_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_diff_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_file_content_range_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_file_diff_page_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_staged_file_changes_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_staged_file_diff_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_unstaged_file_changes_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "crate::commands::diff_commands::get_agent_conversation_workspace_unstaged_file_diff_for_state("
       },
       {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
-        "target": "crate::commands",
-        "text": "use crate::commands::ExecutionState;"
-      },
-      {
-        "path": "src-tauri/src/http_server/handlers/agent_workspaces.rs",
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/mod.rs",
         "target": "crate::commands",
         "text": "use crate::commands::unified_chat_commands::{"
+      },
+      {
+        "path": "src-tauri/src/http_server/handlers/agent_workspaces/tests.rs",
+        "target": "crate::commands",
+        "text": "use crate::commands::ExecutionState;"
       },
       {
         "path": "src-tauri/src/http_server/handlers/external/ideation_runtime/append.rs",

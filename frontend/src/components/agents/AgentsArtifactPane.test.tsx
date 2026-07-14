@@ -241,6 +241,20 @@ vi.mock("@/api/chat", async (importOriginal) => {
   };
 });
 
+vi.mock("./useWorkspaceReviewActions", () => ({
+  useWorkspaceReviewActions: ({
+    onStartReview,
+  }: {
+    onStartReview: (input: { force: boolean }) => Promise<unknown>;
+  }) => ({
+    startReview: (force: boolean) => {
+      void onStartReview({ force });
+    },
+    confirmationDialogProps: {},
+    ConfirmationDialog: () => null,
+  }),
+}));
+
 vi.mock("@/api/automations", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/automations")>();
   return {

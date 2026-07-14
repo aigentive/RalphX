@@ -2082,13 +2082,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_fixer_status = excluded.review_fixer_status,
                         last_run_id = excluded.last_run_id,
                         last_error = excluded.last_error,
-                        auto_merge_guard_status = excluded.auto_merge_guard_status,
-                        auto_merge_guard_pr_number = excluded.auto_merge_guard_pr_number,
-                        auto_merge_guard_method = excluded.auto_merge_guard_method,
-                        auto_merge_guard_target_scope = excluded.auto_merge_guard_target_scope,
-                        auto_merge_guard_diff_fingerprint = excluded.auto_merge_guard_diff_fingerprint,
-                        auto_merge_guard_head_sha = excluded.auto_merge_guard_head_sha,
-                        auto_merge_guard_last_error = excluded.auto_merge_guard_last_error,
+                        auto_merge_guard_status = agent_workspace_review_monitors.auto_merge_guard_status,
+                        auto_merge_guard_pr_number = agent_workspace_review_monitors.auto_merge_guard_pr_number,
+                        auto_merge_guard_method = agent_workspace_review_monitors.auto_merge_guard_method,
+                        auto_merge_guard_target_scope = agent_workspace_review_monitors.auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint = agent_workspace_review_monitors.auto_merge_guard_diff_fingerprint,
+                        auto_merge_guard_head_sha = agent_workspace_review_monitors.auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error = agent_workspace_review_monitors.auto_merge_guard_last_error,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         conversation_id,
@@ -2252,6 +2252,83 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     ],
                 )?;
                 Ok(changed == 1)
+            })
+            .await
+    }
+
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_status = expected.status.to_string();
+        let expected_pr_number = expected.pr_number;
+        let expected_method = expected.merge_method;
+        let expected_target_scope = expected.target_scope.to_string();
+        let expected_diff_fingerprint = expected.diff_fingerprint;
+        let expected_head_sha = expected.head_sha;
+        let expected_last_error = expected.last_error;
+        let now = Utc::now().to_rfc3339();
+        let restored_summary =
+            "GitHub auto-merge was restored after the workspace Review passed.".to_string();
+
+        self.db
+            .run(move |conn| {
+                let tx = conn.unchecked_transaction()?;
+                let workspace_changed = tx.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET pr_auto_merge_current = 1,
+                         pr_supervision_status = 'monitoring',
+                         pr_supervision_summary = ?2,
+                         pr_supervision_updated_at = ?3,
+                         updated_at = ?3
+                     WHERE conversation_id = ?1
+                       AND pr_auto_merge_desired = 1",
+                    rusqlite::params![conversation_id, restored_summary, now],
+                )?;
+                if workspace_changed != 1 {
+                    tx.rollback()?;
+                    return Ok(false);
+                }
+                let monitor_changed = tx.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET auto_merge_guard_status = NULL,
+                         auto_merge_guard_pr_number = NULL,
+                         auto_merge_guard_method = NULL,
+                         auto_merge_guard_target_scope = NULL,
+                         auto_merge_guard_diff_fingerprint = NULL,
+                         auto_merge_guard_head_sha = NULL,
+                         auto_merge_guard_last_error = NULL,
+                         updated_at = ?9
+                     WHERE conversation_id = ?1
+                       AND auto_merge_guard_status IS ?2
+                       AND auto_merge_guard_pr_number IS ?3
+                       AND auto_merge_guard_method IS ?4
+                       AND auto_merge_guard_target_scope IS ?5
+                       AND auto_merge_guard_diff_fingerprint IS ?6
+                       AND auto_merge_guard_head_sha IS ?7
+                       AND auto_merge_guard_last_error IS ?8
+                       AND current_target_scope IS ?5
+                       AND current_diff_fingerprint IS ?6",
+                    rusqlite::params![
+                        conversation_id,
+                        expected_status,
+                        expected_pr_number,
+                        expected_method,
+                        expected_target_scope,
+                        expected_diff_fingerprint,
+                        expected_head_sha,
+                        expected_last_error,
+                        now,
+                    ],
+                )?;
+                if monitor_changed != 1 {
+                    tx.rollback()?;
+                    return Ok(false);
+                }
+                tx.commit()?;
+                Ok(true)
             })
             .await
     }

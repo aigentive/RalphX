@@ -718,6 +718,31 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
     startup_phase_completed("workspace_review_startup_reconciliation", phase_started_at);
 
+    let phase_started_at =
+        startup_phase_started("workspace_review_auto_merge_guard_reconciliation");
+    match crate::application::agent_workspace_review_auto_merge::
+        reconcile_workspace_review_auto_merge_guards(&app_state)
+        .await
+    {
+        Ok(count) if count > 0 => {
+            info!(
+                count,
+                "Startup reconciled workspace Review auto-merge guards"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                "Startup workspace Review auto-merge guard reconciliation failed closed"
+            );
+        }
+    }
+    startup_phase_completed(
+        "workspace_review_auto_merge_guard_reconciliation",
+        phase_started_at,
+    );
+
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&app_state).await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);

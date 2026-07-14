@@ -23,12 +23,13 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review,
-    start_agent_workspace_review_blocking_fixer, AgentWorkspaceReviewGoalContext,
+    review_gate_publish_blocker, start_agent_workspace_review_blocking_fixer,
+    AgentWorkspaceReviewGoalContext,
     AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::agent_workspace_review_auto_merge::{
-    start_guarded_agent_workspace_review, WorkspaceReviewStartOrigin,
+    preview_manual_workspace_review_start, start_guarded_agent_workspace_review,
+    WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
 };
 use crate::application::agent_workspace_review_publish_handoff::resume_pr_fix_publish_after_passed_workspace_review;
 use crate::application::publish_resilience::{
@@ -664,6 +665,70 @@ pub struct AgentWorkspaceReviewContextQuery {
 #[derive(Debug, serde::Deserialize)]
 pub struct StartAgentWorkspaceReviewRequest {
     pub force: Option<bool>,
+    pub confirmation: Option<StartAgentWorkspaceReviewConfirmationRequest>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct StartAgentWorkspaceReviewConfirmationRequest {
+    pub target_scope: Option<String>,
+    pub diff_fingerprint: Option<String>,
+    pub head_sha: Option<String>,
+    pub pr_number: Option<i64>,
+    pub will_disable_auto_merge: bool,
+}
+
+impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest>
+    for WorkspaceReviewStartConfirmation
+{
+    type Error = AppError;
+
+    fn try_from(value: StartAgentWorkspaceReviewConfirmationRequest) -> Result<Self, Self::Error> {
+        let target_scope = value
+            .target_scope
+            .as_deref()
+            .map(AgentWorkspaceReviewTargetScope::from_str)
+            .transpose()
+            .map_err(AppError::Validation)?;
+        Ok(Self {
+            target_scope,
+            diff_fingerprint: value.diff_fingerprint,
+            head_sha: value.head_sha,
+            pr_number: value.pr_number,
+            will_disable_auto_merge: value.will_disable_auto_merge,
+        })
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StartAgentWorkspaceReviewConfirmationResponse {
+    pub target_scope: Option<String>,
+    pub diff_fingerprint: Option<String>,
+    pub head_sha: Option<String>,
+    pub pr_number: Option<i64>,
+    pub will_disable_auto_merge: bool,
+}
+
+impl From<WorkspaceReviewStartConfirmation> for StartAgentWorkspaceReviewConfirmationResponse {
+    fn from(value: WorkspaceReviewStartConfirmation) -> Self {
+        Self {
+            target_scope: value.target_scope.map(|scope| scope.to_string()),
+            diff_fingerprint: value.diff_fingerprint,
+            head_sha: value.head_sha,
+            pr_number: value.pr_number,
+            will_disable_auto_merge: value.will_disable_auto_merge,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewStartPreviewResponse {
+    pub success: bool,
+    pub target: Option<AgentWorkspaceReviewTargetResponse>,
+    pub will_disable_auto_merge: bool,
+    pub pr_number: Option<i64>,
+    pub merge_method: Option<String>,
+    pub restore_after_publish: bool,
+    pub confirmation: StartAgentWorkspaceReviewConfirmationResponse,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1469,6 +1534,43 @@ fn workspace_review_action_error(error: AppError) -> JsonError {
     json_error(status, error.to_string(), None)
 }
 
+/// GET /api/agent-workspaces/{conversation_id}/workspace-review-start-preview
+pub async fn get_agent_workspace_review_start_preview(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<AgentWorkspaceReviewStartPreviewResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let preview = preview_manual_workspace_review_start(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(workspace_review_action_error)?;
+    let will_disable_auto_merge = preview.auto_merge.is_some();
+    let pr_number = preview.auto_merge.as_ref().map(|effect| effect.pr_number);
+    let merge_method = preview
+        .auto_merge
+        .as_ref()
+        .map(|effect| effect.merge_method.clone());
+    let restore_after_publish = preview
+        .auto_merge
+        .as_ref()
+        .map(|effect| effect.restore_after_publish)
+        .unwrap_or_else(|| {
+            preview
+                .target
+                .as_ref()
+                .is_some_and(|target| target.scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        });
+    Ok(Json(AgentWorkspaceReviewStartPreviewResponse {
+        success: true,
+        target: preview.target.map(AgentWorkspaceReviewTargetResponse::from),
+        will_disable_auto_merge,
+        pr_number,
+        merge_method,
+        restore_after_publish,
+        confirmation: preview.confirmation.into(),
+    }))
+}
+
 /// POST /api/agent-workspaces/{conversation_id}/workspace-review-runs
 pub async fn start_agent_workspace_review_run(
     State(state): State<HttpServerState>,
@@ -1477,6 +1579,11 @@ pub async fn start_agent_workspace_review_run(
 ) -> Result<Json<StartAgentWorkspaceReviewResponse>, JsonError> {
     let started = Instant::now();
     let force = req.force.unwrap_or(false);
+    let confirmation = req
+        .confirmation
+        .map(WorkspaceReviewStartConfirmation::try_from)
+        .transpose()
+        .map_err(workspace_review_action_error)?;
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
     let start = start_guarded_agent_workspace_review(
@@ -1484,6 +1591,7 @@ pub async fn start_agent_workspace_review_run(
         &workspace,
         force,
         WorkspaceReviewStartOrigin::Manual,
+        confirmation.as_ref(),
     )
     .await
     .map_err(workspace_review_action_error)?;
@@ -3465,7 +3573,13 @@ impl WorkspaceReviewStarter for DefaultWorkspaceReviewStarter {
         workspace: &'a AgentConversationWorkspace,
         force: bool,
     ) -> WorkspaceReviewStartFuture<'a> {
-        Box::pin(start_agent_workspace_review(state, workspace, force))
+        Box::pin(start_guarded_agent_workspace_review(
+            state,
+            workspace,
+            force,
+            WorkspaceReviewStartOrigin::Automated,
+            None,
+        ))
     }
 }
 

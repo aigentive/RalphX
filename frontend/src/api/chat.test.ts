@@ -16,6 +16,7 @@ import {
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
+  getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
   listAgentConversationIssues,
@@ -3085,6 +3086,9 @@ describe("chat api", () => {
     expect(chatApi.getAgentWorkspaceReviewContext).toBe(
       getAgentWorkspaceReviewContext,
     );
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toBe(
+      getAgentWorkspaceReviewStartPreview,
+    );
     expect(chatApi.startAgentWorkspaceReview).toBe(startAgentWorkspaceReview);
     expect(chatApi.startAgentWorkspaceReviewFixer).toBe(
       startAgentWorkspaceReviewFixer,
@@ -3463,6 +3467,45 @@ describe("getConversationActiveState", () => {
     expect(result.target?.scope).toBe("selected_source");
     expect(result.target?.sourcePullRequestNumber).toBe(42);
     expect(result.monitor.status).toBe("reviewing");
+  });
+
+  it("fetches the target-bound workspace review start preview", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          target: rawWorkspaceReviewTarget(),
+          will_disable_auto_merge: true,
+          pr_number: 42,
+          merge_method: "squash",
+          restore_after_publish: true,
+          confirmation: {
+            target_scope: "workspace_delta",
+            diff_fingerprint: "fingerprint-1",
+            head_sha: "head-sha-1",
+            pr_number: 42,
+            will_disable_auto_merge: true,
+          },
+        }),
+    });
+
+    const result = await getAgentWorkspaceReviewStartPreview("conversation/1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-start-preview",
+      ),
+      undefined,
+    );
+    expect(result.confirmation).toEqual({
+      targetScope: "workspace_delta",
+      diffFingerprint: "fingerprint-1",
+      headSha: "head-sha-1",
+      prNumber: 42,
+      willDisableAutoMerge: true,
+    });
+    expect(result.restoreAfterPublish).toBe(true);
   });
 
   it("starts the workspace review fixer through the encoded REST endpoint", async () => {

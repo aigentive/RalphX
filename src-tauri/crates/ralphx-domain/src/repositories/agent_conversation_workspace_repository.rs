@@ -403,6 +403,16 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(false)
     }
 
+    /// Atomically records a confirmed restoration only while the captured guard still owns the
+    /// monitor and the user still wants GitHub auto-merge enabled.
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn list_active_workspace_review_auto_merge_guards(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
