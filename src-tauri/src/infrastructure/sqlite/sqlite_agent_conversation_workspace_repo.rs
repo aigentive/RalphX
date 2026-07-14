@@ -13,7 +13,8 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
@@ -206,6 +207,43 @@ fn row_to_workspace_review_monitor(
     let reviewed_target_scope = row
         .get::<_, Option<String>>("reviewed_target_scope")?
         .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok());
+    let auto_merge_guard_status = row
+        .get::<_, Option<String>>("auto_merge_guard_status")?
+        .and_then(|value| AgentWorkspaceReviewAutoMergeGuardStatus::from_str(&value).ok());
+    let auto_merge_guard_pr_number = row.get::<_, Option<i64>>("auto_merge_guard_pr_number")?;
+    let auto_merge_guard_method = row.get::<_, Option<String>>("auto_merge_guard_method")?;
+    let auto_merge_guard_target_scope = row
+        .get::<_, Option<String>>("auto_merge_guard_target_scope")?
+        .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok());
+    let auto_merge_guard_diff_fingerprint =
+        row.get::<_, Option<String>>("auto_merge_guard_diff_fingerprint")?;
+    let auto_merge_guard_head_sha = row.get::<_, Option<String>>("auto_merge_guard_head_sha")?;
+    let auto_merge_guard_last_error =
+        row.get::<_, Option<String>>("auto_merge_guard_last_error")?;
+    let auto_merge_guard = match (
+        auto_merge_guard_status,
+        auto_merge_guard_pr_number,
+        auto_merge_guard_method,
+        auto_merge_guard_target_scope,
+        auto_merge_guard_diff_fingerprint,
+    ) {
+        (
+            Some(status),
+            Some(pr_number),
+            Some(merge_method),
+            Some(target_scope),
+            Some(diff_fingerprint),
+        ) => Some(AgentWorkspaceReviewAutoMergeGuard {
+            status,
+            pr_number,
+            merge_method,
+            target_scope,
+            diff_fingerprint,
+            head_sha: auto_merge_guard_head_sha,
+            last_error: auto_merge_guard_last_error,
+        }),
+        _ => None,
+    };
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
     Ok(AgentWorkspaceReviewMonitor {
@@ -259,6 +297,7 @@ fn row_to_workspace_review_monitor(
         review_fixer_status: row.get("review_fixer_status")?,
         last_run_id: row.get("last_run_id")?,
         last_error: row.get("last_error")?,
+        auto_merge_guard,
         created_at: parse_datetime(&created_at),
         updated_at: parse_datetime(&updated_at),
     })
@@ -1876,6 +1915,34 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let review_fixer_status = monitor.review_fixer_status;
         let last_run_id = monitor.last_run_id;
         let last_error = monitor.last_error;
+        let auto_merge_guard_status = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.status.to_string());
+        let auto_merge_guard_pr_number = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.pr_number);
+        let auto_merge_guard_method = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.merge_method.clone());
+        let auto_merge_guard_target_scope = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.target_scope.to_string());
+        let auto_merge_guard_diff_fingerprint = monitor
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.diff_fingerprint.clone());
+        let auto_merge_guard_head_sha = monitor
+            .auto_merge_guard
+            .as_ref()
+            .and_then(|guard| guard.head_sha.clone());
+        let auto_merge_guard_last_error = monitor
+            .auto_merge_guard
+            .as_ref()
+            .and_then(|guard| guard.last_error.clone());
         let created_at = monitor.created_at.to_rfc3339();
         let updated_at = Utc::now().to_rfc3339();
         let fetch_id = monitor.conversation_id;
@@ -1896,12 +1963,16 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         current_diff_fingerprint, previous_version_id,
                         review_blocking_summary, review_blocking_fingerprint,
                         review_fixer_run_id, review_fixer_conversation_id,
-                        review_fixer_status, last_run_id, last_error, created_at,
-                        updated_at
+                        review_fixer_status, last_run_id, last_error,
+                        auto_merge_guard_status, auto_merge_guard_pr_number,
+                        auto_merge_guard_method, auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint, auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                        ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
+                        ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
+                        ?38, ?39, ?40
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
@@ -1934,6 +2005,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_fixer_status = excluded.review_fixer_status,
                         last_run_id = excluded.last_run_id,
                         last_error = excluded.last_error,
+                        auto_merge_guard_status = excluded.auto_merge_guard_status,
+                        auto_merge_guard_pr_number = excluded.auto_merge_guard_pr_number,
+                        auto_merge_guard_method = excluded.auto_merge_guard_method,
+                        auto_merge_guard_target_scope = excluded.auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint = excluded.auto_merge_guard_diff_fingerprint,
+                        auto_merge_guard_head_sha = excluded.auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error = excluded.auto_merge_guard_last_error,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         conversation_id,
@@ -1967,6 +2045,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         review_fixer_status,
                         last_run_id,
                         last_error,
+                        auto_merge_guard_status,
+                        auto_merge_guard_pr_number,
+                        auto_merge_guard_method,
+                        auto_merge_guard_target_scope,
+                        auto_merge_guard_diff_fingerprint,
+                        auto_merge_guard_head_sha,
+                        auto_merge_guard_last_error,
                         created_at,
                         updated_at,
                     ],
@@ -2011,6 +2096,97 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_workspace_review_monitors
                      WHERE status = 'reviewing'
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows = stmt.query_map([], row_to_workspace_review_monitor)?;
+                let mut monitors = Vec::new();
+                for row in rows {
+                    monitors.push(row?);
+                }
+                Ok(monitors)
+            })
+            .await
+    }
+
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let expected_status = expected.as_ref().map(|guard| guard.status.to_string());
+        let expected_pr_number = expected.as_ref().map(|guard| guard.pr_number);
+        let expected_method = expected.as_ref().map(|guard| guard.merge_method.clone());
+        let expected_target_scope = expected
+            .as_ref()
+            .map(|guard| guard.target_scope.to_string());
+        let expected_diff_fingerprint = expected
+            .as_ref()
+            .map(|guard| guard.diff_fingerprint.clone());
+        let expected_head_sha = expected.as_ref().and_then(|guard| guard.head_sha.clone());
+        let expected_last_error = expected.and_then(|guard| guard.last_error);
+        let next_status = next.as_ref().map(|guard| guard.status.to_string());
+        let next_pr_number = next.as_ref().map(|guard| guard.pr_number);
+        let next_method = next.as_ref().map(|guard| guard.merge_method.clone());
+        let next_target_scope = next.as_ref().map(|guard| guard.target_scope.to_string());
+        let next_diff_fingerprint = next.as_ref().map(|guard| guard.diff_fingerprint.clone());
+        let next_head_sha = next.as_ref().and_then(|guard| guard.head_sha.clone());
+        let next_last_error = next.and_then(|guard| guard.last_error);
+        let updated_at = Utc::now().to_rfc3339();
+
+        self.db
+            .run(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE agent_workspace_review_monitors
+                     SET auto_merge_guard_status = ?2,
+                         auto_merge_guard_pr_number = ?3,
+                         auto_merge_guard_method = ?4,
+                         auto_merge_guard_target_scope = ?5,
+                         auto_merge_guard_diff_fingerprint = ?6,
+                         auto_merge_guard_head_sha = ?7,
+                         auto_merge_guard_last_error = ?8,
+                         updated_at = ?9
+                     WHERE conversation_id = ?1
+                       AND auto_merge_guard_status IS ?10
+                       AND auto_merge_guard_pr_number IS ?11
+                       AND auto_merge_guard_method IS ?12
+                       AND auto_merge_guard_target_scope IS ?13
+                       AND auto_merge_guard_diff_fingerprint IS ?14
+                       AND auto_merge_guard_head_sha IS ?15
+                       AND auto_merge_guard_last_error IS ?16",
+                    rusqlite::params![
+                        conversation_id,
+                        next_status,
+                        next_pr_number,
+                        next_method,
+                        next_target_scope,
+                        next_diff_fingerprint,
+                        next_head_sha,
+                        next_last_error,
+                        updated_at,
+                        expected_status,
+                        expected_pr_number,
+                        expected_method,
+                        expected_target_scope,
+                        expected_diff_fingerprint,
+                        expected_head_sha,
+                        expected_last_error,
+                    ],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_review_monitors
+                     WHERE auto_merge_guard_status IS NOT NULL
                      ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], row_to_workspace_review_monitor)?;

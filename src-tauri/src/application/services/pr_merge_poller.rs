@@ -2454,6 +2454,26 @@ async fn sync_agent_workspace_auto_merge_preference(
     let remote_current = health.auto_merge_request.is_some();
     let mut current = remote_current;
 
+    let monitor = workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await?;
+    if crate::application::agent_workspace_review_auto_merge::auto_merge_guard_blocks_enable(
+        monitor.as_ref(),
+    ) {
+        if remote_current {
+            github.disable_pr_auto_merge(working_dir, pr_number).await?;
+        }
+        workspace_repo
+            .update_pr_auto_merge_state(
+                &workspace.conversation_id,
+                Some(false),
+                Some("review_paused"),
+                Some("GitHub auto-merge is paused while the workspace Review is authoritative."),
+            )
+            .await?;
+        return Ok(false);
+    }
+
     if workspace.pr_auto_merge_desired && !remote_current {
         let enable_result = async {
             if health.sync_state.is_draft {
