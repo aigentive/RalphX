@@ -124,8 +124,6 @@ import { useTeamEvents } from "@/hooks/useTeamEvents";
 import { useTeamActions } from "@/hooks/useTeamActions";
 import { TeamContextBar } from "./TeamContextBar";
 import { TeamPlanApproval } from "./TeamPlanApproval";
-import { StreamingToolIndicator } from "./StreamingToolIndicator";
-import { isDiffToolCall } from "./DiffToolCallView.utils";
 import { TeamFilterTabs, type TeamFilterValue } from "./TeamFilterTabs";
 import { useTeamHistory } from "@/hooks/useTeamHistory";
 import { useTeamModeAvailability } from "@/hooks/useTeamModeAvailability";
@@ -1881,38 +1879,6 @@ export function IntegratedChatPanel({
               data-testid="chat-below-transcript-chrome"
               className="shrink-0"
             >
-              {/* StreamingToolIndicator — outside scroll container so it's always visible.
-              Filters out Task calls (shown as TaskSubagentCard), diff calls (shown inline),
-              and any tool calls already rendered inline via streamingContentBlocks to avoid duplication. */}
-              {(isSending || agentStatus === "generating") &&
-                (() => {
-                  // IDs of tool calls already rendered inline from streamingContentBlocks
-                  const inlineToolIds = new Set(
-                    streamingContentBlocks
-                      ?.filter((b) => b.type === "tool_use")
-                      .map((b) =>
-                        b.type === "tool_use" ? b.toolCall.id : "",
-                      ) ?? [],
-                  );
-                  const otherToolCalls = streamingToolCalls.filter(
-                    (tc) =>
-                      !inlineToolIds.has(tc.id) &&
-                      tc.name.toLowerCase() !== "task" &&
-                      (!isDiffToolCall(tc.name) || tc.arguments == null),
-                  );
-                  return otherToolCalls.length > 0 ? (
-                    <div className="shrink-0 px-3 pb-2">
-                      <div className={conversationContentShellClassName}>
-                        <StreamingToolIndicator
-                          toolCalls={otherToolCalls}
-                          isActive={true}
-                          toolCallStartTimes={toolCallStartTimes}
-                        />
-                      </div>
-                    </div>
-                  ) : null;
-                })()}
-
               {/* Team Plan Approval (shown when lead requests plan approval) */}
               {showTeamUi && pendingPlan && (
                 <div className="px-3">

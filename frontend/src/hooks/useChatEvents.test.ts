@@ -2014,7 +2014,7 @@ describe("useChatEvents", () => {
       expect(delegated!.completedAt).toBeDefined();
     });
 
-    it("should NOT subscribe to task events when supportsSubagentTasks is false", () => {
+    it("subscribes universally but ignores non-delegated task events when supportsSubagentTasks is false", () => {
       mockContextConfig = {
         supportsStreamingText: false,
         supportsSubagentTasks: false,
@@ -2022,12 +2022,106 @@ describe("useChatEvents", () => {
       };
 
       const props = makeProps({ contextType: "task" as ContextType });
-      renderHook(() => useChatEvents(props));
+      renderAndClear(props);
 
       const startedHandlers = subscriptions.get("agent:task_started") ?? [];
       const completedHandlers = subscriptions.get("agent:task_completed") ?? [];
-      expect(startedHandlers).toHaveLength(0);
-      expect(completedHandlers).toHaveLength(0);
+      expect(startedHandlers.length).toBeGreaterThan(0);
+      expect(completedHandlers.length).toBeGreaterThan(0);
+
+      act(() => {
+        fireEvent("agent:task_started", {
+          tool_use_id: "legacy-task",
+          tool_name: "Task",
+          subagent_type: "Explore",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+      expect(props.setStreamingTasks).not.toHaveBeenCalled();
+      expect(props.setStreamingContentBlocks).not.toHaveBeenCalled();
+    });
+
+    const nativeDelegationContextMatrix = (
+      [
+        ["ideation", true],
+        ["task", false],
+        ["project", false],
+        ["task_execution", true],
+        ["review", true],
+        ["merge", true],
+        ["branch_update", false],
+        ["delegation", true],
+      ] as const
+    ).flatMap(([contextType, supportsSubagentTasks]) => [
+      [contextType, "Claude", "mcp__ralphx__delegate_start", supportsSubagentTasks] as const,
+      [contextType, "Codex", "ralphx::delegate_start", supportsSubagentTasks] as const,
+    ]);
+
+    it.each(nativeDelegationContextMatrix)(
+      "%s context promotes native delegation from %s provider events",
+      (contextType, _provider, toolName, supportsSubagentTasks) => {
+      mockContextConfig = {
+        supportsStreamingText: true,
+        supportsSubagentTasks,
+        supportsDiffViews: true,
+      };
+      const props = makeProps({ contextType: contextType as ContextType });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: toolName,
+          tool_id: "delegate-any-context",
+          arguments: { agent_name: "ralphx-general-explorer", prompt: "Inspect chat" },
+          result: { job_id: "job-any-context", status: "running" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      expect(props.setStreamingToolCalls).not.toHaveBeenCalled();
+      const tasks = executeUpdater<Map<string, StreamingTask>>(
+        props.setStreamingTasks,
+        new Map(),
+      );
+      expect(tasks.get("delegate-any-context")).toMatchObject({
+        toolName,
+        delegatedJobId: "job-any-context",
+        subagentType: "delegated",
+      });
+      },
+    );
+
+    it("accepts backend-native delegated lifecycle events in contexts without legacy task support", () => {
+      mockContextConfig = {
+        supportsStreamingText: true,
+        supportsSubagentTasks: false,
+        supportsDiffViews: true,
+      };
+      const props = makeProps({ contextType: "project" as ContextType });
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:task_started", {
+          tool_use_id: "delegated-lifecycle",
+          tool_name: "delegate_start",
+          subagent_type: "delegated",
+          delegated_job_id: "job-lifecycle",
+          delegated_conversation_id: "child-conversation",
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const tasks = executeUpdater<Map<string, StreamingTask>>(
+        props.setStreamingTasks,
+        new Map(),
+      );
+      expect(tasks.get("delegated-lifecycle")).toMatchObject({
+        delegatedJobId: "job-lifecycle",
+        delegatedConversationId: "child-conversation",
+      });
     });
 
     it("should create a delegated placeholder task immediately on delegate_start tool calls", () => {
