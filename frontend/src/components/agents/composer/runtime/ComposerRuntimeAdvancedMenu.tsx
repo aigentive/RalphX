@@ -660,7 +660,7 @@ export function ComposerRuntimeAdvancedMenu({
             side={side}
             triggerRef={effortTriggerRef}
             contentRef={nestedContentRef}
-            focusSelector="[role=slider]"
+            focusSelector={`[data-testid="${effort.testId ?? "agent-composer-runtime-effort"}-${effort.value}"]`}
             onLevelChange={onLevelChange}
           >
             {levels.effort}

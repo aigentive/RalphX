@@ -572,6 +572,31 @@ describe("AgentComposerSurface", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("commits enabled provider selections from Advanced", () => {
+    const onProviderChange = vi.fn();
+    renderComposer({
+      provider: {
+        value: "codex",
+        onValueChange: onProviderChange,
+        options: [
+          { id: "codex", label: "Codex" },
+          { id: "claude", label: "Claude" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    expect(onProviderChange).toHaveBeenCalledWith("claude");
+  });
+
   it("opens from the composer-scoped shortcut and resets to Quick after closing", () => {
     renderComposer({
       model: {
@@ -635,6 +660,11 @@ describe("AgentComposerSurface", () => {
           { id: "gpt-5.5", label: "gpt-5.5" },
           { id: "gpt-5.4", label: "gpt-5.4" },
         ],
+        fastMode: {
+          visible: true,
+          value: false,
+          onValueChange: vi.fn(),
+        },
       },
     });
 
@@ -663,6 +693,33 @@ describe("AgentComposerSurface", () => {
       screen.getByRole("button", { name: "Back to Advanced runtime settings" }),
     );
     expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Provider,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-provider-submenu"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Advanced runtime settings" }),
+    );
+    expect(screen.getByRole("button", { name: /^Provider,/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-effort-submenu"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Advanced runtime settings" }),
+    );
+    expect(screen.getByRole("button", { name: /^Effort,/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Speed,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-speed-submenu"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Advanced runtime settings" }),
+    );
+    expect(screen.getByRole("button", { name: /^Speed,/ })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
     fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-effort-submenu"), {
@@ -776,6 +833,34 @@ describe("AgentComposerSurface", () => {
 
     expect(onModelChange).toHaveBeenCalledWith("future-model");
     expect(screen.getByTestId("agent-composer-runtime-advanced")).toBeInTheDocument();
+  });
+
+  it("hydrates custom model values and commits them from Enter", () => {
+    const onModelChange = vi.fn();
+    renderComposer({
+      model: {
+        value: "custom-current",
+        onValueChange: onModelChange,
+        options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+        allowCustomValue: true,
+        customPlaceholder: "Custom model ID",
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
+
+    const customInput = screen.getByPlaceholderText("Custom model ID");
+    expect(customInput).toHaveValue("custom-current");
+    fireEvent.change(customInput, { target: { value: "next-custom" } });
+    fireEvent.keyDown(customInput, { key: "Enter" });
+
+    expect(onModelChange).toHaveBeenCalledWith("next-custom");
   });
 
   it("filters and selects projects from the compact project line", () => {
