@@ -32,8 +32,10 @@ use crate::domain::entities::{
     AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
     AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    ArtifactId, ChatContextType, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::domain::services::github_service::{
@@ -2944,6 +2946,77 @@ async fn supervised_agent_workspace_pr_autofix_marks_healthy_pr_monitoring() {
     assert_eq!(
         updated.pr_supervision_summary.as_deref(),
         Some("RalphX is monitoring PR health.")
+    );
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_suppresses_auto_merge_enable_during_review_guard() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-review-guard-conversation",
+        "project-review-guard",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.pr_supervision_status = Some("waiting".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let project_id = workspace.project_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+    monitor.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 101,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "guarded-diff".to_string(),
+        head_sha: Some("guarded-head".to_string()),
+        last_error: None,
+    });
+    workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("review guard should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("healthy-guarded-head")));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("guarded healthy PR should not error");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().mark_pr_ready_calls, 0);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.pr_auto_merge_current, Some(false));
+    assert_eq!(
+        updated.pr_supervision_status.as_deref(),
+        Some("review_paused")
+    );
+    assert_eq!(
+        updated.pr_supervision_summary.as_deref(),
+        Some("GitHub auto-merge is paused while the workspace Review is authoritative.")
     );
 }
 

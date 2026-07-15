@@ -2156,8 +2156,16 @@ async fn route_agent_workspace_pr_autofix_for_target(
             Arc::clone(&workspace_repo),
         )
         .await?;
-        let auto_merge_pending = workspace.pr_auto_merge_desired && !auto_merge_current;
+        let auto_merge_guard_blocks_enable = workspace_review_auto_merge_guard_blocks_enable(
+            workspace_repo.as_ref(),
+            conversation_id,
+        )
+        .await?;
+        let auto_merge_pending = workspace.pr_auto_merge_desired
+            && !auto_merge_current
+            && !auto_merge_guard_blocks_enable;
         if !auto_merge_pending
+            && !auto_merge_guard_blocks_enable
             && (workspace.pr_supervision_status.as_deref() != Some("monitoring")
                 || workspace.pr_auto_merge_current != Some(auto_merge_current))
         {
@@ -2443,6 +2451,20 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
     Ok(true)
 }
 
+async fn workspace_review_auto_merge_guard_blocks_enable(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    conversation_id: &ChatConversationId,
+) -> crate::AppResult<bool> {
+    let monitor = workspace_repo
+        .get_workspace_review_monitor(conversation_id)
+        .await?;
+    Ok(
+        crate::application::agent_workspace_review_auto_merge::auto_merge_guard_blocks_enable(
+            monitor.as_ref(),
+        ),
+    )
+}
+
 async fn sync_agent_workspace_auto_merge_preference(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -2454,12 +2476,12 @@ async fn sync_agent_workspace_auto_merge_preference(
     let remote_current = health.auto_merge_request.is_some();
     let mut current = remote_current;
 
-    let monitor = workspace_repo
-        .get_workspace_review_monitor(&workspace.conversation_id)
-        .await?;
-    if crate::application::agent_workspace_review_auto_merge::auto_merge_guard_blocks_enable(
-        monitor.as_ref(),
-    ) {
+    if workspace_review_auto_merge_guard_blocks_enable(
+        workspace_repo.as_ref(),
+        &workspace.conversation_id,
+    )
+    .await?
+    {
         if remote_current {
             github.disable_pr_auto_merge(working_dir, pr_number).await?;
         }
