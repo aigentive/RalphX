@@ -86,6 +86,14 @@ pub trait PlanBranchRepository: Send + Sync {
         Ok(())
     }
 
+    async fn get_local_cleanup_status(&self, _id: &PlanBranchId) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn clear_local_cleanup_status(&self, _id: &PlanBranchId) -> AppResult<()> {
+        Ok(())
+    }
+
     /// Update plan branch status
     async fn update_status(&self, id: &PlanBranchId, status: PlanBranchStatus) -> AppResult<()>;
 

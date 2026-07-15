@@ -654,34 +654,52 @@ fn apply_external_mcp_overlay_or_embedded_from_path(
     }
 }
 
-/// Resolve file_logging setting for early use (before tracing subscriber init).
-/// Priority: RALPHX_FILE_LOGGING env > config/ralphx.yaml `file_logging` field > default (true).
-///
-/// This does a lightweight YAML parse — the full config is loaded lazily later.
-pub fn resolve_file_logging_early() -> bool {
-    if let Ok(val) = std::env::var("RALPHX_FILE_LOGGING") {
-        return matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+#[derive(Deserialize)]
+struct MinimalEarlyConfig {
+    #[serde(default = "default_file_logging")]
+    file_logging: bool,
+}
+
+fn parse_early_file_logging(yaml: &str) -> Option<bool> {
+    serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
+        .ok()
+        .map(|config| config.file_logging)
+}
+
+fn resolve_file_logging_from_sources(
+    environment_value: Option<&str>,
+    runtime_config_path: Option<&Path>,
+    embedded_config: &str,
+) -> bool {
+    if let Some(value) = environment_value {
+        return matches!(value.to_lowercase().as_str(), "true" | "1" | "yes");
     }
 
-    #[derive(Deserialize)]
-    struct MinimalConfig {
-        #[serde(default = "default_file_logging_true")]
-        file_logging: bool,
-    }
-    fn default_file_logging_true() -> bool {
-        true
-    }
-
-    let path = config_path();
-    // Main config path is a RalphX-owned runtime config path.
-    // codeql[rust/path-injection]
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        if let Ok(cfg) = serde_yaml::from_str::<MinimalConfig>(&contents) {
-            return cfg.file_logging;
+    if let Some(path) = runtime_config_path {
+        // Runtime config paths are established from RalphX-owned bundled resources.
+        // codeql[rust/path-injection]
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Some(file_logging) = parse_early_file_logging(&contents) {
+                return file_logging;
+            }
         }
     }
 
-    true
+    parse_early_file_logging(embedded_config).unwrap_or(true)
+}
+
+/// Resolve file logging before tracing initialization.
+///
+/// Priority: environment override, configured bundled runtime file, embedded canonical config,
+/// then the fail-safe default (`true`).
+pub fn resolve_file_logging_early() -> bool {
+    let environment_value = std::env::var("RALPHX_FILE_LOGGING").ok();
+    let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
+    resolve_file_logging_from_sources(
+        environment_value.as_deref(),
+        runtime_config_path.as_deref(),
+        EMBEDDED_CONFIG,
+    )
 }
 
 fn resolve_tools_from_spec(

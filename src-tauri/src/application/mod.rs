@@ -12,6 +12,7 @@ pub mod agent_conversation_linear_issue;
 pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
+pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
@@ -29,6 +30,8 @@ pub mod agent_workspace_review_base;
 #[cfg(test)]
 mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
+#[cfg(test)]
+mod agent_workspace_review_mode_guard_tests;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
 pub mod app_setup;
@@ -58,6 +61,8 @@ pub mod branch_update_workflow;
 mod branch_update_executor_tests;
 #[cfg(test)]
 mod git_mutation_recovery_tests;
+#[cfg(test)]
+mod git_service_strict_worktree_tests;
 pub mod granola_integration_service;
 pub mod harness_runtime_registry;
 pub mod http_shutdown;
@@ -315,6 +320,10 @@ mod agent_conversation_archive_restart_tests;
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_restart_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
 #[cfg(test)]
