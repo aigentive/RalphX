@@ -16,9 +16,10 @@ use crate::domain::entities::plan_branch::PrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ArtifactId, BranchUpdateCapacityOwnership,
     BranchUpdateContinuation, BranchUpdateDirection, BranchUpdateOperation,
-    BranchUpdateWorkspaceOwnership, ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind,
-    IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, IdeationSessionId,
-    InternalStatus, Priority, Project, ProposalCategory, TaskProposal,
+    BranchUpdateWorkspaceOwnership, ChatContextType, ChatConversation, GitTargetLeaseOwner,
+    IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
+    IdeationSession, IdeationSessionId, InternalStatus, Priority, Project, ProposalCategory,
+    TaskProposal,
 };
 use crate::domain::repositories::{BranchUpdateActivation, BranchUpdateActivationOutcome};
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus as RemotePrStatus};
@@ -166,6 +167,247 @@ async fn restart_branch_update_preflight_rejects_missing_durable_authority() {
     assert!(error
         .to_string()
         .contains("without active durable authority"));
+}
+
+#[tokio::test]
+async fn restart_branch_update_preflight_rejects_stale_operation_state() {
+    let state = setup_apply_state();
+    let repo_dir = setup_git_repo();
+    let worktree_parent = tempfile::TempDir::new().expect("worktree parent should be created");
+    let mut project = Project::new(
+        "Stale branch update operation".to_string(),
+        repo_dir.path().to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    let mut task = crate::domain::entities::Task::new(
+        project.id.clone(),
+        "Task with stale branch update".to_string(),
+    );
+    task.task_branch = Some(format!("task/stale-update-{}", task.id.as_str()));
+    let task_branch = task.task_branch.clone().expect("task branch should be set");
+    git_ok(repo_dir.path(), &["branch", &task_branch, "main"]);
+    let task = state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+    let target_identity = GitService::canonical_target_identity(repo_dir.path(), &task_branch)
+        .await
+        .expect("target identity should resolve");
+    let mut operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::TaskBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "restart-stale-history",
+        "main",
+        task_branch,
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        target_identity,
+        chrono::Utc::now(),
+    );
+    operation.workspace_path = Some(
+        validate_absolute_non_root_path(
+            Path::new(&compute_source_update_worktree_path(
+                &project,
+                task.id.as_str(),
+            )),
+            "restart stale branch-update workspace",
+        )
+        .expect("derived workspace path should be safe"),
+    );
+    let activation = state
+        .branch_update_repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "restart_stale_branch_update_test".to_string(),
+        })
+        .await
+        .expect("branch update should activate");
+    assert!(matches!(
+        activation,
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+
+    let error = preflight_branch_updates_for_restart(&state, &project, &[task])
+        .await
+        .expect_err("status drift must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("does not match its active operation"));
+}
+
+#[tokio::test]
+async fn restart_branch_update_preflight_rejects_released_target_lease() {
+    let state = setup_apply_state();
+    let repo_dir = setup_git_repo();
+    let worktree_parent = tempfile::TempDir::new().expect("worktree parent should be created");
+    let mut project = Project::new(
+        "Missing target lease".to_string(),
+        repo_dir.path().to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    let mut task = crate::domain::entities::Task::new(
+        project.id.clone(),
+        "Task with released lease".to_string(),
+    );
+    task.task_branch = Some(format!("task/released-lease-{}", task.id.as_str()));
+    let task_branch = task.task_branch.clone().expect("task branch should be set");
+    git_ok(repo_dir.path(), &["branch", &task_branch, "main"]);
+    let task = state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+    let target_identity = GitService::canonical_target_identity(repo_dir.path(), &task_branch)
+        .await
+        .expect("target identity should resolve");
+    let mut operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::TaskBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "restart-missing-lease-history",
+        "main",
+        task_branch,
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        target_identity.clone(),
+        chrono::Utc::now(),
+    );
+    operation.workspace_path = Some(
+        validate_absolute_non_root_path(
+            Path::new(&compute_source_update_worktree_path(
+                &project,
+                task.id.as_str(),
+            )),
+            "restart missing-lease branch-update workspace",
+        )
+        .expect("derived workspace path should be safe"),
+    );
+    let activation = state
+        .branch_update_repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingTaskBranch,
+            trigger: "restart_missing_lease_branch_update_test".to_string(),
+        })
+        .await
+        .expect("branch update should activate");
+    let (operation_id, fencing_epoch) = match activation {
+        BranchUpdateActivationOutcome::Applied {
+            operation_id,
+            fencing_epoch,
+            ..
+        } => (operation_id, fencing_epoch),
+        other => panic!("unexpected activation outcome: {other:?}"),
+    };
+    let owner = GitTargetLeaseOwner::branch_update(task.id.as_str(), operation_id.as_str());
+    state
+        .branch_update_repo
+        .release_target_lease(&target_identity, &owner, fencing_epoch)
+        .await
+        .expect("lease release should complete");
+
+    let error = preflight_branch_updates_for_restart(&state, &project, &[task])
+        .await
+        .expect_err("released lease must fail closed");
+
+    assert!(error.to_string().contains("authority is busy or stale"));
+}
+
+#[tokio::test]
+async fn restart_branch_update_preflight_rejects_unregistered_existing_workspace() {
+    let state = setup_apply_state();
+    let repo_dir = setup_git_repo();
+    let worktree_parent = tempfile::TempDir::new().expect("worktree parent should be created");
+    let mut project = Project::new(
+        "Unregistered branch update workspace".to_string(),
+        repo_dir.path().to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    let mut task = crate::domain::entities::Task::new(
+        project.id.clone(),
+        "Task with unregistered workspace".to_string(),
+    );
+    task.task_branch = Some(format!("task/unregistered-update-{}", task.id.as_str()));
+    let task_branch = task.task_branch.clone().expect("task branch should be set");
+    git_ok(repo_dir.path(), &["branch", &task_branch, "main"]);
+    let task = state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+    let workspace_path = validate_absolute_non_root_path(
+        Path::new(&compute_source_update_worktree_path(
+            &project,
+            task.id.as_str(),
+        )),
+        "restart unregistered branch-update workspace",
+    )
+    .expect("derived workspace path should be safe");
+    // codeql[rust/path-injection]
+    std::fs::create_dir_all(&workspace_path).expect("unregistered workspace should exist");
+    let target_identity = GitService::canonical_target_identity(repo_dir.path(), &task_branch)
+        .await
+        .expect("target identity should resolve");
+    let mut operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::TaskBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "restart-unregistered-history",
+        "main",
+        task_branch,
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        target_identity,
+        chrono::Utc::now(),
+    );
+    operation.workspace_path = Some(workspace_path.clone());
+    let activation = state
+        .branch_update_repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingTaskBranch,
+            trigger: "restart_unregistered_branch_update_test".to_string(),
+        })
+        .await
+        .expect("branch update should activate");
+    assert!(matches!(
+        activation,
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+
+    let error = preflight_branch_updates_for_restart(&state, &project, &[task])
+        .await
+        .expect_err("unregistered workspace must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("workspace exists without Git registration"));
+    assert!(
+        workspace_path.is_dir(),
+        "preflight must not delete unregistered data"
+    );
 }
 
 #[tokio::test]

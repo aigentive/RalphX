@@ -579,6 +579,111 @@ async fn restart_owner_inspection_accepts_only_the_exact_current_attempt_merge_w
 }
 
 #[tokio::test]
+async fn restart_owner_inspection_classifies_owned_conversation_and_linked_worktrees() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-owner-classification".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let session_id = IdeationSessionId::from_string("session-restart-owner-classification");
+    let execution_plan_id = ExecutionPlanId::from_string("execution-owner-classification");
+    let mut plan_branch =
+        linked_plan_branch_for_workspace(&project, &mut workspace, session_id.clone());
+    plan_branch.execution_plan_id = Some(execution_plan_id.clone());
+
+    let owner = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[],
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("conversation-owned worktree should be classified");
+    assert_eq!(owner, RestartWorkspaceOwner::OwnedConversation);
+
+    let conversation_path = PathBuf::from(&workspace.worktree_path);
+    let linked_path = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+        .expect("linked path should resolve");
+    GitService::delete_worktree(&repo_path, &conversation_path)
+        .await
+        .expect("conversation worktree should be removed");
+    GitService::checkout_existing_branch_worktree_strict(
+        &repo_path,
+        &linked_path,
+        &plan_branch.branch_name,
+    )
+    .await
+    .expect("linked plan worktree should be created");
+
+    let owner = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[],
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("linked worktree should be classified");
+    assert_eq!(owner, RestartWorkspaceOwner::ExistingLinked);
+}
+
+#[tokio::test]
+async fn restart_owner_inspection_classifies_unowned_and_recreatable_branches() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-unowned-branch".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let session_id = IdeationSessionId::from_string("session-restart-unowned-branch");
+    let execution_plan_id = ExecutionPlanId::from_string("execution-unowned-branch");
+    let mut plan_branch =
+        linked_plan_branch_for_workspace(&project, &mut workspace, session_id.clone());
+    plan_branch.execution_plan_id = Some(execution_plan_id.clone());
+    let conversation_path = PathBuf::from(&workspace.worktree_path);
+    GitService::delete_worktree(&repo_path, &conversation_path)
+        .await
+        .expect("conversation worktree should be removed");
+
+    let owner = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[],
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("unowned preserved branch should be classified");
+    assert_eq!(owner, RestartWorkspaceOwner::UnownedPreservedBranch);
+
+    git(&repo_path, &["branch", "-D", &plan_branch.branch_name]);
+    let owner = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[],
+        RestartWorkspaceCleanupProof::OwnedMergedCleanup,
+    )
+    .await
+    .expect("owned cleanup proof should permit recreation");
+    assert_eq!(owner, RestartWorkspaceOwner::RecreatableFromCleanup);
+}
+
+#[tokio::test]
 async fn restart_owner_inspection_refuses_unregistered_derived_linked_path() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");

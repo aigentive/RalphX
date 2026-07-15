@@ -244,6 +244,100 @@ async fn replacement_cleanup_validates_the_whole_batch_before_mutating_any_workt
 }
 
 #[tokio::test]
+async fn replacement_cleanup_deletes_task_branch_checked_out_in_project_root() {
+    let repo = setup_git_repo();
+    let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let running_registry = Arc::new(crate::domain::services::MemoryRunningAgentRegistry::new());
+
+    let project = project_repo
+        .create(Project::new(
+            "Project-root branch cleanup".to_string(),
+            repo.path().to_string_lossy().into_owned(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id.clone(), "Current root branch".to_string());
+    let task_branch = format!("cleanup/root-{}", task.id.as_str());
+    git_ok(repo.path(), &["checkout", "-b", &task_branch]);
+    task.task_branch = Some(task_branch.clone());
+    let task = task_repo.create(task).await.unwrap();
+
+    let service = TaskCleanupService::new(
+        Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        None,
+    );
+    let report = service
+        .prepare_tasks_for_replacement(&[task], StopMode::DirectStop, None)
+        .await;
+
+    assert!(
+        report.errors.is_empty(),
+        "unexpected cleanup errors: {:?}",
+        report.errors
+    );
+    assert_eq!(
+        GitService::get_current_branch(repo.path()).await.unwrap(),
+        "main"
+    );
+    assert!(
+        !GitService::branch_exists(repo.path(), &task_branch)
+            .await
+            .expect("task branch lookup should succeed"),
+        "cleanup should delete the task branch after moving the checkout to base"
+    );
+}
+
+#[tokio::test]
+async fn replacement_cleanup_preserves_explicitly_preserved_branch() {
+    let repo = setup_git_repo();
+    let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let running_registry = Arc::new(crate::domain::services::MemoryRunningAgentRegistry::new());
+
+    let project = project_repo
+        .create(Project::new(
+            "Preserved branch cleanup".to_string(),
+            repo.path().to_string_lossy().into_owned(),
+        ))
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id.clone(), "Preserved branch".to_string());
+    let preserved_branch = format!("cleanup/preserved-{}", task.id.as_str());
+    git_ok(repo.path(), &["branch", &preserved_branch, "main"]);
+    task.task_branch = Some(preserved_branch.clone());
+    let task = task_repo.create(task).await.unwrap();
+
+    let service = TaskCleanupService::new(
+        Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        None,
+    );
+    service
+        .preflight_tasks_for_replacement(&[task.clone()], Some(&preserved_branch))
+        .await
+        .expect("preserved branch should pass strict preflight");
+    let report = service
+        .prepare_tasks_for_replacement(&[task], StopMode::DirectStop, Some(&preserved_branch))
+        .await;
+
+    assert!(
+        report.errors.is_empty(),
+        "unexpected cleanup errors: {:?}",
+        report.errors
+    );
+    assert!(
+        GitService::branch_exists(repo.path(), &preserved_branch)
+            .await
+            .expect("preserved branch lookup should succeed"),
+        "preserved branch must not be deleted during replacement cleanup"
+    );
+}
+
+#[tokio::test]
 async fn replacement_cleanup_fails_closed_when_a_task_row_disappeared() {
     let repo = setup_git_repo();
     let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
