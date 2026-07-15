@@ -13,9 +13,10 @@ use crate::commands::ideation_commands::{
 };
 use crate::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
-    IdeationSession, IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority,
-    ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId,
-    ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
+    AutomationRunStatus, AutomationStatus, IdeationSession, IdeationSessionId,
+    IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
+    TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
+    ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::{
@@ -1003,6 +1004,9 @@ pub async fn finalize_proposals_impl(
         )));
     }
 
+    let automation_bridge_authorized =
+        automation_bridge_finalize_authorized(state, &session).await?;
+
     // ─── Acceptance Gate ───────────────────────────────────────────────────────
     // Resolve effective policy from (settings, session.origin) — external overrides
     // may change whether require_accept_for_finalize applies for this session.
@@ -1022,7 +1026,7 @@ pub async fn finalize_proposals_impl(
         if let Err(e) = check_verification_gate(&session, &effective_policy) {
             return Err(AppError::Validation(e.to_string()));
         }
-        if effective_policy.require_accept_for_finalize {
+        if effective_policy.require_accept_for_finalize && !automation_bridge_authorized {
             // Set acceptance_status to Pending (CAS: only if currently None)
             state
                 .ideation_session_repo
@@ -1119,6 +1123,68 @@ pub async fn finalize_proposals_impl(
         session_title: session.title.clone(),
         project_name: Some(project.name.clone()),
     })
+}
+
+pub(crate) async fn automation_bridge_finalize_authorized(
+    state: &AppState,
+    session: &IdeationSession,
+) -> AppResult<bool> {
+    if session.verification_status != VerificationStatus::Verified {
+        return Ok(false);
+    }
+    let Some(plan_artifact_id) = session.plan_artifact_id.as_ref() else {
+        return Ok(false);
+    };
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(&session.id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let Some(conversation) = state
+        .chat_conversation_repo
+        .get_by_id(&workspace.conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let Some(run_id) = conversation.automation_run_id.as_ref() else {
+        return Ok(false);
+    };
+    let Some(run) = state.automation_run_repo.get_by_id(run_id).await? else {
+        return Ok(false);
+    };
+    if run.status != AutomationRunStatus::Running
+        || run.conversation_id.as_ref() != Some(&conversation.id)
+    {
+        return Ok(false);
+    }
+    let Some(latest) = state
+        .automation_run_repo
+        .latest_for_automation(&run.automation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if latest.id != run.id {
+        return Ok(false);
+    }
+    let Some(automation) = state.automation_repo.get_by_id(&run.automation_id).await? else {
+        return Ok(false);
+    };
+    if automation.status != AutomationStatus::Active
+        || automation.run_mode
+            != crate::application::automation::service::IDEATION_BRIDGE_RUN_MODE
+        || automation.completion_signal
+            != crate::application::automation::service::IDEATION_FINALIZED_COMPLETION_SIGNAL
+    {
+        return Ok(false);
+    }
+    let Some(approval) = state.plan_approval_repo.get_by_session(&session.id).await? else {
+        return Ok(false);
+    };
+    Ok(approval.artifact_id == *plan_artifact_id)
 }
 
 /// Apply proposals core for an already-validated session.

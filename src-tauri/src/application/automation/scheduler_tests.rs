@@ -61,7 +61,8 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
-    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
+    AutomationSettingsPatch,
     IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
     PlanArtifactApprovalRepository,
 };
@@ -194,6 +195,8 @@ struct RecordingResumer {
     running_responses: Mutex<VecDeque<bool>>,
     launches_paused: Mutex<bool>,
     prompts: Mutex<Vec<(ChatConversationId, String)>>,
+    ideation_prompts: Mutex<Vec<(IdeationSessionId, String)>>,
+    ideation_switches: Mutex<Vec<ChatConversationId>>,
     switches: Mutex<Vec<ChatConversationId>>,
     fail_next_send: Mutex<bool>,
     queue_next_send: Mutex<bool>,
@@ -232,6 +235,10 @@ impl RecordingResumer {
         self.prompts.lock().unwrap().clone()
     }
 
+    fn ideation_prompts(&self) -> Vec<(IdeationSessionId, String)> {
+        self.ideation_prompts.lock().unwrap().clone()
+    }
+
     fn switches(&self) -> Vec<ChatConversationId> {
         self.switches.lock().unwrap().clone()
     }
@@ -254,12 +261,24 @@ impl AutomationRunResumer for RecordingResumer {
         Ok(*self.running.lock().unwrap())
     }
 
+    async fn is_ideation_agent_running(&self, _session_id: &IdeationSessionId) -> AppResult<bool> {
+        Ok(*self.running.lock().unwrap())
+    }
+
     async fn launches_paused(&self) -> AppResult<bool> {
         Ok(*self.launches_paused.lock().unwrap())
     }
 
     async fn switch_to_edit(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
         self.switches.lock().unwrap().push(conversation_id.clone());
+        Ok(())
+    }
+
+    async fn switch_to_ideation(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.ideation_switches
+            .lock()
+            .unwrap()
+            .push(conversation_id.clone());
         Ok(())
     }
 
@@ -289,6 +308,18 @@ impl AutomationRunResumer for RecordingResumer {
             *self.purged_queued_messages.lock().unwrap() += 1;
             return Ok(ResumeDelivery::QueuedAndPurged);
         }
+        Ok(ResumeDelivery::Delivered)
+    }
+
+    async fn resume_ideation_with_prompt(
+        &self,
+        session_id: &IdeationSessionId,
+        prompt: &str,
+    ) -> AppResult<ResumeDelivery> {
+        self.ideation_prompts
+            .lock()
+            .unwrap()
+            .push((session_id.clone(), prompt.to_string()));
         Ok(ResumeDelivery::Delivered)
     }
 }
@@ -1229,6 +1260,31 @@ impl ParkedPlanGateScenario {
             )
             .await
             .unwrap();
+    }
+
+    async fn configure_ideation_bridge(&self, verified: bool) {
+        self.automation_repo
+            .update_config(
+                &self.automation_id,
+                AutomationConfigPatch {
+                    run_mode: Some("ideation".to_string()),
+                    completion_signal: Some("ideation_finalized".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        self.enable_plan_deep_verification().await;
+        if verified {
+            self.session_repo
+                .update_verification_state(
+                    &self.session_id,
+                    VerificationStatus::Verified,
+                    false,
+                )
+                .await
+                .unwrap();
+        }
     }
 
     async fn set_completion_signal(&self, completion_signal: &str) {
@@ -4536,6 +4592,90 @@ async fn automation_scheduler_plan_approval_delivery_ignores_verification_hold()
     assert_eq!(latest.status, AutomationRunStatus::Running);
     assert!(latest.plan_pending_instructions.is_none());
     assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_verified_ideation_bridge_approval_starts_proposal_finalization() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert!(scenario.resumer.prompts().is_empty());
+    let prompts = scenario.resumer.ideation_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].0, scenario.session_id);
+    assert!(prompts[0].1.contains("<auto-propose>"));
+    assert!(prompts[0].1.contains("finalize all proposals"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_ideation_bridge_rejects_approval_without_verified_plan() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(false).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 1);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Paused);
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some("ideation_bridge_verification_failed")
+    );
+    assert!(scenario.resumer.ideation_prompts().is_empty());
+}
+
+#[tokio::test]
+async fn automation_scheduler_completes_ideation_bridge_only_after_session_is_accepted() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .session_repo
+        .update_status(&scenario.session_id, crate::domain::entities::IdeationSessionStatus::Accepted)
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.completed_runs, 1);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Completed);
+    assert_eq!(run.status, AutomationRunStatus::Completed);
 }
 
 #[tokio::test]

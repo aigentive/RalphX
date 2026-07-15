@@ -23,6 +23,7 @@ use crate::application::automation::merged_run_finalizer::AutomationMergedRunFin
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, clear_plan_phase_publication_metadata,
     current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
+    ideation_bridge_delivery_prompt,
     matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
     AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
     AutomationPlanVerificationStarter, AutomationRunResumer, ResumeDelivery,
@@ -41,7 +42,8 @@ use crate::application::automation::provisioning::{
 };
 use crate::application::automation::service::{
     AutomationJudgeApplyOutcome, AutomationService, CompleteAutomationJudgeInput,
-    PendingGoalReplanApplyOutcome,
+    PendingGoalReplanApplyOutcome, IDEATION_BRIDGE_RUN_MODE,
+    IDEATION_FINALIZED_COMPLETION_SIGNAL,
 };
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
@@ -67,8 +69,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
     ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState,
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode, AutomationRun,
-    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationSession,
-    VerificationRunSnapshot, VerificationStatus, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId, IdeationSession,
+    IdeationSessionStatus, VerificationRunSnapshot, VerificationStatus,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -1262,6 +1265,7 @@ pub struct AutomationScheduler {
     service: AutomationService,
     provisioner: AutomationRunProvisioner,
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    conversation_repo: Arc<dyn ChatConversationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -1320,7 +1324,7 @@ impl AutomationScheduler {
         let provisioner = AutomationRunProvisioner::new(
             automation_repo,
             Arc::clone(&run_repo),
-            conversation_repo,
+            Arc::clone(&conversation_repo),
             Arc::clone(&workspace_repo),
             starter,
             event_emitter,
@@ -1331,6 +1335,7 @@ impl AutomationScheduler {
             service,
             provisioner,
             agent_run_repo,
+            conversation_repo,
             run_repo,
             workspace_repo,
             ideation_session_repo,
@@ -1718,6 +1723,11 @@ impl AutomationScheduler {
             .workspace_repo
             .get_by_conversation_id(conversation_id)
             .await?;
+        if automation.completion_signal == IDEATION_FINALIZED_COMPLETION_SIGNAL {
+            self.observe_ideation_bridge_run(automation, run, workspace.as_ref(), summary)
+                .await?;
+            return Ok(());
+        }
         if let Some(workspace) = workspace.as_ref() {
             if workspace.mode == AgentConversationWorkspaceMode::Plan {
                 self.observe_plan_phase_running_run(automation, run, workspace, summary)
@@ -1909,6 +1919,159 @@ impl AutomationScheduler {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    async fn observe_ideation_bridge_run(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        workspace: Option<&AgentConversationWorkspace>,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(workspace) = workspace else {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_missing_session",
+                "Automation ideation bridge lost its planning workspace",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        };
+        let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_missing_session",
+                "Automation ideation bridge has no linked planning session",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        };
+        let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_missing_session",
+                "Automation ideation bridge planning session was not found",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        };
+
+        if session.status == IdeationSessionStatus::Accepted {
+            if self
+                .transition_service
+                .transition_run_status(
+                    &run.id,
+                    AutomationRunStatus::Running,
+                    AutomationRunStatus::Completed,
+                    None,
+                    None,
+                )
+                .await?
+            {
+                summary.completed_runs += 1;
+                self.transition_service
+                    .transition_automation_status(
+                        &automation.id,
+                        AutomationStatus::Active,
+                        AutomationStatus::Completed,
+                        None,
+                        None,
+                    )
+                    .await?;
+            }
+            return Ok(());
+        }
+        if session.status != IdeationSessionStatus::Active {
+            self.fail_running_run(
+                run,
+                "ideation_bridge_not_finalized",
+                &format!(
+                    "Automation ideation bridge session entered {} before finalization",
+                    session.status
+                ),
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+        if running_run_has_exceeded(run, self.config.max_run_duration) {
+            self.fail_running_run(
+                run,
+                "timeout",
+                "Automation ideation bridge exceeded max_run_duration_secs",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let bridge_conversation = self
+            .conversation_repo
+            .get_active_for_context(ChatContextType::Ideation, session_id.as_str())
+            .await?;
+        let bridge_agent_run = match bridge_conversation.as_ref() {
+            Some(conversation) => self
+                .latest_agent_run_for_current_phase(&conversation.id, run)
+                .await?,
+            None => None,
+        };
+        let restart_orphan = bridge_agent_run
+            .as_ref()
+            .is_some_and(agent_run_is_restart_orphan);
+        match bridge_agent_run.as_ref().map(|agent_run| agent_run.status) {
+            Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled) if !restart_orphan => {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_agent_failed",
+                    "Automation ideation bridge agent exited before finalizing proposals",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Completed) => {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_not_finalized",
+                    "Automation ideation bridge agent completed without finalizing proposals",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Running) => {}
+            Some(AgentRunStatus::Cancelled) | None => {
+                if session.pending_initial_prompt.is_some()
+                    || self.resumer.is_ideation_agent_running(session_id).await?
+                {
+                    return Ok(());
+                }
+                let Some(approval) = matching_plan_approval_for_workspace(
+                    &self.ideation_session_repo,
+                    &self.plan_approval_repo,
+                    workspace,
+                )
+                .await?
+                else {
+                    self.fail_running_run(
+                        run,
+                        "ideation_bridge_approval_missing",
+                        "Automation ideation bridge lost its approved plan",
+                        summary,
+                    )
+                    .await?;
+                    return Ok(());
+                };
+                self.resumer
+                    .resume_ideation_with_prompt(
+                        session_id,
+                        &ideation_bridge_delivery_prompt(&approval),
+                    )
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -2713,6 +2876,46 @@ impl AutomationScheduler {
             return Ok(());
         }
 
+        let bridge_session_id = if automation.run_mode == IDEATION_BRIDGE_RUN_MODE {
+            let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_missing_session",
+                    "Automation ideation bridge has no linked planning session",
+                    summary,
+                )
+                .await?;
+                return Ok(());
+            };
+            let verified = self
+                .ideation_session_repo
+                .get_by_id(session_id)
+                .await?
+                .is_some_and(|session| session.verification_status == VerificationStatus::Verified);
+            if !verified {
+                if self
+                    .transition_service
+                    .transition_automation_status(
+                        &automation.id,
+                        AutomationStatus::Active,
+                        AutomationStatus::Paused,
+                        Some("ideation_bridge_verification_failed".to_string()),
+                        Some(
+                            "The approved automation bridge plan did not complete deep verification"
+                                .to_string(),
+                        ),
+                    )
+                    .await?
+                {
+                    summary.paused_automations += 1;
+                }
+                return Ok(());
+            }
+            Some(session_id.clone())
+        } else {
+            None
+        };
+
         if self
             .service
             .apply_pending_goal_replan_for_run(&automation.id, run)
@@ -2740,7 +2943,11 @@ impl AutomationScheduler {
 
         clear_plan_phase_publication_metadata(&self.run_repo, &self.workspace_repo, run, workspace)
             .await?;
-        self.resumer.switch_to_edit(conversation_id).await?;
+        if bridge_session_id.is_some() {
+            self.resumer.switch_to_ideation(conversation_id).await?;
+        } else {
+            self.resumer.switch_to_edit(conversation_id).await?;
+        }
         if !self
             .transition_service
             .transition_run_status_clearing_plan_pending_instructions(
@@ -2760,12 +2967,22 @@ impl AutomationScheduler {
             return Ok(());
         }
 
-        let prompt = approval_delivery_prompt(approval);
-        match self
-            .resumer
-            .resume_with_prompt(conversation_id, &prompt)
-            .await
-        {
+        let delivery = match bridge_session_id.as_ref() {
+            Some(session_id) => {
+                self.resumer
+                    .resume_ideation_with_prompt(
+                        session_id,
+                        &ideation_bridge_delivery_prompt(approval),
+                    )
+                    .await
+            }
+            None => {
+                self.resumer
+                    .resume_with_prompt(conversation_id, &approval_delivery_prompt(approval))
+                    .await
+            }
+        };
+        match delivery {
             Ok(ResumeDelivery::Delivered) => {}
             Ok(ResumeDelivery::QueuedAndPurged) => {
                 self.run_repo

@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::application::agent_conversation_mode_switch::system_switch_automation_run_to_edit;
+use crate::application::agent_conversation_mode_switch::{
+    system_switch_automation_run_to_edit, system_switch_automation_run_to_ideation,
+};
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
 };
@@ -167,12 +169,27 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
             .await)
     }
 
+    async fn is_ideation_agent_running(
+        &self,
+        session_id: &crate::domain::entities::IdeationSessionId,
+    ) -> AppResult<bool> {
+        Ok(self
+            .chat_service()
+            .is_agent_running(ChatContextType::Ideation, session_id.as_str())
+            .await)
+    }
+
     async fn launches_paused(&self) -> AppResult<bool> {
         Ok(self.execution_state.is_paused())
     }
 
     async fn switch_to_edit(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
         system_switch_automation_run_to_edit(conversation_id, &self.state).await?;
+        Ok(())
+    }
+
+    async fn switch_to_ideation(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        system_switch_automation_run_to_ideation(conversation_id, &self.state).await?;
         Ok(())
     }
 
@@ -189,6 +206,37 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
             prompt,
         )
         .await
+    }
+
+    async fn resume_ideation_with_prompt(
+        &self,
+        session_id: &crate::domain::entities::IdeationSessionId,
+        prompt: &str,
+    ) -> AppResult<ResumeDelivery> {
+        let result = self
+            .chat_service()
+            .send_message(
+                ChatContextType::Ideation,
+                session_id.as_str(),
+                prompt,
+                SendMessageOptions {
+                    caller_context: SendCallerContext::UserInitiated,
+                    ..SendMessageOptions::default()
+                },
+            )
+            .await
+            .map_err(|error| {
+                AppError::Infrastructure(format!(
+                    "automation ideation bridge send failed: {error}"
+                ))
+            })?;
+        if result.was_queued {
+            tracing::info!(
+                session_id = %session_id,
+                "Automation ideation bridge prompt is waiting for execution capacity"
+            );
+        }
+        Ok(ResumeDelivery::Delivered)
     }
 }
 

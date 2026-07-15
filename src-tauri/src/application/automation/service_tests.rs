@@ -1481,6 +1481,39 @@ async fn service_create_draft_then_config_then_finalize_activates_automation() {
 }
 
 #[tokio::test]
+async fn ideation_bridge_finalization_requires_verified_plan_delivery_contract() {
+    let (service, automation_repo, _run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut draft = automation("automation-bridge", AutomationStatus::Draft);
+    draft.run_mode = "ideation".to_string();
+    draft.completion_signal = "ideation_finalized".to_string();
+    draft.plan_deep_verification = false;
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let unverified = service.finalize(&draft.id).await.unwrap_err();
+    assert!(matches!(
+        unverified,
+        AppError::Validation(message) if message.contains("deep plan verification")
+    ));
+
+    automation_repo
+        .update_settings(
+            &draft.id,
+            AutomationSettingsPatch {
+                plan_deep_verification: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let finalized = service.finalize(&draft.id).await.unwrap();
+    assert_eq!(finalized.status, AutomationStatus::Active);
+    assert_eq!(finalized.run_mode, "ideation");
+    assert_eq!(finalized.completion_signal, "ideation_finalized");
+}
+
+#[tokio::test]
 async fn service_status_controls_fail_when_compare_and_swap_loses() {
     let emitter = Arc::new(RecordingEmitter::default());
 

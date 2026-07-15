@@ -52,6 +52,8 @@ const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const JUDGE_FAILED_PAUSED_REASON_CODE: &str = "judge_failed";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
 const AGENT_COMPLETED_COMPLETION_SIGNAL: &str = "agent_completed";
+pub(crate) const IDEATION_BRIDGE_RUN_MODE: &str = "ideation";
+pub(crate) const IDEATION_FINALIZED_COMPLETION_SIGNAL: &str = "ideation_finalized";
 const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 const SPEC_ARTIFACT_BUCKET: &str = "prd-library";
@@ -2214,6 +2216,7 @@ fn skip_judge_template_prompt(previous_run: &AutomationRun) -> String {
 fn completion_signal_for_run_mode(run_mode: &str) -> &'static str {
     match run_mode.trim() {
         DEFAULT_RUN_MODE => DEFAULT_COMPLETION_SIGNAL,
+        IDEATION_BRIDGE_RUN_MODE => IDEATION_FINALIZED_COMPLETION_SIGNAL,
         _ => AGENT_COMPLETED_COMPLETION_SIGNAL,
     }
 }
@@ -2282,12 +2285,26 @@ pub(crate) fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         ));
     }
     validate_goal_items_json(automation.goal_items_json.as_deref())?;
+    if automation.run_mode == IDEATION_BRIDGE_RUN_MODE && !automation.plan_deep_verification {
+        return Err(AppError::Validation(
+            "ideation bridge automations require deep plan verification".to_string(),
+        ));
+    }
+    if automation.run_mode == IDEATION_BRIDGE_RUN_MODE
+        && automation.completion_signal != IDEATION_FINALIZED_COMPLETION_SIGNAL
+    {
+        return Err(AppError::Validation(
+            "ideation bridge automations require ideation_finalized completion".to_string(),
+        ));
+    }
     match automation.completion_signal.as_str() {
         DEFAULT_COMPLETION_SIGNAL if automation.run_mode != DEFAULT_RUN_MODE => {
             return Err(AppError::Validation(
                 "pr_merged automations require edit run_mode".to_string(),
             ));
         }
+        IDEATION_FINALIZED_COMPLETION_SIGNAL
+            if automation.run_mode == IDEATION_BRIDGE_RUN_MODE => {}
         DEFAULT_COMPLETION_SIGNAL | AGENT_COMPLETED_COMPLETION_SIGNAL => {}
         value => {
             return Err(AppError::Validation(format!(
