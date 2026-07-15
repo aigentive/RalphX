@@ -62,6 +62,20 @@ fn project_with_worktrees(repo_path: &Path, worktree_parent: &Path) -> Project {
     project
 }
 
+fn checked_test_worktree_child_path(path: &Path, parent: &Path, context: &str) -> PathBuf {
+    let path = validate_absolute_non_root_path(path, context)
+        .expect("test worktree child path should be absolute and non-root");
+    let parent = validate_absolute_non_root_path(parent, "test worktree parent")
+        .expect("test worktree parent should be absolute and non-root");
+    assert!(
+        path.starts_with(&parent),
+        "{context} path {} must stay under {}",
+        path.display(),
+        parent.display()
+    );
+    path
+}
+
 async fn prepare_ideation_workspace(
     project: &Project,
     conversation_id: &ChatConversationId,
@@ -510,7 +524,11 @@ async fn restart_owner_inspection_accepts_only_the_exact_current_attempt_merge_w
 
     let mut task = Task::new(project.id.clone(), "Current merge owner".to_string());
     task.execution_plan_id = Some(execution_plan_id.clone());
-    let merge_path = PathBuf::from(compute_merge_worktree_path(&project, task.id.as_str()));
+    let merge_path = checked_test_worktree_child_path(
+        Path::new(&compute_merge_worktree_path(&project, task.id.as_str())),
+        &worktree_parent,
+        "restart current-attempt merge worktree",
+    );
     task.worktree_path = Some(merge_path.to_string_lossy().into_owned());
     GitService::checkout_existing_branch_worktree_strict(
         &repo_path,
@@ -555,6 +573,8 @@ async fn restart_owner_inspection_accepts_only_the_exact_current_attempt_merge_w
         error,
         RestartWorkspacePreparationError::UnsafeOwnership { .. }
     ));
+
+    // codeql[rust/path-injection]
     assert!(merge_path.is_dir(), "inspection must not mutate the owner");
 }
 
