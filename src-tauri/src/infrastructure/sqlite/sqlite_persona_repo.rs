@@ -44,7 +44,7 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     let created_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                10,
+                12,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -53,7 +53,7 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     let updated_at = DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
         .map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                11,
+                13,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )

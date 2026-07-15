@@ -120,9 +120,7 @@ impl PersonaRepository for MemoryPersonaRepository {
                 .slug
                 .clone();
             if personas.values().any(|persona| {
-                &persona.id != id
-                    && persona.slug == slug
-                    && persona.status == PersonaStatus::Active
+                &persona.id != id && persona.slug == slug && persona.status == PersonaStatus::Active
             }) {
                 return Err(AppError::Validation(format!(
                     "Persona slug `{slug}` is already in use"

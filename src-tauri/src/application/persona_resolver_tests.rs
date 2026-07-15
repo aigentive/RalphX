@@ -72,7 +72,9 @@ impl PersonaRepository for FailingPersonaRepository {
     }
 
     async fn get_active_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
-        Err(AppError::Database("unexpected active slug read".to_string()))
+        Err(AppError::Database(
+            "unexpected active slug read".to_string(),
+        ))
     }
 
     async fn list(&self) -> AppResult<Vec<Persona>> {
@@ -116,7 +118,9 @@ impl PersonaRepository for CountingPersonaRepository {
     }
 
     async fn get_active_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
-        Err(AppError::Database("unexpected active slug read".to_string()))
+        Err(AppError::Database(
+            "unexpected active slug read".to_string(),
+        ))
     }
 
     async fn list(&self) -> AppResult<Vec<Persona>> {

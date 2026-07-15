@@ -595,8 +595,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             row.get("conv_upstream_provider")?;
                         let provider_profile: Option<String> = row.get("conv_provider_profile")?;
                         let persona_id: Option<String> = row.get("conv_persona_id")?;
-                        let builder_draft_id: Option<String> =
-                            row.get("conv_builder_draft_id")?;
+                        let builder_draft_id: Option<String> = row.get("conv_builder_draft_id")?;
                         let coordination_mode = row
                             .get::<_, Option<String>>("conv_coordination_mode")
                             .ok()

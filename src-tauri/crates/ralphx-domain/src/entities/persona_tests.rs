@@ -41,6 +41,8 @@ fn persona_bindability_tracks_only_active_status() {
         version: 1,
         content_hash: String::new(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

@@ -274,6 +274,8 @@ fn persona_attribution_fixture() -> Persona {
         version: 2,
         content_hash: "persona-content-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

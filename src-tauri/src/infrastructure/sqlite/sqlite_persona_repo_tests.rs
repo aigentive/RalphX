@@ -23,8 +23,8 @@ fn persona(slug: &str, status: PersonaStatus) -> Persona {
         version: 1,
         content_hash: format!("hash-{slug}"),
         source_session_id: Some("session-1".to_string()),
-        source_persona_id: Some(PersonaId::from("source-persona")),
-        source_content_hash: Some("source-content-hash".to_string()),
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{\"source\":\"test\"}".to_string(),
         created_at: now,
         updated_at: now,
@@ -34,7 +34,11 @@ fn persona(slug: &str, status: PersonaStatus) -> Persona {
 #[tokio::test]
 async fn create_and_get_round_trips_all_columns() {
     let (_db, repo) = setup_repo();
-    let expected = persona("reviewer", PersonaStatus::Draft);
+    let source = persona("source-reviewer", PersonaStatus::Active);
+    repo.create(source.clone()).await.unwrap();
+    let mut expected = persona("reviewer", PersonaStatus::Draft);
+    expected.source_persona_id = Some(source.id);
+    expected.source_content_hash = Some("source-content-hash".to_string());
 
     repo.create(expected.clone()).await.unwrap();
     let actual = repo.get_by_id(&expected.id).await.unwrap().unwrap();

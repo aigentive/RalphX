@@ -90,6 +90,8 @@ async fn seed_bound_active_project_persona(
         version: 1,
         content_hash: format!("{persona_id}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,
