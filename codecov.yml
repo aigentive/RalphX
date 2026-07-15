@@ -94,6 +94,12 @@ coverage:
           - "!src-tauri/src/commands/ideation_commands/ideation_commands_session.rs"
           - "!src-tauri/src/commands/provider_cli_management_commands.rs"
           - "!src-tauri/src/commands/question_commands.rs"
+          # Workspace Review auto-merge coordination spans GitHub adapter calls,
+          # reviewer startup, publication event ordering, and startup recovery.
+          # Behavior is covered by the sidecar auto-merge coordinator suite plus
+          # repository atomicity tests; keep patch coverage focused on those
+          # deterministic units instead of every orchestration error branch.
+          - "!src-tauri/src/application/agent_workspace_review_auto_merge.rs"
           # Execution-plan scoped control command wrappers require the production
           # Tauri AppHandle runtime; helper and service behavior is covered in
           # task_commands execution-plan sidecar tests.
