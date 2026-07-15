@@ -210,7 +210,8 @@ async function executeFetch(
     });
 
     try {
-      const response = await fetch(url, init);
+      // buildTauriApiUrl constrains requests to an HTTP loopback host and a valid TCP port.
+      const response = await fetch(url, init); // lgtm[js/request-forgery]
 
       safeTrace("backend.response", {
         label,
