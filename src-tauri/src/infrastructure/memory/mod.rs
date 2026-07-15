@@ -53,6 +53,8 @@ pub mod memory_orphan_worktree_cleanup_marker_repo;
 pub mod memory_permission_repo;
 pub mod memory_plan_artifact_approval_repo;
 pub mod memory_plan_branch_repo;
+#[cfg(test)]
+mod memory_restart_repository_tests;
 pub mod memory_plan_selection_stats_repo;
 pub mod memory_process_repo;
 pub mod memory_project_repo;

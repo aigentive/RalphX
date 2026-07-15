@@ -3,6 +3,30 @@ use super::*;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 impl GitService {
+    /// Check for a local branch without collapsing Git failures into absence.
+    pub async fn branch_exists_strict(repo_path: &Path, branch: &str) -> AppResult<bool> {
+        if !Self::check_ref_format(repo_path, branch).await? {
+            return Err(AppError::Validation(format!(
+                "Invalid local branch name: '{branch}'"
+            )));
+        }
+
+        let branch_ref = format!("refs/heads/{branch}");
+        let output = git_cmd::run(
+            &["show-ref", "--verify", "--quiet", branch_ref.as_str()],
+            repo_path,
+        )
+        .await?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(AppError::GitOperation(format!(
+                "Failed to determine whether local branch '{branch}' exists: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))),
+        }
+    }
+
     // =========================================================================
     // Worktree Operations (Worktree mode only)
     // =========================================================================
@@ -113,6 +137,51 @@ impl GitService {
             )));
         }
 
+        Ok(())
+    }
+
+    /// Create a new branch worktree without deleting, moving, or adopting any
+    /// competing path when Git reports a race or ownership conflict.
+    pub async fn create_worktree_strict(
+        repo: &Path,
+        worktree: &Path,
+        branch: &str,
+        base: &str,
+    ) -> AppResult<()> {
+        if !Self::check_ref_format(repo, branch).await? {
+            return Err(AppError::Validation(format!(
+                "Invalid worktree branch name: '{branch}'"
+            )));
+        }
+        let parent = worktree.parent().ok_or_else(|| {
+            AppError::Validation("Strict worktree destination has no parent".to_string())
+        })?;
+        validate_absolute_non_root_path(parent, "worktree parent")?;
+        // codeql[rust/path-injection]
+        std::fs::create_dir_all(parent).map_err(|error| {
+            AppError::GitOperation(format!(
+                "Failed to create strict worktree parent directory: {error}"
+            ))
+        })?;
+
+        let output = git_cmd::run(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                worktree.to_str().unwrap_or_default(),
+                base,
+            ],
+            repo,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "Failed to create strict worktree for branch '{branch}': {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
         Ok(())
     }
 

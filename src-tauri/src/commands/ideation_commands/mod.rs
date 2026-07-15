@@ -63,3 +63,5 @@ pub use ideation_commands_dependencies::build_dependency_graph;
 
 #[cfg(test)]
 mod ideation_commands_orchestrator_tests;
+#[cfg(test)]
+mod ideation_commands_restart_tests;
