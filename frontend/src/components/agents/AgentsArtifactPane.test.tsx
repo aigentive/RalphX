@@ -5698,10 +5698,13 @@ describe("AgentsArtifactPane", () => {
     let dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Restart implementation?");
     expect(dialog).toHaveTextContent(
-      "RalphX will safely restore the linked implementation workspace if it was previously cleaned",
+      "The accepted plan will remain unchanged",
     );
     expect(dialog).toHaveTextContent(
-      "reset the branch to the latest base from origin",
+      "current implementation attempt, Kanban tasks, and uncommitted implementation changes will be discarded",
+    );
+    expect(dialog).toHaveTextContent(
+      "reset the branch to the latest fetched base",
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));

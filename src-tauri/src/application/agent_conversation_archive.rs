@@ -10,6 +10,7 @@ use crate::domain::entities::{
     ChatContextType, ChatConversationId, ExecutionPlan, ExecutionPlanStatus, PlanBranch,
     PlanBranchStatus,
 };
+use crate::domain::services::github_service::PrStatus as RemotePrStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EffectivePrSource {
@@ -117,11 +118,8 @@ pub async fn close_agent_workspace_pr_for_state(
     .await
 }
 
-/// Strictly close the effective PR before replacing an implementation attempt.
-///
-/// Unlike archive cleanup, restart cannot continue with local state that claims an
-/// open PR was closed when the remote operation failed. Once remote closure succeeds,
-/// clear both active PR pointers so the replacement implementation cannot reuse it.
+/// Strictly reconcile the effective remote PR before replacing an implementation attempt.
+/// Local pointers remain intact until the replacement transaction commits.
 pub(crate) async fn close_agent_workspace_pr_for_restart(
     workspace: &AgentConversationWorkspace,
     linked_plan_branch: &PlanBranch,
@@ -150,27 +148,28 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
                 target.number
             ))
         })?;
-        github_svc
-            .close_pr(&project_path, target.number)
+        let remote_status = github_svc
+            .check_pr_status(&project_path, target.number)
             .await
             .map_err(|error| {
                 crate::error::AppError::Infrastructure(format!(
-                    "Restart could not close existing PR {}: {}",
+                    "Restart could not check existing PR {}: {}",
                     target.number, error
                 ))
             })?;
+        if remote_status == RemotePrStatus::Open {
+            github_svc
+                .close_pr(&project_path, target.number)
+                .await
+                .map_err(|error| {
+                    crate::error::AppError::Infrastructure(format!(
+                        "Restart could not close existing PR {}: {}",
+                        target.number, error
+                    ))
+                })?;
+        }
     }
-
-    state
-        .plan_branch_repo
-        .clear_pr_info(&linked_plan_branch.id)
-        .await
-        .map_err(|error| crate::error::AppError::Database(error.to_string()))?;
-    state
-        .agent_conversation_workspace_repo
-        .update_publication(&workspace.conversation_id, None, None, None, None)
-        .await
-        .map_err(|error| crate::error::AppError::Database(error.to_string()))
+    Ok(())
 }
 
 fn workspace_allows_pr_closure(workspace: &AgentConversationWorkspace) -> bool {

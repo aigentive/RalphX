@@ -1,17 +1,23 @@
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
+use super::ideation_commands_restart::RestartInFlightGuard;
 use super::*;
 use crate::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, resolve_linked_plan_branch_agent_worktree_path,
     AgentConversationWorkspaceBaseSelection,
 };
-use crate::application::AppState;
+use crate::application::{AppState, GitService};
+use crate::domain::entities::plan_branch::PrStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
-    IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, Priority, Project,
-    ProposalCategory, TaskProposal,
+    AgentConversationWorkspaceMode, ArtifactId, ChatConversation, IdeationAnalysisBaseRefKind,
+    IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, IdeationSessionId,
+    Priority, Project, ProposalCategory, TaskProposal,
 };
+use crate::domain::services::github_service::{GithubServiceTrait, PrStatus as RemotePrStatus};
+use crate::domain::state_machine::transition_handler::compute_merge_worktree_path;
+use crate::tests::mock_github_service::MockGithubService;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 fn setup_apply_state() -> AppState {
@@ -66,9 +72,22 @@ fn setup_git_repo() -> tempfile::TempDir {
     dir
 }
 
+#[test]
+fn restart_in_flight_guard_serializes_by_ideation_session() {
+    let session_id = IdeationSessionId::new();
+    let first = RestartInFlightGuard::acquire(&session_id)
+        .expect("first restart should acquire the session guard");
+    let duplicate = RestartInFlightGuard::acquire(&session_id)
+        .expect_err("duplicate restart should be rejected");
+    assert!(duplicate.to_string().contains("already in progress"));
+    drop(first);
+    RestartInFlightGuard::acquire(&session_id)
+        .expect("guard should release after the first restart exits");
+}
+
 #[tokio::test]
-async fn restart_core_prepares_linked_workspace_and_restores_cleanup_state() {
-    let state = setup_apply_state();
+async fn restart_core_discards_dirty_current_attempt_merge_worktree() {
+    let mut state = setup_apply_state();
     let repo_dir = setup_git_repo();
     let origin_dir = tempfile::TempDir::new().expect("origin should be created");
     git_ok(origin_dir.path(), &["init", "--bare", "-b", "main"]);
@@ -116,6 +135,7 @@ async fn restart_core_prepares_linked_workspace_and_restores_cleanup_state() {
     .expect("workspace should be prepared");
 
     let mut session = IdeationSession::new(project.id.clone());
+    session.plan_artifact_id = Some(ArtifactId::from_string("approved-plan-artifact"));
     session.analysis = IdeationAnalysisState {
         base_ref_kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
         base_ref: Some("main".to_string()),
@@ -170,6 +190,104 @@ async fn restart_core_prepares_linked_workspace_and_restores_cleanup_state() {
     let linked_worktree_path =
         resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
             .expect("linked path should resolve");
+    state
+        .plan_branch_repo
+        .update_pr_info(
+            &plan_branch.id,
+            739,
+            "https://github.com/example/ralphx/pull/739".to_string(),
+            PrStatus::Open,
+            false,
+        )
+        .await
+        .expect("stale local plan PR should be persisted");
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &conversation.id,
+            Some(739),
+            Some("https://github.com/example/ralphx/pull/739"),
+            Some("open"),
+            Some("pushed"),
+        )
+        .await
+        .expect("stale local workspace PR should be persisted");
+    let github = Arc::new(MockGithubService::new());
+    github.state().check_pr_status_result = Some(Ok(RemotePrStatus::Merged {
+        merge_commit_sha: Some("merged-before-retry".to_string()),
+        merged_at: Some("2026-07-15T10:00:00Z".to_string()),
+    }));
+    let github_service: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_service);
+    let old_plan_branch_id = plan_branch.id.clone();
+    let old_plan_artifact_id = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session lookup should succeed")
+        .expect("session should remain after apply")
+        .plan_artifact_id
+        .expect("accepted implementation should retain a plan artifact");
+    let old_proposal = state
+        .task_proposal_repo
+        .get_by_id(&proposal.id)
+        .await
+        .expect("proposal lookup should succeed")
+        .expect("proposal should remain persisted");
+
+    let old_task_id = crate::domain::entities::TaskId::from_string(
+        apply_result
+            .created_task_ids
+            .first()
+            .expect("apply should create a proposal task")
+            .clone(),
+    );
+    let mut old_task = state
+        .task_repo
+        .get_by_id(&old_task_id)
+        .await
+        .expect("old task lookup should succeed")
+        .expect("old task should exist");
+    old_task.task_branch = Some(format!("restart/task-{}", old_task.id.as_str()));
+    git_ok(
+        repo_dir.path(),
+        &["branch", old_task.task_branch.as_deref().unwrap(), "main"],
+    );
+
+    GitService::delete_worktree(repo_dir.path(), Path::new(&workspace.worktree_path))
+        .await
+        .expect("stale conversation worktree should be removed");
+    let merge_worktree_path = validate_absolute_non_root_path(
+        Path::new(&compute_merge_worktree_path(&project, old_task.id.as_str())),
+        "restart command merge worktree",
+    )
+    .expect("derived merge worktree path should be safe");
+    GitService::checkout_existing_branch_worktree_strict(
+        repo_dir.path(),
+        &merge_worktree_path,
+        &plan_branch.branch_name,
+    )
+    .await
+    .expect("current attempt merge worktree should be created");
+    old_task.worktree_path = Some(merge_worktree_path.to_string_lossy().into_owned());
+    state
+        .task_repo
+        .update(&old_task)
+        .await
+        .expect("merge worktree ownership should be persisted on the current task");
+    // codeql[rust/path-injection]
+    std::fs::write(
+        merge_worktree_path.join("discarded-untracked.txt"),
+        "discard me\n",
+    )
+    .expect("dirty untracked file should be written");
+    // codeql[rust/path-injection]
+    std::fs::write(
+        merge_worktree_path.join("discarded-tracked.txt"),
+        "discard me\n",
+    )
+    .expect("dirty tracked file should be written");
+    git_ok(&merge_worktree_path, &["add", "discarded-tracked.txt"]);
 
     git_ok(
         repo_dir.path(),
@@ -190,10 +308,62 @@ async fn restart_core_prepares_linked_workspace_and_restores_cleanup_state() {
         "restart should relocate the stale conversation worktree"
     );
     assert!(linked_worktree_path.is_dir());
+    assert!(
+        !merge_worktree_path.exists(),
+        "restart should delete the verified current-attempt merge worktree"
+    );
     assert_eq!(
         git_stdout(&linked_worktree_path, &["rev-parse", "HEAD"]),
         latest_origin_base
     );
+    assert_eq!(
+        git_stdout(&linked_worktree_path, &["status", "--porcelain"]),
+        ""
+    );
+    assert!(!linked_worktree_path
+        .join("discarded-untracked.txt")
+        .exists());
+    assert!(!linked_worktree_path.join("discarded-tracked.txt").exists());
+    let refreshed_session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session lookup should succeed")
+        .expect("session should remain");
+    assert_eq!(
+        refreshed_session.plan_artifact_id.as_ref(),
+        Some(&old_plan_artifact_id)
+    );
+    let refreshed_proposal = state
+        .task_proposal_repo
+        .get_by_id(&proposal.id)
+        .await
+        .expect("proposal lookup should succeed")
+        .expect("proposal should remain");
+    assert_eq!(refreshed_proposal.id, old_proposal.id);
+    assert_eq!(refreshed_proposal.title, old_proposal.title);
+    assert_ne!(
+        refreshed_proposal.created_task_id, old_proposal.created_task_id,
+        "the preserved proposal should link to the replacement task"
+    );
+    let refreshed_plan_branch = state
+        .plan_branch_repo
+        .get_by_session_id(&session.id)
+        .await
+        .expect("plan branch lookup should succeed")
+        .expect("plan branch should remain");
+    assert_eq!(refreshed_plan_branch.id, old_plan_branch_id);
+    assert_eq!(refreshed_plan_branch.branch_name, plan_branch.branch_name);
+    assert_eq!(refreshed_plan_branch.pr_number, None);
+    assert_eq!(github.state().check_pr_status_calls, 1);
+    assert_eq!(github.state().close_pr_calls, 0);
+    let archived_old_task = state
+        .task_repo
+        .get_by_id(&old_task_id)
+        .await
+        .expect("old task lookup should succeed")
+        .expect("old task should remain for history");
+    assert!(archived_old_task.archived_at.is_some());
     let stored_workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation.id)
@@ -201,6 +371,7 @@ async fn restart_core_prepares_linked_workspace_and_restores_cleanup_state() {
         .expect("workspace lookup should succeed")
         .expect("workspace should remain");
     assert_eq!(stored_workspace.linked_plan_branch_id, Some(plan_branch.id));
+    assert_eq!(stored_workspace.publication_pr_number, None);
     assert_eq!(
         state
             .agent_conversation_workspace_repo

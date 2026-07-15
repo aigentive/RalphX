@@ -6,15 +6,17 @@ use crate::application::agent_conversation_workspace::{
     resolve_linked_plan_branch_agent_worktree_path, AgentConversationWorkspaceBaseSelection,
 };
 use crate::application::agent_conversation_workspace_restart::{
+    inspect_linked_plan_branch_owner_for_restart,
     prepare_linked_plan_branch_agent_worktree_for_restart, resolve_restart_workspace_cleanup_proof,
-    RestartWorkspaceCleanupProof, RestartWorkspacePreparationError,
+    RestartWorkspaceCleanupProof, RestartWorkspaceOwner, RestartWorkspacePreparationError,
     RestartWorkspacePreparationSource,
 };
 use crate::application::GitService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project,
+    ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project, Task,
 };
+use crate::domain::state_machine::transition_handler::compute_merge_worktree_path;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
 fn git(repo: &Path, args: &[&str]) -> String {
@@ -484,6 +486,76 @@ async fn restart_preparation_refuses_branch_checked_out_in_another_worktree() {
             .expect("other worktree branch should remain intact"),
         plan_branch.branch_name
     );
+}
+
+#[tokio::test]
+async fn restart_owner_inspection_accepts_only_the_exact_current_attempt_merge_worktree() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-current-merge".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let direct_path = PathBuf::from(&workspace.worktree_path);
+    let session_id = IdeationSessionId::from_string("session-restart-current-merge");
+    let execution_plan_id = ExecutionPlanId::from_string("execution-restart-current-merge");
+    let mut plan_branch =
+        linked_plan_branch_for_workspace(&project, &mut workspace, session_id.clone());
+    plan_branch.execution_plan_id = Some(execution_plan_id.clone());
+    GitService::delete_worktree(&repo_path, &direct_path)
+        .await
+        .expect("owned direct worktree should be removed");
+
+    let mut task = Task::new(project.id.clone(), "Current merge owner".to_string());
+    task.execution_plan_id = Some(execution_plan_id.clone());
+    let merge_path = PathBuf::from(compute_merge_worktree_path(&project, task.id.as_str()));
+    task.worktree_path = Some(merge_path.to_string_lossy().into_owned());
+    GitService::checkout_existing_branch_worktree_strict(
+        &repo_path,
+        &merge_path,
+        &plan_branch.branch_name,
+    )
+    .await
+    .expect("current-attempt merge worktree should be created");
+
+    let owner = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[task.clone()],
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("exact current-attempt merge owner should be accepted");
+    assert_eq!(
+        owner,
+        RestartWorkspaceOwner::CurrentAttemptMerge {
+            task_id: task.id.clone(),
+            path: merge_path.clone(),
+        }
+    );
+
+    task.execution_plan_id = Some(ExecutionPlanId::from_string("stale-execution-plan"));
+    let error = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[task],
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect_err("stale-attempt ownership must fail closed");
+    assert!(matches!(
+        error,
+        RestartWorkspacePreparationError::UnsafeOwnership { .. }
+    ));
+    assert!(merge_path.is_dir(), "inspection must not mutate the owner");
 }
 
 #[test]

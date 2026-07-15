@@ -100,7 +100,7 @@ async fn setup_restart_pr_state() -> (
 }
 
 #[tokio::test]
-async fn restart_closes_remote_pr_and_clears_active_pr_pointers() {
+async fn restart_closes_open_remote_pr_without_clearing_local_pointers() {
     let (_project_dir, mut state, workspace, plan_branch) = setup_restart_pr_state().await;
     let github = Arc::new(MockGithubService::new());
     let github_service: Arc<dyn GithubServiceTrait> = github.clone();
@@ -110,6 +110,7 @@ async fn restart_closes_remote_pr_and_clears_active_pr_pointers() {
         .await
         .expect("restart should close the remote PR");
 
+    assert_eq!(github.state().check_pr_status_calls, 1);
     assert_eq!(github.state().close_pr_calls, 1);
     assert_eq!(github.state().last_close_pr_number, Some(41));
     let refreshed_branch = state
@@ -118,17 +119,81 @@ async fn restart_closes_remote_pr_and_clears_active_pr_pointers() {
         .await
         .expect("plan branch lookup should succeed")
         .expect("plan branch should exist");
-    assert_eq!(refreshed_branch.pr_number, None);
-    assert_eq!(refreshed_branch.pr_url, None);
-    assert_eq!(refreshed_branch.pr_status, None);
+    assert_eq!(refreshed_branch.pr_number, Some(41));
+    assert!(refreshed_branch.pr_url.is_some());
+    assert_eq!(refreshed_branch.pr_status, Some(PrStatus::Open));
     let refreshed_workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&workspace.conversation_id)
         .await
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
-    assert_eq!(refreshed_workspace.publication_pr_number, None);
-    assert_eq!(refreshed_workspace.publication_pr_status, None);
+    assert_eq!(refreshed_workspace.publication_pr_number, Some(41));
+    assert_eq!(
+        refreshed_workspace.publication_pr_status.as_deref(),
+        Some("open")
+    );
+}
+
+#[tokio::test]
+async fn restart_treats_terminal_remote_pr_as_idempotently_closed() {
+    for remote_status in [
+        crate::domain::services::github_service::PrStatus::Closed,
+        crate::domain::services::github_service::PrStatus::Merged {
+            merge_commit_sha: Some("abc123".to_string()),
+            merged_at: Some("2026-07-15T10:00:00Z".to_string()),
+        },
+    ] {
+        let (_project_dir, mut state, workspace, plan_branch) = setup_restart_pr_state().await;
+        let github = Arc::new(MockGithubService::new());
+        github.state().check_pr_status_result = Some(Ok(remote_status));
+        let github_service: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_service);
+
+        close_agent_workspace_pr_for_restart(&workspace, &plan_branch, &state)
+            .await
+            .expect("terminal remote PR state should be retry-safe");
+
+        assert_eq!(github.state().check_pr_status_calls, 1);
+        assert_eq!(github.state().close_pr_calls, 0);
+        assert_eq!(
+            state
+                .plan_branch_repo
+                .get_by_id(&plan_branch.id)
+                .await
+                .expect("plan branch lookup should succeed")
+                .expect("plan branch should exist")
+                .pr_number,
+            Some(41),
+            "local pointers clear only in the replacement transaction"
+        );
+    }
+}
+
+#[tokio::test]
+async fn restart_fails_closed_when_remote_pr_status_lookup_fails() {
+    let (_project_dir, mut state, workspace, plan_branch) = setup_restart_pr_state().await;
+    let github = Arc::new(MockGithubService::new());
+    github.state().check_pr_status_result = Some(Err(AppError::Infrastructure("offline".into())));
+    let github_service: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_service);
+
+    let error = close_agent_workspace_pr_for_restart(&workspace, &plan_branch, &state)
+        .await
+        .expect_err("restart should fail when remote PR status cannot be proven");
+
+    assert!(error.to_string().contains("could not check existing PR 41"));
+    assert_eq!(github.state().close_pr_calls, 0);
+    assert_eq!(
+        state
+            .plan_branch_repo
+            .get_by_id(&plan_branch.id)
+            .await
+            .expect("plan branch lookup should succeed")
+            .expect("plan branch should exist")
+            .pr_number,
+        Some(41)
+    );
 }
 
 #[tokio::test]

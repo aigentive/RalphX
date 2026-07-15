@@ -2,14 +2,18 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::application::agent_conversation_workspace::{
-    ensure_linked_plan_branch_agent_worktree,
+    ensure_linked_plan_branch_agent_worktree, expand_worktree_parent_public,
     resolve_agent_conversation_workspace_path_from_record_identity,
     resolve_linked_plan_branch_agent_worktree_path, validate_workspace_linked_plan_branch,
 };
 use crate::application::git_artifact_cleanup::LOCAL_CLEANUP_STATUS_CLEANED;
 use crate::application::GitService;
 use crate::domain::entities::plan_branch::PrStatus;
-use crate::domain::entities::{AgentConversationWorkspace, PlanBranch, PlanBranchStatus, Project};
+use crate::domain::entities::{
+    AgentConversationWorkspace, ExecutionPlanId, IdeationSessionId, PlanBranch, PlanBranchStatus,
+    Project, Task, TaskId,
+};
+use crate::domain::state_machine::transition_handler::compute_merge_worktree_path;
 use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -43,6 +47,15 @@ pub(crate) enum RestartWorkspacePreparationSource {
     RelocatedConversation,
     ReattachedBranch,
     RecreatedFromCleanup,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RestartWorkspaceOwner {
+    ExistingLinked,
+    OwnedConversation,
+    UnownedPreservedBranch,
+    CurrentAttemptMerge { task_id: TaskId, path: PathBuf },
+    RecreatableFromCleanup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +111,137 @@ impl fmt::Display for RestartWorkspacePreparationError {
             Self::Operation { detail } => write!(formatter, "operation failed: {detail}"),
         }
     }
+}
+
+/// Classify the preserved plan branch owner without mutating worktrees or refs.
+pub(crate) async fn inspect_linked_plan_branch_owner_for_restart(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    plan_branch: &PlanBranch,
+    session_id: &IdeationSessionId,
+    execution_plan_id: &ExecutionPlanId,
+    current_tasks: &[Task],
+    cleanup_proof: RestartWorkspaceCleanupProof,
+) -> Result<RestartWorkspaceOwner, RestartWorkspacePreparationError> {
+    validate_workspace_linked_plan_branch(project, workspace, plan_branch)
+        .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+    if workspace.linked_plan_branch_id.as_ref() != Some(&plan_branch.id)
+        || workspace.linked_ideation_session_id.as_ref() != Some(session_id)
+        || &plan_branch.session_id != session_id
+        || plan_branch.execution_plan_id.as_ref() != Some(execution_plan_id)
+    {
+        return Err(RestartWorkspacePreparationError::UnsafeOwnership {
+            detail: "linked workspace, session, branch, and execution attempt do not match"
+                .to_string(),
+        });
+    }
+
+    let project_root = validated_project_root(project)
+        .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+    let linked_path = resolve_linked_plan_branch_agent_worktree_path(project, plan_branch)
+        .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+    let conversation_path =
+        resolve_agent_conversation_workspace_path_from_record_identity(project, workspace)
+            .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+    let worktree_root = expand_worktree_parent_public(project.worktree_parent_or_default())
+        .and_then(|path| validate_absolute_non_root_path(&path, "configured worktree root"))
+        .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+
+    let owners: Vec<_> = GitService::list_worktrees(&project_root)
+        .await
+        .map_err(RestartWorkspacePreparationError::operation)?
+        .into_iter()
+        .filter(|worktree| worktree.branch.as_deref() == Some(&plan_branch.branch_name))
+        .collect();
+    if owners.len() > 1 {
+        return Err(RestartWorkspacePreparationError::UnsafeOwnership {
+            detail: format!(
+                "preserved branch '{}' has multiple registered owners",
+                plan_branch.branch_name
+            ),
+        });
+    }
+
+    if let Some(owner) = owners.first() {
+        let owner_path = validate_absolute_non_root_path(
+            Path::new(&owner.path),
+            "registered plan branch worktree",
+        )
+        .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+        if paths_match(&owner_path, &project_root) {
+            return Err(RestartWorkspacePreparationError::UnsafeOwnership {
+                detail: "preserved branch is checked out in the project root".to_string(),
+            });
+        }
+        if paths_match(&owner_path, &linked_path) {
+            return Ok(RestartWorkspaceOwner::ExistingLinked);
+        }
+        if paths_match(&owner_path, &conversation_path) {
+            return Ok(RestartWorkspaceOwner::OwnedConversation);
+        }
+
+        for task in current_tasks {
+            if task.project_id != project.id
+                || task.execution_plan_id.as_ref() != Some(execution_plan_id)
+            {
+                continue;
+            }
+            let derived_path = validate_absolute_non_root_path(
+                Path::new(&compute_merge_worktree_path(project, task.id.as_str())),
+                "derived current-attempt merge worktree",
+            )
+            .map_err(RestartWorkspacePreparationError::unsafe_ownership)?;
+            let stored_path = task.worktree_path.as_deref().map(PathBuf::from);
+            if stored_path.as_ref() != Some(&derived_path)
+                || !paths_match(&owner_path, &derived_path)
+            {
+                continue;
+            }
+            if !path_is_contained(&owner_path, &worktree_root) {
+                return Err(RestartWorkspacePreparationError::UnsafeOwnership {
+                    detail: "current-attempt merge worktree escapes the configured root"
+                        .to_string(),
+                });
+            }
+            return Ok(RestartWorkspaceOwner::CurrentAttemptMerge {
+                task_id: task.id.clone(),
+                path: derived_path,
+            });
+        }
+
+        return Err(RestartWorkspacePreparationError::UnsafeOwnership {
+            detail: format!(
+                "preserved branch '{}' is checked out by an unknown or stale worktree",
+                plan_branch.branch_name
+            ),
+        });
+    }
+
+    if GitService::branch_exists_strict(&project_root, &plan_branch.branch_name)
+        .await
+        .map_err(RestartWorkspacePreparationError::operation)?
+    {
+        return Ok(RestartWorkspaceOwner::UnownedPreservedBranch);
+    }
+    if cleanup_proof == RestartWorkspaceCleanupProof::OwnedMergedCleanup {
+        return Ok(RestartWorkspaceOwner::RecreatableFromCleanup);
+    }
+    Err(RestartWorkspacePreparationError::MissingBranchWithoutCleanupProof)
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn path_is_contained(path: &Path, root: &Path) -> bool {
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    canonical_path.starts_with(&canonical_root) && canonical_path != canonical_root
 }
 
 /// Prepare the linked implementation worktree without touching unknown owners.

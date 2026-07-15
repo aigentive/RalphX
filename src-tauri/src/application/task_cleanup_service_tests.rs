@@ -1,7 +1,40 @@
-use super::*;
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+
+use super::task_cleanup_service::*;
+use crate::application::GitService;
 use crate::domain::entities::{InternalStatus, Project, Task};
+use crate::domain::repositories::{ProjectRepository, TaskRepository};
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::memory::MemoryProjectRepository;
+use crate::utils::path_safety::validate_absolute_non_root_path;
+
+fn git_ok(repo: &Path, args: &[&str]) {
+    let repo = validate_absolute_non_root_path(repo, "task cleanup test repository")
+        .expect("test repository path should be safe");
+    let output = Command::new("git")
+        .args(args)
+        // codeql[rust/path-injection]
+        .current_dir(&repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn setup_git_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().expect("repository should be created");
+    git_ok(repo.path(), &["init", "-b", "main"]);
+    git_ok(repo.path(), &["config", "user.email", "test@example.com"]);
+    git_ok(repo.path(), &["config", "user.name", "Test User"]);
+    git_ok(repo.path(), &["commit", "--allow-empty", "-m", "initial"]);
+    repo
+}
 
 #[tokio::test]
 async fn test_direct_cleanup_stops_task_using_current_repo_state_not_stale_snapshot() {
@@ -57,5 +90,89 @@ async fn test_direct_cleanup_stops_task_using_current_repo_state_not_stale_snaps
     assert!(
         archived.archived_at.is_some(),
         "cleanup should archive the task after stopping its live context"
+    );
+}
+
+#[tokio::test]
+async fn replacement_cleanup_removes_only_derived_task_worktrees_and_reports_errors() {
+    let repo = setup_git_repo();
+    let worktree_parent = tempfile::tempdir().expect("worktree parent should be created");
+    let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let running_registry = Arc::new(crate::domain::services::MemoryRunningAgentRegistry::new());
+
+    let mut project = Project::new(
+        "Strict replacement cleanup".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    let project = project_repo.create(project).await.unwrap();
+    let mut task = Task::new(project.id.clone(), "Owned worktree".to_string());
+    let task_branch = format!("cleanup/task-{}", task.id.as_str());
+    let task_worktree = project.task_worktree_path(task.id.as_str());
+    GitService::create_worktree(repo.path(), &task_worktree, &task_branch, "main")
+        .await
+        .expect("derived task worktree should be created");
+    task.task_branch = Some(task_branch.clone());
+    task.worktree_path = Some(task_worktree.to_string_lossy().into_owned());
+    let task = task_repo.create(task).await.unwrap();
+
+    let service = TaskCleanupService::new(
+        Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        None,
+    );
+    let report = service
+        .prepare_tasks_for_replacement(&[task], StopMode::DirectStop, None)
+        .await;
+
+    assert!(
+        report.errors.is_empty(),
+        "unexpected errors: {:?}",
+        report.errors
+    );
+    assert_eq!(report.git_cleanups, 1);
+    assert!(!task_worktree.exists());
+    assert!(!GitService::branch_exists(repo.path(), &task_branch)
+        .await
+        .expect("branch lookup should succeed"));
+
+    let mut mismatched_task = Task::new(project.id.clone(), "Mismatched owner".to_string());
+    let mismatched_worktree = project.task_worktree_path(mismatched_task.id.as_str());
+    let unexpected_branch = format!("cleanup/unexpected-{}", mismatched_task.id.as_str());
+    GitService::create_worktree(
+        repo.path(),
+        &mismatched_worktree,
+        &unexpected_branch,
+        "main",
+    )
+    .await
+    .expect("mismatched worktree should be created");
+    mismatched_task.task_branch = Some(format!("cleanup/expected-{}", mismatched_task.id.as_str()));
+    mismatched_task.worktree_path = Some(mismatched_worktree.to_string_lossy().into_owned());
+    let report = service
+        .prepare_tasks_for_replacement(&[mismatched_task], StopMode::DirectStop, None)
+        .await;
+
+    assert_eq!(report.git_cleanups, 0);
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        mismatched_worktree.is_dir(),
+        "a worktree registered to another branch must remain untouched"
+    );
+
+    let outside = tempfile::tempdir().expect("unowned path should be created");
+    let mut unsafe_task = Task::new(project.id.clone(), "Unowned worktree".to_string());
+    unsafe_task.worktree_path = Some(outside.path().to_string_lossy().into_owned());
+    let report = service
+        .prepare_tasks_for_replacement(&[unsafe_task], StopMode::DirectStop, None)
+        .await;
+
+    assert_eq!(report.git_cleanups, 0);
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        outside.path().is_dir(),
+        "unknown path must remain untouched"
     );
 }
