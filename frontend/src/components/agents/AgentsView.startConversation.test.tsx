@@ -45,6 +45,7 @@ const {
   listIdeationSessionsMock,
   spawnConversationSessionNamerMock,
   startAgentConversationMock,
+  startWorkFromTicketMock,
   updateAutomationSetupMock,
   useHarnessProvidersMock,
   useConversationMock,
@@ -158,6 +159,31 @@ describe("AgentsView start conversation", () => {
 
   it("prefills and consumes a pending start conversation draft", async () => {
     mockAgentViewData();
+    loadBranchBaseOptionsMock.mockResolvedValueOnce({
+      options: [
+        {
+          key: "project_default:main",
+          label: "Project default (main)",
+          source: "project",
+          selection: {
+            kind: "project_default",
+            ref: "main",
+            displayName: "Project default (main)",
+          },
+        },
+        {
+          key: "local_branch:feature/TASK-123-existing",
+          label: "feature/TASK-123-existing",
+          source: "local",
+          selection: {
+            kind: "local_branch",
+            ref: "feature/TASK-123-existing",
+            displayName: "feature/TASK-123-existing",
+          },
+        },
+      ],
+      selectedKey: "project_default:main",
+    });
     useAgentSessionStore.getState().setStartConversationDraft({
       projectId: "project-1",
       content: "replace ideation command with agent composer",
@@ -200,6 +226,11 @@ describe("AgentsView start conversation", () => {
     expect(planReferencePill).toHaveTextContent("Runtime Plan");
     expect(planReferencePill).toHaveTextContent("Approved");
     expect(planReferencePill).toHaveTextContent("v2");
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "feature/TASK-123-existing",
+      ),
+    );
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 
@@ -2033,6 +2064,12 @@ describe("AgentsView start conversation", () => {
         },
       ],
     });
+
+    expect(startWorkFromTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticketRef: { provider: "jira", id: "RX-42", key: "RX-42" },
+      }),
+    );
 
     expect(invalidateQueriesSpy).toHaveBeenCalledWith({
       queryKey: agentJiraIssueKeys.issue("conversation-with-jira"),

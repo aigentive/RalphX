@@ -16,6 +16,7 @@ import {
   type TeamIntent,
 } from "@/api/chat";
 import { automationsApi } from "@/api/automations";
+import { ticketingApi, type TicketRef } from "@/api/ticketing";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import {
@@ -448,7 +449,7 @@ export function useStartAgentConversation({
           setAgentActivityLabel(storeKey, "Setup workspace");
         }
 
-        const result = await chatApi.startAgentConversation({
+        const startInput = {
           projectId: targetProjectId,
           content,
           ...(seededConversation ? { conversationId: seededConversation.id } : {}),
@@ -474,7 +475,13 @@ export function useStartAgentConversation({
             ? { composerArtifactReferences }
             : {}),
           ...(base ? { base } : {}),
-        });
+        };
+        const ticketRef = ticketRefFromIntegrationReferences(
+          composerIntegrationReferences,
+        );
+        const result = ticketRef
+          ? await ticketingApi.startWorkFromTicket({ ...startInput, ticketRef })
+          : await chatApi.startAgentConversation(startInput);
         const resolvedConversation: ChatConversation = {
           ...result.conversation,
           agentMode: result.conversation.agentMode ?? mode,
@@ -623,6 +630,31 @@ export function useStartAgentConversation({
   );
 
   return handleStartAgentConversation;
+}
+
+function ticketRefFromIntegrationReferences(
+  references: ComposerIntegrationReference[] | undefined,
+): TicketRef | null {
+  for (const reference of references ?? []) {
+    const provider = reference.provider.trim().toLowerCase();
+    const kind = reference.kind.trim().toLowerCase();
+    const ticketProvider =
+      kind === "jira" && (provider === "atlassian" || provider === "jira")
+        ? "jira"
+        : kind === "linear" && provider === "linear"
+          ? "linear"
+          : kind === "clickup" && provider === "clickup"
+            ? "clickup"
+            : null;
+    if (ticketProvider && reference.id.trim()) {
+      return {
+        provider: ticketProvider,
+        id: reference.id.trim(),
+        ...(reference.key?.trim() ? { key: reference.key.trim() } : {}),
+      };
+    }
+  }
+  return null;
 }
 
 function getSupportedStartIntegrationTab(

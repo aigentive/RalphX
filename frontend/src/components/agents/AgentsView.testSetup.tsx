@@ -62,6 +62,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentConversationRuntimeStatusesMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
   getTicketAssociationsMock: vi.fn(),
+  startWorkFromTicketMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   loadPullRequestBaseOptionsMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
@@ -196,6 +197,7 @@ const {
   getAgentConversationRuntimeStatusesMock,
   getPlanBranchesMock,
   getTicketAssociationsMock,
+  startWorkFromTicketMock,
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
   listIdeationSessionsMock,
@@ -934,6 +936,11 @@ vi.mock("@/api/ticketing", async () => {
       ...actual.ticketingApi,
       getTicketAssociations: (...args: unknown[]) =>
         getTicketAssociationsMock(...args),
+      startWorkFromTicket: (input: Record<string, unknown>) => {
+        startWorkFromTicketMock(input);
+        const { ticketRef: _ticketRef, ...startInput } = input;
+        return startAgentConversationMock(startInput);
+      },
     },
   };
 });
@@ -1531,6 +1538,7 @@ export function setupAgentsViewTest() {
   getAgentConversationRuntimeStatusesMock.mockReset();
   getPlanBranchesMock.mockReset();
   getTicketAssociationsMock.mockReset();
+  startWorkFromTicketMock.mockReset();
   loadBranchBaseOptionsMock.mockReset();
   loadPullRequestBaseOptionsMock.mockReset();
   listIdeationSessionsMock.mockReset();

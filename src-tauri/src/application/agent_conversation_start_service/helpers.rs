@@ -25,6 +25,37 @@ use crate::domain::entities::{
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::ComposerIntegrationReference;
 
+pub(crate) fn clickup_task_lookup_key_from_references(
+    references: &[ComposerIntegrationReference],
+) -> Result<Option<String>, String> {
+    let mut lookup_keys = references
+        .iter()
+        .filter(|reference| {
+            reference.provider.trim().eq_ignore_ascii_case("clickup")
+                && reference.kind.trim().eq_ignore_ascii_case("clickup")
+        })
+        .filter_map(|reference| {
+            reference
+                .key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    let id = reference.id.trim();
+                    (!id.is_empty()).then_some(id)
+                })
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    lookup_keys.sort_by_key(|key| key.to_ascii_lowercase());
+    lookup_keys.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    match lookup_keys.as_slice() {
+        [] => Ok(None),
+        [lookup_key] => Ok(Some(lookup_key.clone())),
+        _ => Err("A conversation can only start from one ClickUp task at a time".to_string()),
+    }
+}
+
 pub(crate) fn parse_agent_workspace_mode(
     mode: Option<&str>,
 ) -> Result<AgentConversationWorkspaceMode, String> {
