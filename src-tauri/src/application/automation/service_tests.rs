@@ -4121,7 +4121,7 @@ async fn trusted_decomposition_verification_activates_only_after_current_approva
     let manual_policy_error = service.finalize(&draft.id).await.unwrap_err();
     assert!(manual_policy_error
         .to_string()
-        .contains("automatic plan approval, and automatic PR merge"));
+        .contains("automatic edit/PR-merge policy or the verified ideation/task-graph policy"));
     service
         .update_settings(UpdateAutomationSettingsInput {
             id: draft.id.clone(),
