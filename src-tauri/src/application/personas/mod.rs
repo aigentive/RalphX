@@ -293,3 +293,6 @@ fn ensure_enabled(feature_enabled: bool) -> AppResult<()> {
 
 #[path = "persona_service_tests.rs"]
 mod persona_service_tests;
+
+#[path = "persona_update_approval_tests.rs"]
+mod persona_update_approval_tests;
