@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -729,6 +730,28 @@ impl AutomationSignalChecker for RecordingSignalChecker {
             Some(Ok(status)) => Ok(status),
             Some(Err(error)) => Err(AppError::Validation(error)),
             None => Ok(PrStatus::Open),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TransientThenOpenSignalChecker {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl AutomationSignalChecker for TransientThenOpenSignalChecker {
+    async fn check_pr_status(
+        &self,
+        _workspace: &AgentConversationWorkspace,
+        _pr_number: i64,
+    ) -> AppResult<PrStatus> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(AppError::Infrastructure(
+                "temporary GitHub transport failure".to_string(),
+            ))
+        } else {
+            Ok(PrStatus::Open)
         }
     }
 }
@@ -2738,6 +2761,69 @@ async fn automation_scheduler_pauses_after_bounded_signal_check_errors() {
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::Published);
     assert_eq!(latest.signal_check_failures, 2);
+}
+
+#[tokio::test]
+async fn automation_scheduler_retries_one_transient_signal_error_before_counting_a_failure() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-transient-signal");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-transient-signal");
+    let mut run = automation_run(
+        "run-transient-signal",
+        &automation_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    run.pr_number = Some(91);
+    run_repo.create_run(run).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(91);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let checker = Arc::new(TransientThenOpenSignalChecker::default());
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        checker.clone(),
+        AutomationSchedulerConfig {
+            signal_failure_pause_threshold: 1,
+            ..AutomationSchedulerConfig::default()
+        },
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(checker.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(summary.signal_check_errors, 0);
+    assert_eq!(summary.paused_automations, 0);
+    assert_eq!(
+        automation_repo
+            .get_by_id(&automation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Active
+    );
+    assert_eq!(
+        run_repo
+            .get_by_id(&AutomationRunId::from_string("run-transient-signal"))
+            .await
+            .unwrap()
+            .unwrap()
+            .signal_check_failures,
+        0
+    );
 }
 
 #[tokio::test]

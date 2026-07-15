@@ -1,0 +1,30 @@
+const ACTIONABLE_PAUSED_REASON_CODES: [&str; 9] = [
+    "judge_failed",
+    "plan_judge_failed",
+    "plan_revision_exhausted",
+    "workspace_review_blocked",
+    "max_runs_exhausted",
+    "max_consecutive_failures",
+    "signal_verification_failed",
+    "judge_loop_suspected",
+    "judge_stopped_unmet",
+];
+
+pub(crate) fn is_actionable_paused_reason(reason: &str) -> bool {
+    ACTIONABLE_PAUSED_REASON_CODES.contains(&reason)
+}
+
+pub(crate) fn paused_reason_label(reason: &str) -> &'static str {
+    match reason {
+        "judge_failed" => "judge failed",
+        "plan_judge_failed" => "plan judge failed",
+        "plan_revision_exhausted" => "plan revision limit reached",
+        "workspace_review_blocked" => "workspace review blocked",
+        "max_runs_exhausted" => "maximum run count reached",
+        "max_consecutive_failures" => "too many consecutive failures",
+        "signal_verification_failed" => "PR status verification failed",
+        "judge_loop_suspected" => "judge loop suspected",
+        "judge_stopped_unmet" => "judge stopped before the goal was met",
+        _ => "automation needs attention",
+    }
+}

@@ -6,6 +6,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::application::NotificationService;
+use crate::application::automation::pause_recovery::{
+    is_actionable_paused_reason, paused_reason_label,
+};
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
     judge_is_transition_allowed, plan_judge_is_transition_allowed, Automation, AutomationId,
@@ -15,15 +18,6 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
 use crate::error::{AppError, AppResult};
-
-const ACTIONABLE_PAUSED_REASON_CODES: [&str; 6] = [
-    "judge_failed",
-    "plan_judge_failed",
-    "plan_revision_exhausted",
-    "workspace_review_blocked",
-    "max_runs_exhausted",
-    "max_consecutive_failures",
-];
 
 pub const AUTOMATION_UPDATED_EVENT: &str = "automation:updated";
 pub const AUTOMATION_RUN_UPDATED_EVENT: &str = "automation:run:updated";
@@ -194,14 +188,14 @@ impl AutomationTransitionService {
         let Some(reason) = automation.paused_reason_code.as_deref() else {
             return;
         };
-        if !ACTIONABLE_PAUSED_REASON_CODES.contains(&reason) {
+        if !is_actionable_paused_reason(reason) {
             return;
         }
         self.notification_service
             .record(NewNotification {
                 project_id: Some(automation.project_id.to_string()),
                 category: NotificationCategory::AutomationPaused,
-                severity: NotificationSeverity::Warning,
+                severity: NotificationSeverity::ActionRequired,
                 title: "Automation paused".to_string(),
                 body: Some(format!(
                     "“{}” paused: {}",
@@ -214,6 +208,34 @@ impl AutomationTransitionService {
                     automation.id,
                     reason,
                     automation.updated_at.to_rfc3339()
+                )),
+            })
+            .await;
+    }
+
+    pub(crate) async fn record_auto_merge_enable_warning(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: &str,
+    ) {
+        let pr_label = run
+            .pr_number
+            .map_or_else(|| "the run PR".to_string(), |number| format!("PR #{number}"));
+        self.notification_service
+            .record(NewNotification {
+                project_id: Some(automation.project_id.to_string()),
+                category: NotificationCategory::AutomationRunFailed,
+                severity: NotificationSeverity::ActionRequired,
+                title: "Automatic merge needs attention".to_string(),
+                body: Some(format!(
+                    "{pr_label} for “{}” is waiting for manual merge: {detail}",
+                    automation.name
+                )),
+                target: automation_target(automation, Some(run)),
+                dedupe_key: Some(format!(
+                    "run:{}:auto_merge_enable_failed",
+                    run.id
                 )),
             })
             .await;
@@ -507,18 +529,6 @@ fn automation_target(automation: &Automation, run: Option<&AutomationRun>) -> No
             .map(ToString::to_string),
         automation_id: Some(automation.id.to_string()),
         run_id: run.map(|run| run.id.to_string()),
-    }
-}
-
-fn paused_reason_label(reason: &str) -> &'static str {
-    match reason {
-        "judge_failed" => "judge failed",
-        "plan_judge_failed" => "plan judge failed",
-        "plan_revision_exhausted" => "plan revision limit reached",
-        "workspace_review_blocked" => "workspace review blocked",
-        "max_runs_exhausted" => "maximum run count reached",
-        "max_consecutive_failures" => "too many consecutive failures",
-        _ => "automation needs attention",
     }
 }
 

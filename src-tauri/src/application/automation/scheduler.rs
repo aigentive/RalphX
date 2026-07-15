@@ -3363,12 +3363,11 @@ impl AutomationScheduler {
                 .await;
         }
 
-        self.sync_auto_merge_enable_warning_from_workspace(run, &workspace)
+        self.sync_auto_merge_enable_warning_from_workspace(automation, run, &workspace)
             .await?;
 
         match self
-            .signal_checker
-            .check_pr_status(&workspace, pr_number)
+            .check_pr_status_with_transient_retry(&workspace, pr_number)
             .await
         {
             Ok(PrStatus::Open) => {
@@ -3479,6 +3478,29 @@ impl AutomationScheduler {
         Ok(())
     }
 
+    async fn check_pr_status_with_transient_retry(
+        &self,
+        workspace: &AgentConversationWorkspace,
+        pr_number: i64,
+    ) -> AppResult<PrStatus> {
+        let first = self
+            .signal_checker
+            .check_pr_status(workspace, pr_number)
+            .await;
+        if !matches!(first, Err(AppError::Infrastructure(_))) {
+            return first;
+        }
+        tracing::warn!(
+            conversation_id = %workspace.conversation_id,
+            pr_number,
+            "Retrying transient automation PR signal check failure"
+        );
+        tokio::task::yield_now().await;
+        self.signal_checker
+            .check_pr_status(workspace, pr_number)
+            .await
+    }
+
     async fn enable_run_auto_merge_preference(
         &self,
         workspace: &AgentConversationWorkspace,
@@ -3538,6 +3560,7 @@ impl AutomationScheduler {
 
     async fn sync_auto_merge_enable_warning_from_workspace(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         workspace: &AgentConversationWorkspace,
     ) -> AppResult<()> {
@@ -3558,9 +3581,12 @@ impl AutomationScheduler {
                 .update_published_run_error(
                     &run.id,
                     Some(AUTO_MERGE_ENABLE_WARNING_CODE.to_string()),
-                    Some(detail),
+                    Some(detail.clone()),
                 )
                 .await?;
+            self.transition_service
+                .record_auto_merge_enable_warning(automation, run, &detail)
+                .await;
         } else if run.error_code.as_deref() == Some(AUTO_MERGE_ENABLE_WARNING_CODE) {
             self.run_repo
                 .update_published_run_error(&run.id, None, None)

@@ -6,6 +6,7 @@ pub mod judge;
 pub mod merged_run_finalizer;
 pub mod plan_judge;
 pub mod plan_gate;
+pub(crate) mod pause_recovery;
 pub mod provisioning;
 pub mod review_gate;
 pub mod scheduler;

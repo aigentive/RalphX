@@ -579,6 +579,19 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         .create(user_paused.clone())
         .await
         .unwrap();
+    for reason in [
+        "signal_verification_failed",
+        "judge_loop_suspected",
+        "judge_stopped_unmet",
+    ] {
+        let mut paused = automation(
+            project.id.clone(),
+            &format!("actionable-{reason}"),
+            AutomationStatus::Paused,
+        );
+        paused.paused_reason_code = Some(reason.to_string());
+        state.automation_repo.create(paused).await.unwrap();
+    }
     let awaiting_run = automation_run(
         actionable.id.clone(),
         "awaiting-plan",
@@ -587,6 +600,20 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
     state
         .automation_run_repo
         .create_run(awaiting_run.clone())
+        .await
+        .unwrap();
+    let mut auto_merge_warning = automation_run(
+        actionable.id.clone(),
+        "auto-merge-warning",
+        AutomationRunStatus::Published,
+    );
+    auto_merge_warning.pr_number = Some(733);
+    auto_merge_warning.error_code = Some("auto_merge_enable_failed".to_string());
+    auto_merge_warning.error_detail =
+        Some("GitHub rejected automatic merge enablement".to_string());
+    state
+        .automation_run_repo
+        .create_run(auto_merge_warning.clone())
         .await
         .unwrap();
 
@@ -599,9 +626,24 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         item.id == format!("automation-run:{}:plan-approval", awaiting_run.id)
             && item.category == NotificationCategory::AutomationPlanApproval
     }));
+    assert!(items.iter().any(|item| {
+        item.id == format!("automation-run:{}:auto-merge", auto_merge_warning.id)
+            && item.category == NotificationCategory::AutomationRunFailed
+            && item.detail.as_deref() == auto_merge_warning.error_detail.as_deref()
+    }));
     assert!(!items
         .iter()
         .any(|item| item.id == format!("automation:{}:paused", user_paused.id)));
+    for reason in [
+        "signal_verification_failed",
+        "judge_loop_suspected",
+        "judge_stopped_unmet",
+    ] {
+        assert!(items.iter().any(|item| {
+            item.title
+                == format!("Automation paused: Automation actionable-{reason}")
+        }));
+    }
 }
 
 #[tokio::test]

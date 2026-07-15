@@ -2,7 +2,10 @@ import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { automationsApi } from "@/api/automations";
 import { tasksApi } from "@/api/tasks";
+import { attentionKeys } from "@/hooks/useAttentionItems";
+import { invalidateAutomationQueries } from "@/hooks/useAutomations";
 import {
   navigateToAgentConversation,
   navigateToAgentPlan,
@@ -31,6 +34,29 @@ export interface NotificationNavigationItem {
 export interface NotificationNavigationOptions {
   onClose?: () => void;
   onOpenAutomationDetail?: (automationId: string) => void;
+}
+
+export async function performNotificationPrimaryAction(
+  item: NotificationNavigationItem,
+  queryClient: QueryClient,
+  options: NotificationNavigationOptions = {},
+): Promise<boolean> {
+  if (item.category !== "automation_paused" || !item.target.automationId) {
+    return navigateNotification(item, queryClient, options);
+  }
+  const automationId = item.target.automationId;
+  try {
+    await automationsApi.resume(automationId);
+    invalidateAutomationQueries(queryClient, automationId);
+    void queryClient.invalidateQueries({ queryKey: attentionKeys.all });
+    toast.success("Automation resumed");
+    options.onClose?.();
+    return true;
+  } catch {
+    void queryClient.invalidateQueries({ queryKey: attentionKeys.all });
+    toast.error("Automation is no longer resumable");
+    return false;
+  }
 }
 
 /** The one target dispatcher used by attention rows, history rows, and toast actions. */

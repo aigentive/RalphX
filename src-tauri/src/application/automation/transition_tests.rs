@@ -532,16 +532,32 @@ async fn transition_service_records_only_actionable_automation_pauses() {
         )
         .await
         .unwrap());
-    assert!(service
-        .transition_automation_status(
-            &automation.id,
-            AutomationStatus::Active,
-            AutomationStatus::Paused,
-            Some("plan_judge_failed".to_string()),
-            None
-        )
-        .await
-        .unwrap());
+    for reason in [
+        "signal_verification_failed",
+        "judge_loop_suspected",
+        "judge_stopped_unmet",
+    ] {
+        assert!(service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some(reason.to_string()),
+                None
+            )
+            .await
+            .unwrap());
+        assert!(service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Paused,
+                AutomationStatus::Active,
+                None,
+                None
+            )
+            .await
+            .unwrap());
+    }
     assert_eq!(
         notification_repo
             .list(None, None, 10)
@@ -549,7 +565,61 @@ async fn transition_service_records_only_actionable_automation_pauses() {
             .unwrap()
             .notifications
             .len(),
-        1
+        3
+    );
+}
+
+#[tokio::test]
+async fn transition_service_records_auto_merge_enable_warning_once_as_action_required() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new(
+        automation_repo.shared_state(),
+    ));
+    let (notification_service, notification_repo) = notification_service_with_repo();
+    let service = AutomationTransitionService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        Arc::new(RecordingEmitter::default()),
+        notification_service,
+    );
+    let automation = automation("automation-auto-merge", AutomationStatus::Active);
+    automation_repo.create(automation.clone()).await.unwrap();
+    let mut published = run(
+        "auto-merge-warning",
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    published.automation_id = automation.id.clone();
+    published.pr_number = Some(733);
+    run_repo.create_run(published.clone()).await.unwrap();
+
+    for _ in 0..2 {
+        service
+            .record_auto_merge_enable_warning(
+                &automation,
+                &published,
+                "GitHub rejected automatic merge enablement",
+            )
+            .await;
+    }
+
+    let notifications = notification_repo
+        .list(None, None, 10)
+        .await
+        .unwrap()
+        .notifications;
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(
+        notifications[0].severity,
+        crate::domain::entities::NotificationSeverity::ActionRequired
+    );
+    assert_eq!(
+        notifications[0].category,
+        crate::domain::entities::NotificationCategory::AutomationRunFailed
+    );
+    assert_eq!(
+        notifications[0].dedupe_key.as_deref(),
+        Some("run:auto-merge-warning:auto_merge_enable_failed")
     );
 }
 
