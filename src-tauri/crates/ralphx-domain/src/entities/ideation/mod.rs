@@ -48,6 +48,12 @@ pub struct IdeationSession {
     pub status: IdeationSessionStatus,
     /// The implementation plan artifact for this session (owned by this session)
     pub plan_artifact_id: Option<ArtifactId>,
+    /// Exact linked plan artifact version most recently proven implementation-ready.
+    #[serde(default)]
+    pub verified_plan_artifact_id: Option<ArtifactId>,
+    /// Agent run whose bounded completion operation recorded the current proof.
+    #[serde(default)]
+    pub verified_plan_agent_run_id: Option<String>,
     /// Plan artifact inherited from parent session (read-only; child cannot modify)
     pub inherited_plan_artifact_id: Option<ArtifactId>,
     /// Optional reference to a draft task that seeded this session
@@ -168,6 +174,8 @@ pub struct IdeationSessionBuilder {
     title: Option<String>,
     status: Option<IdeationSessionStatus>,
     plan_artifact_id: Option<ArtifactId>,
+    verified_plan_artifact_id: Option<ArtifactId>,
+    verified_plan_agent_run_id: Option<String>,
     inherited_plan_artifact_id: Option<ArtifactId>,
     seed_task_id: Option<TaskId>,
     parent_session_id: Option<IdeationSessionId>,
@@ -245,6 +253,11 @@ impl IdeationSessionBuilder {
     /// Set the plan artifact ID
     pub fn plan_artifact_id(mut self, plan_artifact_id: ArtifactId) -> Self {
         self.plan_artifact_id = Some(plan_artifact_id);
+        self
+    }
+
+    pub fn verified_plan_artifact_id(mut self, artifact_id: ArtifactId) -> Self {
+        self.verified_plan_artifact_id = Some(artifact_id);
         self
     }
 
@@ -465,6 +478,8 @@ impl IdeationSessionBuilder {
             title: self.title,
             status: self.status.unwrap_or_default(),
             plan_artifact_id: self.plan_artifact_id,
+            verified_plan_artifact_id: self.verified_plan_artifact_id,
+            verified_plan_agent_run_id: self.verified_plan_agent_run_id,
             inherited_plan_artifact_id: self.inherited_plan_artifact_id,
             seed_task_id: self.seed_task_id,
             parent_session_id: self.parent_session_id,
@@ -597,6 +612,13 @@ impl IdeationSession {
             plan_artifact_id: row
                 .get::<_, Option<String>>("plan_artifact_id")?
                 .map(ArtifactId::from_string),
+            verified_plan_artifact_id: row
+                .get::<_, Option<String>>("verified_plan_artifact_id")
+                .unwrap_or(None)
+                .map(ArtifactId::from_string),
+            verified_plan_agent_run_id: row
+                .get::<_, Option<String>>("verified_plan_agent_run_id")
+                .unwrap_or(None),
             inherited_plan_artifact_id: row
                 .get::<_, Option<String>>("inherited_plan_artifact_id")?
                 .map(ArtifactId::from_string),

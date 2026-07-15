@@ -1,5 +1,4 @@
 use super::*;
-use crate::application::harness_runtime_registry::default_verification_auto_verify_enabled;
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::NotificationContextResolver;
 
@@ -10,25 +9,7 @@ pub async fn create_plan_artifact(
     let session_id_str = req.session_id.clone();
     let title = req.title.clone();
     let content = req.content.clone();
-    let auto_verify_enabled = default_verification_auto_verify_enabled();
-
-    // Check in-memory auto-accept state BEFORE the transaction (async lock)
-    let is_auto_accept = {
-        let auto_accept = state.app_state.auto_accept_sessions.lock().await;
-        auto_accept.contains(&session_id_str)
-    };
-
-    let (
-        session_id,
-        created,
-        auto_verify_generation,
-        project_id,
-        session_title,
-        is_planning_flow,
-        should_auto_verify,
-        should_offer_verification_confirmation,
-        notification_session,
-    ) =
+    let (session_id, created, project_id, session_title, is_planning_flow, notification_session) =
         state
             .app_state
             .db
@@ -38,13 +19,7 @@ pub async fn create_plan_artifact(
                 let session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
                     .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
 
-                let is_external = session.origin == SessionOrigin::External;
                 let is_planning_flow = session.session_flow == IdeationSessionFlow::Planning;
-                let should_auto_verify =
-                    !is_planning_flow && (auto_verify_enabled || is_external || is_auto_accept);
-                let should_offer_verification_confirmation =
-                    !is_planning_flow && session.origin != SessionOrigin::External;
-
                 crate::http_server::helpers::assert_session_mutable(&session)?;
 
                 let bucket_id = ArtifactBucketId::from_string("prd-library");
@@ -73,21 +48,15 @@ pub async fn create_plan_artifact(
                 )?;
                 SessionRepo::update_plan_version_last_read_sync(conn, sid.as_str(), 1)?;
 
-                let auto_verify_generation = if should_auto_verify {
-                    let gen = SessionRepo::trigger_auto_verify_sync(conn, sid.as_str())?;
-                    if gen.is_some() {
-                        conn.execute(
-                            "UPDATE ideation_sessions SET verification_confirmation_status = NULL WHERE id = ?1",
-                            rusqlite::params![sid.as_str()],
-                        )?;
-                    }
-                    gen
-                } else {
-                    None
-                };
-
                 let session_title = session.title.clone();
-                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_title, is_planning_flow, should_auto_verify, should_offer_verification_confirmation, session))
+                Ok((
+                    sid,
+                    created,
+                    session.project_id.clone(),
+                    session_title,
+                    is_planning_flow,
+                    session,
+                ))
             })
             .await
             .map_err(|e| {
@@ -219,93 +188,6 @@ pub async fn create_plan_artifact(
         .await
     {
         tracing::warn!(error = %e, "Failed to persist IdeationPlanCreated event (non-fatal)");
-    }
-
-    if let Some(generation) = auto_verify_generation {
-        let spawned = crate::http_server::handlers::verification::spawn_verification_agent(
-            &state,
-            &session_id,
-            generation,
-            &[],
-        )
-        .await;
-        if !spawned {
-            if let Err(e) = state
-                .app_state
-                .ideation_session_repo
-                .set_verification_confirmation_status(
-                    &session_id,
-                    Some(crate::domain::entities::VerificationConfirmationStatus::Pending),
-                )
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to re-set verification_confirmation_status to pending after spawn failure for session {} (non-fatal)",
-                    session_id.as_str()
-                );
-            }
-        }
-    } else if should_auto_verify {
-        // should_auto_verify=true but trigger returned None: session is already-verifying
-        // or has ImportedVerified status. Check which case for observability, then suppress
-        // dialog in either case — no pending_confirmation event for duplicate calls or
-        // pre-verified sessions.
-        match state
-            .app_state
-            .ideation_session_repo
-            .get_verification_status(&session_id)
-            .await
-        {
-            Ok(Some((status, verification_in_progress))) => {
-                if !verification_in_progress
-                    && !matches!(status, VerificationStatus::ImportedVerified)
-                {
-                    tracing::warn!(
-                        session_id = session_id.as_str(),
-                        ?status,
-                        "trigger_auto_verify_sync returned None unexpectedly (not in_progress, not ImportedVerified); suppressing dialog"
-                    );
-                }
-            }
-            Ok(None) => {
-                tracing::warn!(
-                    session_id = session_id.as_str(),
-                    "Session not found when checking verification status after trigger=None"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    session_id = session_id.as_str(),
-                    "Failed to fetch verification status after trigger=None (non-fatal)"
-                );
-            }
-        }
-    } else if should_offer_verification_confirmation {
-        // UI session without auto-verify: set DB status to 'pending' (D7: also resets 'rejected')
-        // and emit confirmation event so the UI shows the dialog immediately.
-        if let Err(e) = state
-            .app_state
-            .ideation_session_repo
-            .set_verification_confirmation_status(
-                &session_id,
-                Some(crate::domain::entities::VerificationConfirmationStatus::Pending),
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %e,
-                "Failed to set verification_confirmation_status to pending for session {} (non-fatal)",
-                session_id.as_str()
-            );
-        }
-        crate::application::verification_event_emitters::emit_verification_pending_confirmation(
-            state.app_state.events.as_ref(),
-            session_id.as_str(),
-            &session_title.unwrap_or_default(),
-            created.id.as_str(),
-        );
     }
 
     let mut response = ArtifactResponse::from(created);

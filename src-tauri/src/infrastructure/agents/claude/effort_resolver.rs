@@ -19,7 +19,6 @@ pub fn effort_bucket_for_agent(agent_name: &str) -> Option<EffortBucket> {
         | "ralphx-ideation-team-lead"
         | "ideation-team-member"
         | "ralphx-ideation-readonly" => Some(EffortBucket::Primary),
-        "ralphx-plan-verifier" => Some(EffortBucket::Verifier),
         _ => None,
     }
 }

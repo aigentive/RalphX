@@ -53,6 +53,7 @@ use crate::application::harness_runtime_registry::{
     default_automation_signal_failure_pause_threshold, resolve_harness_agent_bootstrap,
 };
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
+use crate::application::plan_verification_service::PlanVerificationStatusKind;
 use crate::application::services::pr_auto_merge_status::{
     AUTO_MERGE_ENABLE_FAILURE_SUMMARY_PREFIX, AUTO_MERGE_ENABLE_WARNING_CODE,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
@@ -107,11 +108,7 @@ impl AutomationSchedulerConfig {
             plan_judge_models: config.plan_judge_model.clone(),
             plan_max_revision_rounds: i64::try_from(config.plan_max_revision_rounds.max(1))
                 .unwrap_or(i64::MAX),
-            plan_verification_hold_timeout: Duration::from_secs(
-                crate::application::harness_runtime_registry::default_verification_reconciliation_config()
-                    .auto_verify_stale_secs
-                    .max(1),
-            ),
+            plan_verification_hold_timeout: Duration::from_secs(5_400),
         }
     }
 }
@@ -1197,6 +1194,23 @@ fn verification_summary_judge_context(
         convergence_reason: session.verification_convergence_reason.clone(),
         gap_count: Some(session.verification_gap_count as usize),
         gap_score: session.verification_gap_score,
+        gaps: Vec::new(),
+        unavailable_reason: None,
+    }
+}
+
+fn model_native_verification_judge_context(
+    status: PlanVerificationStatusKind,
+) -> AutomationPlanVerificationJudgeContext {
+    AutomationPlanVerificationJudgeContext {
+        status: status.as_str().to_string(),
+        in_progress: status.is_in_progress(),
+        generation: None,
+        current_round: None,
+        max_rounds: None,
+        convergence_reason: None,
+        gap_count: None,
+        gap_score: None,
         gaps: Vec::new(),
         unavailable_reason: None,
     }
@@ -2429,6 +2443,43 @@ impl AutomationScheduler {
             }
         };
 
+        let Some(artifact_id) = plan_artifact_id else {
+            return PlanVerificationJudgeGate {
+                context: Some(verification_unavailable_judge_context(
+                    Some(&session),
+                    "planning session has no linked plan".to_string(),
+                )),
+                ..PlanVerificationJudgeGate::default()
+            };
+        };
+        let verification_request = AutomationPlanVerificationStartRequest {
+            session_id: session_id.clone(),
+            artifact_id: artifact_id.to_string(),
+            provider_harness: AgentHarnessKind::from_str(automation.provider_harness.trim()).ok(),
+        };
+        let mut action_status = match self
+            .plan_verification_starter
+            .verification_status(&verification_request)
+            .await
+        {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation.id,
+                    session_id = %session_id.as_str(),
+                    error = %error,
+                    "Automation model-native plan verification status read failed"
+                );
+                return PlanVerificationJudgeGate {
+                    context: Some(verification_unavailable_judge_context(
+                        Some(&session),
+                        format!("model-native verification status read failed: {error}"),
+                    )),
+                    ..PlanVerificationJudgeGate::default()
+                };
+            }
+        };
+
         let mut effective_status =
             match load_effective_verification_status(self.ideation_session_repo.as_ref(), &session)
                 .await
@@ -2452,62 +2503,93 @@ impl AutomationScheduler {
             };
 
         let mut force_hold_after_start = false;
-        if baseline_changed
+        if action_status == PlanVerificationStatusKind::Unverified
+            && baseline_changed
             && verification_status_allows_deep_start(effective_status.0, effective_status.1)
         {
-            if let Some(artifact_id) = plan_artifact_id {
-                match self
-                    .plan_verification_starter
-                    .start_verification(AutomationPlanVerificationStartRequest {
-                        session_id: session_id.clone(),
-                        artifact_id: artifact_id.to_string(),
-                        provider_harness: AgentHarnessKind::from_str(
-                            automation.provider_harness.trim(),
-                        )
-                        .ok(),
-                    })
-                    .await
-                {
-                    Ok(AutomationPlanVerificationStartOutcome::Unavailable { detail }) => {
-                        tracing::warn!(
-                            automation_id = %automation.id,
-                            session_id = %session_id.as_str(),
-                            artifact_id,
+            match self
+                .plan_verification_starter
+                .start_verification(verification_request.clone())
+                .await
+            {
+                Ok(AutomationPlanVerificationStartOutcome::Unavailable { detail }) => {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        session_id = %session_id.as_str(),
+                        artifact_id,
+                        detail,
+                        "Automation plan verification could not be started"
+                    );
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
                             detail,
-                            "Automation plan verification could not be started"
-                        );
-                        return PlanVerificationJudgeGate {
-                            context: Some(verification_unavailable_judge_context(
-                                Some(&session),
-                                detail,
-                            )),
-                            ..PlanVerificationJudgeGate::default()
-                        };
-                    }
-                    Ok(outcome) => {
-                        force_hold_after_start = matches!(
-                            outcome,
-                            AutomationPlanVerificationStartOutcome::Started { .. }
-                                | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. }
-                        );
-                        match self.ideation_session_repo.get_by_id(&session_id).await {
-                            Ok(Some(updated)) => {
-                                session = updated;
-                                effective_status = match load_effective_verification_status(
-                                    self.ideation_session_repo.as_ref(),
-                                    &session,
-                                )
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
+                }
+                Ok(outcome) => {
+                    force_hold_after_start = matches!(
+                        &outcome,
+                        AutomationPlanVerificationStartOutcome::Started { .. }
+                            | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. }
+                    );
+                    action_status = match outcome {
+                        AutomationPlanVerificationStartOutcome::Started { .. }
+                        | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. } => {
+                            match self
+                                .plan_verification_starter
+                                .verification_status(&verification_request)
                                 .await
-                                {
-                                    Ok(status) => status,
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            automation_id = %automation.id,
-                                            session_id = %session_id.as_str(),
-                                            error = %error,
-                                            "Automation plan verification post-start effective status read failed"
-                                        );
-                                        return PlanVerificationJudgeGate {
+                            {
+                                Ok(status) => status,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        automation_id = %automation.id,
+                                        session_id = %session_id.as_str(),
+                                        error = %error,
+                                        "Automation post-start model-native verification status read failed"
+                                    );
+                                    return PlanVerificationJudgeGate {
+                                            hold_judge: true,
+                                            context: Some(verification_unavailable_judge_context(
+                                                Some(&session),
+                                                format!("verification started but status read failed: {error}"),
+                                            )),
+                                        };
+                                }
+                            }
+                        }
+                        AutomationPlanVerificationStartOutcome::AlreadyTerminal {
+                            status:
+                                VerificationStatus::Verified | VerificationStatus::ImportedVerified,
+                            ..
+                        } => PlanVerificationStatusKind::Verified,
+                        AutomationPlanVerificationStartOutcome::AlreadyTerminal { .. } => {
+                            PlanVerificationStatusKind::Failed
+                        }
+                        AutomationPlanVerificationStartOutcome::Unavailable { .. } => {
+                            PlanVerificationStatusKind::Unverified
+                        }
+                    };
+                    match self.ideation_session_repo.get_by_id(&session_id).await {
+                        Ok(Some(updated)) => {
+                            session = updated;
+                            effective_status = match load_effective_verification_status(
+                                self.ideation_session_repo.as_ref(),
+                                &session,
+                            )
+                            .await
+                            {
+                                Ok(status) => status,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        automation_id = %automation.id,
+                                        session_id = %session_id.as_str(),
+                                        error = %error,
+                                        "Automation plan verification post-start effective status read failed"
+                                    );
+                                    return PlanVerificationJudgeGate {
                                             context: Some(verification_unavailable_judge_context(
                                                 Some(&session),
                                                 format!(
@@ -2516,56 +2598,80 @@ impl AutomationScheduler {
                                             )),
                                             ..PlanVerificationJudgeGate::default()
                                         };
-                                    }
-                                };
-                            }
-                            Ok(None) => {
-                                return PlanVerificationJudgeGate {
-                                    context: Some(verification_unavailable_judge_context(
-                                        None,
-                                        "planning session disappeared after verification start"
-                                            .to_string(),
-                                    )),
-                                    ..PlanVerificationJudgeGate::default()
-                                };
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    automation_id = %automation.id,
-                                    session_id = %session_id.as_str(),
-                                    error = %error,
-                                    "Automation plan verification post-start state read failed"
-                                );
-                                return PlanVerificationJudgeGate {
-                                    context: Some(verification_unavailable_judge_context(
-                                        Some(&session),
-                                        format!(
-                                            "verification post-start state read failed: {error}"
-                                        ),
-                                    )),
-                                    ..PlanVerificationJudgeGate::default()
-                                };
-                            }
+                                }
+                            };
+                        }
+                        Ok(None) => {
+                            return PlanVerificationJudgeGate {
+                                context: Some(verification_unavailable_judge_context(
+                                    None,
+                                    "planning session disappeared after verification start"
+                                        .to_string(),
+                                )),
+                                ..PlanVerificationJudgeGate::default()
+                            };
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                automation_id = %automation.id,
+                                session_id = %session_id.as_str(),
+                                error = %error,
+                                "Automation plan verification post-start state read failed"
+                            );
+                            return PlanVerificationJudgeGate {
+                                context: Some(verification_unavailable_judge_context(
+                                    Some(&session),
+                                    format!("verification post-start state read failed: {error}"),
+                                )),
+                                ..PlanVerificationJudgeGate::default()
+                            };
                         }
                     }
-                    Err(error) => {
-                        tracing::warn!(
-                            automation_id = %automation.id,
-                            session_id = %session_id.as_str(),
-                            artifact_id,
-                            error = %error,
-                            "Automation plan verification start failed"
-                        );
-                        return PlanVerificationJudgeGate {
-                            context: Some(verification_unavailable_judge_context(
-                                Some(&session),
-                                format!("verification start failed: {error}"),
-                            )),
-                            ..PlanVerificationJudgeGate::default()
-                        };
-                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        session_id = %session_id.as_str(),
+                        artifact_id,
+                        error = %error,
+                        "Automation plan verification start failed"
+                    );
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
+                            format!("verification start failed: {error}"),
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
                 }
             }
+        }
+
+        if action_status != PlanVerificationStatusKind::Unverified {
+            let context = model_native_verification_judge_context(action_status);
+            if action_status.is_in_progress() {
+                if verification_hold_timed_out(&session, self.config.plan_verification_hold_timeout)
+                {
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
+                            format!(
+                                "verification did not reach a terminal state within {} seconds",
+                                self.config.plan_verification_hold_timeout.as_secs()
+                            ),
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
+                }
+                return PlanVerificationJudgeGate {
+                    hold_judge: true,
+                    context: Some(context),
+                };
+            }
+            return PlanVerificationJudgeGate {
+                hold_judge: false,
+                context: Some(context),
+            };
         }
 
         let (status, in_progress) = effective_status;

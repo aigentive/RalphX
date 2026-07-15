@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,8 +6,8 @@ use ralphx_lib::application::services::PrPollerRegistry;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    AcceptanceStatus, IdeationSession, IdeationSessionId, Priority, Project, ProjectId,
-    ProposalCategory, TaskProposal,
+    AcceptanceStatus, Artifact, ArtifactType, IdeationSession, IdeationSessionId, Priority,
+    Project, ProjectId, ProposalCategory, TaskProposal,
 };
 use ralphx_lib::domain::services::github_service::GithubServiceTrait;
 use ralphx_lib::http_server::handlers::{
@@ -107,6 +106,86 @@ async fn wait_for_initial_scheduler_tick() {
 }
 
 #[tokio::test]
+async fn accept_finalize_keeps_confirmation_pending_when_auto_verification_is_queued() {
+    use ralphx_lib::application::plan_verification_service::{
+        get_plan_verification_status, PlanVerificationStatusKind,
+    };
+
+    let (state, _) = setup_http_state_with_pr_mode();
+    let repo = setup_real_git_repo();
+    let session_id = create_project_and_session(
+        &state,
+        "proj-accept-finalize-verification",
+        &repo,
+        Some(AcceptanceStatus::Pending),
+    )
+    .await;
+    let artifact = state
+        .app_state
+        .artifact_repo
+        .create(Artifact::new_inline(
+            "Plan",
+            ArtifactType::Specification,
+            "# Plan",
+            "test",
+        ))
+        .await
+        .expect("plan artifact should be created");
+    state
+        .app_state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session_id, Some(artifact.id.as_str().to_string()))
+        .await
+        .expect("plan artifact should be linked");
+    create_single_feature_proposal(&state, &session_id).await;
+
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = true;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let response = accept_finalize(
+        State(state.clone()),
+        Json(AcceptFinalizeRequest {
+            session_id: session_id.as_str().to_string(),
+        }),
+    )
+    .await;
+    assert!(
+        response.is_err(),
+        "first acceptance should queue verification"
+    );
+
+    let session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .expect("session read should succeed")
+        .expect("session should exist");
+    assert_eq!(session.acceptance_status, Some(AcceptanceStatus::Pending));
+    let verification = get_plan_verification_status(&state.app_state, &session_id)
+        .await
+        .expect("verification status should load");
+    assert!(matches!(
+        verification.status,
+        PlanVerificationStatusKind::Queued
+            | PlanVerificationStatusKind::Verifying
+            | PlanVerificationStatusKind::Failed
+    ));
+}
+
+#[tokio::test]
 async fn accept_finalize_defers_pr_creation_until_plan_branch_has_changes() {
     let (state, mock_github) = setup_http_state_with_pr_mode();
     let repo = setup_real_git_repo();
@@ -142,7 +221,10 @@ async fn accept_finalize_defers_pr_creation_until_plan_branch_has_changes() {
         .await
         .unwrap()
         .unwrap();
-    assert!(branch.pr_eligible, "accepted plan branch should be PR-eligible");
+    assert!(
+        branch.pr_eligible,
+        "accepted plan branch should be PR-eligible"
+    );
     assert!(
         branch.pr_number.is_none(),
         "accepting a plan should not create a PR before the plan branch has reviewable changes"
@@ -163,8 +245,7 @@ async fn accept_finalize_defers_pr_creation_until_plan_branch_has_changes() {
 async fn finalize_proposals_defers_pr_creation_until_plan_branch_has_changes() {
     let (state, mock_github) = setup_http_state_with_pr_mode();
     let repo = setup_real_git_repo();
-    let session_id =
-        create_project_and_session(&state, "proj-internal-pr", &repo, None).await;
+    let session_id = create_project_and_session(&state, "proj-internal-pr", &repo, None).await;
     create_single_feature_proposal(&state, &session_id).await;
 
     let response = finalize_proposals(
@@ -191,7 +272,10 @@ async fn finalize_proposals_defers_pr_creation_until_plan_branch_has_changes() {
         .await
         .unwrap()
         .unwrap();
-    assert!(branch.pr_eligible, "internal finalize path should create a PR-eligible plan branch");
+    assert!(
+        branch.pr_eligible,
+        "internal finalize path should create a PR-eligible plan branch"
+    );
     assert!(
         branch.pr_number.is_none(),
         "internal finalize should defer PR creation until the plan branch is ahead of base"
@@ -204,8 +288,7 @@ async fn finalize_proposals_defers_pr_creation_until_plan_branch_has_changes() {
 async fn external_apply_proposals_defers_pr_creation_until_plan_branch_has_changes() {
     let (state, mock_github) = setup_http_state_with_pr_mode();
     let repo = setup_real_git_repo();
-    let session_id =
-        create_project_and_session(&state, "proj-external-pr", &repo, None).await;
+    let session_id = create_project_and_session(&state, "proj-external-pr", &repo, None).await;
     create_single_feature_proposal(&state, &session_id).await;
 
     let response = external_apply_proposals(
@@ -243,7 +326,10 @@ async fn external_apply_proposals_defers_pr_creation_until_plan_branch_has_chang
         .await
         .unwrap()
         .unwrap();
-    assert!(branch.pr_eligible, "external apply path should create a PR-eligible plan branch");
+    assert!(
+        branch.pr_eligible,
+        "external apply path should create a PR-eligible plan branch"
+    );
     assert!(
         branch.pr_number.is_none(),
         "external apply should defer PR creation until the plan branch is ahead of base"

@@ -12,6 +12,9 @@ fn test_ideation_settings_default() {
     assert!(!settings.require_plan_approval);
     assert!(settings.suggest_plans_for_complex);
     assert!(settings.auto_link_proposals);
+    assert!(!settings.auto_verify_plans);
+    assert!(!settings.require_verification_for_accept);
+    assert_eq!(settings.external_overrides.auto_verify_plans, None);
 }
 
 #[test]
@@ -36,10 +39,14 @@ fn test_ideation_settings_serialization() {
         require_plan_approval: true,
         suggest_plans_for_complex: false,
         auto_link_proposals: false,
+        auto_verify_plans: true,
         require_verification_for_accept: false,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,
-        external_overrides: Default::default(),
+        external_overrides: ExternalIdeationOverrides {
+            auto_verify_plans: Some(false),
+            ..Default::default()
+        },
     };
 
     let json = serde_json::to_string(&settings).unwrap();
@@ -49,4 +56,9 @@ fn test_ideation_settings_serialization() {
     assert!(deserialized.require_plan_approval);
     assert!(!deserialized.suggest_plans_for_complex);
     assert!(!deserialized.auto_link_proposals);
+    assert!(deserialized.auto_verify_plans);
+    assert_eq!(
+        deserialized.external_overrides.auto_verify_plans,
+        Some(false)
+    );
 }

@@ -13,7 +13,7 @@ use tracing::error;
 
 use crate::application::spawn_ready_task_scheduler_if_needed;
 use crate::domain::entities::{AcceptanceStatus, IdeationSessionId};
-use crate::http_server::helpers::apply_proposals_core_for_session;
+use crate::http_server::helpers::apply_pending_proposals_core_for_session;
 use crate::http_server::types::{
     AcceptFinalizeRequest, AcceptanceActionResponse, AcceptanceStatusResponse, HttpServerState,
     PendingConfirmationItem, PendingConfirmationsResponse, RejectFinalizeRequest,
@@ -23,43 +23,25 @@ use super::{json_error, JsonError};
 
 /// Accept the pending finalize confirmation for a session.
 ///
-/// Atomically transitions acceptance_status from Pending → Accepted,
-/// then calls apply_proposals_core to create tasks.
+/// Applies the pending proposal set and consumes Pending → Accepted in the
+/// canonical task-creation transaction.
 pub async fn accept_finalize(
     State(state): State<HttpServerState>,
     Json(req): Json<AcceptFinalizeRequest>,
 ) -> Result<Json<AcceptanceActionResponse>, JsonError> {
-    let session_id = IdeationSessionId::from_string(req.session_id.clone());
-
-    // CAS: only transition from Pending → Accepted
-    let was_pending = state
-        .app_state
-        .ideation_session_repo
-        .update_acceptance_status(
-            &session_id,
-            Some(AcceptanceStatus::Pending),
-            Some(AcceptanceStatus::Accepted),
-        )
-        .await
-        .map_err(|e| {
-            error!("Failed to update acceptance_status: {}", e);
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        })?;
-
-    if !was_pending {
-        // Either already accepted (idempotent) or in wrong state
-        return Err(json_error(
-            StatusCode::CONFLICT,
-            "Session is not in pending_acceptance state",
-        ));
-    }
-
-    // Apply proposals (same as finalize_proposals_impl does normally)
-    let result = apply_proposals_core_for_session(&state.app_state, &req.session_id)
+    // Verification admission and every other precondition run before the pending
+    // confirmation is consumed. The final CAS shares the task transaction, so a
+    // failed/queued verification or concurrent rejection leaves no Kanban rows.
+    let result = apply_pending_proposals_core_for_session(&state.app_state, &req.session_id)
         .await
         .map_err(|e| {
             error!("Failed to apply proposals after acceptance: {}", e);
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            let status = match &e {
+                crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
+                crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            json_error(status, e.to_string())
         })?;
 
     spawn_ready_task_scheduler_if_needed(

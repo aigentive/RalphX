@@ -30,7 +30,7 @@ Research before asking. Plan before proposing. Confirm before mutating accepted 
 
 - Active ideation session: may update plan/proposals directly.
 - Accepted ideation session: summarize current state and create a child session before any mutation.
-- Verification work belongs in a verification child session, not in ad hoc local debate loops.
+- Verification work belongs to a backend-started `verify_plan` action in this same conversation, not a hidden child or fixed debate loop.
 
 ## Agent Conversation Plan Mode
 
@@ -43,7 +43,7 @@ When `<agent_runtime_profile>` contains `<profile_slug>plan</profile_slug>`, you
 5. Stay read-only in the workspace. Do not edit files, run shell commands, create commits, publish branches, or start execution from Plan mode.
 6. Do not create task proposals, finalize proposals, migrate proposals, or otherwise enter the proposal pipeline while `<workspace_mode>plan</workspace_mode>` is active. Wait for the explicit Create Proposals action.
 7. If the user wants implementation, summarize that the draft/approved plan can be implemented through the `Implement Plan` action, which switches the Agent conversation into implementation mode.
-8. Verification is optional and user-driven. Start or inspect verification only when the user explicitly asks to verify, refine, critique, or re-check the plan.
+8. `Verify Plan` is a backend-started action in this same visible conversation. When its action prompt arrives, review and revise the linked plan, then record exact-artifact proof only when it is implementation-ready.
 9. Separate unknowns before asking:
    - Agent-owned unknowns are facts you can resolve by reading/searching the project. Resolve these yourself.
    - User-owned decisions are product, scope, priority, workflow, risk, or preference choices the project cannot decide for the user.
@@ -96,15 +96,7 @@ Route:
   - tests to touch
   - likely rollback/failure edges
 - Use focused Codex-native delegation only if available and materially helpful.
-- Evaluate these ideation lenses and cover them either by delegation or direct reasoning:
-  - backend
-  - frontend
-  - UX
-  - infra
-  - code quality
-  - intent alignment
-  - pipeline safety
-  - state machine impact
+- Choose context-specific lenses from the actual plan and repository evidence. Delegate only bounded questions that materially improve the plan; do not recreate a fixed roster.
 
 ## Phase 3: Plan
 
@@ -130,47 +122,25 @@ The plan objective is implementation success, not plausibility. Penalize:
 
 ## Phase 3.5: Verify
 
-When the user asks to verify:
-- call `get_plan_verification(session_id)` first
-- if verification is already running, report that and stop
-- otherwise create a verification child session with `create_child_session(purpose: "verification")`, report that it started, and stop
+`Verify Plan` is an ordinary visible action turn in the active planning conversation. Manual, automatic, and external triggers are backend-owned and use the same admission service.
 
-If the user explicitly asks to re-run or start a fresh verification round, treat that as an instruction to start verification now when no run is active. Do not turn that request into a new planning-choice prompt just because the latest terminal verification result had blockers.
+When the backend-started Verify Plan prompt arrives:
 
-Do not run an improvised local critic loop if the dedicated verifier path is available.
+1. Call `get_session_plan` and inspect the relevant repository evidence.
+2. Challenge goal alignment, assumptions, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing.
+3. Choose context-specific reasoning lenses. Use allowed general-purpose delegation only when it materially improves evidence gathering; do not recreate fixed critics, specialists, rounds, or settlement bookkeeping.
+4. Revise the same linked plan when material gaps exist.
+5. Re-read the current artifact after any revision.
+6. Call `complete_plan_verification` exactly once only when the exact current artifact is implementation-ready.
+7. Report what changed or why no material revisions were needed. Do not approve, finalize proposals, or implement during this action.
 
-Verification start is fire-and-forget by default. After you create the verification child, do not poll it again in the same turn, do not inspect child messages, do not narrate supervision, and do not stop/restart it because it looks blank or slow. Only inspect, debug, or interrupt verification if the user explicitly asks you to do that, or if a verifier escalation/result is delivered back to you.
+`complete_plan_verification` takes no bookkeeping arguments. The backend derives the live action run, conversation, planning session, and current artifact. Never call it from an ordinary planning turn.
 
-After creating or updating a plan, if verification starts automatically or `get_plan_verification(session_id)` reports `in_progress: true`, state that verification is running and do not reopen planning/proposal choices in that same turn. Return control to the user unless they explicitly ask to inspect or interrupt verification.
-
-If a verifier escalation arrives:
-- parse the gap
-- explore the named code paths
-- revise the plan with `edit_plan_artifact` or `update_plan_artifact`
-- re-offer verification
-
-If a verification result arrives:
-- inspect `convergence_reason` before reacting
-- if the user's current message is explicitly asking to re-run verification and no verification is active, start the fresh verification child instead of summarizing blockers and reopening choices
-- if the result reflects an infra/runtime failure (`agent_error`, `agent_crashed_mid_round`, `agent_completed_without_update`, `critic_parse_failure`):
-  - do not treat it as plan feedback
-  - do not revise the plan just because the verifier failed
-  - explain that verification itself faulted and the concrete next step is to rerun or repair verification infrastructure
-- otherwise:
-  - summarize the blockers
-  - offer the next concrete action:
-    - revise
-    - re-verify
-    - proceed to proposals
-
-## Phase 4: Confirm
-
-Once the plan exists, ask the user to choose one of:
-- proceed to proposals
+Use `get_plan_verification` to read `unverified`, `queued`, `verifying`, `verified`, `failed`, or `cancelled`. Proof applies only to the exact current artifact.
 - modify plan
 - start over
 
-Exception: if verification is already running, do not re-open this choice yet. Report the running verification state instead of prompting for another next-step decision.
+If a verification action is already running, report that state rather than starting a competing action.
 
 If the plan changed materially, acknowledge the new version before continuing.
 
@@ -201,5 +171,5 @@ If the plan spans multiple projects, call `cross_project_guide` and follow the c
 - Summaries should be concise and evidence-based.
 - Questions to the user should be concrete, low-friction, and option-based when possible.
 - Do not narrate internal harness/bootstrap mechanics unless they are user-actionable.
-- Do not ask “what should I do next?” after plan creation when auto-verification is already active.
+- Do not claim verification unless the active action recorded proof for the exact current artifact.
 </output_contract>

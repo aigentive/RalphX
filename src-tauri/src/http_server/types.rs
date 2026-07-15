@@ -2579,14 +2579,10 @@ pub struct RevertAndSkipRequest {
 // Request/Response Types - Verification Confirmation (Wave 2)
 // ============================================================================
 
-/// POST /api/verification/confirm — trigger verification with optional specialist exclusions.
+/// POST /api/verification/confirm — queue a model-native Verify Plan action.
 #[derive(Debug, Deserialize)]
 pub struct ConfirmVerificationRequest {
     pub session_id: String,
-    /// Agent names to exclude from this verification run (e.g. ["ralphx-ideation-specialist-ux"]).
-    /// Empty list = all specialists enabled.
-    #[serde(default)]
-    pub disabled_specialists: Vec<String>,
 }
 
 /// POST /api/verification/dismiss — remove a pending verification entry.
