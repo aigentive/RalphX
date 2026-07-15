@@ -453,7 +453,6 @@ mod v20260713063349_persona_run_attribution;
 #[cfg(test)]
 mod v20260713063349_persona_run_attribution_tests;
 mod v20260713131052_disable_auto_followup_by_default;
-mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
 mod v20260714184430_workspace_review_auto_merge_guard;
@@ -462,24 +461,10 @@ mod v20260714184430_workspace_review_auto_merge_guard_tests;
 mod v20260715013854_model_native_plan_verification;
 #[cfg(test)]
 mod v20260715013854_model_native_plan_verification_tests;
+mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
-<<<<<<< HEAD
-=======
 mod v20260715172058_persona_update_draft_provenance_tests;
 #[cfg(test)]
-mod v20260710134609_notifications_table_tests;
-#[cfg(test)]
-mod v20260710201548_notification_settings_tests;
-#[cfg(test)]
-mod v20260711151804_personas_tests;
-#[cfg(test)]
-mod v20260712155425_ui_feature_flag_overrides_tests;
-#[cfg(test)]
-mod v20260712162657_persona_builder_agent_mode_tests;
-#[cfg(test)]
-mod v20260713063349_persona_run_attribution_tests;
-#[cfg(test)]
->>>>>>> origin/main
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
 mod v21_questions_permissions_tests;
