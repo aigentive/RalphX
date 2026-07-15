@@ -470,6 +470,7 @@ fn build_queued_agent_run(
     provider_session_id: &str,
     run_chain_id: Option<&str>,
     parent_run_id: Option<&str>,
+    metadata: Option<&str>,
 ) -> AgentRun {
     let mut run = match (run_chain_id, parent_run_id) {
         (Some(chain_id), Some(parent_id)) => {
@@ -479,6 +480,7 @@ fn build_queued_agent_run(
     };
     run.harness = Some(harness);
     run.provider_session_id = Some(provider_session_id.to_string());
+    run.apply_action_metadata_json(metadata);
     run
 }
 
@@ -1148,6 +1150,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 session_id,
                 run_chain_id,
                 parent_run_id,
+                queued_msg.metadata_override.as_deref(),
             );
             let queued_run_id = queued_run.id.as_str().to_string();
             if let Err(error) = agent_run_repo.create(queued_run).await {

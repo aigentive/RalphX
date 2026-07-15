@@ -1,7 +1,7 @@
 import type { ChatMessageResponse } from "@/api/chat";
 import type { StreamingTask } from "@/types/streaming-task";
 import type { ToolCall } from "./ToolCallIndicator";
-import { normalizeToolCallTranscriptPayload } from "./verification-tool-calls";
+import { normalizeToolCallTranscriptPayload } from "./tool-call-transcript";
 
 export type TaskCardTranscriptBlock =
   | { type: "text"; text: string }

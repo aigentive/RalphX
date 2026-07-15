@@ -13,9 +13,6 @@ import { Virtuoso, type ListRange, type ScrollerProps, type VirtuosoHandle } fro
 import { MessageItem, MessageMeta } from "./MessageItem";
 import { parseComposerReferencesFromMetadata } from "./MessageReferences.parse";
 import { HookEventMessage } from "./HookEventMessage";
-import { AutoVerificationCard } from "./AutoVerificationCard";
-import { VerificationResultCard } from "./VerificationResultCard";
-import { AUTO_VERIFICATION_KEY, VERIFICATION_RESULT_KEY } from "@/types/ideation";
 import {
   ConversationTranscriptPlaceholders,
   TypingIndicator,
@@ -41,7 +38,6 @@ import { shouldHideCompletedProjectOrchestrationToolCall } from "./tool-widgets/
 import type { TeamMessage } from "@/stores/teamStore";
 import { TeamMessageBubble } from "./TeamMessageBubble";
 import { isProviderRole } from "@/lib/chat/provider-role";
-import { normalizeStreamingVerificationContentBlocks } from "./verification-tool-calls";
 import { cn } from "@/lib/utils";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
 import { VISUAL_BOTTOM_EPSILON_PX } from "./ChatMessageList.scroll";
@@ -269,54 +265,6 @@ function parseMessageMetadata(metadata: string | null | undefined): Record<strin
   }
 }
 
-function renderSystemCard(
-  metadata: Record<string, unknown> | null,
-  content: string,
-  createdAt: string,
-) {
-  if (!metadata) return null;
-
-  if (metadata[AUTO_VERIFICATION_KEY]) {
-    return <AutoVerificationCard content={content} createdAt={createdAt} />;
-  }
-
-  if (metadata[VERIFICATION_RESULT_KEY]) {
-    const blockers = Array.isArray(metadata.top_blockers)
-      ? metadata.top_blockers
-          .filter((item): item is { severity?: unknown; description?: unknown } => (
-            item != null && typeof item === "object"
-          ))
-          .map((item) => ({
-            severity: typeof item.severity === "string" ? item.severity : "unknown",
-            description: typeof item.description === "string" ? item.description : "",
-          }))
-          .filter((item) => item.description.length > 0)
-      : [];
-
-    return (
-      <VerificationResultCard
-        summary={typeof metadata.summary === "string" ? metadata.summary : content}
-        convergenceReason={typeof metadata.convergence_reason === "string" ? metadata.convergence_reason : null}
-        currentRound={typeof metadata.current_round === "number" ? metadata.current_round : null}
-        maxRounds={typeof metadata.max_rounds === "number" ? metadata.max_rounds : null}
-        recommendedNextAction={
-          typeof metadata.recommended_next_action === "string"
-            ? metadata.recommended_next_action
-            : null
-        }
-        blockers={blockers}
-        actionableForParent={metadata.actionable_for_parent === true}
-      />
-    );
-  }
-
-  return null;
-}
-
-function hasSystemCardMetadata(metadata: Record<string, unknown> | null) {
-  return Boolean(metadata?.[AUTO_VERIFICATION_KEY] || metadata?.[VERIFICATION_RESULT_KEY]);
-}
-
 function isPersistedTimelineToolCallMessage(message: ChatMessageData): boolean {
   if (!isProviderRole(message.role) || message.timelineSequence == null) {
     return false;
@@ -491,10 +439,6 @@ function attributedRunForId(
 
 function assistantSenderGroupKeyForMessage(message: ChatMessageData): string | null {
   if (!isProviderRole(message.role)) {
-    return null;
-  }
-  const metadata = parseMessageMetadata(message.metadata);
-  if (hasSystemCardMetadata(metadata)) {
     return null;
   }
   return [
@@ -1184,7 +1128,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       enabled: !shouldShowInitialPaintCover,
     });
     const normalizedStreamingContentBlocks = useMemo(
-      () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
+      () => streamingContentBlocks ?? [],
       [streamingContentBlocks],
     );
     const liveTranscriptRows = useMemo(
@@ -1938,19 +1882,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       const messageMetadata = parseMessageMetadata(msg.metadata);
-      const systemCard = renderSystemCard(
-        messageMetadata,
-        msg.content,
-        msg.createdAt,
-      );
-      if (systemCard) {
-        return (
-          <div className="px-3 w-full" style={contentContainerStyle}>
-            <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
-          </div>
-        );
-      }
-
       const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
       const effectiveSenderGroupState =
         toolCallGroup?.position === "toggle" && isExpandedToolCallGroup
@@ -2158,19 +2089,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             }
 
             const messageMetadata = parseMessageMetadata(msg.metadata);
-            const systemCard = renderSystemCard(
-              messageMetadata,
-              msg.content,
-              msg.createdAt,
-            );
-            if (systemCard) {
-              return (
-                <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
-                  <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
-                </div>
-              );
-            }
-
             const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
             const effectiveSenderGroupState =
               toolCallGroup?.position === "toggle" && isExpandedToolCallGroup

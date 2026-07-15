@@ -2788,12 +2788,9 @@ describe("AgentsActiveConversationPanel", () => {
     await user.click(actions.getByRole("button", { name: /Verify Plan/i }));
 
     await waitFor(() =>
-      expect(confirmVerificationMock).toHaveBeenCalledWith(
-        "planning-session-1",
-        ["risk"],
-      ),
+      expect(confirmVerificationMock).toHaveBeenCalledWith("planning-session-1"),
     );
-    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
+    expect(onSelectArtifact).not.toHaveBeenCalledWith("verification");
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
@@ -3555,12 +3552,9 @@ describe("AgentsActiveConversationPanel", () => {
     await user.click(within(row).getByRole("button", { name: /Verify Plan/i }));
 
     await waitFor(() =>
-      expect(confirmVerificationMock).toHaveBeenCalledWith(
-        "planning-session-1",
-        ["risk"],
-      ),
+      expect(confirmVerificationMock).toHaveBeenCalledWith("planning-session-1"),
     );
-    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
+    expect(onSelectArtifact).not.toHaveBeenCalledWith("verification");
   });
 
   it("requires confirmation before running the typed fork command", async () => {

@@ -426,6 +426,9 @@ mod v20260713131052_disable_auto_followup_by_default;
 mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
+mod v20260715013854_model_native_plan_verification;
+#[cfg(test)]
+mod v20260715013854_model_native_plan_verification_tests;
 #[cfg(test)]
 mod v20260715172058_persona_update_draft_provenance_tests;
 #[cfg(test)]
@@ -1517,6 +1520,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260713131052,
         name: "disable_auto_followup_by_default",
         migrate: v20260713131052_disable_auto_followup_by_default::migrate,
+    },
+    Migration {
+        version: 20260715013854,
+        name: "model_native_plan_verification",
+        migrate: v20260715013854_model_native_plan_verification::migrate,
     },
     Migration {
         version: 20260715172058,

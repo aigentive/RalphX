@@ -1289,6 +1289,7 @@ async fn test_update_ideation_settings() {
         require_plan_approval: true,
         suggest_plans_for_complex: false,
         auto_link_proposals: false,
+        auto_verify_plans: false,
         require_verification_for_accept: false,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,
@@ -1321,6 +1322,7 @@ async fn test_ideation_settings_persist_across_reads() {
         require_plan_approval: false,
         suggest_plans_for_complex: true,
         auto_link_proposals: false,
+        auto_verify_plans: false,
         require_verification_for_accept: false,
         require_verification_for_proposals: false,
         require_accept_for_finalize: false,
@@ -2922,7 +2924,7 @@ async fn test_apply_proposals_core_repairs_stale_orphaned_execution_plan() {
 }
 
 #[tokio::test]
-async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_disabled() {
+async fn test_apply_proposals_core_ignores_retired_active_verification_when_accept_gate_disabled() {
     let state = setup_apply_test_state();
     let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
 
@@ -2939,35 +2941,24 @@ async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_d
         base_branch_override: None,
     };
 
-    let err = apply_proposals_core(&state, input)
+    let result = apply_proposals_core(&state, input)
         .await
-        .expect_err("apply_proposals_core should block active verification");
-
-    assert!(
-        matches!(err, ralphx_lib::error::AppError::Validation(_)),
-        "Expected Validation error from verification gate, got: {:?}",
-        err
-    );
+        .expect("retired verifier state must not block advisory acceptance");
+    assert_eq!(result.tasks_created, 1);
 
     let active_plan = state
         .execution_plan_repo
         .get_active_for_session(&session.id)
         .await
         .expect("execution plan lookup should not fail");
-    assert!(
-        active_plan.is_none(),
-        "blocked verification must not create an execution plan"
-    );
+    assert!(active_plan.is_some());
 
     let tasks = state
         .task_repo
         .get_by_ideation_session(&session.id)
         .await
         .expect("task lookup should not fail");
-    assert!(
-        tasks.is_empty(),
-        "blocked verification must not create proposal tasks"
-    );
+    assert!(!tasks.is_empty());
 
     let updated_session = state
         .ideation_session_repo
@@ -2975,7 +2966,205 @@ async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_d
         .await
         .expect("repo error")
         .expect("session should exist");
-    assert_eq!(updated_session.status, IdeationSessionStatus::Active);
+    assert_eq!(updated_session.status, IdeationSessionStatus::Accepted);
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_accepts_only_current_exact_verification_proof() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .expect("plan should be linked");
+    let session_id = session.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET verified_plan_artifact_id = 'plan-current'
+                 WHERE id = ?1",
+                [&session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("exact proof should be stored");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("exact proof for the current artifact should permit acceptance");
+
+    assert_eq!(result.tasks_created, 1);
+    assert!(result.session_converted);
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_blocks_stale_proof_without_creating_kanban_state() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .expect("plan should be linked");
+    let session_id = session.id.as_str().to_string();
+    state
+        .db
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE ideation_sessions
+                 SET verified_plan_artifact_id = 'plan-stale'
+                 WHERE id = ?1",
+                [&session_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("stale proof should be stored");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids,
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("stale proof must block acceptance");
+
+    assert!(error.to_string().contains("must be verified"));
+    assert!(
+        state
+            .execution_plan_repo
+            .get_active_for_session(&session.id)
+            .await
+            .expect("execution plan lookup should succeed")
+            .is_none(),
+        "blocked acceptance must not create an execution plan"
+    );
+    assert!(
+        state
+            .task_repo
+            .get_by_ideation_session(&session.id)
+            .await
+            .expect("task lookup should succeed")
+            .is_empty(),
+        "blocked acceptance must not create tasks"
+    );
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_blocks_unverified_all_foreign_acceptance() {
+    use ralphx_lib::domain::entities::{
+        IdeationSession, Priority, Project, ProposalCategory, TaskProposal,
+    };
+
+    let state = setup_apply_test_state();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Foreign-only source".to_string(),
+            "/tmp/foreign-only-source".to_string(),
+        ))
+        .await
+        .expect("project should be created");
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .expect("session should be created");
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .expect("plan should be linked");
+    let mut proposal = TaskProposal::new(
+        session.id.clone(),
+        "Foreign proposal".to_string(),
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
+    proposal.target_project = Some("/tmp/another-project".to_string());
+    let proposal = state
+        .task_proposal_repo
+        .create(proposal)
+        .await
+        .expect("proposal should be created");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("required verification must also gate all-foreign acceptance");
+
+    assert!(error.to_string().contains("must be verified"));
+    let persisted = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session read should succeed")
+        .expect("session should exist");
+    assert_eq!(persisted.status, IdeationSessionStatus::Active);
 }
 
 #[tokio::test]

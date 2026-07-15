@@ -161,10 +161,7 @@ async fn codex_lane_selection_uses_codex_lane_settings() {
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(resolved.claude_effort.as_deref(), Some("xhigh"));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        resolved.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
     assert_eq!(
         resolved.configured_subagent_model_cap.as_deref(),
         Some("gpt-5.4-mini")
@@ -211,81 +208,6 @@ async fn codex_primary_lane_without_model_or_effort_uses_registry_defaults() {
 }
 
 #[tokio::test]
-async fn codex_verifier_lane_without_model_or_effort_uses_registry_defaults() {
-    let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
-        Arc::new(MemoryAgentLaneSettingsRepository::new());
-
-    lane_repo
-        .upsert_global(
-            AgentLane::IdeationVerifier,
-            &AgentLaneSettings {
-                harness: AgentHarnessKind::Codex,
-                model: None,
-                effort: None,
-                approval_policy: None,
-                sandbox_mode: None,
-            },
-        )
-        .await
-        .expect("verifier codex lane upsert should succeed");
-
-    let resolved = resolve_agent_spawn_settings(
-        "ralphx-plan-verifier",
-        None,
-        ChatContextType::Ideation,
-        None,
-        None,
-        None,
-        Some(&lane_repo),
-    )
-    .await;
-
-    assert_eq!(resolved.effective_harness, AgentHarnessKind::Codex);
-    assert_eq!(resolved.model, "gpt-5.4-mini");
-    assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
-    assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
-    assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
-    assert_eq!(resolved.subagent_model_cap.as_deref(), Some("gpt-5.4-mini"));
-}
-
-#[tokio::test]
-async fn verifier_and_primary_subagent_caps_use_lane_rows_when_claude_is_selected() {
-    let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
-        Arc::new(MemoryAgentLaneSettingsRepository::new());
-
-    lane_repo
-        .upsert_global(
-            AgentLane::IdeationVerifier,
-            &claude_lane_settings("opus", Some(LogicalEffort::High), None, None),
-        )
-        .await
-        .expect("verifier lane upsert should succeed");
-    lane_repo
-        .upsert_global(
-            AgentLane::IdeationVerifierSubagent,
-            &claude_lane_settings("haiku", None, None, None),
-        )
-        .await
-        .expect("verifier subagent lane upsert should succeed");
-
-    let verifier = resolve_agent_spawn_settings(
-        "ralphx-plan-verifier",
-        None,
-        ChatContextType::Ideation,
-        None,
-        None,
-        None,
-        Some(&lane_repo),
-    )
-    .await;
-
-    assert_eq!(verifier.model, "opus");
-    assert_eq!(verifier.logical_effort, Some(LogicalEffort::High));
-    assert_eq!(verifier.claude_effort.as_deref(), Some("high"));
-    assert_eq!(verifier.subagent_model_cap.as_deref(), Some("haiku"));
-}
-
-#[tokio::test]
 async fn execution_worker_lane_can_resolve_codex_settings() {
     let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
         Arc::new(MemoryAgentLaneSettingsRepository::new());
@@ -319,10 +241,7 @@ async fn execution_worker_lane_can_resolve_codex_settings() {
     assert_eq!(resolved.model, "gpt-5.4");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        resolved.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
     assert_eq!(resolved.subagent_model_cap, None);
 }
 
@@ -488,8 +407,5 @@ async fn reexecuting_task_execution_uses_reexecutor_lane_settings() {
     assert_eq!(resolved.model, "gpt-5.4-mini");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        resolved.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
 }

@@ -27,12 +27,12 @@ vi.mock("@/stores/uiStore", () => ({
 }));
 
 const defaultSettings: IdeationSettings = {
+  autoVerifyPlans: false,
   requireAcceptForFinalize: false,
   requireVerificationForAccept: false,
-  requireVerificationForProposals: false,
   externalOverrides: {
+    autoVerifyPlans: null,
     requireVerificationForAccept: null,
-    requireVerificationForProposals: null,
     requireAcceptForFinalize: null,
   },
 };
@@ -63,13 +63,19 @@ describe("IdeationSettingsPanel", () => {
     expect(screen.getByText("Configure acceptance and verification gates")).toBeInTheDocument();
   });
 
-  it("renders the three gate checkboxes", async () => {
+  it("renders automatic and acceptance verification controls", async () => {
     render(<IdeationSettingsPanel />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByTestId("require-accept-for-finalize")).toBeInTheDocument();
       expect(screen.getByTestId("require-verification-for-accept")).toBeInTheDocument();
-      expect(screen.getByTestId("require-verification-for-proposals")).toBeInTheDocument();
+      expect(screen.getByTestId("auto-verify-plans")).toBeInTheDocument();
+      expect(screen.getByText("Verify automatically on acceptance")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting",
+        ),
+      ).toBeInTheDocument();
     });
   });
 
@@ -146,7 +152,7 @@ describe("IdeationSettingsPanel", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("ext-override-verification-for-accept")).toBeInTheDocument();
-      expect(screen.getByTestId("ext-override-verification-for-proposals")).toBeInTheDocument();
+      expect(screen.getByTestId("ext-override-auto-verify-plans")).toBeInTheDocument();
       expect(screen.getByTestId("ext-override-accept-for-finalize")).toBeInTheDocument();
     });
   });

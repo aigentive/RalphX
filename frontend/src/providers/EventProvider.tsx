@@ -28,8 +28,6 @@ import {
 } from "@/hooks/useEvents";
 import { useIdeationEvents } from "@/hooks/useIdeationEvents";
 import { usePlanArtifactEvents } from "@/hooks/useEvents.planArtifact";
-import { useVerificationEvents } from "@/hooks/useVerificationEvents";
-import { useVerificationBootstrap } from "@/hooks/useVerificationBootstrap";
 import { useTaskValidationEventInvalidation } from "@/hooks/useTaskValidationEvents";
 import { useFreshnessBlockedNotification } from "@/hooks/useFreshnessBlockedNotification";
 import { useGitAuthStartupNotification } from "@/hooks/useGitAuthStartupNotification";
@@ -91,8 +89,6 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useRecoveryPromptEvents(); // Listen to recovery prompts
   useIdeationEvents(); // Listen to ideation events (session title updates)
   usePlanArtifactEvents(); // Listen to plan artifact events for real-time updates
-  useVerificationEvents(); // Listen to plan verification status changes globally
-  useVerificationBootstrap(); // Hydrate pending verification confirmations on startup and project switch
   useTaskValidationEventInvalidation(); // Refresh task validation summaries on lifecycle events
   useFreshnessBlockedNotification(); // Show toast when task is freshness-blocked
   useGitAuthStartupNotification(); // Warn before Git/GitHub-dependent startup work fails
