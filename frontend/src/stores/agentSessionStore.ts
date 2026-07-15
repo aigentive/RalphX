@@ -296,13 +296,7 @@ export function getSeededArtifactTab(
   if (!hiddenTabs.includes(requestedTab)) {
     return requestedTab;
   }
-  if (activeTab !== requestedTab && !hiddenTabs.includes(activeTab)) {
-    return activeTab;
-  }
-  return (
-    AGENT_ARTIFACT_TABS.find((candidate) => !hiddenTabs.includes(candidate)) ??
-    activeTab
-  );
+  return activeTab;
 }
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {

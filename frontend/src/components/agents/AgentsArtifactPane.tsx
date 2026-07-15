@@ -414,9 +414,9 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   tasks: "Appears when implementation tasks are available.",
   automation: "Appears in automation conversations.",
   pr: "Appears when this workspace has a pull request.",
-  jira: "Link Jira to this conversation to make it available.",
-  linear: "Link Linear to this conversation to make it available.",
-  granola: "Link a Granola note to this conversation to make it available.",
+  jira: "Connect Jira in Settings to make it available.",
+  linear: "Connect Linear in Settings to make it available.",
+  granola: "Connect Granola in Settings to make it available.",
   review: "Appears when a review is created.",
   publish: "Appears when this conversation has an editable workspace.",
 };
@@ -1120,21 +1120,32 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
     [availableTabs, hiddenTabs],
   );
+  const shownEnabledTabs = useMemo(
+    () => shownTabs.filter((tab) => tab.enabled),
+    [shownTabs],
+  );
   const enabledAvailableTabIds = useMemo(
     () => availableTabs.filter((tab) => tab.enabled).map((tab) => tab.id),
     [availableTabs],
   );
   const customizerTabs = useMemo<AgentArtifactTabCustomizerItem[]>(
     () =>
-      ALL_ARTIFACT_TAB_DEFINITIONS.map((definition) => ({
-        ...definition,
-        available: availableTabs.some((tab) => tab.id === definition.id),
-        unavailableReason: ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id],
-      })),
+      ALL_ARTIFACT_TAB_DEFINITIONS.map((definition) => {
+        const availableTab = availableTabs.find(
+          (tab) => tab.id === definition.id,
+        );
+        return {
+          ...definition,
+          available: availableTab?.enabled === true,
+          unavailableReason:
+            availableTab?.disabledReason ??
+            ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id],
+        };
+      }),
     [availableTabs],
   );
   const allAvailableTabsHidden =
-    availableTabs.length > 0 && shownTabs.length === 0;
+    enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
   const requestedFallbackActiveTab =
     isAutomationRunConversation
       ? automationRunTabPolicy.defaultTab
@@ -1158,10 +1169,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                       ? "review"
                       : "plan";
   const fallbackActiveTab =
-    shownTabs.find(
+    shownEnabledTabs.find(
       (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
     )?.id ??
-    shownTabs.find((tab) => tab.enabled)?.id ??
+    shownEnabledTabs[0]?.id ??
     "automation";
   const shouldPreferAutomationOverPlan =
     activeTab === "plan" &&

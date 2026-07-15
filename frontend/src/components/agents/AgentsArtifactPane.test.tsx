@@ -2044,6 +2044,52 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-artifact-content-pr")).toBeInTheDocument();
   });
 
+  it("shows recovery instead of hidden Automation content when only disabled Plan remains", async () => {
+    getAutomationMock.mockResolvedValue(
+      automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "running",
+            planArtifactId: null,
+            prNumber: null,
+            prUrl: null,
+          }),
+        ],
+      }),
+    );
+
+    renderPane(
+      "automation",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+      { hiddenTabs: ["automation"] },
+    );
+
+    await waitFor(() =>
+      expect(getAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(await screen.findByTestId("agents-artifact-content-hidden")).toBeVisible();
+    expect(
+      screen.queryByTestId("agents-artifact-content-automation"),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getAllByRole("button", { name: "Customize tabs" })[0]!,
+    );
+    expect(screen.getByText("No run plan has been authored yet.")).toBeVisible();
+  });
+
   it("uses the automation tab as the setup-conversation fallback", async () => {
     const automationConversation = {
       ...conversation(),

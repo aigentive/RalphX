@@ -70,6 +70,21 @@ export function seedAgentArtifactTab(
   });
 }
 
+export function revealAgentArtifactTab(
+  conversationId: string,
+  tab: AgentArtifactTab,
+  hasAutoOpenArtifacts: boolean,
+): void {
+  const current = getAgentArtifactStateSnapshot(conversationId, hasAutoOpenArtifacts);
+  useAgentArtifactUiStore.getState().setArtifactState(conversationId, {
+    ...current,
+    activeTab: tab,
+    isOpen: true,
+    hiddenTabs: current.hiddenTabs.filter((hiddenTab) => hiddenTab !== tab),
+  });
+  useAgentSessionStore.getState().setArtifactTab(conversationId, tab);
+}
+
 export function useResolvedAgentArtifactState(
   conversationId: string | null,
   hasAutoOpenArtifacts: boolean,

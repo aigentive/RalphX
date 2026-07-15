@@ -168,6 +168,7 @@ describe("navigateToAgentPlan", () => {
       isOpen: false,
       activeTab: "tasks",
       taskMode: "kanban",
+      hiddenTabs: ["plan"],
     });
 
     navigateToAgentPlan(PROJECT_A, CONVERSATION_A);

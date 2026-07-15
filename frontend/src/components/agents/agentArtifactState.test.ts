@@ -11,7 +11,7 @@ describe("seedAgentArtifactTab", () => {
     useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
   });
 
-  it("never unhides a level-seeded tab and selects a non-hidden fallback", () => {
+  it("never unhides a level-seeded tab or invents an unavailable fallback", () => {
     useAgentSessionStore.getState().setArtifactState("conversation-1", {
       isOpen: false,
       activeTab: "automation",
@@ -25,7 +25,7 @@ describe("seedAgentArtifactTab", () => {
       useAgentArtifactUiStore.getState().artifactByConversationId["conversation-1"],
     ).toMatchObject({
       isOpen: true,
-      activeTab: "issues",
+      activeTab: "automation",
       hiddenTabs: ["automation"],
     });
     expect(
