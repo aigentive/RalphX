@@ -261,10 +261,10 @@ fn ingest_file(
             .push(skipped_entry(display_path, "maximum ingest depth exceeded"));
         return Ok(());
     }
-    if !is_allowed_text_path(relative_path) {
+    if is_denied_binary_path(relative_path) {
         manifest
             .skipped
-            .push(skipped_entry(display_path, "unsupported file type"));
+            .push(skipped_entry(display_path, "binary file type"));
         return Ok(());
     }
     // codeql[rust/path-injection]
@@ -499,15 +499,72 @@ pub(super) fn require_under_root(path: &Path, root: &Path, label: &str) -> AppRe
     }
 }
 
-fn is_allowed_text_path(path: &Path) -> bool {
+fn is_denied_binary_path(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+    {
+        return true;
+    }
+
     matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some(extension) if matches!(extension.to_ascii_lowercase().as_str(),
-            "txt" | "md" | "mdx" | "rst" | "adoc" | "json" | "yaml" | "yml" | "toml"
-            | "ini" | "cfg" | "conf" | "log" | "rs" | "ts" | "tsx" | "js" | "jsx"
-            | "py" | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp"
-            | "cs" | "rb" | "php" | "html" | "css" | "scss" | "sql" | "sh" | "bash"
-            | "zsh" | "fish" | "xml" | "csv"
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "7z" | "a"
+                | "app"
+                | "avi"
+                | "bin"
+                | "bmp"
+                | "bz2"
+                | "class"
+                | "db"
+                | "dll"
+                | "dmg"
+                | "doc"
+                | "docx"
+                | "dylib"
+                | "exe"
+                | "flac"
+                | "gif"
+                | "gz"
+                | "ico"
+                | "jar"
+                | "jpeg"
+                | "jpg"
+                | "mkv"
+                | "mov"
+                | "mp3"
+                | "mp4"
+                | "o"
+                | "obj"
+                | "otf"
+                | "pdf"
+                | "pkg"
+                | "png"
+                | "ppt"
+                | "pptx"
+                | "pyc"
+                | "rar"
+                | "so"
+                | "sqlite"
+                | "sqlite3"
+                | "tar"
+                | "tif"
+                | "tiff"
+                | "ttf"
+                | "wasm"
+                | "wav"
+                | "webp"
+                | "woff"
+                | "woff2"
+                | "xls"
+                | "xlsx"
+                | "xz"
+                | "zip"
         )
     )
 }
