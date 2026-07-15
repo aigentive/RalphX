@@ -598,7 +598,10 @@ async fn restart_owner_inspection_refuses_unregistered_derived_linked_path() {
         error,
         RestartWorkspacePreparationError::UnsafeOwnership { .. }
     ));
-    assert!(linked_path.is_dir(), "inspection must not mutate unknown data");
+    assert!(
+        linked_path.is_dir(),
+        "inspection must not mutate unknown data"
+    );
 }
 
 #[test]

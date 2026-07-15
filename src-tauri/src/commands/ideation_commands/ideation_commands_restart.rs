@@ -7,8 +7,8 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use tauri::{Emitter, Manager, State};
 
-use crate::application::task_cleanup_service::StopMode;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
+use crate::application::task_cleanup_service::StopMode;
 use crate::application::{
     agent_conversation_archive::close_agent_workspace_pr_for_restart,
     agent_conversation_workspace_restart::{
@@ -49,13 +49,14 @@ struct RestartTxOutput {
     any_ready_tasks: bool,
 }
 
-struct RestartBranchUpdate {
+#[derive(Debug)]
+pub(super) struct RestartBranchUpdate {
     operation: BranchUpdateOperation,
     lease: GitTargetLease,
     workspace_path: std::path::PathBuf,
 }
 
-async fn preflight_branch_updates_for_restart(
+pub(super) async fn preflight_branch_updates_for_restart(
     app_state: &AppState,
     project: &Project,
     tasks: &[Task],
@@ -66,7 +67,17 @@ async fn preflight_branch_updates_for_restart(
     )?;
     let registered_worktrees = GitService::list_worktrees(&project_root).await?;
     let mut updates = Vec::new();
-    for task in tasks {
+    for task_snapshot in tasks {
+        let task = app_state
+            .task_repo
+            .get_by_id(&task_snapshot.id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Task {} disappeared during branch-update restart preflight",
+                    task_snapshot.id
+                ))
+            })?;
         let operation = app_state
             .branch_update_repo
             .get_active_operation(&task.id)
@@ -280,7 +291,7 @@ fn clear_proposal_task_links(
     Ok(())
 }
 
-fn archive_execution_plan_tasks(
+pub(super) fn archive_execution_plan_tasks(
     conn: &rusqlite::Connection,
     execution_plan_id: &ExecutionPlanId,
     expected_task_ids: &[TaskId],

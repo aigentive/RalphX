@@ -219,8 +219,9 @@ pub(crate) async fn inspect_linked_plan_branch_owner_for_restart(
 
     if linked_path.exists() || conversation_path.exists() {
         return Err(RestartWorkspacePreparationError::UnsafeOwnership {
-            detail: "a derived implementation workspace path exists without Git worktree registration"
-                .to_string(),
+            detail:
+                "a derived implementation workspace path exists without Git worktree registration"
+                    .to_string(),
         });
     }
 

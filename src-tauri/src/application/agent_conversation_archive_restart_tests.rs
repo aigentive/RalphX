@@ -172,8 +172,7 @@ async fn restart_treats_terminal_remote_pr_as_idempotently_closed() {
 
 #[tokio::test]
 async fn restart_checks_remote_pr_even_when_local_state_is_terminal() {
-    let (_project_dir, mut state, mut workspace, mut plan_branch) =
-        setup_restart_pr_state().await;
+    let (_project_dir, mut state, mut workspace, mut plan_branch) = setup_restart_pr_state().await;
     plan_branch.pr_status = Some(PrStatus::Closed);
     workspace.publication_pr_status = Some("closed".to_string());
     let github = Arc::new(MockGithubService::new());
@@ -187,6 +186,23 @@ async fn restart_checks_remote_pr_even_when_local_state_is_terminal() {
     assert_eq!(github.state().check_pr_status_calls, 1);
     assert_eq!(github.state().close_pr_calls, 1);
     assert_eq!(github.state().last_close_pr_number, Some(41));
+}
+
+#[tokio::test]
+async fn restart_reconciles_distinct_plan_and_workspace_pr_numbers() {
+    let (_project_dir, mut state, mut workspace, plan_branch) = setup_restart_pr_state().await;
+    workspace.publication_pr_number = Some(42);
+    let github = Arc::new(MockGithubService::new());
+    let github_service: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_service);
+
+    close_agent_workspace_pr_for_restart(&workspace, &plan_branch, &state)
+        .await
+        .expect("every stored PR pointer must be reconciled");
+
+    assert_eq!(github.state().check_pr_status_calls, 2);
+    assert_eq!(github.state().close_pr_calls, 2);
+    assert_eq!(github.state().last_close_pr_number, Some(42));
 }
 
 #[tokio::test]

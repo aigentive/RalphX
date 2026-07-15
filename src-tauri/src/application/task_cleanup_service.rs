@@ -355,7 +355,7 @@ impl TaskCleanupService {
         }
 
         for current_task in &current_tasks {
-            if self.stop_task_for_cleanup(&current_task, stop_mode).await
+            if self.stop_task_for_cleanup(current_task, stop_mode).await
                 && stopped_task_ids.insert(current_task.id.clone())
             {
                 report.tasks_stopped += 1;

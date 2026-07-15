@@ -62,6 +62,16 @@ async fn test_direct_cleanup_stops_task_using_current_repo_state_not_stale_snaps
             None,
         )
         .await;
+    running_registry
+        .register(
+            RunningAgentKey::new("branch_update", stored_task.id.as_str()),
+            424243,
+            "conv-branch-update".to_string(),
+            "run-branch-update".to_string(),
+            None,
+            None,
+        )
+        .await;
 
     let service = TaskCleanupService::new(
         Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
@@ -80,6 +90,11 @@ async fn test_direct_cleanup_stops_task_using_current_repo_state_not_stale_snaps
     assert!(
         !running_registry.is_running(&key).await,
         "direct cleanup must stop the live task_execution context even when the input snapshot is stale"
+    );
+    let branch_update_key = RunningAgentKey::new("branch_update", stored_task.id.as_str());
+    assert!(
+        !running_registry.is_running(&branch_update_key).await,
+        "direct cleanup must also stop an active branch-update runtime"
     );
 
     let archived = task_repo
@@ -214,11 +229,7 @@ async fn replacement_cleanup_validates_the_whole_batch_before_mutating_any_workt
         None,
     );
     let report = service
-        .prepare_tasks_for_replacement(
-            &[valid_task, unsafe_task],
-            StopMode::DirectStop,
-            None,
-        )
+        .prepare_tasks_for_replacement(&[valid_task, unsafe_task], StopMode::DirectStop, None)
         .await;
 
     assert_eq!(report.errors.len(), 1);
@@ -226,7 +237,10 @@ async fn replacement_cleanup_validates_the_whole_batch_before_mutating_any_workt
         valid_worktree.is_dir(),
         "a later validation failure must preserve earlier valid worktrees"
     );
-    assert!(outside.path().is_dir(), "unknown data must remain untouched");
+    assert!(
+        outside.path().is_dir(),
+        "unknown data must remain untouched"
+    );
 }
 
 #[tokio::test]

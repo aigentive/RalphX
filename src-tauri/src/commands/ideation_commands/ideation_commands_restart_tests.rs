@@ -2,7 +2,9 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use super::ideation_commands_restart::RestartInFlightGuard;
+use super::ideation_commands_restart::{
+    archive_execution_plan_tasks, preflight_branch_updates_for_restart, RestartInFlightGuard,
+};
 use super::*;
 use crate::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, resolve_linked_plan_branch_agent_worktree_path,
@@ -83,6 +85,79 @@ fn restart_in_flight_guard_serializes_by_ideation_session() {
     drop(first);
     RestartInFlightGuard::acquire(&session_id)
         .expect("guard should release after the first restart exits");
+}
+
+#[test]
+fn restart_task_archive_rejects_changed_attempt_membership() {
+    let connection = rusqlite::Connection::open_in_memory().expect("database should open");
+    connection
+        .execute_batch(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                execution_plan_id TEXT NOT NULL,
+                archived_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO tasks (id, execution_plan_id, archived_at, updated_at)
+            VALUES ('task-known', 'attempt-current', NULL, 'before'),
+                   ('task-raced', 'attempt-current', NULL, 'before');",
+        )
+        .expect("fixture should be created");
+    let execution_plan_id =
+        crate::domain::entities::ExecutionPlanId::from_string("attempt-current");
+    let expected = [crate::domain::entities::TaskId::from_string(
+        "task-known".to_string(),
+    )];
+
+    let error = archive_execution_plan_tasks(
+        &connection,
+        &execution_plan_id,
+        &expected,
+        "2026-07-15T18:00:00Z",
+    )
+    .expect_err("a concurrently inserted task must reject replacement");
+
+    assert!(error.to_string().contains("tasks changed"));
+    let archived: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE archived_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("archive count should load");
+    assert_eq!(archived, 0, "membership failure must not archive any task");
+}
+
+#[tokio::test]
+async fn restart_branch_update_preflight_rejects_missing_durable_authority() {
+    let state = setup_apply_state();
+    let repo_dir = setup_git_repo();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Missing branch update authority".to_string(),
+            repo_dir.path().to_string_lossy().into_owned(),
+        ))
+        .await
+        .expect("project should be created");
+    let mut task = crate::domain::entities::Task::new(
+        project.id.clone(),
+        "Updating without operation".to_string(),
+    );
+    task.internal_status = crate::domain::entities::InternalStatus::UpdatingTaskBranch;
+    let task = state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+
+    let error = preflight_branch_updates_for_restart(&state, &project, &[task])
+        .await
+        .expect_err("updating status without an active operation must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("without active durable authority"));
 }
 
 #[tokio::test]
