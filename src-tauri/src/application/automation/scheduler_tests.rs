@@ -34,7 +34,8 @@ use super::scheduler::{
     AutomationJudgeInvocation, AutomationJudgeInvocationOutput, AutomationJudgeInvoker,
     AutomationPlanJudgeInvocation, AutomationPlanJudgeInvocationOutput, AutomationPlanJudgeInvoker,
     AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
-    AutomationSchedulerTickSummary, AutomationSignalChecker,
+    AutomationSchedulerTickSummary, AutomationSignalChecker, HarnessAutomationJudgeInvoker,
+    HarnessAutomationPlanJudgeInvoker,
 };
 use super::service::{AutomationRunNowAction, AutomationService};
 use super::transition::{
@@ -74,6 +75,7 @@ use crate::infrastructure::memory::{
     MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
     MemoryIdeationSessionRepository, MemoryPlanArtifactApprovalRepository,
 };
+use crate::infrastructure::MockAgenticClient;
 use crate::tests::mock_github_service::MockGithubService;
 
 fn notification_service() -> Arc<NotificationService> {
@@ -1051,6 +1053,20 @@ fn workspace(conversation_id: &ChatConversationId) -> AgentConversationWorkspace
         "ralphx/automation-run-1".to_string(),
         "/tmp/ralphx-automation-run-1".to_string(),
     )
+}
+
+async fn state_with_mock_utility_project() -> (AppState, Arc<MockAgenticClient>, tempfile::TempDir)
+{
+    let checkout = tempfile::tempdir().expect("temp checkout");
+    let client = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(client.clone());
+    let mut project = Project::new(
+        "Automation Project".to_string(),
+        checkout.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("project-1".to_string());
+    state.project_repo.create(project).await.unwrap();
+    (state, client, checkout)
 }
 
 fn open_pr_health(head: &str) -> PrHealth {
@@ -9261,4 +9277,68 @@ async fn load_spec_attachment_empty_when_repo_errors() {
     automation.spec_artifact_id = Some("spec-1".to_string());
 
     assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+}
+
+#[tokio::test]
+async fn harness_judge_invoker_uses_utility_agent_runtime() {
+    let (state, client, _checkout) = state_with_mock_utility_project().await;
+    let automation = automation("automation-1", AutomationStatus::Active);
+    let run = automation_run("run-1", &automation.id, AutomationRunStatus::Merged, None);
+    let invoker = HarnessAutomationJudgeInvoker::new(state);
+
+    let output = invoker
+        .invoke(AutomationJudgeInvocation {
+            automation: automation.clone(),
+            runs: vec![run.clone()],
+            previous_run: run,
+            retry_reminder: true,
+            timeout: Duration::from_millis(1),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(output.raw_output, "MOCK_COMPLETION");
+    assert!(output.model_id.is_some());
+    let calls = client.get_spawn_calls().await;
+    assert_eq!(calls.len(), 1);
+    assert!(matches!(
+        &calls[0].call_type,
+        crate::infrastructure::MockCallType::Spawn { prompt, .. }
+            if prompt.contains("Goal")
+                && prompt.contains("Run prompt")
+    ));
+}
+
+#[tokio::test]
+async fn harness_plan_judge_invoker_passes_override_model_to_utility_runtime() {
+    let (state, client, _checkout) = state_with_mock_utility_project().await;
+    let automation = automation("automation-1", AutomationStatus::Active);
+    let run = automation_run("run-1", &automation.id, AutomationRunStatus::Running, None);
+    let invoker = HarnessAutomationPlanJudgeInvoker::new(state);
+
+    let output = invoker
+        .invoke(AutomationPlanJudgeInvocation {
+            automation,
+            run,
+            plan_artifact_id: "plan-1".to_string(),
+            plan_content: "# Plan\n\nShip one scoped slice.".to_string(),
+            verification_context: None,
+            previous_verdict_json: None,
+            retry_reminder: true,
+            timeout: Duration::from_millis(1),
+            plan_judge_model: Some("judge-model".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(output.raw_output, "MOCK_COMPLETION");
+    assert_eq!(output.model_id.as_deref(), Some("judge-model"));
+    let calls = client.get_spawn_calls().await;
+    assert_eq!(calls.len(), 1);
+    assert!(matches!(
+        &calls[0].call_type,
+        crate::infrastructure::MockCallType::Spawn { prompt, .. }
+            if prompt.contains("plan-1")
+                && prompt.contains("Ship one scoped slice.")
+    ));
 }

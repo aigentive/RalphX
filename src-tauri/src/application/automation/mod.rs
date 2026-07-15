@@ -35,3 +35,5 @@ mod scheduler_tests;
 mod service_tests;
 #[cfg(test)]
 mod transition_tests;
+#[cfg(test)]
+mod utility_agent_tests;

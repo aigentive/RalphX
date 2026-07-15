@@ -510,7 +510,18 @@ pub fn build_decomposition_verifier_prompt(
             "decomposition verifier fixed inputs exceed the prompt budget".to_string(),
         ));
     }
-    let spec_budget = available - fixed.len();
+    let spec_attributes = [
+        ("artifact_id", input.spec_artifact_id.as_str()),
+        ("truncated", "false"),
+    ];
+    let spec_wrapper_bytes = xml_section("spec", "", &spec_attributes).len();
+    let spec_budget = available
+        .checked_sub(fixed.len() + spec_wrapper_bytes)
+        .ok_or_else(|| {
+            AppError::Validation(
+                "decomposition verifier fixed inputs exceed the prompt budget".to_string(),
+            )
+        })?;
     let (spec, truncated) = truncate_utf8_to_bytes(&input.spec_content, spec_budget);
     let prompt = format!(
         "{fixed}{}{output_contract}",

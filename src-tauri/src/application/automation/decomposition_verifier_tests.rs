@@ -5,6 +5,7 @@ use super::decomposition_verifier::{
     AutomationAuthoringState, AutomationDecompositionInput, AutomationDecompositionVerdictDecision,
     AutomationDecompositionVerificationStatus,
 };
+use super::judge::AUTOMATION_JUDGE_PROMPT_MAX_BYTES;
 
 fn decomposition_input() -> AutomationDecompositionInput {
     AutomationDecompositionInput {
@@ -101,6 +102,93 @@ fn decomposition_verdict_revision_requires_actionable_findings() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("at least one finding"));
+}
+
+#[test]
+fn decomposition_verdict_rejects_missing_required_keys_and_empty_text() {
+    let missing_key = parse_decomposition_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "Complete.",
+            "confidence": "high"
+        })
+        .to_string(),
+    )
+    .unwrap_err();
+    assert!(missing_key.to_string().contains("missing required key"));
+
+    let empty_reason = parse_decomposition_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": "   ",
+            "confidence": "high",
+            "findings": []
+        })
+        .to_string(),
+    )
+    .unwrap_err();
+    assert!(empty_reason.to_string().contains("reason is required"));
+
+    let empty_finding = parse_decomposition_verdict(
+        &json!({
+            "decision": "revise",
+            "reason": "Needs a concrete split.",
+            "confidence": "medium",
+            "findings": [{
+                "severity": "medium",
+                "category": "phase_boundaries",
+                "description": "   ",
+                "goalItemIds": ["phase-1"]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap_err();
+    assert!(empty_finding
+        .to_string()
+        .contains("findings require descriptions"));
+}
+
+#[test]
+fn decomposition_verdict_trims_and_allows_low_severity_approval_notes() {
+    let long_reason = format!(" {} ", "r".repeat(1_200));
+    let long_description = format!(" {} ", "d".repeat(1_200));
+
+    let verdict = parse_decomposition_verdict(
+        &json!({
+            "decision": "approve",
+            "reason": long_reason,
+            "confidence": "medium",
+            "findings": [{
+                "severity": "low",
+                "category": "autonomy_risk",
+                "description": long_description,
+                "goalItemIds": ["phase-1", "", "   ", "phase-2"]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        verdict.decision,
+        AutomationDecompositionVerdictDecision::Approve
+    );
+    assert_eq!(verdict.reason.len(), 1_000);
+    assert_eq!(verdict.findings[0].description.len(), 1_000);
+    assert_eq!(verdict.findings[0].goal_item_ids, ["phase-1", "phase-2"]);
+}
+
+#[test]
+fn decomposition_prompt_truncates_spec_to_fit_budget() {
+    let mut input = decomposition_input();
+    input.spec_content = "spec ".repeat(40_000);
+
+    let prompt = build_decomposition_verifier_prompt(&input).unwrap();
+
+    assert!(prompt.len() <= AUTOMATION_JUDGE_PROMPT_MAX_BYTES);
+    assert!(prompt.contains("<spec artifact_id=\"spec-1\" truncated=\"true\">"));
+    assert!(prompt.contains("<output_contract truncated=\"false\">"));
 }
 
 #[test]
