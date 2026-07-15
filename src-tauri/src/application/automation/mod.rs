@@ -1,4 +1,5 @@
 pub mod api;
+pub mod decomposition_verifier;
 pub mod delete;
 pub mod integration_pr;
 pub mod judge;
@@ -11,6 +12,8 @@ pub mod scheduler;
 pub mod service;
 pub mod transition;
 
+#[cfg(test)]
+mod decomposition_verifier_tests;
 #[cfg(test)]
 mod delete_tests;
 #[cfg(test)]
