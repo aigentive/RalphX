@@ -38,6 +38,47 @@ async fn memory_persona_repo_round_trips_update_provenance() {
 }
 
 #[tokio::test]
+async fn memory_persona_repo_finds_active_slug_only_and_newest_seeded_draft() {
+    let repo = MemoryPersonaRepository::new();
+    let active = persona("reviewer", PersonaStatus::Active);
+    let draft_same_slug = persona("reviewer", PersonaStatus::Draft);
+    let mut older_seeded = persona("seeded", PersonaStatus::Draft);
+    older_seeded.created_at -= Duration::seconds(2);
+    older_seeded.source_persona_id = Some(active.id.clone());
+    let mut newer_seeded = persona("seeded", PersonaStatus::Draft);
+    newer_seeded.created_at -= Duration::seconds(1);
+    newer_seeded.source_persona_id = Some(active.id.clone());
+
+    repo.create(active.clone()).await.unwrap();
+    repo.create(draft_same_slug).await.unwrap();
+    repo.create(older_seeded).await.unwrap();
+    repo.create(newer_seeded.clone()).await.unwrap();
+
+    assert_eq!(
+        repo.get_active_by_slug("reviewer")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        active.id
+    );
+    assert!(repo.get_active_by_slug("seeded").await.unwrap().is_none());
+    assert_eq!(
+        repo.get_draft_by_source_persona_id(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        newer_seeded.id
+    );
+    assert!(repo
+        .get_draft_by_source_persona_id(&PersonaId::from("missing-source"))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn memory_persona_repo_allows_drafts_but_rejects_duplicate_active_slugs() {
     let repo = MemoryPersonaRepository::new();
     let first_draft = persona("reviewer", PersonaStatus::Draft);

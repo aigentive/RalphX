@@ -376,6 +376,92 @@ fn batch_ingests_files_and_directories_and_rejects_vanished_entries_by_basename(
 }
 
 #[test]
+fn batch_rejects_empty_and_all_invalid_picks_without_creating_storage() {
+    let temp = temp_dir();
+    let destination = fixture_path(temp.path(), "destination");
+
+    let empty_error =
+        ingest_picked_roots(&[], &destination).expect_err("empty batches must reject");
+    assert!(empty_error.to_string().contains("at least one picked path"));
+    assert!(!destination.exists());
+
+    let relative = PathBuf::from("relative-picked-file.md");
+    let invalid_error = ingest_picked_roots(&[relative], &destination)
+        .expect_err("all-invalid batches must reject");
+    assert!(invalid_error
+        .to_string()
+        .contains("No persona context paths could be ingested"));
+    assert!(!destination.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_rejects_symlink_root_without_following_it() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "actual.md");
+    let picked = fixture_path(temp.path(), "picked.md");
+    let destination = fixture_path(temp.path(), "destination");
+    // codeql[rust/path-injection]
+    fs::write(&source, b"source").expect("source file");
+    std::os::unix::fs::symlink(&source, &picked).expect("picked symlink");
+
+    let error = ingest_picked_roots(&[picked], &destination).expect_err("root symlink must reject");
+
+    assert!(error.to_string().contains("symlink"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn batch_rejects_corrupt_or_non_file_app_owned_manifest() {
+    let corrupt = temp_dir();
+    let corrupt_source = fixture_path(corrupt.path(), "source");
+    let corrupt_destination = fixture_path(corrupt.path(), "destination");
+    write_fixture(&corrupt_source, "accepted.txt", b"accepted");
+    // codeql[rust/path-injection]
+    fs::create_dir_all(&corrupt_destination).expect("destination root");
+    // codeql[rust/path-injection]
+    fs::write(corrupt_destination.join("manifest.json"), b"{not-json").expect("corrupt manifest");
+
+    let corrupt_error = ingest_picked_roots(&[corrupt_source], &corrupt_destination)
+        .expect_err("corrupt persisted manifest must reject");
+    assert!(corrupt_error
+        .to_string()
+        .contains("Failed to parse ingest manifest"));
+
+    let directory = temp_dir();
+    let directory_source = fixture_path(directory.path(), "source");
+    let directory_destination = fixture_path(directory.path(), "destination");
+    write_fixture(&directory_source, "accepted.txt", b"accepted");
+    // codeql[rust/path-injection]
+    fs::create_dir_all(directory_destination.join("manifest.json"))
+        .expect("manifest directory fixture");
+
+    let directory_error = ingest_picked_roots(&[directory_source], &directory_destination)
+        .expect_err("manifest directories must reject");
+    assert!(directory_error
+        .to_string()
+        .contains("manifest must be a regular file"));
+}
+
+#[test]
+fn batch_rejects_corrupt_app_owned_usage_content_before_counting() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "source");
+    let destination = fixture_path(temp.path(), "destination");
+    write_fixture(&source, "accepted.txt", b"accepted");
+    let hashed = fixture_path(&destination, "file-000000000000000000000000");
+    // codeql[rust/path-injection]
+    fs::create_dir_all(hashed.join("content")).expect("content directory fixture");
+
+    let error = ingest_picked_roots(&[source], &destination)
+        .expect_err("non-file app-owned usage content must reject");
+
+    assert!(error
+        .to_string()
+        .contains("ingest content must be a regular file"));
+}
+
+#[test]
 fn same_name_sources_use_distinct_destinations_and_repicks_refresh_in_place() {
     let temp = temp_dir();
     let source_a = fixture_path(temp.path(), "a");

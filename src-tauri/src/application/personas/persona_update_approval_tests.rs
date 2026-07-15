@@ -132,6 +132,62 @@ async fn seeded_approval_rolls_back_source_write_when_draft_delete_fails() {
 }
 
 #[tokio::test]
+async fn seeded_approval_conflicts_when_source_update_matches_no_rows() {
+    let db = SqliteTestDb::new("seeded_approval_source_update_zero_rows");
+    let (service, source, draft, conversations) = seeded_fixture(&db, "source-update-zero").await;
+    let trigger = format!(
+        "CREATE TRIGGER ignore_seeded_source_update BEFORE UPDATE ON personas
+         WHEN OLD.id = '{}' BEGIN SELECT RAISE(IGNORE); END;",
+        source.id.as_str()
+    );
+    db.shared_conn()
+        .lock()
+        .await
+        .execute_batch(&trigger)
+        .expect("source update trigger should install");
+
+    let error = service
+        .approve_persona(true, &draft.id)
+        .await
+        .expect_err("ignored source update must be reported as a conflict");
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.contains("changed during approval"))
+    );
+    assert_eq!(service.get_persona(true, &source.id).await.unwrap(), source);
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
+}
+
+#[tokio::test]
+async fn seeded_approval_conflicts_when_draft_delete_matches_no_rows() {
+    let db = SqliteTestDb::new("seeded_approval_draft_delete_zero_rows");
+    let (service, source, draft, conversations) = seeded_fixture(&db, "draft-delete-zero").await;
+    let trigger = format!(
+        "CREATE TRIGGER ignore_seeded_draft_delete BEFORE DELETE ON personas
+         WHEN OLD.id = '{}' BEGIN SELECT RAISE(IGNORE); END;",
+        draft.id.as_str()
+    );
+    db.shared_conn()
+        .lock()
+        .await
+        .execute_batch(&trigger)
+        .expect("draft delete trigger should install");
+
+    let error = service
+        .approve_persona(true, &draft.id)
+        .await
+        .expect_err("ignored draft delete must be reported as a conflict");
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.contains("disappeared during approval"))
+    );
+    assert_eq!(service.get_persona(true, &source.id).await.unwrap(), source);
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
+}
+
+#[tokio::test]
 async fn stale_source_blocks_apply_until_the_draft_is_explicitly_reseeded() {
     let db = SqliteTestDb::new("seeded_approval_stale_source");
     let (service, source, draft, conversations) = seeded_fixture(&db, "stale-source").await;
@@ -261,6 +317,87 @@ async fn archived_source_requires_explicit_approve_as_new_recovery() {
     assert!(approved.source_persona_id.is_none());
     assert!(approved.source_content_hash.is_none());
     assert_bindings(&service, &conversations, None).await;
+}
+
+#[tokio::test]
+async fn approve_as_new_rejects_drafts_that_are_not_seeded_updates() {
+    let db = SqliteTestDb::new("approve_as_new_unseeded");
+    let service = sqlite_service(&db);
+    let draft = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                slug: "unseeded-draft".to_string(),
+                content: persona_content("unseeded-draft", "Standalone draft"),
+                source_session_id: None,
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect("standalone draft should create");
+
+    let error = service
+        .approve_persona_as_new(true, &draft.id, Some("replacement-slug"))
+        .await
+        .expect_err("approve-as-new only applies to seeded update drafts");
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("not a seeded update draft"))
+    );
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+}
+
+#[tokio::test]
+async fn approve_as_new_rejects_when_the_source_is_still_active() {
+    let db = SqliteTestDb::new("approve_as_new_source_active");
+    let (service, _source, draft, conversations) = seeded_fixture(&db, "still-active-source").await;
+
+    let error = service
+        .approve_persona_as_new(true, &draft.id, Some("should-not-activate"))
+        .await
+        .expect_err("active sources must be updated in place");
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.starts_with("SourceStillActive:"))
+    );
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
+}
+
+#[tokio::test]
+async fn approve_as_new_rejects_explicit_slug_used_by_another_open_draft() {
+    let db = SqliteTestDb::new("approve_as_new_draft_slug_collision");
+    let (service, source, draft, conversations) = seeded_fixture(&db, "draft-collision").await;
+    service.archive_persona(true, &source.id).await.unwrap();
+    let other_draft = service
+        .create_draft(
+            true,
+            SavePersonaDraftInput {
+                slug: "occupied-draft-slug".to_string(),
+                content: persona_content("occupied-draft-slug", "Other draft"),
+                source_session_id: None,
+                source_persona_id: None,
+                source_content_hash: None,
+            },
+        )
+        .await
+        .expect("other draft should reserve its slug");
+
+    let error = service
+        .approve_persona_as_new(true, &draft.id, Some("occupied-draft-slug"))
+        .await
+        .expect_err("explicit replacement slug must not collide with an open draft");
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.contains("occupied-draft-slug"))
+    );
+    assert_eq!(service.get_draft(true, &draft.id).await.unwrap(), draft);
+    assert_eq!(
+        service.get_draft(true, &other_draft.id).await.unwrap(),
+        other_draft
+    );
+    assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
 }
 
 #[tokio::test]
