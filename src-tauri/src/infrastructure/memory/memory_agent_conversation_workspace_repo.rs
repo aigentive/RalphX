@@ -18,7 +18,7 @@ use crate::domain::entities::{
     IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 #[cfg(test)]
 #[path = "memory_agent_conversation_workspace_repo_tests.rs"]
@@ -128,6 +128,29 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .write()
             .await
             .insert(conversation_id.clone(), (status.to_string(), checked_at));
+        Ok(())
+    }
+
+    async fn get_local_cleanup_status(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<String>> {
+        Ok(self
+            .local_cleanup_markers
+            .read()
+            .await
+            .get(conversation_id)
+            .map(|(status, _)| status.clone()))
+    }
+
+    async fn clear_local_cleanup_status(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        self.local_cleanup_markers
+            .write()
+            .await
+            .remove(conversation_id);
         Ok(())
     }
 
@@ -300,6 +323,29 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.linked_plan_branch_id = plan_branch_id.cloned();
             workspace.updated_at = Utc::now();
         }
+        Ok(())
+    }
+
+    async fn restore_after_restart(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: &IdeationSessionId,
+        plan_branch_id: &PlanBranchId,
+    ) -> AppResult<()> {
+        {
+            let mut workspaces = self.workspaces.write().await;
+            let workspace = workspaces.get_mut(conversation_id).ok_or_else(|| {
+                AppError::NotFound(format!("Workspace not found: {conversation_id}"))
+            })?;
+            workspace.linked_ideation_session_id = Some(ideation_session_id.clone());
+            workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+            workspace.status = AgentConversationWorkspaceStatus::Active;
+            workspace.updated_at = Utc::now();
+        }
+        self.local_cleanup_markers
+            .write()
+            .await
+            .remove(conversation_id);
         Ok(())
     }
 

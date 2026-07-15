@@ -16,6 +16,7 @@ use crate::error::AppResult;
 
 pub struct MemoryPlanBranchRepository {
     branches: Arc<RwLock<HashMap<String, PlanBranch>>>,
+    local_cleanup_markers: Arc<RwLock<HashMap<String, (String, DateTime<Utc>)>>>,
 }
 
 impl Default for MemoryPlanBranchRepository {
@@ -28,6 +29,7 @@ impl MemoryPlanBranchRepository {
     pub fn new() -> Self {
         Self {
             branches: Arc::new(RwLock::new(HashMap::new())),
+            local_cleanup_markers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -105,6 +107,33 @@ impl PlanBranchRepository for MemoryPlanBranchRepository {
             .filter(|b| b.project_id == *project_id)
             .cloned()
             .collect())
+    }
+
+    async fn mark_local_cleanup_status(
+        &self,
+        id: &PlanBranchId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        self.local_cleanup_markers
+            .write()
+            .await
+            .insert(id.as_str().to_string(), (status.to_string(), checked_at));
+        Ok(())
+    }
+
+    async fn get_local_cleanup_status(&self, id: &PlanBranchId) -> AppResult<Option<String>> {
+        Ok(self
+            .local_cleanup_markers
+            .read()
+            .await
+            .get(id.as_str())
+            .map(|(status, _)| status.clone()))
+    }
+
+    async fn clear_local_cleanup_status(&self, id: &PlanBranchId) -> AppResult<()> {
+        self.local_cleanup_markers.write().await.remove(id.as_str());
+        Ok(())
     }
 
     async fn update_status(&self, id: &PlanBranchId, status: PlanBranchStatus) -> AppResult<()> {

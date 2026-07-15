@@ -833,6 +833,45 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn get_local_cleanup_status(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<String>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT local_cleanup_status FROM agent_conversation_workspaces WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map(|value| value.flatten())
+                .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn clear_local_cleanup_status(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET local_cleanup_status = NULL, local_cleanup_checked_at = NULL,
+                         updated_at = ?2
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, updated_at],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn list_worktree_paths_by_project_id(
         &self,
         project_id: &ProjectId,
@@ -1097,6 +1136,44 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         updated_at
                     ],
                 )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn restore_after_restart(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: &IdeationSessionId,
+        plan_branch_id: &PlanBranchId,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let ideation_session_id = ideation_session_id.as_str().to_string();
+        let plan_branch_id = plan_branch_id.as_str().to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let rows = conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET linked_ideation_session_id = ?2,
+                         linked_plan_branch_id = ?3,
+                         status = 'active',
+                         local_cleanup_status = NULL,
+                         local_cleanup_checked_at = NULL,
+                         updated_at = ?4
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![
+                        conversation_id,
+                        ideation_session_id,
+                        plan_branch_id,
+                        updated_at
+                    ],
+                )?;
+                if rows == 0 {
+                    return Err(AppError::NotFound(format!(
+                        "Workspace not found: {conversation_id}"
+                    )));
+                }
                 Ok(())
             })
             .await

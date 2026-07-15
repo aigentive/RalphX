@@ -356,13 +356,15 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let captured = fs::read_to_string(&capture).unwrap_or_default();
-            if captured.contains("--resume") {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                break fs::read_to_string(&capture).expect("fresh Claude invocation capture");
+            if captured.contains("--resume")
+                && captured.contains("preserved-provider-session")
+                && captured.contains("new persona body")
+            {
+                break captured;
             }
             assert!(
                 Instant::now() < deadline,
-                "fresh Claude invocation did not include --resume: {captured}"
+                "fresh Claude invocation did not include resumed session and fresh persona prompt: {captured}"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

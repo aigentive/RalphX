@@ -1,12 +1,112 @@
 use super::MemoryAgentConversationWorkspaceRepository;
 use crate::domain::entities::{
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewTargetScope, ChatConversationId, ProjectId,
+    AgentWorkspaceReviewTargetScope, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
+
+fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
+    AgentConversationWorkspace::new(
+        conversation_id,
+        ProjectId::from_string("project-memory".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project-memory/agent".to_string(),
+        "/tmp/ralphx/project-memory/agent".to_string(),
+    )
+}
+
+#[tokio::test]
+async fn restart_restore_reactivates_workspace_and_clears_cleanup_marker() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-restart");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.status = AgentConversationWorkspaceStatus::Missing;
+    repo.create_or_update(workspace)
+        .await
+        .expect("insert missing workspace");
+    repo.mark_local_cleanup_status(&conversation_id, "cleaned", chrono::Utc::now())
+        .await
+        .expect("mark cleanup");
+    let session_id = IdeationSessionId::from_string("session-after-restart");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-after-restart");
+
+    repo.restore_after_restart(&conversation_id, &session_id, &plan_branch_id)
+        .await
+        .expect("restore after restart");
+
+    let restored = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("read workspace")
+        .expect("workspace remains persisted");
+    assert_eq!(restored.status, AgentConversationWorkspaceStatus::Active);
+    assert_eq!(
+        restored.linked_ideation_session_id.as_ref(),
+        Some(&session_id)
+    );
+    assert_eq!(
+        restored.linked_plan_branch_id.as_ref(),
+        Some(&plan_branch_id)
+    );
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .expect("read cleanup marker"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn restart_restore_rejects_missing_workspace() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let error = repo
+        .restore_after_restart(
+            &ChatConversationId::from_string("missing-conversation"),
+            &IdeationSessionId::from_string("session-after-restart"),
+            &PlanBranchId::from_string("plan-branch-after-restart"),
+        )
+        .await
+        .expect_err("restore should require an existing workspace");
+
+    assert!(error.to_string().contains("Workspace not found"));
+}
+
+#[tokio::test]
+async fn cleanup_status_round_trips_and_clears() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("conversation-cleanup");
+
+    repo.mark_local_cleanup_status(&conversation_id, "unsafe", chrono::Utc::now())
+        .await
+        .expect("mark cleanup");
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .expect("read marker")
+            .as_deref(),
+        Some("unsafe")
+    );
+
+    repo.clear_local_cleanup_status(&conversation_id)
+        .await
+        .expect("clear marker");
+
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .expect("read cleared marker"),
+        None
+    );
+}
 
 #[tokio::test]
 async fn pr_review_auto_approve_settings_and_claim_round_trip() {
