@@ -1598,6 +1598,53 @@ describe("AgentsArtifactPane", () => {
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
+  it("filters hidden tabs and exposes the right-click hide action", async () => {
+    const onHideTab = vi.fn();
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      { hiddenTabs: ["verification"], onHideTab },
+    );
+
+    const planTab = await screen.findByTestId("agents-artifact-tab-plan");
+    expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(planTab);
+    await userEvent.click(await screen.findByText("Hide “Plan”"));
+    expect(onHideTab).toHaveBeenCalledWith("plan", expect.any(Array));
+  });
+
+  it("shows a recoverable empty state when every available tab is hidden", async () => {
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {
+        hiddenTabs: [
+          "issues",
+          "plan",
+          "verification",
+          "tasks",
+          "automation",
+          "pr",
+          "jira",
+          "linear",
+          "granola",
+          "review",
+          "publish",
+        ],
+      },
+    );
+
+    expect(await screen.findByText("All tabs are hidden")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Customize tabs" })).not.toHaveLength(0);
+  });
+
   it("hides the Issues tab when a project conversation has no open issues", async () => {
     listAgentConversationIssuesMock.mockResolvedValue([]);
 

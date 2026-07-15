@@ -1,4 +1,5 @@
 import {
+  getSeededArtifactTab,
   selectArtifactState,
   selectHasStoredArtifactState,
   useAgentSessionStore,
@@ -24,10 +25,10 @@ export function resolveAgentArtifactState({
   hasAutoOpenArtifacts: boolean;
 }): AgentArtifactState {
   if (optimistic) {
-    return optimistic;
+    return { ...optimistic, hiddenTabs: optimistic.hiddenTabs ?? [] };
   }
   if (hasStored) {
-    return persisted;
+    return { ...persisted, hiddenTabs: persisted.hiddenTabs ?? [] };
   }
   return {
     ...DEFAULT_AGENT_ARTIFACT_UI_STATE,
@@ -57,9 +58,14 @@ export function seedAgentArtifactTab(
   hasAutoOpenArtifacts: boolean,
 ): void {
   const current = getAgentArtifactStateSnapshot(conversationId, hasAutoOpenArtifacts);
+  const activeTab = getSeededArtifactTab(
+    current.activeTab,
+    tab,
+    current.hiddenTabs,
+  );
   useAgentArtifactUiStore.getState().setArtifactState(conversationId, {
     ...current,
-    activeTab: tab,
+    activeTab,
     isOpen: true,
   });
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import {
+  getArtifactTabFallback,
+  getSeededArtifactTab,
   useAgentSessionStore,
   type AgentArtifactState,
   type AgentArtifactTab,
@@ -168,7 +170,64 @@ export function useAgentArtifactController({
         ...current,
         activeTab: tab,
         isOpen: true,
+        hiddenTabs: current.hiddenTabs.filter((hiddenTab) => hiddenTab !== tab),
       }));
+    },
+    [updateArtifactState],
+  );
+
+  const hideArtifactTab = useCallback(
+    (
+      conversationId: string,
+      tab: AgentArtifactTab,
+      availableTabs: readonly AgentArtifactTab[],
+    ) => {
+      updateArtifactState(conversationId, (current) => {
+        const hiddenTabs = current.hiddenTabs.includes(tab)
+          ? current.hiddenTabs
+          : [...current.hiddenTabs, tab];
+        if (current.activeTab !== tab) {
+          return { ...current, hiddenTabs };
+        }
+        const nextActiveTab = getArtifactTabFallback(
+          availableTabs,
+          hiddenTabs,
+          tab,
+        );
+        return {
+          ...current,
+          ...(nextActiveTab ? { activeTab: nextActiveTab } : {}),
+          hiddenTabs,
+        };
+      });
+    },
+    [updateArtifactState],
+  );
+
+  const showArtifactTab = useCallback(
+    (conversationId: string, tab: AgentArtifactTab) => {
+      updateArtifactState(conversationId, (current) => ({
+        ...current,
+        hiddenTabs: current.hiddenTabs.filter((hiddenTab) => hiddenTab !== tab),
+      }));
+    },
+    [updateArtifactState],
+  );
+
+  const seedArtifactTab = useCallback(
+    (conversationId: string, tab: AgentArtifactTab) => {
+      updateArtifactState(conversationId, (current) => {
+        const activeTab = getSeededArtifactTab(
+          current.activeTab,
+          tab,
+          current.hiddenTabs,
+        );
+        return {
+          ...current,
+          activeTab,
+          isOpen: true,
+        };
+      });
     },
     [updateArtifactState],
   );
@@ -224,10 +283,13 @@ export function useAgentArtifactController({
   ]);
 
   return {
+    hideArtifactTab,
     openArtifactTab,
     scheduleArtifactPanePreload,
+    seedArtifactTab,
     setArtifactPaneVisibility,
     setArtifactTaskMode,
+    showArtifactTab,
     toggleArtifactPaneVisibility,
   };
 }

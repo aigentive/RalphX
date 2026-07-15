@@ -19,6 +19,7 @@ export const DEFAULT_AGENT_ARTIFACT_UI_STATE: AgentArtifactState = {
   isOpen: false,
   activeTab: "plan",
   taskMode: loadPersistedTaskMode(),
+  hiddenTabs: [],
 };
 
 interface AgentArtifactUiState {
@@ -55,4 +56,3 @@ export function selectOptimisticArtifactState(conversationId: string | null) {
   return (state: AgentArtifactUiState): AgentArtifactState | null =>
     conversationId ? state.artifactByConversationId[conversationId] ?? null : null;
 }
-
