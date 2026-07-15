@@ -161,6 +161,25 @@ describe("notification read queries", () => {
     expect(toastError).not.toHaveBeenCalled();
   });
 
+  it("clears the unread count immediately while mark-all-read is pending", async () => {
+    let resolveMarkAllRead!: (value: null) => void;
+    vi.mocked(notificationsApi.markAllRead).mockReturnValue(new Promise((resolve) => {
+      resolveMarkAllRead = resolve;
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(notificationKeys.unreadCount(), 6);
+    const { result } = renderHook(() => useNotificationReadActions(), { wrapper: createWrapper(queryClient) });
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.markAllRead();
+    });
+
+    expect(queryClient.getQueryData(notificationKeys.unreadCount())).toBe(0);
+    resolveMarkAllRead(null);
+    await act(async () => pending);
+  });
+
   it("reports and restores mark-all-read after failure", async () => {
     vi.mocked(notificationsApi.markAllRead).mockRejectedValueOnce(new Error("mark all failed"));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -168,6 +187,7 @@ describe("notification read queries", () => {
       pages: [{ notifications: [unreadNotification], hasMore: false }],
       pageParams: [undefined],
     });
+    queryClient.setQueryData(notificationKeys.unreadCount(), 1);
     const { result } = renderHook(() => useNotificationReadActions(), { wrapper: createWrapper(queryClient) });
 
     await act(async () => { await result.current.markAllRead(); });
@@ -176,6 +196,7 @@ describe("notification read queries", () => {
       pages: Array<{ notifications: Array<{ readAt?: string }> }>;
     }>(notificationKeys.history());
     expect(cached?.pages[0]?.notifications[0]?.readAt).toBeUndefined();
+    expect(queryClient.getQueryData(notificationKeys.unreadCount())).toBe(1);
     expect(toastError).toHaveBeenCalledWith("mark all failed");
   });
 });

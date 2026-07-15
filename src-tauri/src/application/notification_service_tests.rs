@@ -612,22 +612,22 @@ async fn record_swallows_repository_failures_without_emitting() {
 }
 
 #[tokio::test]
-async fn mark_read_emits_only_for_a_changed_row_and_swallows_repository_failures() {
+async fn mark_read_emits_only_for_a_changed_row_and_returns_repository_failures() {
     let repo: Arc<dyn NotificationRepository> = Arc::new(MemoryNotificationRepository::new());
     let emitter = Arc::new(RecordingUpdateEmitter::default());
     let service = NotificationService::new(Arc::clone(&repo), emitter.clone());
     let row = new_notification(Some("mark-read")).into_notification(Utc::now());
     repo.create_with_dedupe(row.clone()).await.unwrap();
 
-    service.mark_read(&row.id).await;
-    service.mark_read(&row.id).await;
-    service.mark_read("missing").await;
+    service.mark_read(&row.id).await.unwrap();
+    service.mark_read(&row.id).await.unwrap();
+    service.mark_read("missing").await.unwrap();
     assert_eq!(emitter.0.lock().unwrap().as_slice(), [Some(row.id.clone())]);
 
     let failing_emitter: Arc<dyn NotificationEventEmitter> = emitter.clone();
     let failing_service =
         NotificationService::new(Arc::new(FailingNotificationRepository), failing_emitter);
-    failing_service.mark_read("fails").await;
+    assert!(failing_service.mark_read("fails").await.is_err());
     assert_eq!(emitter.0.lock().unwrap().as_slice(), [Some(row.id)]);
 }
 
@@ -643,8 +643,8 @@ async fn mark_all_read_emits_only_when_rows_changed_and_keeps_project_scope() {
     repo.create_with_dedupe(project_a).await.unwrap();
     repo.create_with_dedupe(project_b).await.unwrap();
 
-    service.mark_all_read(Some("project-1")).await;
-    service.mark_all_read(Some("project-1")).await;
+    service.mark_all_read(Some("project-1")).await.unwrap();
+    service.mark_all_read(Some("project-1")).await.unwrap();
     assert_eq!(emitter.0.lock().unwrap().as_slice(), [None]);
     assert_eq!(repo.unread_count(Some("project-2")).await.unwrap(), 1);
 }
