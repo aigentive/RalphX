@@ -369,6 +369,91 @@ async fn terminal_cleanup_candidates_skip_marked_rows() {
 }
 
 #[tokio::test]
+async fn local_cleanup_status_can_be_read_and_cleared() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    repo.mark_local_cleanup_status(&conversation_id, "workspace_dirty", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("workspace_dirty")
+    );
+
+    repo.clear_local_cleanup_status(&conversation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn restore_after_restart_reactivates_links_and_clears_cleanup_marker() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.status = AgentConversationWorkspaceStatus::Missing;
+    repo.create_or_update(workspace).await.unwrap();
+    repo.mark_local_cleanup_status(&conversation_id, "cleaned", chrono::Utc::now())
+        .await
+        .unwrap();
+    let session_id = IdeationSessionId::from_string("restart-session");
+    let plan_branch_id = PlanBranchId::from_string("restart-plan-branch");
+
+    repo.restore_after_restart(&conversation_id, &session_id, &plan_branch_id)
+        .await
+        .unwrap();
+
+    let restored = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should remain persisted");
+    assert_eq!(restored.status, AgentConversationWorkspaceStatus::Active);
+    assert_eq!(
+        restored.linked_ideation_session_id.as_ref(),
+        Some(&session_id)
+    );
+    assert_eq!(
+        restored.linked_plan_branch_id.as_ref(),
+        Some(&plan_branch_id)
+    );
+    assert_eq!(
+        repo.get_local_cleanup_status(&conversation_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn restore_after_restart_rejects_a_missing_workspace() {
+    let (_db, repo, _) = setup_repo();
+    let missing_conversation_id = ChatConversationId::new();
+    let error = repo
+        .restore_after_restart(
+            &missing_conversation_id,
+            &IdeationSessionId::new(),
+            &PlanBranchId::new(),
+        )
+        .await
+        .expect_err("restart repair must not succeed without a workspace row");
+
+    assert!(error.to_string().contains("Workspace not found"));
+}
+
+#[tokio::test]
 async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     let (db, repo, conversation_id) = setup_repo();
     let mut workspace = make_workspace(conversation_id);
@@ -1059,6 +1144,109 @@ async fn pr_review_monitor_round_trips_and_active_listing_filters_terminal_rows(
 }
 
 #[tokio::test]
+async fn pr_review_monitor_rejects_stale_disabled_upserts_after_pause_and_restart() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        268,
+        Some("head-a".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.last_seen_head_sha = Some("authoritative-head".to_string());
+    monitor.last_reviewed_head_sha = Some("authoritative-reviewed-head".to_string());
+    monitor.last_review_outcome = Some("authoritative-outcome".to_string());
+    monitor.review_artifact_head_sha = Some("authoritative-artifact-head".to_string());
+    monitor.review_artifact_version = Some(2);
+    monitor.updated_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    repo.upsert_pr_review_monitor(monitor.clone())
+        .await
+        .unwrap();
+
+    let mut stale_disabled_callback = monitor;
+    stale_disabled_callback.monitor_enabled = false;
+    stale_disabled_callback.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    stale_disabled_callback.last_seen_head_sha = Some("stale-head".to_string());
+    stale_disabled_callback.last_reviewed_head_sha = Some("stale-reviewed-head".to_string());
+    stale_disabled_callback.last_review_outcome = Some("stale-outcome".to_string());
+    stale_disabled_callback.review_artifact_head_sha = Some("stale-artifact-head".to_string());
+    stale_disabled_callback.review_artifact_version = Some(1);
+
+    repo.set_pr_review_monitor_enabled(&conversation_id, false)
+        .await
+        .unwrap();
+
+    let stale_write = repo
+        .upsert_pr_review_monitor(stale_disabled_callback.clone())
+        .await
+        .unwrap();
+    assert!(!stale_write.monitor_enabled);
+    assert_eq!(
+        stale_write.status,
+        AgentWorkspacePrReviewMonitorStatus::Paused
+    );
+    assert_eq!(
+        stale_write.last_seen_head_sha.as_deref(),
+        Some("authoritative-head")
+    );
+    assert_eq!(
+        stale_write.last_reviewed_head_sha.as_deref(),
+        Some("authoritative-reviewed-head")
+    );
+    assert_eq!(
+        stale_write.last_review_outcome.as_deref(),
+        Some("authoritative-outcome")
+    );
+    assert_eq!(
+        stale_write.review_artifact_head_sha.as_deref(),
+        Some("authoritative-artifact-head")
+    );
+    assert_eq!(stale_write.review_artifact_version, Some(2));
+
+    let restarted = repo
+        .set_pr_review_monitor_enabled(&conversation_id, true)
+        .await
+        .unwrap();
+    assert!(restarted.monitor_enabled);
+    assert_eq!(
+        restarted.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+
+    let stale_after_restart = repo
+        .upsert_pr_review_monitor(stale_disabled_callback)
+        .await
+        .unwrap();
+    assert!(stale_after_restart.monitor_enabled);
+    assert_eq!(
+        stale_after_restart.status,
+        AgentWorkspacePrReviewMonitorStatus::Watching
+    );
+    assert_eq!(
+        stale_after_restart.last_seen_head_sha.as_deref(),
+        Some("authoritative-head")
+    );
+    assert_eq!(
+        stale_after_restart.last_reviewed_head_sha.as_deref(),
+        Some("authoritative-reviewed-head")
+    );
+    assert_eq!(
+        stale_after_restart.last_review_outcome.as_deref(),
+        Some("authoritative-outcome")
+    );
+    assert_eq!(
+        stale_after_restart.review_artifact_head_sha.as_deref(),
+        Some("authoritative-artifact-head")
+    );
+    assert_eq!(stale_after_restart.review_artifact_version, Some(2));
+}
+
+#[tokio::test]
 async fn pr_review_actions_update_existing_pending_action_for_same_head() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))
@@ -1153,6 +1341,88 @@ async fn pr_review_actions_update_existing_pending_action_for_same_head() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn supersede_pending_pr_review_actions_except_head_keeps_current_and_terminal_actions() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let stale = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            267,
+            "old-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Old blocking issues".to_string(),
+            "Please address old issues.".to_string(),
+            None,
+            Some("run-old".to_string()),
+        ))
+        .await
+        .unwrap();
+    let current = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            267,
+            "current-head".to_string(),
+            AgentWorkspacePrReviewActionKind::Approve,
+            "Current head passes".to_string(),
+            "Approved.".to_string(),
+            None,
+            Some("run-current".to_string()),
+        ))
+        .await
+        .unwrap();
+    let submitted = repo
+        .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+            conversation_id.clone(),
+            267,
+            "submitted-head".to_string(),
+            AgentWorkspacePrReviewActionKind::RequestChanges,
+            "Already submitted".to_string(),
+            "Submitted.".to_string(),
+            None,
+            Some("run-submitted".to_string()),
+        ))
+        .await
+        .unwrap();
+    repo.update_pr_review_action_status(
+        &submitted.id,
+        AgentWorkspacePrReviewActionStatus::Submitted,
+        Some("review-submitted"),
+    )
+    .await
+    .unwrap();
+
+    repo.supersede_pending_pr_review_actions_except_head(&conversation_id, 267, "current-head")
+        .await
+        .unwrap();
+
+    let stale = repo
+        .get_pr_review_action(&stale.id)
+        .await
+        .unwrap()
+        .expect("stale action should exist");
+    assert_eq!(stale.status, AgentWorkspacePrReviewActionStatus::Superseded);
+    assert!(stale.resolved_at.is_some());
+    let current = repo
+        .get_pr_review_action(&current.id)
+        .await
+        .unwrap()
+        .expect("current action should exist");
+    assert_eq!(current.status, AgentWorkspacePrReviewActionStatus::Pending);
+    let submitted = repo
+        .get_pr_review_action(&submitted.id)
+        .await
+        .unwrap()
+        .expect("submitted action should exist");
+    assert_eq!(
+        submitted.status,
+        AgentWorkspacePrReviewActionStatus::Submitted
+    );
 }
 
 #[tokio::test]
@@ -1303,7 +1573,7 @@ async fn list_active_direct_published_workspaces_excludes_archived_conversation_
 }
 
 #[tokio::test]
-async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_prs() {
+async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_and_review_prs() {
     let (db, repo, conversation_id) = setup_repo();
     let mut direct = make_workspace(conversation_id);
     direct.publication_pr_number = Some(72);
@@ -1321,6 +1591,23 @@ async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_
     ideation.publication_push_status = Some("pushed".to_string());
     ideation.pr_autofix_enabled = true;
     repo.create_or_update(ideation.clone()).await.unwrap();
+
+    let review_pr_id = ChatConversationId::from_string("30303030-3030-3030-3030-303030303030");
+    seed_conversation(&db, &review_pr_id);
+    let mut review_pr = make_workspace(review_pr_id);
+    review_pr.mode = AgentConversationWorkspaceMode::ReviewPr;
+    review_pr.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 75,
+        url: Some("https://github.com/owner/repo/pull/75".to_string()),
+        title: Some("Review PR source".to_string()),
+        head_ref_name: "feature/review-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head-75".to_string()),
+    });
+    review_pr.publication_pr_number = None;
+    review_pr.publication_pr_status = None;
+    review_pr.publication_push_status = None;
+    repo.create_or_update(review_pr.clone()).await.unwrap();
 
     let unsupervised_id = ChatConversationId::from_string("20202020-2020-2020-2020-202020202020");
     seed_conversation(&db, &unsupervised_id);
@@ -1342,9 +1629,13 @@ async fn list_active_pr_poller_recovery_workspaces_includes_supervised_ideation_
             .into_iter()
             .map(|workspace| workspace.conversation_id)
             .collect::<std::collections::HashSet<_>>(),
-        [direct.conversation_id, ideation.conversation_id]
-            .into_iter()
-            .collect()
+        [
+            direct.conversation_id,
+            ideation.conversation_id,
+            review_pr.conversation_id,
+        ]
+        .into_iter()
+        .collect()
     );
 }
 

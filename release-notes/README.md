@@ -37,5 +37,6 @@ Notes:
 - `./scripts/propose-release.sh`, `./scripts/bump-version.sh`, `./scripts/generate-release-notes.sh`, and `./scripts/append-github-release-metadata.sh` still work as standalone lower-level steps
 - Generated drafts should keep commit traceability as clickable Markdown links
 - The public GitHub Release uses the full note, while app updater metadata strips the managed GitHub metadata block so in-app update notes stay concise.
+- Release Build uploads only app/DMG artifacts that pass final-DMG notarization, stapling, Gatekeeper, metadata, and matrix-architecture validation.
 - Codex generation logs are written to `.artifacts/release-notes/logs/`
 - The full release sequence lives in `docs/release-process.md`

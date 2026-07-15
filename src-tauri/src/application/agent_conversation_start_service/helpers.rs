@@ -17,11 +17,44 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
+    AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatContextType,
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
     IdeationSessionFlow, Project, ProjectId,
 };
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::ComposerIntegrationReference;
+
+pub(crate) fn clickup_task_lookup_key_from_references(
+    references: &[ComposerIntegrationReference],
+) -> Result<Option<String>, String> {
+    let mut lookup_keys = references
+        .iter()
+        .filter(|reference| {
+            reference.provider.trim().eq_ignore_ascii_case("clickup")
+                && reference.kind.trim().eq_ignore_ascii_case("clickup")
+        })
+        .filter_map(|reference| {
+            reference
+                .key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    let id = reference.id.trim();
+                    (!id.is_empty()).then_some(id)
+                })
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    lookup_keys.sort_by_key(|key| key.to_ascii_lowercase());
+    lookup_keys.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    match lookup_keys.as_slice() {
+        [] => Ok(None),
+        [lookup_key] => Ok(Some(lookup_key.clone())),
+        _ => Err("A conversation can only start from one ClickUp task at a time".to_string()),
+    }
+}
 
 pub(crate) fn parse_agent_workspace_mode(
     mode: Option<&str>,
@@ -165,6 +198,60 @@ pub(crate) fn agent_mode_should_create_workspace(
     agent_mode_requires_workspace(mode)
         || (mode == AgentConversationWorkspaceMode::Chat
             && (source_pull_request.is_some() || has_plan_reference))
+}
+
+pub(crate) fn review_pr_monitor_for_workspace(
+    workspace: &AgentConversationWorkspace,
+) -> Result<Option<AgentWorkspacePrReviewMonitor>, String> {
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
+        return Ok(None);
+    }
+
+    let pr_number = workspace
+        .source_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.number)
+        .or(workspace.publication_pr_number)
+        .ok_or_else(|| "Review PR workspace requires a linked pull request".to_string())?;
+    let head_sha = workspace
+        .source_pull_request
+        .as_ref()
+        .and_then(|pull_request| pull_request.head_ref_oid.clone());
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+        pr_number,
+        head_sha,
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    Ok(Some(monitor))
+}
+
+pub(crate) async fn ensure_review_pr_monitor_for_workspace(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    workspace: Option<&AgentConversationWorkspace>,
+) -> Result<(), String> {
+    let Some(monitor) = workspace
+        .map(review_pr_monitor_for_workspace)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+
+    if workspace_repo
+        .get_pr_review_monitor(&monitor.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn ensure_linked_branch_workspace_available(

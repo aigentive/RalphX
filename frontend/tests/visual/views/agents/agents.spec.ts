@@ -1199,6 +1199,61 @@ test.describe("Agents View", () => {
     });
   });
 
+  test("starter runtime selector exposes polished Quick and Advanced levels", async ({
+    page,
+  }) => {
+    await setupAgentsView(page);
+    await expect(page.getByTestId("agents-start-composer")).toBeVisible();
+
+    await page.getByTestId("agent-composer-runtime-pill").click();
+    await expect(page.getByTestId("agent-composer-runtime-quick")).toBeVisible();
+    await expect(page.getByRole("slider", { name: "Effort" })).toBeVisible();
+    await expect(page).toHaveScreenshot("agents-runtime-selector-quick.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+
+    await page
+      .getByRole("button", { name: "Advanced provider and model settings" })
+      .click();
+    await expect(page.getByTestId("agent-composer-runtime-advanced")).toBeVisible();
+    await expect(page.getByTestId("agent-composer-runtime-quick")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Provider,/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Model,/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Effort,/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Speed,/ })).toBeVisible();
+    await expect(page).toHaveScreenshot("agents-runtime-selector-advanced.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+
+    await page.getByRole("button", { name: /^Provider,/ }).hover();
+    const modelMenuRow = page.getByRole("button", { name: /^Model,/ });
+    await modelMenuRow.hover();
+    await expect(modelMenuRow).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("agent-composer-runtime-model-submenu")).toBeVisible();
+    await expect(page.getByTestId("agent-composer-runtime-advanced")).toBeVisible();
+    await expect(page).toHaveScreenshot("agents-runtime-selector-models-cascade.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+
+    await page.getByRole("button", { name: /^Effort,/ }).hover();
+    await expect(page.getByTestId("agent-composer-runtime-effort-submenu")).toBeVisible();
+    await expect(page.getByTestId("agent-composer-runtime-advanced")).toBeVisible();
+    await expect(page).toHaveScreenshot("agents-runtime-selector-effort-cascade.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+
+    await page.getByRole("button", { name: /^Speed,/ }).hover();
+    await expect(page.getByTestId("agent-composer-runtime-speed-submenu")).toBeVisible();
+    await expect(page).toHaveScreenshot("agents-runtime-selector-speed-cascade.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
   test("edit workspace with commit publish pane matches visual contract", async ({ page }) => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);

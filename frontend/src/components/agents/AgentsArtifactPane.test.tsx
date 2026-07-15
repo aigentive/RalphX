@@ -88,6 +88,7 @@ const {
   setWorkspaceAutoPublishMock,
   setWorkspacePrSupervisionMock,
   setPrReviewAutoApproveMock,
+  setPrReviewMonitoringMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
   sendAgentMessageMock,
@@ -153,6 +154,7 @@ const {
   setWorkspaceAutoPublishMock: vi.fn(),
   setWorkspacePrSupervisionMock: vi.fn(),
   setPrReviewAutoApproveMock: vi.fn(),
+  setPrReviewMonitoringMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
@@ -224,6 +226,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         setWorkspacePrSupervisionMock(...args),
       setAgentWorkspacePrReviewAutoApprove: (...args: unknown[]) =>
         setPrReviewAutoApproveMock(...args),
+      setAgentWorkspacePrReviewMonitoring: (...args: unknown[]) =>
+        setPrReviewMonitoringMock(...args),
       precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
         precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
@@ -1418,6 +1422,7 @@ describe("AgentsArtifactPane", () => {
         }),
     );
     setPrReviewAutoApproveMock.mockReset();
+    setPrReviewMonitoringMock.mockReset();
     setWorkspaceAutoPublishMock.mockImplementation(
       async (conversationId: string, input: { autoPublishEnabled: boolean }) =>
         workspace({
@@ -3409,7 +3414,88 @@ describe("AgentsArtifactPane", () => {
     ).not.toBeInTheDocument();
     expect(await screen.findByText("PR Review")).toBeInTheDocument();
     expect(getPrReviewContextMock).toHaveBeenCalledWith("conversation-1");
+    expect(getWorkspaceReviewContextMock).not.toHaveBeenCalled();
     expect(getArtifactMock).toHaveBeenCalledWith("review-artifact-1");
+  });
+
+  it("does not leak stale Workspace Review actions into Review PR mode", async () => {
+    const queryClient = createTestQueryClient();
+    const startedContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "ready",
+      reviewOutcome: "blocking",
+      reviewGateStatus: "blocking",
+      reviewArtifactId: "review-artifact-2",
+      reviewArtifactVersion: 2,
+      reviewBlockingSummary: "Workspace review blocker.",
+      isCurrent: true,
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    startWorkspaceReviewMock.mockResolvedValue(startedContext);
+    getPrReviewContextMock.mockResolvedValue(
+      prReviewContext("conversation-1", "review-artifact-1"),
+    );
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    const pane = (mode: "edit" | "review_pr") => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={conversation({
+                agentMode: mode,
+              })}
+              workspace={workspace({ mode })}
+              activeTab="review"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={vi.fn()}
+              isPublishingWorkspace={false}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(pane("edit"));
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run review" }));
+    await waitFor(() => expect(startWorkspaceReviewMock).toHaveBeenCalled());
+
+    rerender(pane("review_pr"));
+
+    expect(await screen.findByText("PR Review")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Fix Issues" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Update review" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Run review" }),
+    ).not.toBeInTheDocument();
+    expect(startWorkspaceReviewFixerMock).not.toHaveBeenCalled();
   });
 
   it("persists the Review PR Auto Approve switch through the authoritative API", async () => {
@@ -3453,6 +3539,116 @@ describe("AgentsArtifactPane", () => {
       ),
     );
     expect(toggle).not.toBeChecked();
+  });
+
+  it("pauses and restarts Review PR monitoring from the Review tab", async () => {
+    const user = userEvent.setup();
+    const context = prReviewContext("conversation-1", "review-artifact-1");
+    const pausedContext = {
+      ...context,
+      monitor: {
+        ...context.monitor!,
+        monitorEnabled: false,
+        status: "paused" as const,
+      },
+    };
+    getPrReviewContextMock
+      .mockResolvedValueOnce(context)
+      .mockResolvedValue(pausedContext);
+    setPrReviewMonitoringMock
+      .mockResolvedValueOnce({
+        success: true,
+        monitor: pausedContext.monitor!,
+      })
+      .mockResolvedValueOnce({ success: true, monitor: context.monitor! });
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane("review", workspace({ mode: "review_pr" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "review_pr",
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop Monitoring" }),
+    );
+
+    await waitFor(() =>
+      expect(setPrReviewMonitoringMock).toHaveBeenCalledWith(
+        "conversation-1",
+        false,
+      ),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Restart Monitoring" }),
+    );
+    await waitFor(() =>
+      expect(setPrReviewMonitoringMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        true,
+      ),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("PR review monitoring paused");
+  });
+
+  it("asks whether to finish or cancel an active PR review before stopping", async () => {
+    const user = userEvent.setup();
+    const context = prReviewContext("conversation-1", "review-artifact-1");
+    context.monitor = { ...context.monitor!, status: "reviewing" };
+    getPrReviewContextMock.mockResolvedValue(context);
+    setPrReviewMonitoringMock.mockResolvedValue({
+      success: true,
+      monitor: {
+        ...context.monitor!,
+        monitorEnabled: false,
+        status: "paused",
+      },
+    });
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-1",
+      type: "pr_review",
+      name: "PR #78 Review",
+      content: { type: "inline", text: "# PR Review" },
+      metadata: {
+        createdAt: "2026-04-23T09:30:00Z",
+        createdBy: "ralphx-pr-reviewer",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane("review", workspace({ mode: "review_pr" }), vi.fn(), false, {
+      ...conversation(),
+      agentMode: "review_pr",
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop Monitoring" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Stop PR review monitoring?" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Stop After Review" }));
+
+    await waitFor(() =>
+      expect(setPrReviewMonitoringMock).toHaveBeenCalledWith(
+        "conversation-1",
+        false,
+        "finish_current",
+      ),
+    );
   });
 
   it("restores the Review PR Auto Approve preference when saving fails", async () => {
@@ -5452,6 +5648,14 @@ describe("AgentsArtifactPane", () => {
   it("confirms before restarting accepted implementation work", async () => {
     const user = userEvent.setup();
     const loadActivePlan = vi.fn().mockResolvedValue(undefined);
+    const restartResult = deferred<{
+      sessionId: string;
+      oldExecutionPlanId: string;
+      executionPlanId: string;
+      archivedTaskCount: number;
+      createdTaskIds: string[];
+    }>();
+    restartImplementationMock.mockReturnValueOnce(restartResult.promise);
     usePlanStore.setState({
       activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
@@ -5494,10 +5698,10 @@ describe("AgentsArtifactPane", () => {
     let dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Restart implementation?");
     expect(dialog).toHaveTextContent(
-      "RalphX will close the existing PR",
+      "RalphX will safely restore the linked implementation workspace if it was previously cleaned",
     );
     expect(dialog).toHaveTextContent(
-      "reset the implementation branch and workspace to the latest base branch from origin",
+      "reset the branch to the latest base from origin",
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -5515,7 +5719,22 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(restartImplementationMock).toHaveBeenCalledWith("session-1"),
     );
-    expect(loadActivePlan).toHaveBeenCalledWith("project-1");
+    const pendingButton = within(dialog).getByRole("button", {
+      name: "Restarting…",
+    });
+    expect(pendingButton).toBeDisabled();
+    await user.click(pendingButton);
+    expect(restartImplementationMock).toHaveBeenCalledTimes(1);
+
+    restartResult.resolve({
+      sessionId: "session-1",
+      oldExecutionPlanId: "exec-old",
+      executionPlanId: "exec-new",
+      archivedTaskCount: 1,
+      createdTaskIds: ["task-new"],
+    });
+
+    await waitFor(() => expect(loadActivePlan).toHaveBeenCalledWith("project-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith(
       "Implementation restarted with 1 task",
     );
@@ -5732,7 +5951,7 @@ describe("AgentsArtifactPane", () => {
   it("reports string restart implementation failures from the confirmation action", async () => {
     const user = userEvent.setup();
     restartImplementationMock.mockRejectedValueOnce(
-      "Linked plan branch worktree is missing",
+      "RalphX could not safely restore this implementation workspace because the linked branch is checked out elsewhere or no longer matches the plan",
     );
     usePlanStore.setState({
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
@@ -5779,9 +5998,10 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
-        "Linked plan branch worktree is missing",
+        "RalphX could not safely restore this implementation workspace because the linked branch is checked out elsewhere or no longer matches the plan",
       ),
     );
+    expect(toastErrorMock.mock.calls[0]?.[0]).not.toContain("/Users/");
   });
 
   it("falls back to the Plan tab when Proposals is active but no proposals exist", async () => {

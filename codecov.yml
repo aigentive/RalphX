@@ -51,7 +51,9 @@ coverage:
           - "!src-tauri/src/infrastructure/agents/spawn_isolation.rs"
           # Pure trait/module export glue has no runtime branch to exercise directly.
           # Implementations and call sites carry the behavioral coverage.
+          - "!src-tauri/crates/ralphx-domain/src/repositories/agent_conversation_workspace_repository.rs"
           - "!src-tauri/src/domain/repositories/orphan_worktree_cleanup_marker_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/plan_branch_repository.rs"
           - "!src-tauri/src/domain/repositories/mod.rs"
           - "!src-tauri/src/infrastructure/memory/mod.rs"
           - "!src-tauri/src/infrastructure/sqlite/mod.rs"
@@ -151,11 +153,18 @@ parsers:
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.
   - "src-tauri/tests/**"
+  - "src-tauri/crates/**/tests/**"
+  - "src-tauri/crates/**/tests.rs"
+  - "src-tauri/crates/**/*_test.rs"
+  - "src-tauri/crates/**/*_tests.rs"
   - "src-tauri/src/testing/**"
   - "src-tauri/src/**/tests.rs"
   - "src-tauri/src/**/tests/**"
   - "src-tauri/src/**/*_test.rs"
   - "src-tauri/src/**/*_tests.rs"
+  # Startup composition roots wire long-lived services; behavior is covered
+  # through extracted helpers/services and focused scheduler/finalizer tests.
+  - "src-tauri/src/application/startup_background.rs"
   # Merge recovery controller/composition surfaces coordinate long-lived Git
   # worktrees, agent routing, Tauri command glue, and startup reconciliation.
   # Deterministic PR-branch publication behavior is covered by helper and
