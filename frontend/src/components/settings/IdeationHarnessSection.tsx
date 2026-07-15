@@ -443,7 +443,7 @@ const LANE_GROUPS: {
   {
     id: "ideation",
     title: "Ideation",
-    description: "Orchestration, verification, and subagent lanes used during planning.",
+    description: "The active planning model and any general-purpose delegates it selects.",
     lanes: IDEATION_LANES,
   },
   {
@@ -1361,7 +1361,7 @@ export function IdeationHarnessSection() {
     <AgentHarnessSection
       scope="ideation"
       title="Ideation Agents"
-      description="Choose Claude or Codex for ideation leads, verification, and specialist lanes. Codex ideation still runs in solo mode, so these settings mainly control planning and verifier routing."
+      description="Choose Claude or Codex for the active planning model and its general-purpose delegation lane. Verify Plan uses the active planning model in the same conversation."
     />
   );
 }

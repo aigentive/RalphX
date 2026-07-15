@@ -2,7 +2,7 @@
  * IdeationSettingsPanel - Planning & Verification gate configuration
  *
  * Features:
- * - Verification gate controls (requireVerificationForProposals, requireVerificationForAccept)
+ * - Model-native verification policy and acceptance gate controls
  * - Finalization gate (requireAcceptForFinalize)
  * - Auto-accept finalization convenience toggle (in-memory only)
  * - Collapsible External Session Overrides subsection (3-state inherit/on/off selects)
@@ -210,10 +210,10 @@ export function IdeationSettingsPanel() {
     });
   };
 
-  const handleRequireVerificationForProposalsChange = (checked: boolean) => {
+  const handleAutoVerifyPlansChange = (checked: boolean) => {
     updateSettings({
       ...settings,
-      requireVerificationForProposals: checked,
+      autoVerifyPlans: checked,
     });
   };
 
@@ -256,22 +256,21 @@ export function IdeationSettingsPanel() {
 
         {/* Require verification before accepting proposals */}
         <CheckboxSettingRow
+          id="auto-verify-plans"
+          label="Verify plans automatically"
+          description="Queue a visible Verify Plan turn in the active Plan conversation whenever the linked plan changes"
+          checked={settings.autoVerifyPlans}
+          disabled={isUpdating}
+          onChange={handleAutoVerifyPlansChange}
+        />
+
+        <CheckboxSettingRow
           id="require-verification-for-accept"
           label="Require verification before accepting"
-          description="Plan must pass adversarial verification before proposals can be accepted"
+          description="The exact current plan artifact must have verification proof before it can be accepted"
           checked={settings.requireVerificationForAccept}
           disabled={isUpdating}
           onChange={handleRequireVerificationForAcceptChange}
-        />
-
-        {/* Require verification before creating proposals */}
-        <CheckboxSettingRow
-          id="require-verification-for-proposals"
-          label="Require verification before proposals"
-          description="Plan must pass adversarial verification before proposals can be created"
-          checked={settings.requireVerificationForProposals}
-          disabled={isUpdating}
-          onChange={handleRequireVerificationForProposalsChange}
         />
 
         {/* Auto-accept finalization dialogs (in-memory only) */}
@@ -302,6 +301,16 @@ export function IdeationSettingsPanel() {
           {showExternalOverrides && (
             <div className="space-y-1 mt-1">
               <OverrideSelectRow
+                id="ext-override-auto-verify-plans"
+                label="Automatic plan verification"
+                description="Override automatic Verify Plan turns for external sessions"
+                value={settings.externalOverrides.autoVerifyPlans}
+                disabled={isUpdating}
+                onChange={(v) =>
+                  handleExternalOverrideChange("autoVerifyPlans", v)
+                }
+              />
+              <OverrideSelectRow
                 id="ext-override-verification-for-accept"
                 label="Verification for accept"
                 description="Override verification-before-accept gate for external sessions"
@@ -309,16 +318,6 @@ export function IdeationSettingsPanel() {
                 disabled={isUpdating}
                 onChange={(v) =>
                   handleExternalOverrideChange("requireVerificationForAccept", v)
-                }
-              />
-              <OverrideSelectRow
-                id="ext-override-verification-for-proposals"
-                label="Verification for proposals"
-                description="Override verification-before-proposals gate for external sessions"
-                value={settings.externalOverrides.requireVerificationForProposals}
-                disabled={isUpdating}
-                onChange={(v) =>
-                  handleExternalOverrideChange("requireVerificationForProposals", v)
                 }
               />
               <OverrideSelectRow

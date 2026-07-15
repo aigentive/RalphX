@@ -54,7 +54,7 @@
 - Keep provider-native delegation only for generic low-specialization exploration.
 - Use RalphX native delegation for any specialized named agent:
   - ideation specialists
-  - plan critics / verifier helpers
+  - optional general-purpose plan-review lenses selected by the active model
   - future execution / review / QA specialists
 
 ## Phase Plan

@@ -151,8 +151,8 @@ export const VerificationResponseSchema = z.object({
   rounds: z.array(ApiRoundSummarySchema).optional().default([]),
   round_details: z.array(ApiRoundDetailSchema).optional().default([]),
   plan_version: z.number().int().optional(),
-  verification_generation: z.number().int(),
-  selected_generation: z.number().int(),
+  verification_generation: z.number().int().optional(),
+  selected_generation: z.number().int().optional(),
   run_history: z.array(ApiVerificationRunHistoryEntrySchema).optional().default([]),
   verification_child: z.object({
     activeChildSessionId: z.string().optional(),
@@ -163,6 +163,12 @@ export const VerificationResponseSchema = z.object({
     lastAssistantMessage: z.string().nullable().optional(),
     lastAssistantMessageAt: z.string().nullable().optional(),
   }).optional(),
+  plan_artifact_id: z.string().nullable().optional(),
+  verified_plan_artifact_id: z.string().nullable().optional(),
+  agent_run_id: z.string().nullable().optional(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
 });
 
 /**

@@ -36,7 +36,7 @@ import {
 } from "./provider-harness";
 import {
   normalizeToolCallTranscriptPayload,
-} from "./verification-tool-calls";
+} from "./tool-call-transcript";
 import { PersonaRunBadge } from "./PersonaRunBadge";
 
 // ============================================================================

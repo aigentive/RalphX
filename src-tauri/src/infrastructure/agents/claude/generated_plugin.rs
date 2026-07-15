@@ -1402,8 +1402,8 @@ mod tests {
     #[test]
     fn generated_agent_markdown_includes_internal_sidecar_stdio_tools() {
         let definition = CanonicalAgentDefinition {
-            name: "ralphx-plan-verifier".to_string(),
-            role: "plan_verifier".to_string(),
+            name: "ralphx-general-explorer".to_string(),
+            role: "explorer".to_string(),
             description: None,
             capabilities: Default::default(),
             harnesses: Default::default(),
@@ -1417,10 +1417,10 @@ mod tests {
         };
 
         let markdown = render_generated_agent_markdown(
-            "ralphx-plan-verifier",
+            "ralphx-general-explorer",
             &definition,
             &claude_metadata,
-            "Verifier prompt",
+            "Explorer prompt",
         )
         .expect("render generated markdown");
 

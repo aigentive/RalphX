@@ -33,7 +33,7 @@ pub const DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS: u64 = 1000;
 /// A specialist agent entry in the verification pipeline.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SpecialistEntry {
-    /// Unique agent name (matches config/ralphx.yaml agent name, e.g. "ralphx-ideation-specialist-code-quality").
+    /// Unique agent name matching a canonical `agents/*/agent.yaml` id.
     pub name: String,
     /// Human-readable display name shown in the UI.
     pub display_name: String,

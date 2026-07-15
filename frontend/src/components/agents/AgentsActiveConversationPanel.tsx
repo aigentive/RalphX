@@ -1905,17 +1905,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     setIsStartingPlanVerification(true);
     try {
-      let disabledSpecialists: string[] = [];
-      try {
-        const specialists = await verificationApi.getSpecialists();
-        disabledSpecialists = specialists.specialists
-          .filter((specialist) => !specialist.enabled_by_default)
-          .map((specialist) => specialist.name);
-      } catch (err) {
-        console.warn("Failed to load verification specialists:", err);
-      }
-
-      await verificationApi.confirm(planApprovalSessionId, disabledSpecialists);
+      await verificationApi.confirm(planApprovalSessionId);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: verificationStatusKey(planApprovalSessionId),
@@ -1925,8 +1915,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         }),
         queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
       ]);
-      onSelectArtifact("verification");
-      toast.success("Plan verification started");
+      toast.success("Verify Plan queued in this conversation");
     } catch (err) {
       console.error("Failed to start plan verification:", err);
       toast.error(
@@ -1937,7 +1926,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
   }, [
     canVerifyComposerPlan,
-    onSelectArtifact,
     planApprovalSessionId,
     planVerificationInProgress,
     queryClient,

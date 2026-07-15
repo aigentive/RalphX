@@ -473,6 +473,8 @@ fn create_test_session(project_id: &ProjectId) -> IdeationSession {
         title: Some("Test Session".to_string()),
         status: IdeationSessionStatus::Active,
         plan_artifact_id: None,
+        verified_plan_artifact_id: None,
+        verified_plan_agent_run_id: None,
         inherited_plan_artifact_id: None,
         seed_task_id: None,
         parent_session_id: None,

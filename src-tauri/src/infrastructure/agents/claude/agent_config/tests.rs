@@ -5,15 +5,13 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_AUTOMATION_PLAN_JUDGE, SHORT_AUTOMATION_SETUP, SHORT_BRANCH_UPDATER, SHORT_CHAT_PROJECT,
     SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
     SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
-    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
-    SHORT_IDEATION_SPECIALIST_FRONTEND, SHORT_IDEATION_SPECIALIST_INFRA,
-    SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
+    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_FRONTEND,
+    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
     SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
     SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY, SHORT_PERSONA_EXTRACTOR,
-    SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
-    SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
-    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
+    SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER, SHORT_QA_EXECUTOR,
+    SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY, SHORT_SESSION_NAMER,
+    SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
@@ -69,10 +67,6 @@ fn test_canonical_agent_project_root_resolves_live_claude_agents() {
     assert!(
         live_agents.contains(&SHORT_ORCHESTRATOR_IDEATION.to_string()),
         "canonical project root should expose live Claude agents for runtime config synthesis"
-    );
-    assert!(
-        live_agents.contains(&SHORT_PLAN_VERIFIER.to_string()),
-        "canonical project root should expose verifier agents for runtime config synthesis"
     );
 }
 
@@ -343,11 +337,6 @@ fn test_all_agent_names_are_known() {
         SHORT_BRANCH_UPDATER,
         SHORT_MEMORY_MAINTAINER,
         SHORT_MEMORY_CAPTURE,
-        // Plan verification critic agents
-        SHORT_PLAN_CRITIC_COMPLETENESS,
-        SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-        // Plan verifier agent (owns the verification round loop)
-        SHORT_PLAN_VERIFIER,
         // Team lead variants
         SHORT_IDEATION_TEAM_LEAD,
         SHORT_WORKER_TEAM,
@@ -356,18 +345,8 @@ fn test_all_agent_names_are_known() {
         SHORT_IDEATION_SPECIALIST_BACKEND,
         SHORT_IDEATION_SPECIALIST_FRONTEND,
         SHORT_IDEATION_SPECIALIST_INFRA,
-        SHORT_IDEATION_SPECIALIST_UX,
-        SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
         SHORT_IDEATION_ADVOCATE,
         SHORT_IDEATION_CRITIC,
-        // Prompt quality specialist added in recent commits
-        "ralphx-ideation-specialist-prompt-quality",
-        // Intent alignment specialist added in recent commits
-        "ralphx-ideation-specialist-intent",
-        // Pipeline safety specialist added in synthetic-data hardening session
-        "ralphx-ideation-specialist-pipeline-safety",
-        // State machine safety specialist added in synthetic-data hardening session
-        "ralphx-ideation-specialist-state-machine",
         // Utility agent used for plan complexity checks.
         "ralphx-utility-plan-complexity",
         SHORT_AUTOMATION_SETUP,
@@ -533,6 +512,7 @@ fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths()
 }
 
 #[test]
+#[ignore = "legacy fixed verifier removed by model-native Verify Plan cutover"]
 fn test_plan_verifier_prompt_keeps_runtime_failure_and_optional_specialist_rules() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let prompt = load_harness_agent_prompt(
@@ -561,6 +541,7 @@ fn test_plan_verifier_prompt_keeps_runtime_failure_and_optional_specialist_rules
 }
 
 #[test]
+#[ignore = "legacy fixed verifier removed by model-native Verify Plan cutover"]
 fn test_plan_verifier_prompt_uses_backend_owned_verification_helpers() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let prompt = load_harness_agent_prompt(
@@ -665,6 +646,7 @@ fn test_plan_verifier_prompt_uses_backend_owned_verification_helpers() {
 }
 
 #[test]
+#[ignore = "legacy reverify child flow removed by model-native Verify Plan cutover"]
 fn test_ideation_claude_prompt_prioritizes_explicit_reverify_requests() {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let prompt =
@@ -1891,6 +1873,7 @@ fn test_readonly_agent_has_get_plan_verification_not_update() {
 }
 
 #[test]
+#[ignore = "legacy fixed verifier removed by model-native Verify Plan cutover"]
 fn test_plan_verifier_mcp_tools_match_current_prompt_contract() {
     let config =
         get_agent_config("ralphx-plan-verifier").expect("ralphx-plan-verifier should exist");
@@ -3436,7 +3419,6 @@ fn test_permission_mode_chat_agent_is_none() {
 fn test_get_agent_config_accepts_legacy_agent_aliases() {
     let cases = [
         ("orchestrator-ideation", "ralphx-ideation"),
-        ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
         ("pr-describer", "ralphx-utility-pr-describer"),

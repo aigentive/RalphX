@@ -24,7 +24,6 @@ use crate::domain::entities::{
     IdeationSessionId, InternalStatus, SessionOrigin, TaskId,
 };
 use crate::domain::services::text_similarity::{jaccard_similarity, tokenize_for_similarity};
-use crate::application::verification_event_emitters::{emit_verification_started, emit_verification_status_changed};
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
 use ralphx_domain::entities::EventType;
 

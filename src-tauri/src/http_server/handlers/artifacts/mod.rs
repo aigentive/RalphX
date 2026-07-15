@@ -9,7 +9,7 @@ use tracing::error;
 use super::*;
 use crate::domain::entities::{
     Artifact, ArtifactBucketId, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, SessionOrigin, VerificationStatus,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, VerificationStatus,
 };
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::application::verification_event_emitters::emit_verification_status_changed;

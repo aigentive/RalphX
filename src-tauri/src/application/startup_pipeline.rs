@@ -614,7 +614,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     );
 
     let phase_started_at = startup_phase_started("startup_job_runner");
-    let startup_ideation_recovery_claims = runner.run().await;
+    let _startup_ideation_recovery_claims = runner.run().await;
     startup_phase_completed("startup_job_runner", phase_started_at);
 
     let phase_started_at = startup_phase_started("branch_update_post_process_recovery");
@@ -871,61 +871,6 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             app_handle.clone(),
         );
         startup_phase_completed("automation_scheduler_spawn", phase_started_at);
-    }
-
-    if mode == StartupPipelineMode::Full {
-        use crate::application::harness_runtime_registry::default_verification_reconciliation_config;
-        use crate::application::reconciliation::recovery_queue::{
-            create_recovery_queue, RecoveryQueueConfig,
-        };
-        use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationService;
-
-        let recovery_config = RecoveryQueueConfig::default();
-        let recovery_queue_chat_deps = recovery_chat_service_deps.clone();
-        let phase_started_at = startup_phase_started("verification_recovery_chat_service_build");
-        let recovery_chat_service = build_startup_recovery_chat_service(
-            app_handle.clone(),
-            Arc::clone(&execution_state),
-            recovery_queue_chat_deps,
-        );
-        startup_phase_completed("verification_recovery_chat_service_build", phase_started_at);
-        let phase_started_at = startup_phase_started("verification_recovery_queue_build");
-        let (recovery_queue, recovery_processor) = create_recovery_queue(
-            Arc::clone(&running_agent_registry),
-            Arc::clone(&interactive_process_registry),
-            Arc::clone(&ideation_session_repo),
-            recovery_chat_service,
-            Some(app_handle.clone()),
-            recovery_config,
-        );
-        let recovery_queue = Arc::new(recovery_queue);
-        startup_phase_completed("verification_recovery_queue_build", phase_started_at);
-        let phase_started_at = startup_phase_started("verification_recovery_queue_spawn");
-        startup_background::spawn_recovery_queue_processor(recovery_processor);
-        startup_phase_completed("verification_recovery_queue_spawn", phase_started_at);
-
-        let verification_config = default_verification_reconciliation_config();
-        let svc = Arc::new(
-            VerificationReconciliationService::new(
-                Arc::clone(&ideation_session_repo),
-                verification_config,
-            )
-            .with_app_handle(app_handle.clone())
-            .with_recovery_queue(Arc::clone(&recovery_queue))
-            .with_running_agent_registry(Arc::clone(&running_agent_registry)),
-        );
-        let startup_ideation_recovery_claims = startup_ideation_recovery_claims.clone();
-        spawn_startup_background_phase(
-            "verification_startup_scan",
-            STARTUP_BACKGROUND_DB_GRACE,
-            async move {
-                startup_background::startup_scan_verification_reconciliation(
-                    svc,
-                    &startup_ideation_recovery_claims,
-                )
-                .await;
-            },
-        );
     }
 
     if active_git_startup_blocked {

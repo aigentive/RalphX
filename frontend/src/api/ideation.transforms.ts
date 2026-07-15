@@ -258,12 +258,12 @@ export function transformNullableBool(value: number | null | undefined): boolean
 
 export function transformIdeationSettings(raw: IdeationSettingsResponse): IdeationSettings {
   return {
+    autoVerifyPlans: raw.auto_verify_plans,
     requireAcceptForFinalize: raw.require_accept_for_finalize,
     requireVerificationForAccept: raw.require_verification_for_accept,
-    requireVerificationForProposals: raw.require_verification_for_proposals,
     externalOverrides: {
+      autoVerifyPlans: transformNullableBool(raw.ext_auto_verify_plans),
       requireVerificationForAccept: transformNullableBool(raw.ext_require_verification_for_accept),
-      requireVerificationForProposals: transformNullableBool(raw.ext_require_verification_for_proposals),
       requireAcceptForFinalize: transformNullableBool(raw.ext_require_accept_for_finalize),
     },
   };

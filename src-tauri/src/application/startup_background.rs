@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,21 +28,17 @@ use crate::application::automation::transition::TauriAutomationEventEmitter;
 use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
-use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
-use crate::application::verification_child_session::{
-    repair_blank_orphaned_verification_generation, spawn_verification_agent,
-    trigger_auto_verify_generation,
+use crate::application::plan_verification_service::{
+    request_plan_verification, PlanVerificationRequestOutcome, PlanVerificationRequestSource,
 };
+use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::{AppState, TeamService};
 use crate::commands::ExecutionState;
-use crate::domain::entities::{
-    ChatContextType, ChatConversationId, VerificationConfirmationStatus, VerificationStatus,
-};
+use crate::domain::entities::{ChatContextType, ChatConversationId, VerificationStatus};
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
     TaskRepository,
 };
-use crate::domain::services::load_effective_verification_status;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
@@ -191,53 +186,31 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
     }
 }
 
-pub struct AgentConversationAutomationPlanVerificationStarter<R: tauri::Runtime + 'static> {
+pub struct AgentConversationAutomationPlanVerificationStarter {
     state: AppState,
     execution_state: Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
 }
 
-impl<R: tauri::Runtime + 'static> AgentConversationAutomationPlanVerificationStarter<R> {
-    pub fn new(
+impl AgentConversationAutomationPlanVerificationStarter {
+    pub fn new<R: tauri::Runtime + 'static>(
         state: AppState,
         execution_state: Arc<ExecutionState>,
-        app_handle: tauri::AppHandle<R>,
+        _app_handle: tauri::AppHandle<R>,
     ) -> Self {
         Self {
             state,
             execution_state,
-            app_handle,
         }
-    }
-
-    fn chat_service(&self) -> impl ChatService {
-        let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
-        build_chat_service_from_deps(
-            Some(self.app_handle.clone()),
-            Some(Arc::clone(&self.execution_state)),
-            &chat_deps,
-        )
     }
 }
 
 #[async_trait]
-impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
-    for AgentConversationAutomationPlanVerificationStarter<R>
-{
+impl AutomationPlanVerificationStarter for AgentConversationAutomationPlanVerificationStarter {
     async fn start_verification(
         &self,
         request: AutomationPlanVerificationStartRequest,
     ) -> AppResult<AutomationPlanVerificationStartOutcome> {
         let session_id = request.session_id;
-        let provider_harness = request.provider_harness;
-        self.state
-            .ideation_session_repo
-            .set_verification_confirmation_status(
-                &session_id,
-                Some(VerificationConfirmationStatus::Accepted),
-            )
-            .await?;
-
         let session = self
             .state
             .ideation_session_repo
@@ -249,8 +222,6 @@ impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
                     session_id.as_str()
                 ))
             })?;
-
-        repair_blank_orphaned_verification_generation(&self.state, &session).await?;
 
         if session
             .plan_artifact_id
@@ -265,56 +236,35 @@ impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
             });
         }
 
-        let (status, in_progress) =
-            load_effective_verification_status(self.state.ideation_session_repo.as_ref(), &session)
-                .await?;
-        if in_progress || status == VerificationStatus::Reviewing {
-            return Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress {
-                generation: session.verification_generation,
-            });
-        }
-
-        let maybe_generation = trigger_auto_verify_generation(&self.state, &session_id).await?;
-
-        let Some(generation) = maybe_generation else {
-            let Some((status, in_progress)) = self
-                .state
-                .ideation_session_repo
-                .get_verification_status(&session_id)
-                .await?
-            else {
-                return Ok(AutomationPlanVerificationStartOutcome::Unavailable {
-                    detail: "verification trigger did not update a known session".to_string(),
-                });
-            };
-            if in_progress || status == VerificationStatus::Reviewing {
-                return Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress {
-                    generation: session.verification_generation,
-                });
-            }
-            return Ok(AutomationPlanVerificationStartOutcome::AlreadyTerminal {
-                generation: session.verification_generation,
-                status,
-            });
-        };
-
-        let spawn = spawn_verification_agent(
+        let chat_service = self
+            .state
+            .build_chat_service_with_execution_state(Arc::clone(&self.execution_state));
+        let outcome = request_plan_verification(
             &self.state,
+            &chat_service,
             &session_id,
-            generation,
-            provider_harness,
-            &[],
-            |_| self.chat_service(),
+            PlanVerificationRequestSource::Automatic,
         )
-        .await;
-        if spawn.spawned {
-            Ok(AutomationPlanVerificationStartOutcome::Started { generation })
-        } else {
-            Ok(AutomationPlanVerificationStartOutcome::Unavailable {
-                detail: spawn.failure_detail.unwrap_or_else(|| {
-                    "verification agent failed to spawn for an unknown reason".to_string()
-                }),
-            })
+        .await?;
+        match outcome {
+            PlanVerificationRequestOutcome::Queued => {
+                Ok(AutomationPlanVerificationStartOutcome::Started { generation: 0 })
+            }
+            PlanVerificationRequestOutcome::AlreadyQueued
+            | PlanVerificationRequestOutcome::AlreadyRunning => {
+                Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress { generation: 0 })
+            }
+            PlanVerificationRequestOutcome::AlreadyVerified => {
+                Ok(AutomationPlanVerificationStartOutcome::AlreadyTerminal {
+                    generation: 0,
+                    status: VerificationStatus::Verified,
+                })
+            }
+            PlanVerificationRequestOutcome::NoPlan => {
+                Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                    detail: "planning session has no linked plan".to_string(),
+                })
+            }
         }
     }
 }
@@ -703,23 +653,4 @@ pub async fn maybe_start_external_mcp(
             }
         }
     }
-}
-
-pub async fn startup_scan_verification_reconciliation(
-    svc: Arc<
-        crate::application::reconciliation::verification_reconciliation::VerificationReconciliationService,
-    >,
-    startup_ideation_recovery_claims: &HashSet<String>,
-) {
-    svc.startup_scan_excluding_external_archive_sessions(startup_ideation_recovery_claims)
-        .await;
-    tauri::async_runtime::spawn(async move { svc.run_periodic().await });
-}
-
-pub fn spawn_recovery_queue_processor(
-    recovery_processor: crate::application::reconciliation::recovery_queue::RecoveryQueueProcessor,
-) {
-    tauri::async_runtime::spawn(async move {
-        recovery_processor.run().await;
-    });
 }

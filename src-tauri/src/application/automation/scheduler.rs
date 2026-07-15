@@ -106,11 +106,7 @@ impl AutomationSchedulerConfig {
             plan_judge_models: config.plan_judge_model.clone(),
             plan_max_revision_rounds: i64::try_from(config.plan_max_revision_rounds.max(1))
                 .unwrap_or(i64::MAX),
-            plan_verification_hold_timeout: Duration::from_secs(
-                crate::application::harness_runtime_registry::default_verification_reconciliation_config()
-                    .auto_verify_stale_secs
-                    .max(1),
-            ),
+            plan_verification_hold_timeout: Duration::from_secs(5_400),
         }
     }
 }

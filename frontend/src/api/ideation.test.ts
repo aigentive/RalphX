@@ -1232,10 +1232,12 @@ describe("ideationApi.settings.update — payload regression", () => {
     require_plan_approval: false,
     suggest_plans_for_complex: true,
     auto_link_proposals: true,
+    auto_verify_plans: false,
     require_accept_for_finalize: true,
     require_verification_for_accept: false,
     require_verification_for_proposals: false,
     ext_require_verification_for_accept: null,
+    ext_auto_verify_plans: null,
     ext_require_verification_for_proposals: null,
     ext_require_accept_for_finalize: null,
   };
@@ -1244,16 +1246,12 @@ describe("ideationApi.settings.update — payload regression", () => {
     mockInvoke.mockResolvedValue(baseSettingsResponse);
 
     await ideationApi.settings.update({
-      planMode: "optional",
-      requirePlanApproval: false,
-      suggestPlansForComplex: true,
-      autoLinkProposals: true,
+      autoVerifyPlans: false,
       requireAcceptForFinalize: true,
       requireVerificationForAccept: false,
-      requireVerificationForProposals: false,
       externalOverrides: {
+        autoVerifyPlans: null,
         requireVerificationForAccept: null,
-        requireVerificationForProposals: null,
         requireAcceptForFinalize: null,
       },
     });
@@ -1266,25 +1264,23 @@ describe("ideationApi.settings.update — payload regression", () => {
     mockInvoke.mockResolvedValue(baseSettingsResponse);
 
     await ideationApi.settings.update({
-      planMode: "optional",
-      requirePlanApproval: false,
-      suggestPlansForComplex: true,
-      autoLinkProposals: true,
+      autoVerifyPlans: true,
       requireAcceptForFinalize: false,
       requireVerificationForAccept: true,
-      requireVerificationForProposals: true,
       externalOverrides: {
+        autoVerifyPlans: false,
         requireVerificationForAccept: false,
-        requireVerificationForProposals: true,
         requireAcceptForFinalize: null,
       },
     });
 
     const calledSettings = mockInvoke.mock.calls[0]![1].settings;
     expect(calledSettings).toHaveProperty("require_verification_for_accept", true);
-    expect(calledSettings).toHaveProperty("require_verification_for_proposals", true);
+    expect(calledSettings).toHaveProperty("auto_verify_plans", true);
+    expect(calledSettings).toHaveProperty("require_verification_for_proposals", false);
     expect(calledSettings).toHaveProperty("ext_require_verification_for_accept", 0);
-    expect(calledSettings).toHaveProperty("ext_require_verification_for_proposals", 1);
+    expect(calledSettings).toHaveProperty("ext_auto_verify_plans", 0);
+    expect(calledSettings).toHaveProperty("ext_require_verification_for_proposals", null);
     expect(calledSettings).toHaveProperty("ext_require_accept_for_finalize", null);
   });
 });

@@ -18,12 +18,8 @@ use crate::domain::entities::{
     ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
-use crate::domain::services::{
-    check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,
-    ProposalOperation,
-};
+use crate::domain::services::{check_verification_gate, resolve_effective_gate_policy};
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync;
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,
     SqliteTaskProposalRepository as ProposalRepo,
@@ -269,34 +265,6 @@ pub async fn create_proposal_impl(
                 ));
             }
 
-            // Verification gate: block creation if plan hasn't been verified (when enabled)
-            {
-                let settings = get_settings_sync(conn)?;
-                let policy = resolve_effective_gate_policy(&settings, session.origin);
-                let parent_status = if session.plan_artifact_id.is_none()
-                    && session.inherited_plan_artifact_id.is_some()
-                {
-                    session
-                        .parent_session_id
-                        .as_ref()
-                        .and_then(|pid| {
-                            SessionRepo::get_by_id_sync(conn, pid.as_str())
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|p| p.verification_status)
-                } else {
-                    None
-                };
-                check_proposal_verification_gate(
-                    &session,
-                    &policy,
-                    parent_status,
-                    ProposalOperation::Create,
-                )
-                .map_err(AppError::from)?;
-            }
-
             // Enforce plan artifact requirement
             let plan_artifact_id = session.plan_artifact_id.ok_or_else(|| {
                 AppError::Validation(
@@ -531,34 +499,6 @@ pub async fn update_proposal_impl(
                     || AppError::NotFound(format!("Session {} not found", proposal.session_id)),
                 )?;
             assert_session_mutable(&session)?;
-
-            // Verification gate: block update if verification in progress or needs revision
-            {
-                let settings = get_settings_sync(conn)?;
-                let policy = resolve_effective_gate_policy(&settings, session.origin);
-                let parent_status = if session.plan_artifact_id.is_none()
-                    && session.inherited_plan_artifact_id.is_some()
-                {
-                    session
-                        .parent_session_id
-                        .as_ref()
-                        .and_then(|pid| {
-                            SessionRepo::get_by_id_sync(conn, pid.as_str())
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|p| p.verification_status)
-                } else {
-                    None
-                };
-                check_proposal_verification_gate(
-                    &session,
-                    &policy,
-                    parent_status,
-                    ProposalOperation::Update,
-                )
-                .map_err(AppError::from)?;
-            }
 
             let is_ipc = matches!(options.source, UpdateSource::TauriIpc);
 
@@ -863,34 +803,6 @@ pub async fn archive_proposal_impl(
             let session = SessionRepo::get_by_id_sync(conn, session_id.as_str())?
                 .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
             assert_session_mutable(&session)?;
-
-            // Verification gate: block delete if verification in progress or needs revision
-            {
-                let settings = get_settings_sync(conn)?;
-                let policy = resolve_effective_gate_policy(&settings, session.origin);
-                let parent_status = if session.plan_artifact_id.is_none()
-                    && session.inherited_plan_artifact_id.is_some()
-                {
-                    session
-                        .parent_session_id
-                        .as_ref()
-                        .and_then(|pid| {
-                            SessionRepo::get_by_id_sync(conn, pid.as_str())
-                                .ok()
-                                .flatten()
-                        })
-                        .map(|p| p.verification_status)
-                } else {
-                    None
-                };
-                check_proposal_verification_gate(
-                    &session,
-                    &policy,
-                    parent_status,
-                    ProposalOperation::Delete,
-                )
-                .map_err(AppError::from)?;
-            }
 
             // Archive proposal scoped to session (prevents cross-session deletions)
             let proposal_id_typed = TaskProposalId::from_string(pid.clone());

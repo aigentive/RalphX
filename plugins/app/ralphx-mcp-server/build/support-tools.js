@@ -349,7 +349,7 @@ export const SUPPORT_TOOLS = [
         },
     },
     // ========================================================================
-    // CHILD SESSION TOOLS (ralphx-ideation, ralphx-ideation-team-lead, ralphx-plan-verifier)
+    // CHILD SESSION TOOLS (ralphx-ideation and ralphx-ideation-team-lead)
     // ========================================================================
     {
         name: "get_child_session_status",

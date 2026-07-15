@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  CheckCircle2,
   FileText,
   GitPullRequestArrow,
   LayoutGrid,
@@ -81,10 +80,7 @@ import {
 import { ideationKeys } from "@/hooks/useIdeation";
 import { taskKeys, useTasks } from "@/hooks/useTasks";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
-import {
-  useVerificationStatus,
-  verificationStatusKey,
-} from "@/hooks/useVerificationStatus";
+import { verificationStatusKey } from "@/hooks/useVerificationStatus";
 import { useAutomationDetail } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import type { Artifact } from "@/types/artifact";
@@ -297,11 +293,6 @@ const LazyProposalDetailSheet = lazy(() =>
     default: module.ProposalDetailSheet,
   })),
 );
-const LazyVerificationPanel = lazy(() =>
-  import("@/components/Ideation/VerificationPanel").then((module) => ({
-    default: module.VerificationPanel,
-  })),
-);
 const LazyAgentsJiraIssuePanel = lazy(() =>
   import("@/components/agents/AgentsJiraIssuePanel").then((module) => ({
     default: module.AgentsJiraIssuePanel,
@@ -340,7 +331,6 @@ const ARTIFACT_TABS: Array<{
 }> = [
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
-  { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
 
@@ -640,11 +630,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     granolaSettingsQuery.data?.enabled &&
     granolaSettingsQuery.data?.validationStatus === "valid",
   );
-  const [displayedVerificationStatus, setDisplayedVerificationStatus] =
-    useState<{
-      status: VerificationStatus;
-      inProgress: boolean;
-    } | null>(null);
   const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const conversationProjectId =
     conversation?.projectId ?? scopedWorkspace?.projectId ?? workspace?.projectId ?? null;
@@ -841,9 +826,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     string | null
   >(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
-    setDisplayedVerificationStatus(null);
-  }, [attachedSessionId]);
-  useEffect(() => {
     setTaskArtifactSelectedIdState(
       readSelectedTaskForConversation(conversationId),
     );
@@ -963,17 +945,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         sessionData?.session.inheritedPlanArtifactId ??
         null)
       : null);
-  const sessionVerificationStatus =
-    sessionData?.session.verificationStatus ?? "unverified";
-  const hasVerificationEvidence = Boolean(
-    sessionData &&
-    (sessionData.session.verificationInProgress ||
-      sessionVerificationStatus !== "unverified" ||
-      sessionData.session.gapScore != null ||
-      (displayedVerificationStatus !== null &&
-        (displayedVerificationStatus.inProgress ||
-          displayedVerificationStatus.status !== "unverified"))),
-  );
   const proposalCount = proposals.length;
   const automationRunTabPolicy = useMemo(
     () =>
@@ -1010,13 +981,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
         canStartPlan,
-        hasVerificationEvidence,
+        hasVerificationEvidence: false,
         hasExecutionTasks: hasImplementationAttempt,
       }),
     [
       canStartPlan,
       hasImplementationAttempt,
-      hasVerificationEvidence,
       planArtifactId,
       sessionData,
     ],
@@ -1175,8 +1145,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const reviewTabStatusColor = isWorkspaceReviewRunning
     ? reviewTabIconColor
     : null;
-  const shouldLoadVerificationData =
-    shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
     shouldLoadIdeationData &&
     (effectiveActiveTab === "tasks" ||
@@ -1206,26 +1174,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     !planArtifact &&
     !!attachedSessionId &&
     (planArtifactQuery.isFetching || sessionQuery.isFetching);
-  const verificationQuery = useVerificationStatus(
-    shouldLoadVerificationData ? (attachedSessionId ?? undefined) : undefined,
-  );
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? (attachedSessionId ?? "") : "",
   );
-  const verificationData =
-    attachedSessionId && verificationQuery.data?.sessionId === attachedSessionId
-      ? verificationQuery.data
-      : null;
   const dependencyGraph =
     attachedSessionId && sessionData ? (dependencyQuery.data ?? null) : null;
   const verificationState =
-    displayedVerificationStatus?.status ??
-    verificationData?.status ??
     sessionData?.session.verificationStatus ??
     "unverified";
   const verificationInProgress =
-    displayedVerificationStatus?.inProgress ??
-    verificationData?.inProgress ??
     sessionData?.session.verificationInProgress ??
     false;
   const handlePlanUpdated = useCallback(
@@ -1374,19 +1331,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             let iconColor: string | undefined;
             let iconPulse = false;
             let tabStatusColor: string | null = null;
-            if (id === "verification") {
-              if (verificationInProgress) {
-                iconColor = "var(--accent-primary)";
-                iconPulse = true;
-              } else if (
-                verificationState === "verified" ||
-                verificationState === "imported_verified"
-              ) {
-                iconColor = "var(--status-success)";
-              } else if (verificationState === "needs_revision") {
-                iconColor = "var(--status-warning)";
-              }
-            } else if (id === "review") {
+            if (id === "review") {
               iconColor = reviewTabIconColor ?? undefined;
               iconPulse = isWorkspaceReviewRunning;
               tabStatusColor = reviewTabStatusColor;
@@ -1664,13 +1609,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             onFocusIdeationSessionForConversation
           }
           onFocusVerificationSession={onFocusVerificationSession}
-          onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
           onOpenReview={handleOpenReview}
           onOpenPublish={handleOpenPublish}
-          onOpenVerification={() => onTabChange("verification")}
           onOpenTasks={() => onTabChange("tasks")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
@@ -1748,12 +1691,6 @@ type ArtifactContentProps = {
     | undefined;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
-  onDisplayedVerificationStatusChange: (
-    status: {
-      status: VerificationStatus;
-      inProgress: boolean;
-    } | null,
-  ) => void;
   onFocusTaskRuntime?: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType
@@ -1762,7 +1699,6 @@ type ArtifactContentProps = {
   verificationInProgress: boolean;
   onOpenReview: () => void;
   onOpenPublish: () => void;
-  onOpenVerification: () => void;
   onOpenTasks: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
@@ -1819,33 +1755,15 @@ function ArtifactContent({
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
   onFocusVerificationSession: _onFocusVerificationSession,
-  onDisplayedVerificationStatusChange,
   onFocusTaskRuntime,
   verificationState,
   verificationInProgress,
   onOpenReview,
   onOpenPublish,
-  onOpenVerification,
   onOpenTasks,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
-  // Opening the Verification tab no longer auto-focuses the chat on the
-  // verification child. The user switches chats explicitly via the composer
-  // chat-focus pill instead.
-  const handleDisplayedVerificationChildChange = useCallback(
-    (_childSessionId: string | null) => {
-      // intentionally empty — see comment above.
-    },
-    [],
-  );
-  const handleDisplayedVerificationStatusChange = useCallback(
-    (status: VerificationStatus, inProgress: boolean) => {
-      onDisplayedVerificationStatusChange({ status, inProgress });
-    },
-    [onDisplayedVerificationStatusChange],
-  );
-
   if (activeTab === "automation" && automationId) {
     return (
       <Suspense
@@ -2008,7 +1926,6 @@ function ArtifactContent({
         onFocusIdeationSessionForConversation={
           onFocusIdeationSessionForConversation
         }
-        onOpenVerification={onOpenVerification}
         onOpenTasks={onOpenTasks}
       />
     );
@@ -2024,29 +1941,6 @@ function ArtifactContent({
         title="No ideation run attached"
         detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
       />
-    );
-  }
-
-  if (activeTab === "verification") {
-    if (!session) {
-      return <EmptyArtifactState title="No verification data yet" />;
-    }
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        <Suspense
-          fallback={<EmptyArtifactState title="Loading verification..." />}
-        >
-          <LazyVerificationPanel
-            session={session}
-            onDisplayedVerificationChildChange={
-              handleDisplayedVerificationChildChange
-            }
-            onDisplayedVerificationStatusChange={
-              handleDisplayedVerificationStatusChange
-            }
-          />
-        </Suspense>
-      </div>
     );
   }
 
@@ -2081,7 +1975,6 @@ function AgentPlanPanel({
   verificationInProgress,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
-  onOpenVerification,
   onOpenTasks,
 }: {
   workspace: AgentConversationWorkspace | null;
@@ -2110,7 +2003,6 @@ function AgentPlanPanel({
   onFocusIdeationSessionForConversation:
     | ((conversationId: string, sessionId: string) => void)
     | undefined;
-  onOpenVerification: () => void;
   onOpenTasks: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -2463,17 +2355,7 @@ function AgentPlanPanel({
     }
     setIsStartingPlanVerification(true);
     try {
-      let disabledSpecialists: string[] = [];
-      try {
-        const specialists = await verificationApi.getSpecialists();
-        disabledSpecialists = specialists.specialists
-          .filter((specialist) => !specialist.enabled_by_default)
-          .map((specialist) => specialist.name);
-      } catch (err) {
-        console.warn("Failed to load verification specialists:", err);
-      }
-
-      await verificationApi.confirm(session.id, disabledSpecialists);
+      await verificationApi.confirm(session.id);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: verificationStatusKey(session.id),
@@ -2483,8 +2365,7 @@ function AgentPlanPanel({
         }),
         queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
       ]);
-      onOpenVerification();
-      toast.success("Plan verification started");
+      toast.success("Verify Plan queued in this conversation");
     } catch (err) {
       console.error("Failed to start plan verification:", err);
       toast.error(
@@ -2497,7 +2378,6 @@ function AgentPlanPanel({
     }
   }, [
     canVerifyPlan,
-    onOpenVerification,
     queryClient,
     session,
     verificationInProgress,

@@ -151,84 +151,6 @@ export const WORKFLOW_TOOLS: Tool[] = [
     },
   },
   {
-    name: "publish_verification_finding",
-    description:
-      "Publish a typed verification finding for the current verification round. " +
-      "Use this for verification-path specialists and required plan critics so the backend can aggregate gaps directly from structured metadata. " +
-      "If session_id is omitted, the backend uses the current session context and remaps verification child sessions plus delegated verification specialists/critics to the parent ideation session automatically.",
-    inputSchema: {
-      type: "object",
-      examples: [
-        {
-          critic: "completeness",
-          round: 1,
-          status: "partial",
-          coverage: "affected_files",
-          summary: "Migration needs an explicit backfill step.",
-          gaps: [
-            {
-              severity: "high",
-              category: "completeness",
-              description: "Existing projects are not covered by a concrete backfill step.",
-              why_it_matters: "Persisted rows can retain the old mode.",
-            },
-          ],
-        },
-      ],
-      properties: {
-        session_id: {
-          type: "string",
-          description: "Optional parent ideation session ID. Omit this in normal verifier-critic flows and let the backend resolve the correct parent session automatically, including delegated verification specialists and critics.",
-        },
-        critic: {
-          type: "string",
-          description: "Critic identifier, for example 'completeness', 'feasibility', 'intent', 'code-quality', 'ux', 'prompt-quality', 'pipeline-safety', or 'state-machine'.",
-        },
-        round: {
-          type: "integer",
-          description: "Verification round number (1-based).",
-        },
-        status: {
-          type: "string",
-          enum: ["complete", "partial", "error"],
-          description: "Whether the critic finished fully, partially, or hit an infrastructure error.",
-        },
-        coverage: {
-          type: "string",
-          description: "Optional coverage scope such as 'plan_only', 'affected_files', or 'affected_files_plus_adjacent'.",
-        },
-        summary: {
-          type: "string",
-          description: "One-sentence synthesis of the critic result.",
-        },
-        gaps: {
-          type: "array",
-          description: "Structured verification gaps identified by the critic.",
-          items: {
-            type: "object",
-            properties: {
-              severity: {
-                type: "string",
-                enum: ["critical", "high", "medium", "low"],
-              },
-              category: { type: "string" },
-              description: { type: "string" },
-              why_it_matters: { type: "string" },
-              source: { type: "string" },
-              lens: { type: "string" },
-            },
-            required: ["severity", "category", "description"],
-          },
-        },
-        title_suffix: {
-          type: "string",
-          description: "Optional short human-readable suffix appended to the generated artifact title.",
-        },
-      },
-      required: ["critic", "round", "status", "summary", "gaps"],
-    },
-  },
-  {
     name: "get_team_artifacts",
     description:
       "Retrieve all team artifacts for a session. " +
@@ -868,5 +790,4 @@ export const WORKFLOW_TOOLS: Tool[] = [
       required: ["task_id", "feedback"],
     },
   },
-
 ];

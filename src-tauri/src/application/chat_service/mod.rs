@@ -169,6 +169,9 @@ pub use chat_service_types::{
     TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload,
     TeamTeammateIdlePayload, TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
 };
+pub(crate) use chat_service_types::{
+    decode_pending_initial_prompt, encode_pending_initial_prompt,
+};
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
 };
@@ -3950,16 +3953,12 @@ impl<R: Runtime> AppChatService<R> {
                     None
                 }
             }
-            // Ideation context: check purpose first (Verification sessions → ralphx-plan-verifier agent)
-            // then fall back to status for accepted/readonly routing
+            // Ideation context: route from the session status. Legacy verification children
+            // no longer select a dedicated agent.
             ChatContextType::Ideation => {
                 let session_id = IdeationSessionId::from_string(context_id);
                 if let Ok(Some(session)) = self.ideation_session_repo.get_by_id(&session_id).await {
-                    if session.session_purpose == SessionPurpose::Verification {
-                        Some("verification".to_string())
-                    } else {
-                        Some(session.status.to_string())
-                    }
+                    Some(session.status.to_string())
                 } else {
                     None
                 }
@@ -4143,7 +4142,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 if !paused_ideation_has_live_agent {
                     match self
                         .ideation_session_repo
-                        .set_pending_initial_prompt_if_unset(context_id, message.to_string())
+                        .set_pending_initial_prompt_if_unset(
+                            context_id,
+                            encode_pending_initial_prompt(message, options.metadata.as_deref()),
+                        )
                         .await
                     {
                         Ok(true) => {
@@ -4845,6 +4847,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         //     If an agent is already registered for this context, queue the message.
         //     Create the AgentRun early so its ID can be stored in the slot for ownership tracking.
         let mut agent_run = AgentRun::new(conversation.id);
+        agent_run.apply_action_metadata_json(options.metadata.as_deref());
         let agent_run_id = agent_run.id.as_str().to_string();
         let run_chain_id = agent_run.run_chain_id.clone();
 
@@ -5164,7 +5167,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 .ideation_session_repo
                                 .set_pending_initial_prompt_if_unset(
                                     context_id,
-                                    message.to_string(),
+                                    encode_pending_initial_prompt(
+                                        message,
+                                        options.metadata.as_deref(),
+                                    ),
                                 )
                                 .await
                             {

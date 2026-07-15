@@ -29,6 +29,7 @@ const _IDLE_STATUSES: &[&str] = &["backlog", "ready", "blocked"];
 /// SELECT columns for IdeationSession — single source of truth (DRY).
 /// Must be kept in sync with IdeationSession::from_row column names.
 const SESSION_COLUMNS: &str = "id, project_id, title, title_source, status, plan_artifact_id, \
+    verified_plan_artifact_id, verified_plan_agent_run_id, \
     inherited_plan_artifact_id, seed_task_id, parent_session_id, created_at, \
     updated_at, archived_at, converted_at, team_mode, team_config_json, \
     verification_status, verification_in_progress, verification_generation, \
@@ -630,6 +631,49 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
             .await
     }
 
+    async fn complete_plan_verification(
+        &self,
+        id: &IdeationSessionId,
+        agent_run_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        let agent_run_id = agent_run_id.to_string();
+        let artifact_id = artifact_id.to_string();
+        self.db
+            .run_transaction(move |conn| {
+                let changed = conn.execute(
+                    "UPDATE ideation_sessions
+                     SET verified_plan_artifact_id = ?2,
+                         verified_plan_agent_run_id = ?3,
+                         verification_status = 'verified',
+                         verification_in_progress = 0,
+                         updated_at = ?4
+                     WHERE id = ?1
+                       AND plan_artifact_id = ?2
+                       AND EXISTS (
+                         SELECT 1
+                         FROM agent_runs ar
+                         JOIN chat_conversations cc ON cc.id = ar.conversation_id
+                         LEFT JOIN agent_conversation_workspaces aw
+                           ON aw.conversation_id = ar.conversation_id
+                         WHERE ar.id = ?3
+                           AND ar.status = 'running'
+                           AND ar.action_kind = 'verify_plan'
+                           AND ar.action_context_id = ?1
+                           AND ar.action_target_id = ?2
+                           AND (
+                             aw.linked_ideation_session_id = ?1
+                             OR (cc.context_type = 'ideation' AND cc.context_id = ?1)
+                           )
+                       )",
+                    rusqlite::params![id, artifact_id, agent_run_id, Utc::now().to_rfc3339()],
+                )?;
+                Ok(changed == 1)
+            })
+            .await
+    }
+
     async fn delete(&self, id: &IdeationSessionId) -> AppResult<()> {
         let id = id.as_str().to_string();
         self.db
@@ -756,9 +800,9 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                     Some(purpose) => conn.query_row(&sql, params![parent_id, purpose], |row| {
                         row.get::<_, String>(0)
                     })?,
-                    None => conn.query_row(&sql, params![parent_id], |row| {
-                        row.get::<_, String>(0)
-                    })?,
+                    None => {
+                        conn.query_row(&sql, params![parent_id], |row| row.get::<_, String>(0))?
+                    }
                 };
                 Ok(IdeationSessionId::from_string(id))
             })

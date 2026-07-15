@@ -77,7 +77,7 @@ Four independent creation paths, all emitting the same 3-layer event.
 
 - **Handler:** `create_plan_artifact()` — `artifacts.rs:200`
 - **HTTP:** POST `/api/ideation/artifacts` (MCP tool: `create_plan_artifact`)
-- **Agent:** `ralphx-ideation` (calls MCP tool; ralphx-plan-verifier if auto-verify triggered)
+- **Agent:** the active Plan-mode conversation model
 
 **Events emitted:**
 1. `plan_artifact:created` — Layer 1 (Tauri) only; carries full artifact object for frontend UI
@@ -94,8 +94,9 @@ Four independent creation paths, all emitting the same 3-layer event.
 }
 ```
 
-**Auto-verify cascade:** If `auto_verify=true`, creates a child verification session and spawns
-ralphx-plan-verifier agent. Failure emits `ideation:verification_status_changed` with `reason: "spawn_failed"`.
+**Auto-verify cascade:** If effective policy enables auto verification, RalphX queues a typed
+`verify_plan` turn in the same Plan conversation. Capacity-deferred turns retain their action
+metadata and appear as queued until the active planning model reviews the current artifact.
 
 **Autonomous:** Yes.
 
@@ -103,20 +104,20 @@ ralphx-plan-verifier agent. Failure emits `ideation:verification_status_changed`
 
 ## Stage 4: Plan Verification
 
-- **Handler family:** verification round/report/finalize endpoints under `src-tauri/src/http_server/handlers/ideation/verification/`
-- **HTTP:** backend-owned verification APIs (`/api/ideation/sessions/{id}/verification`, `/infra-failure`, plus verifier helper surfaces in the MCP server)
-- **Agent:** `ralphx-plan-verifier` (multi-round adversarial loop using Layer 1 and Layer 2 critics)
+- **Service:** `application/plan_verification_service.rs`
+- **HTTP:** request/status endpoints plus the run-scoped `/api/plan-verification/complete` proof endpoint
+- **Agent:** the active Plan-mode model in the existing conversation; it chooses any useful reasoning lenses or allowed general-purpose delegates
 
 **State machine:**
 ```
-Unverified → Verifying → Verified
-                      → Skipped        (internal sessions only)
-                      → ImportedVerified
+Unverified → Queued → Verifying → Verified
+                                → Failed
+                                → Cancelled
 ```
 
-**Events emitted:**
-1. `ideation:verification_status_changed` — Layer 1 (Tauri) only; fires on every status update
-2. `IdeationVerified` — 3-layer — **guard:** only when `new_status == Verified`
+Verification proof is exact-artifact scoped. `complete_plan_verification` succeeds only for the
+currently running typed action whose session, conversation, and target artifact all match. A plan
+edit changes the current artifact id and therefore invalidates the previous proof automatically.
 
 **Payload for `IdeationVerified`:**
 ```json
@@ -248,10 +249,10 @@ Once `finalize_proposals` completes and session transitions to Accepted:
                                 │ creates session, proposes plan
                                 ▼
                     ┌─────────────────────────┐
-                    │      ralphx-plan-verifier       │  ← spawned as child session
-                    │  (adversarial loop)      │
-                    │  Layer 1 + Layer 2       │
-                    │  critics per round       │
+                    │   same Plan conversation │
+                    │   typed verify_plan turn │
+                    │   optional model-chosen  │
+                    │   general delegates      │
                     └───────────┬─────────────┘
                                 │ complete_plan_verification(Verified)
                                 ▼
@@ -274,9 +275,8 @@ Once `finalize_proposals` completes and session transitions to Accepted:
 | `ralphx-ideation` | `ideation` | Creates session, drives plan creation, calls finalize_proposals |
 | `ralphx-ideation-team-lead` | `ideation` | Team mode variant of orchestrator |
 | `ralphx-utility-session-namer` | `ideation` | Names session title via `update_session_title` MCP tool |
-| `ralphx-plan-verifier` | child session | Owns adversarial verification loop; spawns critics |
-| `ralphx-plan-critic-completeness` | — | Completeness critic (JSON gap analysis) |
-| `ralphx-plan-critic-implementation-feasibility` | — | Dual-lens implementation critic |
+| Active Plan-mode model | existing conversation | Reviews and, when needed, revises the current linked plan |
+| Model-selected general delegates | delegated conversations | Optional context-specific evidence or adversarial lenses |
 
 ---
 
@@ -295,8 +295,9 @@ Tools available to external agents (e.g., ReefBot) via `ralphx-external-mcp` (`:
 | Resume scheduling (idempotent) | `v1_resume_scheduling` | POST `/api/ideation/sessions/{id}/resume` |
 | Poll recent events | `v1_get_recent_events` | GET `/api/external/events` |
 
-**Polling alternative for verification progress:** Use `v1_get_plan_verification` to check
-verification rounds and gaps without waiting for `ideation:verified` webhook.
+**Polling alternative for verification progress:** Use `v1_get_plan_verification` to read the
+typed action state and exact-artifact proof (`unverified`, `queued`, `verifying`, `verified`,
+`failed`, or `cancelled`).
 
 **Polling alternative for agent state:** Use `v1_get_ideation_status` to check
 `agent_status` (idle/generating/waiting_for_input).

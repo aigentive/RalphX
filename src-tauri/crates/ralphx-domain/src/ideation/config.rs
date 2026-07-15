@@ -25,6 +25,8 @@ impl Default for IdeationPlanMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ExternalIdeationOverrides {
+    /// Override for `auto_verify_plans` for external sessions.
+    pub auto_verify_plans: Option<bool>,
     /// Override for `require_verification_for_accept` for external sessions.
     pub require_verification_for_accept: Option<bool>,
     /// Override for `require_verification_for_proposals` for external sessions.
@@ -44,6 +46,9 @@ pub struct IdeationSettings {
     pub suggest_plans_for_complex: bool,
     /// Auto-link proposals to session plan when created
     pub auto_link_proposals: bool,
+    /// Automatically queue model-native plan verification after plan creation/versioning.
+    #[serde(default)]
+    pub auto_verify_plans: bool,
     /// If true, plans must be verified (or skipped) before accepting proposals
     #[serde(default)]
     pub require_verification_for_accept: bool,
@@ -65,9 +70,10 @@ impl Default for IdeationSettings {
             require_plan_approval: false, // Plan existence is sufficient by default
             suggest_plans_for_complex: true,
             auto_link_proposals: true,
+            auto_verify_plans: false,
             require_verification_for_accept: false, // Opt-in feature
             require_verification_for_proposals: false, // Opt-in feature
-            require_accept_for_finalize: false, // Opt-in feature
+            require_accept_for_finalize: false,     // Opt-in feature
             external_overrides: ExternalIdeationOverrides::default(),
         }
     }
