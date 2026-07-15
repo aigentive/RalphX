@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use ralphx_domain::entities::automation::latest_run_holds_goal_authority;
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
+use crate::application::automation::integration_pr::AutomationIntegrationPrPublisher;
 use crate::application::automation::judge::{
     append_automation_judge_retry_instruction, build_automation_judge_prompt,
     mark_current_goal_item_in_progress, parse_automation_judge_verdict,
@@ -1370,6 +1371,7 @@ pub struct AutomationScheduler {
     transition_service: AutomationTransitionService,
     resumer: Arc<dyn AutomationRunResumer>,
     signal_checker: Arc<dyn AutomationSignalChecker>,
+    integration_pr_publisher: Arc<dyn AutomationIntegrationPrPublisher>,
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
@@ -1391,6 +1393,7 @@ impl AutomationScheduler {
         starter: Arc<dyn AutomationRunStarter>,
         resumer: Arc<dyn AutomationRunResumer>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
+        integration_pr_publisher: Arc<dyn AutomationIntegrationPrPublisher>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
         plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
@@ -1437,6 +1440,7 @@ impl AutomationScheduler {
             transition_service,
             resumer,
             signal_checker,
+            integration_pr_publisher,
             judge_invoker,
             plan_judge_invoker,
             plan_verification_starter,
@@ -2978,6 +2982,9 @@ impl AutomationScheduler {
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
+        self.ensure_first_merged_run_integration_pr(automation, run.run_index, run.status)
+            .await?;
+
         match run.judge_state {
             AutomationJudgeState::None | AutomationJudgeState::Failed => {
                 let from = run.judge_state;
@@ -3045,6 +3052,20 @@ impl AutomationScheduler {
                 }
             }
             AutomationJudgeState::InProgress | AutomationJudgeState::Skipped => {}
+        }
+        Ok(())
+    }
+
+    async fn ensure_first_merged_run_integration_pr(
+        &self,
+        automation: &Automation,
+        run_index: i64,
+        run_status: AutomationRunStatus,
+    ) -> AppResult<()> {
+        if first_merged_run_requires_integration_pr(automation, run_index, run_status) {
+            self.integration_pr_publisher
+                .ensure_integration_pr(automation)
+                .await?;
         }
         Ok(())
     }
@@ -3480,6 +3501,12 @@ impl AutomationScheduler {
                     .await?
                 {
                     summary.merged_runs += 1;
+                    self.ensure_first_merged_run_integration_pr(
+                        automation,
+                        run.run_index,
+                        AutomationRunStatus::Merged,
+                    )
+                    .await?;
                     self.finalize_merged_run_conversation(automation, run).await;
                 } else {
                     tracing::warn!(
@@ -3858,6 +3885,16 @@ fn agent_run_is_restart_orphan(agent_run: &AgentRun) -> bool {
     agent_run.status == AgentRunStatus::Cancelled
         && agent_run.error_message.as_deref()
             == Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART)
+}
+
+fn first_merged_run_requires_integration_pr(
+    automation: &Automation,
+    run_index: i64,
+    run_status: AutomationRunStatus,
+) -> bool {
+    run_index == 1
+        && run_status == AutomationRunStatus::Merged
+        && automation.setup_conversation_id.is_some()
 }
 
 fn judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {

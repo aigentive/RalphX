@@ -116,6 +116,7 @@ pub(super) fn phase_upsert_plan_branch(
            source_branch=excluded.source_branch,
            status=excluded.status,
            merge_task_id=excluded.merge_task_id,
+           merged_at=excluded.merged_at,
            execution_plan_id=excluded.execution_plan_id,
            pr_eligible=excluded.pr_eligible,
            base_branch_override=excluded.base_branch_override",

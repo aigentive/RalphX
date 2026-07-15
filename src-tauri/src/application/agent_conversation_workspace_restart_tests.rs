@@ -2,9 +2,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::application::agent_conversation_workspace::{
-    prepare_agent_conversation_workspace, relocate_linked_plan_branch_agent_worktree_for_restart,
-    resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
-    AgentConversationWorkspaceBaseSelection,
+    prepare_agent_conversation_workspace, resolve_agent_conversation_workspace_path,
+    resolve_linked_plan_branch_agent_worktree_path, AgentConversationWorkspaceBaseSelection,
+};
+use crate::application::agent_conversation_workspace_restart::{
+    prepare_linked_plan_branch_agent_worktree_for_restart, resolve_restart_workspace_cleanup_proof,
+    RestartWorkspaceCleanupProof, RestartWorkspacePreparationError,
+    RestartWorkspacePreparationSource,
 };
 use crate::application::GitService;
 use crate::domain::entities::{
@@ -113,12 +117,21 @@ async fn restart_relocation_moves_owned_conversation_worktree_to_linked_plan_pat
         resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
             .expect("linked path should resolve");
 
-    let relocated =
-        relocate_linked_plan_branch_agent_worktree_for_restart(&project, &workspace, &plan_branch)
-            .await
-            .expect("owned conversation worktree should relocate");
+    let prepared = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("owned conversation worktree should relocate");
 
-    assert_eq!(relocated, linked_worktree_path);
+    assert_eq!(prepared.path, linked_worktree_path);
+    assert_eq!(
+        prepared.source,
+        RestartWorkspacePreparationSource::RelocatedConversation
+    );
     assert!(
         !old_worktree_path.exists(),
         "the owned conversation worktree path should be vacated"
@@ -153,15 +166,21 @@ async fn restart_relocation_rejects_owned_workspace_branch_drift_before_move() {
         &["checkout", "-b", "feature/restart-drift"],
     );
 
-    let error =
-        relocate_linked_plan_branch_agent_worktree_for_restart(&project, &workspace, &plan_branch)
-            .await
-            .expect_err("branch drift should block restart relocation");
+    let error = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect_err("branch drift should block restart relocation");
 
     assert!(
-        error
-            .to_string()
-            .contains("Owned agent conversation worktree"),
+        matches!(
+            error,
+            RestartWorkspacePreparationError::UnsafeOwnership { .. }
+        ),
         "unexpected relocation error: {error}"
     );
     assert!(old_worktree_path.is_dir());
@@ -211,16 +230,344 @@ async fn restart_relocation_reuses_existing_linked_plan_worktree() {
     .await
     .expect("linked plan worktree should be created");
 
-    let relocated =
-        relocate_linked_plan_branch_agent_worktree_for_restart(&project, &workspace, &plan_branch)
-            .await
-            .expect("existing linked worktree should be reused");
+    let prepared = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("existing linked worktree should be reused");
 
-    assert_eq!(relocated, linked_worktree_path);
+    assert_eq!(prepared.path, linked_worktree_path);
+    assert_eq!(
+        prepared.source,
+        RestartWorkspacePreparationSource::ExistingLinked
+    );
     assert_eq!(
         GitService::get_current_branch(&linked_worktree_path)
             .await
             .expect("linked worktree branch should resolve"),
         plan_branch.branch_name
     );
+}
+
+#[tokio::test]
+async fn restart_preparation_reattaches_preserved_owned_branch_when_both_paths_are_absent() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-reattach-preserved".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let direct_path = PathBuf::from(&workspace.worktree_path);
+    let plan_branch = linked_plan_branch_for_workspace(
+        &project,
+        &mut workspace,
+        IdeationSessionId::from_string("session-restart-reattach-preserved"),
+    );
+    GitService::delete_worktree(&repo_path, &direct_path)
+        .await
+        .expect("owned direct worktree should be removed");
+
+    let prepared = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect("preserved branch should be reattached");
+
+    assert_eq!(
+        prepared.source,
+        RestartWorkspacePreparationSource::ReattachedBranch
+    );
+    assert!(!direct_path.exists());
+    assert!(prepared.path.is_dir());
+    assert_eq!(
+        GitService::get_current_branch(&prepared.path)
+            .await
+            .expect("reattached branch should resolve"),
+        plan_branch.branch_name
+    );
+}
+
+#[tokio::test]
+async fn restart_preparation_recreates_branch_only_with_owned_merged_cleanup_proof() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-recreate-cleaned".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let direct_path = PathBuf::from(&workspace.worktree_path);
+    let plan_branch = linked_plan_branch_for_workspace(
+        &project,
+        &mut workspace,
+        IdeationSessionId::from_string("session-restart-recreate-cleaned"),
+    );
+    GitService::delete_worktree(&repo_path, &direct_path)
+        .await
+        .expect("owned direct worktree should be removed");
+    git(&repo_path, &["branch", "-D", &plan_branch.branch_name]);
+
+    let prepared = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::OwnedMergedCleanup,
+    )
+    .await
+    .expect("owned merged cleanup should permit branch recreation");
+
+    assert_eq!(
+        prepared.source,
+        RestartWorkspacePreparationSource::RecreatedFromCleanup
+    );
+    assert_eq!(
+        GitService::get_current_branch(&prepared.path)
+            .await
+            .expect("recreated branch should resolve"),
+        plan_branch.branch_name
+    );
+}
+
+#[tokio::test]
+async fn restart_preparation_refuses_unproven_missing_branch_without_creating_artifacts() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-unproven-missing".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let direct_path = PathBuf::from(&workspace.worktree_path);
+    let plan_branch = linked_plan_branch_for_workspace(
+        &project,
+        &mut workspace,
+        IdeationSessionId::from_string("session-restart-unproven-missing"),
+    );
+    GitService::delete_worktree(&repo_path, &direct_path)
+        .await
+        .expect("owned direct worktree should be removed");
+    git(&repo_path, &["branch", "-D", &plan_branch.branch_name]);
+    let linked_path = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+        .expect("linked path should resolve");
+
+    let error = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect_err("unproven branch loss must fail closed");
+
+    assert_eq!(
+        error,
+        RestartWorkspacePreparationError::MissingBranchWithoutCleanupProof
+    );
+    assert!(!direct_path.exists());
+    assert!(!linked_path.exists());
+    assert!(
+        !GitService::branch_exists(&repo_path, &plan_branch.branch_name)
+            .await
+            .expect("branch probe should succeed")
+    );
+}
+
+#[tokio::test]
+async fn restart_preparation_refuses_branch_checked_out_in_project_root() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-project-root-owner".to_string());
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "main".to_string(),
+        resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("conversation path should resolve")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let plan_branch = linked_plan_branch_for_workspace(
+        &project,
+        &mut workspace,
+        IdeationSessionId::from_string("session-restart-project-root-owner"),
+    );
+
+    let error = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect_err("project-root branch ownership must be refused");
+
+    assert!(matches!(
+        error,
+        RestartWorkspacePreparationError::UnsafeOwnership { .. }
+    ));
+    assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+}
+
+#[tokio::test]
+async fn restart_preparation_refuses_branch_checked_out_in_another_worktree() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-other-owner".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let direct_path = PathBuf::from(&workspace.worktree_path);
+    let plan_branch = linked_plan_branch_for_workspace(
+        &project,
+        &mut workspace,
+        IdeationSessionId::from_string("session-restart-other-owner"),
+    );
+    GitService::delete_worktree(&repo_path, &direct_path)
+        .await
+        .expect("owned direct worktree should be removed");
+    let other_path = worktree_parent.join("unknown-owner");
+    GitService::checkout_existing_branch_worktree_strict(
+        &repo_path,
+        &other_path,
+        &plan_branch.branch_name,
+    )
+    .await
+    .expect("test should check the preserved branch out elsewhere");
+    let linked_path = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+        .expect("linked path should resolve");
+
+    let error = prepare_linked_plan_branch_agent_worktree_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        "main",
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect_err("another worktree owner must be refused");
+
+    assert!(matches!(
+        error,
+        RestartWorkspacePreparationError::UnsafeOwnership { .. }
+    ));
+    assert!(other_path.is_dir());
+    assert!(!linked_path.exists());
+    assert_eq!(
+        GitService::get_current_branch(&other_path)
+            .await
+            .expect("other worktree branch should remain intact"),
+        plan_branch.branch_name
+    );
+}
+
+#[test]
+fn restart_cleanup_proof_requires_merged_terminal_state_with_cleaned_marker() {
+    use crate::domain::entities::plan_branch::PrStatus;
+
+    let project = Project::new("Cleanup proof".to_string(), "/owned/project".to_string());
+    let conversation_id = ChatConversationId::new();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/test/plan".to_string(),
+        "/owned/worktree".to_string(),
+    );
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::new(),
+        IdeationSessionId::new(),
+        project.id,
+        workspace.branch_name.clone(),
+        "main".to_string(),
+    );
+
+    workspace.publication_pr_status = Some("closed".to_string());
+    assert_eq!(
+        resolve_restart_workspace_cleanup_proof(&workspace, Some("cleaned"), &plan_branch, None,),
+        RestartWorkspaceCleanupProof::None,
+        "closed cleanup may preserve the branch"
+    );
+
+    workspace.publication_pr_status = Some("merged".to_string());
+    assert_eq!(
+        resolve_restart_workspace_cleanup_proof(&workspace, Some("cleaned"), &plan_branch, None,),
+        RestartWorkspaceCleanupProof::OwnedMergedCleanup
+    );
+
+    workspace.publication_pr_status = None;
+    plan_branch.status = crate::domain::entities::PlanBranchStatus::Merged;
+    assert_eq!(
+        resolve_restart_workspace_cleanup_proof(&workspace, None, &plan_branch, Some("cleaned"),),
+        RestartWorkspaceCleanupProof::OwnedMergedCleanup
+    );
+
+    plan_branch.status = crate::domain::entities::PlanBranchStatus::Active;
+    plan_branch.pr_status = Some(PrStatus::Merged);
+    assert_eq!(
+        resolve_restart_workspace_cleanup_proof(&workspace, None, &plan_branch, Some("cleaned"),),
+        RestartWorkspaceCleanupProof::OwnedMergedCleanup
+    );
+}
+
+#[test]
+fn restart_preparation_errors_map_to_user_safe_validation_messages() {
+    let unsafe_error = RestartWorkspacePreparationError::UnsafeOwnership {
+        detail: "/tmp/private/worktree".to_string(),
+    };
+    let operation_error = RestartWorkspacePreparationError::Operation {
+        detail: "git failed".to_string(),
+    };
+    let missing_error = RestartWorkspacePreparationError::MissingBranchWithoutCleanupProof;
+
+    assert_eq!(
+        unsafe_error.to_string(),
+        "unsafe ownership: /tmp/private/worktree"
+    );
+    assert!(unsafe_error
+        .into_app_error()
+        .to_string()
+        .contains("could not safely restore"));
+    assert_eq!(operation_error.to_string(), "operation failed: git failed");
+    assert!(operation_error
+        .into_app_error()
+        .to_string()
+        .contains("Check Git access"));
+    assert_eq!(
+        missing_error.to_string(),
+        "missing branch has no owned cleanup proof"
+    );
+    assert!(missing_error
+        .into_app_error()
+        .to_string()
+        .contains("ownership of the missing branch could not be verified"));
 }

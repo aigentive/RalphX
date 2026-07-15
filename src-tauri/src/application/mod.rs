@@ -12,6 +12,7 @@ pub mod agent_conversation_linear_issue;
 pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
+pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
@@ -44,6 +45,7 @@ pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
 pub mod clickup_integration_service;
+pub mod clickup_git_association;
 pub mod dependency_service;
 #[cfg(all(dev, target_os = "macos"))]
 pub(crate) mod dev_dock_icon;
@@ -60,6 +62,8 @@ pub mod branch_update_workflow;
 mod branch_update_executor_tests;
 #[cfg(test)]
 mod git_mutation_recovery_tests;
+#[cfg(test)]
+mod git_service_strict_worktree_tests;
 pub mod granola_integration_service;
 pub mod harness_runtime_registry;
 pub mod http_shutdown;
@@ -311,6 +315,10 @@ mod agent_conversation_archive_restart_tests;
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod agent_conversation_workspace_restart_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
 #[cfg(test)]

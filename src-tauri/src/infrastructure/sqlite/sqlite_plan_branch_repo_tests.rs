@@ -230,6 +230,28 @@ async fn test_terminal_cleanup_candidates_skip_marked_rows() {
 }
 
 #[tokio::test]
+async fn test_restart_cleanup_marker_round_trip_and_clear() {
+    let (_db, repo) = setup_repo();
+    let branch = create_test_branch();
+    let branch_id = branch.id.clone();
+    repo.create(branch).await.unwrap();
+
+    repo.mark_local_cleanup_status(&branch_id, "cleaned", chrono::Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_local_cleanup_status(&branch_id).await.unwrap(),
+        Some("cleaned".to_string())
+    );
+
+    repo.clear_local_cleanup_status(&branch_id).await.unwrap();
+    assert_eq!(
+        repo.get_local_cleanup_status(&branch_id).await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn test_terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     let (_db, repo) = setup_repo();
     let project_id = ProjectId::from_string("proj-retry-unsafe".to_string());

@@ -8,13 +8,16 @@ use tauri::{Emitter, Manager, State};
 use crate::application::task_cleanup_service::StopMode;
 use crate::application::{
     agent_conversation_archive::close_agent_workspace_pr_for_restart,
-    agent_conversation_workspace::relocate_linked_plan_branch_agent_worktree_for_restart,
+    agent_conversation_workspace_restart::{
+        prepare_linked_plan_branch_agent_worktree_for_restart,
+        resolve_restart_workspace_cleanup_proof,
+    },
     spawn_ready_task_scheduler_if_needed, AppState, GitService, TaskCleanupService,
 };
 use crate::commands::{emit_queue_changed, ExecutionState};
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ArtifactId, ExecutionPlanId, IdeationSessionId,
-    IdeationSessionStatus, ProjectId, SessionOrigin, Task, TaskProposal, TaskProposalId,
+    IdeationSessionStatus, ProjectId, Task, TaskProposal, TaskProposalId,
 };
 use crate::error::{AppError, AppResult};
 
@@ -166,6 +169,18 @@ pub async fn restart_ideation_implementation_core(
         "project checkout",
     )?;
 
+    let session_base_ref = session
+        .analysis
+        .base_ref
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+    let effective_base_branch_override = session_base_ref;
+    let restart_base_branch = effective_base_branch_override
+        .as_deref()
+        .or(project.base_branch.as_deref())
+        .unwrap_or("main");
+
     let linked_agent_workspace =
         load_linked_agent_conversation_workspace(app_state, &session_id, &session.project_id)
             .await?;
@@ -196,13 +211,47 @@ pub async fn restart_ideation_implementation_core(
                     plan_branch_id
                 ))
             })?;
-        let worktree_path = relocate_linked_plan_branch_agent_worktree_for_restart(
+        let origin_base_ref =
+            GitService::fetch_origin_branch_strict(&project_root, restart_base_branch).await?;
+        let workspace_cleanup_status = app_state
+            .agent_conversation_workspace_repo
+            .get_local_cleanup_status(&workspace.conversation_id)
+            .await
+            .map_err(|error| {
+                AppError::Database(format!(
+                    "Failed to load workspace cleanup provenance: {error}"
+                ))
+            })?;
+        let plan_branch_cleanup_status = app_state
+            .plan_branch_repo
+            .get_local_cleanup_status(&plan_branch.id)
+            .await
+            .map_err(|error| {
+                AppError::Database(format!(
+                    "Failed to load plan branch cleanup provenance: {error}"
+                ))
+            })?;
+        let cleanup_proof = resolve_restart_workspace_cleanup_proof(
+            workspace,
+            workspace_cleanup_status.as_deref(),
+            &plan_branch,
+            plan_branch_cleanup_status.as_deref(),
+        );
+        let preparation = prepare_linked_plan_branch_agent_worktree_for_restart(
             &project,
             workspace,
             &plan_branch,
+            &origin_base_ref,
+            cleanup_proof,
         )
-        .await?;
-        Some((plan_branch, worktree_path))
+        .await
+        .map_err(|error| error.into_app_error())?;
+        tracing::info!(
+            conversation_id = workspace.conversation_id.as_str(),
+            source = ?preparation.source,
+            "Prepared linked implementation workspace for restart"
+        );
+        Some((plan_branch, preparation.path, origin_base_ref))
     } else {
         None
     };
@@ -263,28 +312,22 @@ pub async fn restart_ideation_implementation_core(
         ));
     }
 
-    let session_base_ref = session
-        .analysis
-        .base_ref
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-        .cloned();
-    let effective_base_branch_override = if session.origin == SessionOrigin::Internal {
-        session_base_ref.clone()
-    } else {
-        session_base_ref
-    };
-    let restart_base_branch = effective_base_branch_override
-        .as_deref()
-        .or(project.base_branch.as_deref())
-        .unwrap_or("main");
-    let latest_origin_base_ref = if linked_plan_branch_worktree.is_some() {
-        Some(GitService::fetch_origin_branch_strict(&project_root, restart_base_branch).await?)
-    } else {
-        None
-    };
+    let current_execution_plan = app_state
+        .execution_plan_repo
+        .get_active_for_session(&session_id)
+        .await
+        .map_err(|error| {
+            AppError::Database(format!(
+                "Failed to verify current implementation attempt: {error}"
+            ))
+        })?;
+    if current_execution_plan.as_ref().map(|plan| &plan.id) != Some(&old_execution_plan.id) {
+        return Err(AppError::Validation(
+            "Current implementation attempt is no longer active".to_string(),
+        ));
+    }
 
-    if let (Some(workspace), Some((plan_branch, _))) = (
+    if let (Some(workspace), Some((plan_branch, _, _))) = (
         linked_agent_workspace.as_ref(),
         linked_plan_branch_worktree.as_ref(),
     ) {
@@ -318,10 +361,7 @@ pub async fn restart_ideation_implementation_core(
         )));
     }
 
-    if let (Some((_, worktree_path)), Some(origin_base_ref)) = (
-        linked_plan_branch_worktree.as_ref(),
-        latest_origin_base_ref.as_deref(),
-    ) {
+    if let Some((_, worktree_path, origin_base_ref)) = linked_plan_branch_worktree.as_ref() {
         GitService::reset_hard(worktree_path, origin_base_ref).await?;
         GitService::clean_working_tree(worktree_path).await?;
     }
@@ -468,16 +508,21 @@ pub async fn restart_ideation_implementation_core(
         {
             app_state
                 .agent_conversation_workspace_repo
-                .update_links(
-                    &workspace.conversation_id,
-                    Some(&session_id),
-                    Some(&plan_branch.id),
-                )
+                .restore_after_restart(&workspace.conversation_id, &session_id, &plan_branch.id)
                 .await
                 .map_err(|error| {
                     AppError::Database(format!(
                         "Failed to link agent conversation workspace to restarted branch: {}",
                         error
+                    ))
+                })?;
+            app_state
+                .plan_branch_repo
+                .clear_local_cleanup_status(&plan_branch.id)
+                .await
+                .map_err(|error| {
+                    AppError::Database(format!(
+                        "Failed to clear restarted branch cleanup provenance: {error}"
                     ))
                 })?;
         }

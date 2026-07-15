@@ -567,6 +567,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
                 project_repo: Arc::clone(&project_repo),
                 github: github_service,
+                clickup_integration_service: Some(Arc::clone(
+                    &app_state.clickup_integration_service,
+                )),
+                external_issue_link_service: Some(Arc::clone(
+                    &app_state.external_issue_link_service,
+                )),
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),

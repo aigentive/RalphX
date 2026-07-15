@@ -2067,10 +2067,11 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
         prepare_agent_conversation_workspace, resolve_linked_plan_branch_agent_worktree_path,
         AgentConversationWorkspaceBaseSelection,
     };
+    use ralphx_lib::application::GitService;
     use ralphx_lib::domain::entities::{
-        AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind,
-        IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, Priority, Project,
-        ProposalCategory, TaskProposal,
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, ChatConversation,
+        IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
+        IdeationSession, PlanBranchStatus, Priority, Project, ProposalCategory, TaskProposal,
     };
 
     let state = setup_apply_test_state();
@@ -2200,9 +2201,11 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
     let error = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
         .await
         .expect_err("restart should reject an owned workspace on a different branch");
-    assert!(error
-        .to_string()
-        .contains("Owned agent conversation worktree"));
+    assert!(error.to_string().contains("could not safely restore"));
+    assert!(
+        !error.to_string().contains(&workspace.worktree_path),
+        "user-facing restart errors must not expose the workspace path"
+    );
     assert_eq!(
         state
             .execution_plan_repo
@@ -2222,6 +2225,18 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
     git_ok(
         std::path::Path::new(&workspace.worktree_path),
         &["checkout", plan_branch.branch_name.as_str()],
+    );
+    GitService::delete_worktree(
+        repo_dir.path(),
+        std::path::Path::new(&workspace.worktree_path),
+    )
+    .await
+    .expect("cleanup should remove the direct worktree while preserving its branch");
+    assert!(
+        GitService::branch_exists(repo_dir.path(), &plan_branch.branch_name)
+            .await
+            .expect("branch probe should succeed"),
+        "cleanup variant should preserve the implementation branch"
     );
     git_ok(
         repo_dir.path(),
@@ -2266,13 +2281,85 @@ async fn test_restart_move_worktree_relocates_owned_workspace_before_resetting()
         "restart should reset the linked branch to the newest origin base revision"
     );
 
+    GitService::delete_worktree(repo_dir.path(), &linked_worktree_path)
+        .await
+        .expect("merged cleanup should remove the linked worktree");
+    git_ok(
+        repo_dir.path(),
+        &["branch", "-D", plan_branch.branch_name.as_str()],
+    );
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &conversation.id,
+            Some(90),
+            Some("https://github.com/example/repo/pull/90"),
+            Some("merged"),
+            Some("pushed"),
+        )
+        .await
+        .expect("test should record merged publication state");
+    state
+        .agent_conversation_workspace_repo
+        .mark_local_cleanup_status(&conversation.id, "cleaned", chrono::Utc::now())
+        .await
+        .expect("test should record owned merged cleanup");
+    state
+        .plan_branch_repo
+        .set_merged(&plan_branch.id)
+        .await
+        .expect("test should record the merged plan branch");
+    state
+        .plan_branch_repo
+        .mark_local_cleanup_status(&plan_branch.id, "cleaned", chrono::Utc::now())
+        .await
+        .expect("test should record plan branch cleanup provenance");
+
     let second_restart =
         restart_ideation_implementation_core(&state, session.id.as_str().to_string())
             .await
-            .expect("restart should reuse the already-relocated linked worktree");
+            .expect("restart should recreate a branch removed by owned merged cleanup");
     assert_eq!(
         second_restart.old_execution_plan_id,
         result.execution_plan_id
+    );
+    assert!(linked_worktree_path.is_dir());
+    let restored_workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain persisted");
+    assert_eq!(
+        restored_workspace.status,
+        AgentConversationWorkspaceStatus::Active
+    );
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_local_cleanup_status(&conversation.id)
+            .await
+            .expect("cleanup status should load"),
+        None
+    );
+    let restored_plan_branch = state
+        .plan_branch_repo
+        .get_by_session_id(&session.id)
+        .await
+        .expect("plan branch lookup should succeed")
+        .expect("restarted plan branch should remain persisted");
+    assert_eq!(restored_plan_branch.status, PlanBranchStatus::Active);
+    assert_eq!(
+        restored_plan_branch.merged_at, None,
+        "restart must clear the stale merged timestamp"
+    );
+    assert_eq!(
+        state
+            .plan_branch_repo
+            .get_local_cleanup_status(&plan_branch.id)
+            .await
+            .expect("plan branch cleanup status should load"),
+        None
     );
 }
 

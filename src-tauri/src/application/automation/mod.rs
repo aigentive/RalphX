@@ -1,5 +1,6 @@
 pub mod api;
 pub mod delete;
+pub mod integration_pr;
 pub mod judge;
 pub mod merged_run_finalizer;
 pub mod plan_judge;

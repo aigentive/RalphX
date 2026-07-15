@@ -38,7 +38,9 @@ use crate::application::agent_conversation_workspace::{
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
-use crate::application::agent_workspace_continuation::classify_agent_workspace_continuation;
+use crate::application::agent_workspace_continuation::{
+    classify_agent_workspace_continuation_with_plan_branch,
+};
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
     resolve_default_chat_service_bootstrap, resolve_harness_plugin_dir,
@@ -3356,7 +3358,13 @@ impl<R: Runtime> AppChatService<R> {
             )));
         }
 
-        let availability = classify_agent_workspace_continuation(&project, workspace);
+        let plan_branch_repo = self.plan_branch_repo.lock().unwrap().clone();
+        let availability = classify_agent_workspace_continuation_with_plan_branch(
+            &project,
+            workspace,
+            plan_branch_repo.as_deref(),
+        )
+        .await;
         if let Some(reason) = availability.blocked_reason() {
             tracing::warn!(
                 context_id,
