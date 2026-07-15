@@ -583,6 +583,7 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         "signal_verification_failed",
         "judge_loop_suspected",
         "judge_stopped_unmet",
+        "goal_replan_stale",
     ] {
         let mut paused = automation(
             project.id.clone(),
@@ -602,8 +603,15 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         .create_run(awaiting_run.clone())
         .await
         .unwrap();
+    let auto_merge_automation =
+        automation(project.id.clone(), "auto-merge", AutomationStatus::Active);
+    state
+        .automation_repo
+        .create(auto_merge_automation.clone())
+        .await
+        .unwrap();
     let mut auto_merge_warning = automation_run(
-        actionable.id.clone(),
+        auto_merge_automation.id,
         "auto-merge-warning",
         AutomationRunStatus::Published,
     );
@@ -638,10 +646,10 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         "signal_verification_failed",
         "judge_loop_suspected",
         "judge_stopped_unmet",
+        "goal_replan_stale",
     ] {
         assert!(items.iter().any(|item| {
-            item.title
-                == format!("Automation paused: Automation actionable-{reason}")
+            item.title == format!("Automation paused: Automation actionable-{reason}")
         }));
     }
 }

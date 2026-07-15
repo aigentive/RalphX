@@ -1,6 +1,9 @@
 use chrono::Utc;
 use serde_json::json;
 
+use super::decomposition_verifier::{
+    AutomationAuthoringState, AutomationGoalReplanState, AutomationGoalReplanStatus,
+};
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
     automation_judge_loop_suspected, build_automation_judge_prompt,
@@ -135,6 +138,38 @@ fn build_automation_run_context_block_handles_missing_goal_items() {
     assert!(block.contains("\"goalItemsPending\": 0"));
 }
 
+#[test]
+fn build_automation_run_context_block_exposes_matching_pending_goal_replan() {
+    let mut automation = automation_with_goal_items(Some(goal_items_json()));
+    let proposal = json!([
+        { "id": "item-1", "title": "First", "status": "done" },
+        { "id": "item-2a", "title": "Split backend", "status": "pending" },
+        { "id": "item-2b", "title": "Split UI", "status": "pending" }
+    ])
+    .to_string();
+    let mut state = AutomationAuthoringState::default();
+    state.pending_goal_replan = Some(AutomationGoalReplanState {
+        source_run_id: "run-2".to_string(),
+        base_goal_items_json: automation.goal_items_json.clone().unwrap(),
+        proposed_goal_items_json: proposal,
+        reason: "Split the remaining work.".to_string(),
+        status: AutomationGoalReplanStatus::Pending,
+        created_at: Utc::now().to_rfc3339(),
+        applied_at: None,
+    });
+    automation.authoring_state_json = Some(serde_json::to_string(&state).unwrap());
+    let mut matching = automation_run(3, AutomationRunStatus::Pending);
+    matching.base_from_run_id = Some(AutomationRunId::from_string("run-2"));
+    let unrelated = automation_run(4, AutomationRunStatus::Pending);
+
+    let matching_block = build_automation_run_context_block(&automation, &matching);
+    let unrelated_block = build_automation_run_context_block(&automation, &unrelated);
+
+    assert!(matching_block.contains("<goal_items_proposal "));
+    assert!(matching_block.contains("item-2a"));
+    assert!(!unrelated_block.contains("<goal_items_proposal "));
+}
+
 fn goal_items_json() -> String {
     json!([
         { "id": "item-1", "title": "First", "status": "done" },
@@ -155,6 +190,107 @@ fn valid_continue_output() -> String {
         "nextBaseBranch": "automation_base"
     })
     .to_string()
+}
+
+#[test]
+fn judge_accepts_add_split_and_reorder_proposal_for_plan_gated_continuation() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let previous = automation_run(1, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "The second phase needs to split after the implementation discovery.",
+        "confidence": 0.9,
+        "goalProgress": { "completedItems": 1, "totalItems": 3, "summary": "One phase done; two refined phases remain." },
+        "updatedItemStatuses": null,
+        "goalItemsProposal": [
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2b", "title": "Second integration", "status": "pending" },
+            { "id": "item-2a", "title": "Second backend", "status": "pending" }
+        ],
+        "nextRunPrompt": "Plan and implement the refined second backend phase, with focused tests and a scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let verdict = parse_automation_judge_verdict(
+        &output,
+        AutomationJudgeValidationContext {
+            automation: &automation,
+            previous_run: &previous,
+        },
+    )
+    .unwrap();
+
+    let proposal = verdict.goal_items_proposal.unwrap();
+    assert_eq!(proposal.len(), 3);
+    assert_eq!(proposal[1].id, "item-2b");
+    assert_eq!(proposal[2].id, "item-2a");
+}
+
+#[test]
+fn judge_replan_proposal_cannot_drop_completed_history() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let previous = automation_run(1, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "Replace the remaining phase.",
+        "confidence": 0.8,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "goalItemsProposal": [
+            { "id": "replacement", "title": "Replacement", "status": "pending" }
+        ],
+        "nextRunPrompt": "Plan and implement the replacement phase with focused tests and publish the scoped pull request.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let error = parse_automation_judge_verdict(
+        &output,
+        AutomationJudgeValidationContext {
+            automation: &automation,
+            previous_run: &previous,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("preserve completed goal item item-1"));
+}
+
+#[test]
+fn judge_stop_verdict_rejects_a_structural_replan_proposal() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let previous = automation_run(1, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "stop",
+        "goalMet": false,
+        "reason": "Human input is required.",
+        "confidence": 0.8,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "goalItemsProposal": [
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "pending" }
+        ],
+        "nextRunPrompt": null,
+        "nextBaseBranch": null
+    })
+    .to_string();
+
+    let error = parse_automation_judge_verdict(
+        &output,
+        AutomationJudgeValidationContext {
+            automation: &automation,
+            previous_run: &previous,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("continue verdicts"));
 }
 
 fn validation_context<'a>(
@@ -770,6 +906,7 @@ fn loop_detection_stays_false_for_stop_merged_or_missing_prompt() {
         confidence: 0.5,
         goal_progress: None,
         updated_item_statuses: None,
+        goal_items_proposal: None,
         next_run_prompt: None,
         next_base_branch: None,
     };

@@ -1753,6 +1753,10 @@ fn automation_judge_surface_is_output_only_and_zero_tool() {
             "judge prompt should declare item status updates"
         );
         assert!(
+            prompt.contains("\"goalItemsProposal\""),
+            "judge prompt should declare structural goal-item proposals"
+        );
+        assert!(
             prompt.contains("\"nextBaseBranch\""),
             "judge prompt should declare next base selection"
         );

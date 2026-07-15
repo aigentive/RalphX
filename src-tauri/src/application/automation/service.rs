@@ -9,12 +9,13 @@ use serde_json::Value;
 use crate::application::agent_conversation_workspace::reject_persona_builder_workspace_mode;
 use crate::application::automation::decomposition_verifier::{
     parse_authoring_state, AutomationAuthoringMode, AutomationAuthoringState,
-    AutomationDecompositionInput,
+    AutomationDecompositionInput, AutomationGoalReplanState, AutomationGoalReplanStatus,
 };
 use crate::application::automation::judge::{
-    apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
-    revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
-    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
+    apply_updated_item_statuses, automation_judge_loop_suspected, goal_items_proposal_json,
+    parse_automation_judge_verdict, revert_in_progress_goal_items_to_pending,
+    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
+    AutomationJudgeVerdict,
 };
 use crate::application::automation::plan_gate::{
     is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
@@ -188,6 +189,13 @@ pub struct AutomationJudgeApplyOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationJudgeApplyNoopReason {
     NotCurrent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingGoalReplanApplyOutcome {
+    None,
+    Applied,
+    Stale,
 }
 
 #[derive(Clone)]
@@ -385,6 +393,7 @@ impl AutomationService {
         let spec_artifact_id = self
             .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
             .await?;
+        let goal_items_were_updated = input.goal_items_json.is_some();
         let patch = AutomationConfigPatch {
             goal_prompt: input.goal_prompt,
             first_run_prompt: input.first_run_prompt,
@@ -401,11 +410,25 @@ impl AutomationService {
             setup_analysis_summary: input.setup_analysis_summary,
             spec_artifact_id,
         };
-        let updated = self
+        let mut updated = self
             .automation_repo
             .update_config(&input.id, patch)
             .await?
             .ok_or_else(|| automation_not_found(&input.id))?;
+        if goal_items_were_updated {
+            let mut state = parse_authoring_state(updated.authoring_state_json.as_deref())?;
+            if let Some(replan) = state.pending_goal_replan.as_mut() {
+                if replan.status == AutomationGoalReplanStatus::Pending {
+                    replan.status = AutomationGoalReplanStatus::Rejected;
+                    if self
+                        .persist_authoring_state_if_unchanged(&updated, &state)
+                        .await?
+                    {
+                        updated = self.require_automation(&updated.id).await?;
+                    }
+                }
+            }
+        }
         self.event_emitter.emit(AutomationEvent::AutomationUpdated {
             automation_id: updated.id.clone(),
         });
@@ -1157,6 +1180,65 @@ impl AutomationService {
         Ok(changed)
     }
 
+    pub(crate) async fn apply_pending_goal_replan_for_run(
+        &self,
+        automation_id: &AutomationId,
+        run: &AutomationRun,
+    ) -> AppResult<PendingGoalReplanApplyOutcome> {
+        let Some(source_run_id) = run.base_from_run_id.as_ref() else {
+            return Ok(PendingGoalReplanApplyOutcome::None);
+        };
+        let current = self.require_automation(automation_id).await?;
+        let state = parse_authoring_state(current.authoring_state_json.as_deref())?;
+        let Some(replan) = state.pending_goal_replan.as_ref() else {
+            return Ok(PendingGoalReplanApplyOutcome::None);
+        };
+        if replan.status != AutomationGoalReplanStatus::Pending
+            || replan.source_run_id != source_run_id.as_str()
+        {
+            return Ok(PendingGoalReplanApplyOutcome::None);
+        }
+        if current.goal_items_json.as_deref() == Some(replan.proposed_goal_items_json.as_str()) {
+            self.mark_goal_replan_applied(&current, state).await?;
+            return Ok(PendingGoalReplanApplyOutcome::Applied);
+        }
+        if current.goal_items_json.as_deref() != Some(replan.base_goal_items_json.as_str()) {
+            return Ok(PendingGoalReplanApplyOutcome::Stale);
+        }
+        if !self
+            .update_goal_items_json_if_unchanged(
+                automation_id,
+                Some(replan.base_goal_items_json.clone()),
+                Some(replan.proposed_goal_items_json.clone()),
+            )
+            .await?
+        {
+            let latest = self.require_automation(automation_id).await?;
+            if latest.goal_items_json.as_deref() != Some(replan.proposed_goal_items_json.as_str()) {
+                return Ok(PendingGoalReplanApplyOutcome::Stale);
+            }
+        }
+        let latest = self.require_automation(automation_id).await?;
+        let latest_state = parse_authoring_state(latest.authoring_state_json.as_deref())?;
+        self.mark_goal_replan_applied(&latest, latest_state).await?;
+        Ok(PendingGoalReplanApplyOutcome::Applied)
+    }
+
+    async fn mark_goal_replan_applied(
+        &self,
+        automation: &Automation,
+        mut state: AutomationAuthoringState,
+    ) -> AppResult<()> {
+        if let Some(replan) = state.pending_goal_replan.as_mut() {
+            replan.status = AutomationGoalReplanStatus::Applied;
+            replan.applied_at = Some(Utc::now().to_rfc3339());
+            let _ = self
+                .persist_authoring_state_if_unchanged(automation, &state)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn create_run(&self, input: CreateAutomationRunInput) -> AppResult<AutomationRun> {
         let automation = self.require_automation(&input.automation_id).await?;
         if automation.status != AutomationStatus::Active {
@@ -1599,6 +1681,18 @@ impl AutomationService {
 
                 let (base_ref_kind, base_ref_used) =
                     judge_successor_base(&automation, &latest, &verdict)?;
+
+                if let Some(proposed_goal_items_json) = goal_items_proposal_json(&verdict)? {
+                    self.persist_pending_goal_replan(
+                        &automation,
+                        &latest,
+                        applied_goal_items.as_deref(),
+                        proposed_goal_items_json,
+                        &verdict.reason,
+                    )
+                    .await?;
+                }
+
                 let successor = pending_successor_run(
                     automation.id.clone(),
                     &latest,
@@ -1664,6 +1758,63 @@ impl AutomationService {
                 })
             }
         }
+    }
+
+    async fn persist_pending_goal_replan(
+        &self,
+        automation: &Automation,
+        source_run: &AutomationRun,
+        base_goal_items_json: Option<&str>,
+        proposed_goal_items_json: String,
+        reason: &str,
+    ) -> AppResult<()> {
+        let base_goal_items_json = base_goal_items_json.ok_or_else(|| {
+            AppError::Validation("goalItemsProposal requires stored goal items".to_string())
+        })?;
+        let current = self.require_automation(&automation.id).await?;
+        if current.goal_items_json.as_deref() != Some(base_goal_items_json) {
+            return Err(AppError::Conflict(format!(
+                "automation {} goal items changed before re-plan proposal persistence",
+                automation.id.as_str()
+            )));
+        }
+        let mut state = parse_authoring_state(current.authoring_state_json.as_deref())?;
+        let next = AutomationGoalReplanState {
+            source_run_id: source_run.id.as_str().to_string(),
+            base_goal_items_json: base_goal_items_json.to_string(),
+            proposed_goal_items_json,
+            reason: reason.to_string(),
+            status: AutomationGoalReplanStatus::Pending,
+            created_at: Utc::now().to_rfc3339(),
+            applied_at: None,
+        };
+        if state.pending_goal_replan.as_ref().is_some_and(|stored| {
+            stored.source_run_id == next.source_run_id
+                && stored.base_goal_items_json == next.base_goal_items_json
+                && stored.proposed_goal_items_json == next.proposed_goal_items_json
+                && stored.status == AutomationGoalReplanStatus::Pending
+        }) {
+            return Ok(());
+        }
+        if state.pending_goal_replan.as_ref().is_some_and(|stored| {
+            stored.status == AutomationGoalReplanStatus::Pending
+                && stored.source_run_id != next.source_run_id
+        }) {
+            return Err(AppError::Conflict(
+                "automation already has a pending goal re-plan proposal".to_string(),
+            ));
+        }
+        state.pending_goal_replan = Some(next);
+        if !self
+            .persist_authoring_state_if_unchanged(&current, &state)
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "automation {} changed before re-plan proposal persistence",
+                automation.id.as_str()
+            )));
+        }
+        Ok(())
     }
 
     async fn create_judge_successor_run(

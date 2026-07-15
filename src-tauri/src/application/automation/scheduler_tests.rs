@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
+use super::decomposition_verifier::{
+    parse_authoring_state, AutomationGoalReplanState, AutomationGoalReplanStatus,
+};
 use super::integration_pr::{
     AutomationIntegrationPrPublisher, GithubAutomationIntegrationPrPublisher,
     NoopAutomationIntegrationPrPublisher,
@@ -1236,6 +1239,79 @@ impl ParkedPlanGateScenario {
                     completion_signal: Some(completion_signal.to_string()),
                     ..Default::default()
                 },
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn configure_pending_goal_replan(&self, proposed_goal_items_json: &str) {
+        let current = self
+            .automation_repo
+            .get_by_id(&self.automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if current.goal_items_json.is_none() {
+            self.automation_repo
+                .update_goal_items_json_if_unchanged(
+                    &self.automation_id,
+                    None,
+                    Some(
+                        json!([
+                            { "id": "phase-1", "title": "Original phase", "status": "pending" }
+                        ])
+                        .to_string(),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        self.run_repo
+            .delete_for_automation(&self.automation_id)
+            .await
+            .unwrap();
+        let source_run_id = AutomationRunId::from_string("run-replan-source");
+        let mut source = automation_run(
+            source_run_id.as_str(),
+            &self.automation_id,
+            AutomationRunStatus::Merged,
+            None,
+        );
+        source.judge_state = AutomationJudgeState::Done;
+        self.run_repo.create_run(source).await.unwrap();
+        let mut successor = automation_run(
+            "run-1",
+            &self.automation_id,
+            AutomationRunStatus::AwaitingPlanApproval,
+            Some(self.conversation_id.clone()),
+        );
+        successor.run_index = 2;
+        successor.base_from_run_id = Some(source_run_id.clone());
+        successor.plan_last_parked_artifact_id = Some("plan-artifact-1".to_string());
+        successor.plan_revision_round = 1;
+        self.run_repo.create_run(successor).await.unwrap();
+
+        let automation = self
+            .automation_repo
+            .get_by_id(&self.automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut state = parse_authoring_state(automation.authoring_state_json.as_deref()).unwrap();
+        state.pending_goal_replan = Some(AutomationGoalReplanState {
+            source_run_id: source_run_id.as_str().to_string(),
+            base_goal_items_json: automation.goal_items_json.clone().unwrap(),
+            proposed_goal_items_json: proposed_goal_items_json.to_string(),
+            reason: "The remaining phase must split.".to_string(),
+            status: AutomationGoalReplanStatus::Pending,
+            created_at: Utc::now().to_rfc3339(),
+            applied_at: None,
+        });
+        self.automation_repo
+            .update_authoring_state_if_unchanged(
+                &self.automation_id,
+                automation.updated_at,
+                Some(serde_json::to_string(&state).unwrap()),
             )
             .await
             .unwrap();
@@ -4460,6 +4536,98 @@ async fn automation_scheduler_plan_approval_delivery_ignores_verification_hold()
     assert_eq!(latest.status, AutomationRunStatus::Running);
     assert!(latest.plan_pending_instructions.is_none());
     assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_applies_goal_replan_only_when_successor_plan_is_approved() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    let proposed = json!([
+        { "id": "phase-2a", "title": "Backend follow-up", "status": "pending" },
+        { "id": "phase-2b", "title": "UI follow-up", "status": "pending" }
+    ])
+    .to_string();
+    scenario.configure_pending_goal_replan(&proposed).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 0);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let applied_goal_items: Value = serde_json::from_str(
+        automation
+            .goal_items_json
+            .as_deref()
+            .expect("approved re-plan goal items"),
+    )
+    .unwrap();
+    assert_eq!(applied_goal_items[0]["id"], "phase-2a");
+    assert_eq!(applied_goal_items[0]["status"], "in_progress");
+    assert_eq!(applied_goal_items[1]["id"], "phase-2b");
+    assert_eq!(applied_goal_items[1]["status"], "pending");
+    assert_eq!(
+        parse_authoring_state(automation.authoring_state_json.as_deref())
+            .unwrap()
+            .pending_goal_replan
+            .map(|state| state.status),
+        Some(AutomationGoalReplanStatus::Applied)
+    );
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_pauses_instead_of_applying_a_stale_goal_replan() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    let proposed = json!([
+        { "id": "phase-2", "title": "Judge proposal", "status": "pending" }
+    ])
+    .to_string();
+    scenario.configure_pending_goal_replan(&proposed).await;
+    let before = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let newer = json!([
+        { "id": "human-phase", "title": "Newer human plan", "status": "pending" }
+    ])
+    .to_string();
+    scenario
+        .automation_repo
+        .update_goal_items_json_if_unchanged(
+            &scenario.automation_id,
+            before.goal_items_json,
+            Some(newer.clone()),
+        )
+        .await
+        .unwrap();
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 1);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Paused);
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some("goal_replan_stale")
+    );
+    assert_eq!(automation.goal_items_json.as_deref(), Some(newer.as_str()));
+    assert!(scenario.resumer.prompts().is_empty());
 }
 
 #[tokio::test]

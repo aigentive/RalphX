@@ -536,6 +536,7 @@ async fn transition_service_records_only_actionable_automation_pauses() {
         "signal_verification_failed",
         "judge_loop_suspected",
         "judge_stopped_unmet",
+        "goal_replan_stale",
     ] {
         assert!(service
             .transition_automation_status(
@@ -565,7 +566,7 @@ async fn transition_service_records_only_actionable_automation_pauses() {
             .unwrap()
             .notifications
             .len(),
-        3
+        4
     );
 }
 

@@ -41,6 +41,7 @@ use crate::application::automation::provisioning::{
 };
 use crate::application::automation::service::{
     AutomationJudgeApplyOutcome, AutomationService, CompleteAutomationJudgeInput,
+    PendingGoalReplanApplyOutcome,
 };
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
@@ -2590,7 +2591,7 @@ impl AutomationScheduler {
         )
         .await?
         {
-            self.deliver_plan_approval(&run, &workspace, &approval, summary)
+            self.deliver_plan_approval(automation, &run, &workspace, &approval, summary)
                 .await?;
             return Ok(());
         }
@@ -2696,6 +2697,7 @@ impl AutomationScheduler {
 
     async fn deliver_plan_approval(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         workspace: &AgentConversationWorkspace,
         approval: &PlanArtifactApproval,
@@ -2708,6 +2710,31 @@ impl AutomationScheduler {
             return Ok(());
         }
         if self.resumer.launches_paused().await? {
+            return Ok(());
+        }
+
+        if self
+            .service
+            .apply_pending_goal_replan_for_run(&automation.id, run)
+            .await?
+            == PendingGoalReplanApplyOutcome::Stale
+        {
+            if self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some("goal_replan_stale".to_string()),
+                    Some(
+                        "Goal items changed after the judge proposed a structural re-plan; review the proposal before resuming"
+                            .to_string(),
+                    ),
+                )
+                .await?
+            {
+                summary.paused_automations += 1;
+            }
             return Ok(());
         }
 

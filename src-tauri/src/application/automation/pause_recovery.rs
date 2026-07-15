@@ -1,4 +1,4 @@
-const ACTIONABLE_PAUSED_REASON_CODES: [&str; 9] = [
+const ACTIONABLE_PAUSED_REASON_CODES: [&str; 10] = [
     "judge_failed",
     "plan_judge_failed",
     "plan_revision_exhausted",
@@ -8,6 +8,7 @@ const ACTIONABLE_PAUSED_REASON_CODES: [&str; 9] = [
     "signal_verification_failed",
     "judge_loop_suspected",
     "judge_stopped_unmet",
+    "goal_replan_stale",
 ];
 
 pub(crate) fn is_actionable_paused_reason(reason: &str) -> bool {
@@ -25,6 +26,7 @@ pub(crate) fn paused_reason_label(reason: &str) -> &'static str {
         "signal_verification_failed" => "PR status verification failed",
         "judge_loop_suspected" => "judge loop suspected",
         "judge_stopped_unmet" => "judge stopped before the goal was met",
+        "goal_replan_stale" => "goal re-plan proposal became stale",
         _ => "automation needs attention",
     }
 }

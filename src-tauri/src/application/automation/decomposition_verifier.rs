@@ -104,6 +104,29 @@ pub struct AutomationAuthoringState {
     pub verdict_json: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_goal_replan: Option<AutomationGoalReplanState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationGoalReplanStatus {
+    Pending,
+    Applied,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationGoalReplanState {
+    pub source_run_id: String,
+    pub base_goal_items_json: String,
+    pub proposed_goal_items_json: String,
+    pub reason: String,
+    pub status: AutomationGoalReplanStatus,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
 }
 
 impl Default for AutomationAuthoringState {
@@ -114,6 +137,7 @@ impl Default for AutomationAuthoringState {
             verified_input: None,
             verdict_json: None,
             verified_at: None,
+            pending_goal_replan: None,
         }
     }
 }
@@ -137,6 +161,7 @@ impl AutomationAuthoringState {
             verified_input: Some(input),
             verdict_json: Some(verdict_json),
             verified_at: Some(Utc::now().to_rfc3339()),
+            pending_goal_replan: None,
         }
     }
 
@@ -151,6 +176,7 @@ impl AutomationAuthoringState {
             verified_input: Some(input),
             verdict_json: Some(verdict_json),
             verified_at: None,
+            pending_goal_replan: None,
         }
     }
 
