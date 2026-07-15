@@ -54,6 +54,12 @@ import {
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -107,6 +113,10 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
+import {
+  AgentsArtifactTabCustomizer,
+  type AgentArtifactTabCustomizerItem,
+} from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
 import {
   PlanLifecycleBanner,
@@ -382,6 +392,31 @@ const PR_TAB = {
   icon: GitPullRequestArrow,
 };
 
+const ALL_ARTIFACT_TAB_DEFINITIONS = [
+  ...ARTIFACT_TABS,
+  AUTOMATION_TAB,
+  PR_TAB,
+  JIRA_TAB,
+  LINEAR_TAB,
+  GRANOLA_TAB,
+  REVIEW_TAB,
+  PUBLISH_TAB,
+] as const;
+
+const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
+  issues: "Appears when this conversation has open issues.",
+  plan: "Appears when a plan can be created or already exists.",
+  verification: "Appears when verification evidence is available.",
+  tasks: "Appears when implementation tasks are available.",
+  automation: "Appears in automation conversations.",
+  pr: "Appears when this workspace has a pull request.",
+  jira: "Connect Jira in Settings to make it available.",
+  linear: "Connect Linear in Settings to make it available.",
+  granola: "Connect Granola in Settings to make it available.",
+  review: "Appears when a review is created.",
+  publish: "Appears when this conversation has an editable workspace.",
+};
+
 type VisibleArtifactTab = {
   id: AgentArtifactTab;
   label: string;
@@ -472,8 +507,14 @@ interface AgentsArtifactPaneProps {
   projectBaseBranch?: string | null;
   focusedIdeationSessionId?: string | null;
   activeTab: AgentArtifactTab;
+  hiddenTabs?: readonly AgentArtifactTab[];
   taskMode: AgentTaskArtifactMode;
   onTabChange: (tab: AgentArtifactTab) => void;
+  onHideTab?: (
+    tab: AgentArtifactTab,
+    availableTabs: readonly AgentArtifactTab[],
+  ) => void;
+  onShowTab?: (tab: AgentArtifactTab) => void;
   onOpenPublish?: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
@@ -518,8 +559,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   projectBaseBranch = null,
   focusedIdeationSessionId = null,
   activeTab,
+  hiddenTabs = [],
   taskMode,
   onTabChange,
+  onHideTab,
+  onShowTab,
   onOpenPublish,
   onTaskModeChange,
   onPublishWorkspace,
@@ -1018,7 +1062,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
-  const visibleTabs = useMemo<VisibleArtifactTab[]>(
+  const availableTabs = useMemo<VisibleArtifactTab[]>(
     () =>
       isAutomationRunConversation
         ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
@@ -1048,6 +1092,36 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showPullRequestTab,
     ],
   );
+  const shownTabs = useMemo(
+    () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
+    [availableTabs, hiddenTabs],
+  );
+  const shownEnabledTabs = useMemo(
+    () => shownTabs.filter((tab) => tab.enabled),
+    [shownTabs],
+  );
+  const enabledAvailableTabIds = useMemo(
+    () => availableTabs.filter((tab) => tab.enabled).map((tab) => tab.id),
+    [availableTabs],
+  );
+  const customizerTabs = useMemo<AgentArtifactTabCustomizerItem[]>(
+    () =>
+      ALL_ARTIFACT_TAB_DEFINITIONS.map((definition) => {
+        const availableTab = availableTabs.find(
+          (tab) => tab.id === definition.id,
+        );
+        return {
+          ...definition,
+          available: availableTab?.enabled === true,
+          unavailableReason:
+            availableTab?.disabledReason ??
+            ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id],
+        };
+      }),
+    [availableTabs],
+  );
+  const allAvailableTabsHidden =
+    enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
   const requestedFallbackActiveTab =
     isAutomationRunConversation
       ? automationRunTabPolicy.defaultTab
@@ -1063,28 +1137,28 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               ? "linear"
               : showGranolaTab
                 ? "granola"
-                : visibleTabs.some((tab) => tab.id === "plan")
+                : shownTabs.some((tab) => tab.id === "plan")
                   ? "plan"
-                  : visibleTabs.some((tab) => tab.id === "issues")
+                  : shownTabs.some((tab) => tab.id === "issues")
                     ? "issues"
-                    : visibleTabs.some((tab) => tab.id === "review")
+                    : shownTabs.some((tab) => tab.id === "review")
                       ? "review"
                       : "plan";
   const fallbackActiveTab =
-    visibleTabs.find(
+    shownEnabledTabs.find(
       (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
     )?.id ??
-    visibleTabs.find((tab) => tab.enabled)?.id ??
+    shownEnabledTabs[0]?.id ??
     "automation";
   const shouldPreferAutomationOverPlan =
     activeTab === "plan" &&
     automationId &&
     conversation?.agentMode === "automation" &&
     !isAutomationRunConversation &&
-    visibleTabs.some((tab) => tab.id === "automation");
+    shownTabs.some((tab) => tab.id === "automation");
   const effectiveActiveTab = shouldPreferAutomationOverPlan
     ? "automation"
-    : visibleTabs.some((tab) => tab.id === activeTab && tab.enabled)
+    : shownTabs.some((tab) => tab.id === activeTab && tab.enabled)
       ? activeTab
       : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
@@ -1336,7 +1410,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         }}
       >
         <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
-          {visibleTabs.map(({ id, label, icon: Icon, enabled, disabledReason }) => {
+          {shownTabs.map(({ id, label, icon: Icon, enabled, disabledReason }) => {
             const isActive = effectiveActiveTab === id;
             const count = id === "tasks" ? visibleImplementationTaskCount : 0;
 
@@ -1433,11 +1507,37 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 </Tooltip>
               );
             }
-            return tabButton;
+            return (
+              <ContextMenu key={id}>
+                <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
+                <ContextMenuContent
+                  style={{
+                    backgroundColor: "var(--bg-elevated)",
+                    borderColor: "var(--overlay-medium)",
+                    borderWidth: 1,
+                    borderStyle: "solid",
+                  }}
+                >
+                  <ContextMenuItem
+                    onSelect={() => onHideTab?.(id, enabledAvailableTabIds)}
+                  >
+                    Hide “{label}”
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            );
           })}
         </div>
 
         <div className="ml-auto flex items-center gap-1">
+          {availableTabs.length > 0 ? (
+            <AgentsArtifactTabCustomizer
+              tabs={customizerTabs}
+              hiddenTabs={hiddenTabs}
+              onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
+              onShow={(tab) => onShowTab?.(tab)}
+            />
+          ) : null}
           {effectiveActiveTab === "tasks" && (
             <div
               className="h-8 p-0.5 flex items-center rounded-md border"
@@ -1527,9 +1627,32 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 
       <div
         className="flex-1 min-h-0 overflow-y-auto"
-        data-testid={`agents-artifact-content-${effectiveActiveTab}`}
+        data-testid={
+          allAvailableTabsHidden
+            ? "agents-artifact-content-hidden"
+            : `agents-artifact-content-${effectiveActiveTab}`
+        }
       >
-        <ArtifactContent
+        {allAvailableTabsHidden ? (
+          <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-3 px-6 text-center">
+            <div>
+              <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                All tabs are hidden
+              </h2>
+              <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+                Choose which artifact tabs you want to see in this conversation.
+              </p>
+            </div>
+            <AgentsArtifactTabCustomizer
+              triggerVariant="button"
+              tabs={customizerTabs}
+              hiddenTabs={hiddenTabs}
+              onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
+              onShow={(tab) => onShowTab?.(tab)}
+            />
+          </div>
+        ) : (
+          <ArtifactContent
           activeTab={effectiveActiveTab}
           workspace={scopedWorkspace}
           conversationId={conversationId}
@@ -1630,6 +1753,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
         />
+        )}
       </div>
     </aside>
   );
