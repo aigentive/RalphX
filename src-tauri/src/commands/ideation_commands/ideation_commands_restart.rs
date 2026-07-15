@@ -61,11 +61,7 @@ pub(super) async fn preflight_branch_updates_for_restart(
     project: &Project,
     tasks: &[Task],
 ) -> AppResult<Vec<RestartBranchUpdate>> {
-    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
-        std::path::Path::new(&project.working_directory),
-        "restart branch-update project checkout",
-    )?;
-    let registered_worktrees = GitService::list_worktrees(&project_root).await?;
+    let mut registered_worktrees = None;
     let mut updates = Vec::new();
     for task_snapshot in tasks {
         let task = app_state
@@ -154,6 +150,16 @@ pub(super) async fn preflight_branch_updates_for_restart(
                 task.id
             )));
         }
+        if registered_worktrees.is_none() {
+            let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+                std::path::Path::new(&project.working_directory),
+                "restart branch-update project checkout",
+            )?;
+            registered_worktrees = Some(GitService::list_worktrees(&project_root).await?);
+        }
+        let registered_worktrees = registered_worktrees
+            .as_ref()
+            .expect("registered worktrees should be loaded for active branch updates");
         let registered = registered_worktrees.iter().any(|worktree| {
             crate::utils::path_safety::validate_absolute_non_root_path(
                 std::path::Path::new(&worktree.path),

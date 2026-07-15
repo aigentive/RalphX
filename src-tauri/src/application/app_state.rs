@@ -1885,7 +1885,7 @@ impl AppState {
     /// Repositories backed by the shared connection:
     /// - `ideation_session_repo`, `task_proposal_repo`, `proposal_dependency_repo`
     /// - `execution_plan_repo`, `task_repo`, `task_step_repo`, `task_dependency_repo`
-    /// - `plan_branch_repo`, `project_repo`, `db`
+    /// - `plan_branch_repo`, `project_repo`, `active_plan_repo`, `db`
     #[doc(hidden)]
     pub fn new_sqlite_for_apply_test() -> Self {
         Self::enable_claude_test_mode();
@@ -2019,7 +2019,9 @@ impl AppState {
             ))),
             plan_selection_stats_repo: Arc::new(MemoryPlanSelectionStatsRepository::new()),
             app_state_repo: Arc::new(MemoryAppStateRepository::new()),
-            active_plan_repo: Arc::new(MemoryActivePlanRepository::new()),
+            active_plan_repo: Arc::new(SqliteActivePlanRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(

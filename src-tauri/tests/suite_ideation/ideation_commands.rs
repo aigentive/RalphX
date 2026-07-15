@@ -1749,7 +1749,12 @@ async fn setup_session_with_proposals(
 ) {
     use ralphx_lib::domain::entities::{Priority, Project, ProposalCategory};
 
-    let project = Project::new("Test Project".to_string(), "/tmp/test".to_string());
+    let repo_dir = setup_git_repo_for_apply_test();
+    let repo_path = repo_dir.keep();
+    let project = Project::new(
+        "Test Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
     let project = state
         .project_repo
         .create(project)
