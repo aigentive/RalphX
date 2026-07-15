@@ -11,7 +11,7 @@ use crate::application::automation::decomposition_verifier::{
     parse_authoring_state, AutomationAuthoringMode, AutomationDecompositionVerificationStatus,
     AutomationDecompositionVerifier, AutomationDecompositionVerifierInvocation,
     AutomationDecompositionVerifierInvocationOutput, AutomationDecompositionVerifierInvoker,
-    AutomationGoalReplanStatus,
+    AutomationGoalReplanState, AutomationGoalReplanStatus,
 };
 use crate::application::automation::judge::{
     automation_judge_loop_suspected, AutomationGoalItemStatus, AutomationJudgeDecision,
@@ -4029,6 +4029,237 @@ async fn stale_goal_replan_never_overwrites_newer_goal_items() {
         stored.goal_items_json.as_deref(),
         Some(proposed_json.as_str())
     );
+}
+
+#[tokio::test]
+async fn pending_goal_replan_without_successor_lineage_is_a_noop() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let (automation_id, mut successor, proposed_json) =
+        seed_pending_goal_replan(&service, &automation_repo, &run_repo).await;
+    successor.base_from_run_id = None;
+
+    assert_eq!(
+        service
+            .apply_pending_goal_replan_for_run(&automation_id, &successor)
+            .await
+            .unwrap(),
+        PendingGoalReplanApplyOutcome::None
+    );
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        stored.goal_items_json.as_deref(),
+        Some(proposed_json.as_str())
+    );
+    assert_eq!(
+        parse_authoring_state(stored.authoring_state_json.as_deref())
+            .unwrap()
+            .pending_goal_replan
+            .as_ref()
+            .map(|state| state.status),
+        Some(AutomationGoalReplanStatus::Pending)
+    );
+}
+
+#[tokio::test]
+async fn pending_goal_replan_marks_already_applied_goal_items_as_applied() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let (automation_id, successor, proposed_json) =
+        seed_pending_goal_replan(&service, &automation_repo, &run_repo).await;
+    let before = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    automation_repo
+        .update_goal_items_json_if_unchanged(
+            &automation_id,
+            before.goal_items_json,
+            Some(proposed_json.clone()),
+        )
+        .await
+        .unwrap()
+        .expect("concurrent proposal application should land");
+
+    assert_eq!(
+        service
+            .apply_pending_goal_replan_for_run(&automation_id, &successor)
+            .await
+            .unwrap(),
+        PendingGoalReplanApplyOutcome::Applied
+    );
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        parse_authoring_state(stored.authoring_state_json.as_deref())
+            .unwrap()
+            .pending_goal_replan
+            .as_ref()
+            .map(|state| state.status),
+        Some(AutomationGoalReplanStatus::Applied)
+    );
+}
+
+#[tokio::test]
+async fn pending_goal_replan_ignores_nonpending_or_unrelated_proposals() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let (automation_id, successor, proposed_json) =
+        seed_pending_goal_replan(&service, &automation_repo, &run_repo).await;
+    let current = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut state = parse_authoring_state(current.authoring_state_json.as_deref()).unwrap();
+    let replan = state.pending_goal_replan.as_mut().unwrap();
+    replan.status = AutomationGoalReplanStatus::Rejected;
+    automation_repo
+        .update_authoring_state_if_unchanged(
+            &automation_id,
+            current.updated_at,
+            Some(serde_json::to_string(&state).unwrap()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        service
+            .apply_pending_goal_replan_for_run(&automation_id, &successor)
+            .await
+            .unwrap(),
+        PendingGoalReplanApplyOutcome::None
+    );
+    let stored = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        stored.goal_items_json.as_deref(),
+        Some(proposed_json.as_str())
+    );
+}
+
+#[tokio::test]
+async fn judge_goal_replan_requires_stored_goal_items_before_successor_creation() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-replan-missing-goals", AutomationStatus::Active);
+    active.goal_items_json = None;
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-replan-source",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut verdict = continue_verdict_struct(
+        "Plan and implement the next phase with focused tests and a scoped pull request.",
+        AutomationJudgeNextBaseBranch::AutomationBase,
+    );
+    verdict.goal_items_proposal = Some(vec![AutomationJudgeGoalItemProposal {
+        id: "phase-2".to_string(),
+        title: "Follow-up".to_string(),
+        status: AutomationGoalItemStatus::Pending,
+    }]);
+
+    let error = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("goalItemsProposal requires stored goal items"))
+    );
+    assert!(run_repo
+        .latest_for_automation(&active.id)
+        .await
+        .unwrap()
+        .is_some_and(|run| run.id.as_str() == "run-replan-source"));
+}
+
+#[tokio::test]
+async fn judge_goal_replan_rejects_second_pending_source_run() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-replan-conflict", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-replan-source",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    let mut state = parse_authoring_state(active.authoring_state_json.as_deref()).unwrap();
+    state.pending_goal_replan = Some(AutomationGoalReplanState {
+        source_run_id: "older-source-run".to_string(),
+        base_goal_items_json: active.goal_items_json.clone().unwrap(),
+        proposed_goal_items_json: json!([
+            { "id": "older-phase", "title": "Older phase", "status": "pending" }
+        ])
+        .to_string(),
+        reason: "Older proposal remains pending.".to_string(),
+        status: AutomationGoalReplanStatus::Pending,
+        created_at: Utc::now().to_rfc3339(),
+        applied_at: None,
+    });
+    automation_repo
+        .update_authoring_state_if_unchanged(
+            &active.id,
+            active.updated_at,
+            Some(serde_json::to_string(&state).unwrap()),
+        )
+        .await
+        .unwrap();
+    let refreshed = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut verdict = continue_verdict_struct(
+        "Plan and implement the next phase with focused tests and a scoped pull request.",
+        AutomationJudgeNextBaseBranch::AutomationBase,
+    );
+    verdict.goal_items_proposal = Some(vec![AutomationJudgeGoalItemProposal {
+        id: "phase-2".to_string(),
+        title: "Follow-up".to_string(),
+        status: AutomationGoalItemStatus::Pending,
+    }]);
+
+    let error = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: refreshed,
+            previous_run: previous,
+            verdict,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.contains("pending goal re-plan"))
+    );
+    assert!(run_repo
+        .latest_for_automation(&active.id)
+        .await
+        .unwrap()
+        .is_some_and(|run| run.id.as_str() == "run-replan-source"));
 }
 
 #[tokio::test]

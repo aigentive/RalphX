@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use super::decomposition_verifier::{
-    build_decomposition_verifier_prompt, parse_decomposition_verdict, AutomationAuthoringMode,
-    AutomationAuthoringState, AutomationDecompositionInput, AutomationDecompositionVerdictDecision,
-    AutomationDecompositionVerificationStatus,
+    build_decomposition_verifier_prompt, parse_authoring_state, parse_decomposition_verdict,
+    AutomationAuthoringMode, AutomationAuthoringState, AutomationDecompositionInput,
+    AutomationDecompositionVerdictDecision, AutomationDecompositionVerificationStatus,
 };
 use super::judge::AUTOMATION_JUDGE_PROMPT_MAX_BYTES;
 
@@ -52,6 +52,55 @@ fn decomposition_prompt_carries_the_full_authoritative_contract() {
     assert!(prompt.contains("phase_boundaries"));
     assert!(prompt.contains("ordering"));
     assert!(prompt.contains("autonomy_risk"));
+}
+
+#[test]
+fn authoring_mode_and_status_string_contracts_are_stable() {
+    assert_eq!(
+        AutomationAuthoringMode::parse(" reviewed "),
+        Some(AutomationAuthoringMode::Reviewed)
+    );
+    assert_eq!(
+        AutomationAuthoringMode::parse("trusted_auto_finalize"),
+        Some(AutomationAuthoringMode::TrustedAutoFinalize)
+    );
+    assert_eq!(AutomationAuthoringMode::parse("legacy"), None);
+    assert_eq!(AutomationAuthoringMode::Reviewed.as_str(), "reviewed");
+    assert_eq!(
+        AutomationAuthoringMode::TrustedAutoFinalize.as_str(),
+        "trusted_auto_finalize"
+    );
+    assert_eq!(
+        AutomationDecompositionVerificationStatus::Unverified.as_str(),
+        "unverified"
+    );
+    assert_eq!(
+        AutomationDecompositionVerificationStatus::Verified.as_str(),
+        "verified"
+    );
+    assert_eq!(
+        AutomationDecompositionVerificationStatus::NeedsRevision.as_str(),
+        "needs_revision"
+    );
+    assert_eq!(
+        AutomationDecompositionVerificationStatus::Failed.as_str(),
+        "failed"
+    );
+}
+
+#[test]
+fn authoring_state_parser_defaults_blank_and_rejects_invalid_json() {
+    let blank = parse_authoring_state(Some("   ")).unwrap();
+    assert_eq!(blank, AutomationAuthoringState::default());
+    assert_eq!(
+        AutomationAuthoringState::trusted_unverified().mode,
+        AutomationAuthoringMode::TrustedAutoFinalize
+    );
+
+    let error = parse_authoring_state(Some("{not-json")).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("invalid automation authoring state"));
 }
 
 #[test]
@@ -106,6 +155,9 @@ fn decomposition_verdict_revision_requires_actionable_findings() {
 
 #[test]
 fn decomposition_verdict_rejects_missing_required_keys_and_empty_text() {
+    let non_object = parse_decomposition_verdict("[]").unwrap_err();
+    assert!(non_object.to_string().contains("JSON"));
+
     let missing_key = parse_decomposition_verdict(
         &json!({
             "decision": "approve",
@@ -147,6 +199,20 @@ fn decomposition_verdict_rejects_missing_required_keys_and_empty_text() {
     assert!(empty_finding
         .to_string()
         .contains("findings require descriptions"));
+
+    let invalid_enum = parse_decomposition_verdict(
+        &json!({
+            "decision": "delegate",
+            "reason": "Unknown action.",
+            "confidence": "high",
+            "findings": []
+        })
+        .to_string(),
+    )
+    .unwrap_err();
+    assert!(invalid_enum
+        .to_string()
+        .contains("invalid decomposition verifier JSON"));
 }
 
 #[test]
@@ -189,6 +255,22 @@ fn decomposition_prompt_truncates_spec_to_fit_budget() {
     assert!(prompt.len() <= AUTOMATION_JUDGE_PROMPT_MAX_BYTES);
     assert!(prompt.contains("<spec artifact_id=\"spec-1\" truncated=\"true\">"));
     assert!(prompt.contains("<output_contract truncated=\"false\">"));
+}
+
+#[test]
+fn decomposition_prompt_escapes_spec_artifact_attribute_and_rejects_oversized_fixed_inputs() {
+    let mut input = decomposition_input();
+    input.spec_artifact_id = "spec-&-\"quoted\"-<tag>".to_string();
+
+    let prompt = build_decomposition_verifier_prompt(&input).unwrap();
+
+    assert!(prompt.contains("artifact_id=\"spec-&amp;-&quot;quoted&quot;-&lt;tag&gt;\""));
+
+    input.goal_prompt = "goal ".repeat(20_000);
+    let error = build_decomposition_verifier_prompt(&input).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("fixed inputs exceed the prompt budget"));
 }
 
 #[test]
