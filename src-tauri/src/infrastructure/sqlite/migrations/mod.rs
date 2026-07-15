@@ -423,17 +423,20 @@ mod v20260712190416_branch_update_authority;
 mod v20260712190416_branch_update_authority_tests;
 mod v20260713063349_persona_run_attribution;
 mod v20260713131052_disable_auto_followup_by_default;
+#[cfg(test)]
+mod v20260713131052_disable_auto_followup_by_default_tests;
 mod v20260715013854_model_native_plan_verification;
 #[cfg(test)]
 mod v20260715013854_model_native_plan_verification_tests;
 mod v20260715170000_automation_authoring_state;
 #[cfg(test)]
 mod v20260715170000_automation_authoring_state_tests;
+mod v20260715172058_persona_update_draft_provenance;
+#[cfg(test)]
+mod v20260715172058_persona_update_draft_provenance_tests;
 mod v20260715183000_automation_ideation_signal;
 #[cfg(test)]
 mod v20260715183000_automation_ideation_signal_tests;
-#[cfg(test)]
-mod v20260713131052_disable_auto_followup_by_default_tests;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -1533,6 +1536,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260715170000,
         name: "automation_authoring_state",
         migrate: v20260715170000_automation_authoring_state::migrate,
+    },
+    Migration {
+        version: 20260715172058,
+        name: "persona_update_draft_provenance",
+        migrate: v20260715172058_persona_update_draft_provenance::migrate,
     },
     Migration {
         version: 20260715183000,

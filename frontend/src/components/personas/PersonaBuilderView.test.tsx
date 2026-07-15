@@ -88,6 +88,10 @@ async function emitDraftUpdated() {
   });
 }
 
+function openContextPicker(trigger: HTMLElement) {
+  fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+}
+
 describe("PersonaBuilderView", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -144,9 +148,8 @@ describe("PersonaBuilderView", () => {
     await screen.findByText("Reviewer Voice");
     expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Add context…" }));
-    });
+    openContextPicker(screen.getByRole("button", { name: "Add context…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add folder" }));
 
     expect(await screen.findByText(/1 copied · 1 skipped/)).toBeInTheDocument();
     expect(screen.getByText(/1 rejected/)).toBeInTheDocument();
@@ -163,13 +166,14 @@ describe("PersonaBuilderView", () => {
     expect(await screen.findByText("Add context to start")).toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("persona-builder-empty-add-context"));
+    openContextPicker(screen.getByTestId("persona-builder-empty-add-context"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add folder" }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
         input: {
           conversationId: "builder-conversation",
-          pickedPath: "/tmp/context",
+          pickedPaths: ["/tmp/context"],
         },
       }),
     );
@@ -189,7 +193,8 @@ describe("PersonaBuilderView", () => {
     renderBuilder();
 
     await screen.findByText("Add context to start");
-    fireEvent.click(screen.getByTestId("persona-builder-empty-add-context"));
+    openContextPicker(screen.getByTestId("persona-builder-empty-add-context"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add folder" }));
 
     expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
   });
@@ -250,15 +255,58 @@ describe("PersonaBuilderView", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("slug already exists");
   });
 
+  it("opens the context menu synchronously before starting a native picker", async () => {
+    mockBuilderCommands();
+    renderBuilder();
+
+    expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
+    openContextPicker(screen.getByRole("button", { name: "Add context…" }));
+
+    expect(screen.getByRole("menuitem", { name: "Add files" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Add folder" })).toBeInTheDocument();
+    expect(openDialog).not.toHaveBeenCalled();
+  });
+
+  it("ingests multiple selected files as one batch", async () => {
+    mockBuilderCommands();
+    vi.mocked(openDialog).mockResolvedValue(["/tmp/one.md", "/tmp/two.txt"] as never);
+    renderBuilder();
+
+    expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
+    openContextPicker(screen.getByRole("button", { name: "Add context…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add files" }));
+
+    await waitFor(() =>
+      expect(openDialog).toHaveBeenCalledWith({
+        directory: false,
+        multiple: true,
+        title: "Add persona context files",
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
+      input: {
+        conversationId: "builder-conversation",
+        pickedPaths: ["/tmp/one.md", "/tmp/two.txt"],
+      },
+    });
+  });
+
   it("keeps the builder open when context selection is cancelled", async () => {
     mockBuilderCommands();
     vi.mocked(openDialog).mockResolvedValue(null);
     renderBuilder();
 
     expect(await screen.findByTestId("integrated-chat-panel")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add context…" }));
+    openContextPicker(screen.getByRole("button", { name: "Add context…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add folder" }));
 
-    await waitFor(() => expect(openDialog).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(openDialog).toHaveBeenCalledWith({
+        directory: true,
+        multiple: false,
+        title: "Add persona context folder",
+      }),
+    );
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("ingest_persona_context", expect.anything());
     expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument();
   });

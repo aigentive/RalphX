@@ -209,6 +209,8 @@ async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Pers
         version: 1,
         content_hash: format!("{id}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,

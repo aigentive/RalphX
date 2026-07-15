@@ -1,10 +1,11 @@
 use super::{
     agent_conversation_mode_for_send, conversation_spawn_harness_override,
     edit_mode_plan_handoff_runtime_message, get_agent_name,
-    interactive_run_started_provider_session, persona_switch_requires_process_invalidation,
-    plan_mode_runtime_message, provider_harness_switch_requires_fresh_session,
-    registered_persona_metadata, resolve_agent_name_for_send,
-    should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
+    interactive_run_started_provider_session, persona_builder_runtime_message,
+    persona_switch_requires_process_invalidation, plan_mode_runtime_message,
+    provider_harness_switch_requires_fresh_session, registered_persona_metadata,
+    resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
+    spawn_settings_require_task_metadata,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::application::persona_prompt::ResolvedPersona;
@@ -12,8 +13,9 @@ use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
     ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PersonaId, ProjectId, TaskId,
+    IdeationSessionId, Persona, PersonaId, PersonaStatus, ProjectId, TaskId,
 };
+use chrono::Utc;
 
 fn resolved_persona(id: &str, content_hash: &str) -> ResolvedPersona {
     ResolvedPersona {
@@ -375,6 +377,46 @@ fn plan_mode_runtime_message_injects_linked_planning_session_context() {
     assert!(message.contains("<planning_session_id>planning-session-1</planning_session_id>"));
     assert!(message.contains("Use this planning session for ask_user_question"));
     assert!(message.contains("<user_request>draft the implementation</user_request>"));
+}
+
+#[test]
+fn persona_builder_runtime_message_injects_bound_draft_without_leaking_content() {
+    let mut conversation = ChatConversation::new_project(ProjectId::from_string(
+        "persona-builder-project".to_string(),
+    ));
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+    conversation.builder_draft_id = Some("draft-1".to_string());
+    let now = Utc::now();
+    let draft = Persona {
+        id: PersonaId::from("draft-1"),
+        slug: "existing-reviewer".to_string(),
+        name: "Existing Reviewer".to_string(),
+        description: "Review carefully".to_string(),
+        content: "SECRET PERSONA CONTENT".to_string(),
+        status: PersonaStatus::Draft,
+        version: 3,
+        content_hash: "draft-hash-v3".to_string(),
+        source_session_id: Some(conversation.id.as_str()),
+        source_persona_id: Some(PersonaId::from("source-1")),
+        source_content_hash: Some("source-hash".to_string()),
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    };
+
+    let message = persona_builder_runtime_message(
+        "refine the persona".to_string(),
+        Some(&conversation),
+        Some(&draft),
+    );
+
+    assert!(message.contains("<persona_builder_context>"));
+    assert!(message.contains("<builder_draft_id>draft-1</builder_draft_id>"));
+    assert!(message.contains("<source_persona_id>source-1</source_persona_id>"));
+    assert!(message.contains("<draft_version>3</draft_version>"));
+    assert!(message.contains("save_persona_draft"));
+    assert!(message.contains("<user_request>refine the persona</user_request>"));
+    assert!(!message.contains("SECRET PERSONA CONTENT"));
 }
 
 #[test]

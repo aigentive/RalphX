@@ -26,6 +26,10 @@ impl PersonaRepository for ErroringPersonaRepository {
         repository_error()
     }
 
+    async fn get_active_by_slug(&self, _slug: &str) -> AppResult<Option<Persona>> {
+        repository_error()
+    }
+
     async fn list(&self) -> AppResult<Vec<Persona>> {
         repository_error()
     }

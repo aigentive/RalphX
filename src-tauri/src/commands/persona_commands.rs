@@ -2,7 +2,9 @@ use ralphx_domain::personas::validation::compose_persona_content;
 use serde::Deserialize;
 use tauri::State;
 
-use crate::application::personas::{draft_updated_payload, PersonaService, SavePersonaDraftInput};
+use crate::application::personas::{
+    draft_applied_payload, draft_updated_payload, PersonaService, SavePersonaDraftInput,
+};
 use crate::application::AppState;
 use crate::domain::entities::{Persona, PersonaId};
 use crate::infrastructure::agents::claude::agent_personas_enabled;
@@ -15,6 +17,14 @@ pub struct ListPersonasInput {}
 #[serde(rename_all = "camelCase")]
 pub struct PersonaIdInput {
     pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovePersonaAsNewInput {
+    pub id: String,
+    #[serde(default)]
+    pub new_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +114,8 @@ pub async fn create_persona_draft_for_state(
                 slug: input.slug,
                 content,
                 source_session_id: input.source_session_id,
+                source_persona_id: None,
+                source_content_hash: None,
             },
         )
         .await
@@ -155,8 +167,66 @@ pub async fn approve_persona_for_state(
     state: &AppState,
     feature_enabled: bool,
 ) -> Result<Persona, String> {
+    let id = persona_id(input.id)?;
+    let service = service(state);
+    let source_persona_id = service
+        .get_draft(feature_enabled, &id)
+        .await
+        .map_err(to_string)?
+        .source_persona_id;
+    let persona = service
+        .approve_persona(feature_enabled, &id)
+        .await
+        .map_err(to_string)?;
+    if source_persona_id
+        .as_ref()
+        .is_some_and(|source_id| source_id == &persona.id)
+    {
+        state.events.emit(
+            "persona:draft_applied",
+            draft_applied_payload(&id, &persona),
+        );
+    }
+    Ok(persona)
+}
+
+#[tauri::command]
+pub async fn reseed_persona_draft(
+    input: PersonaIdInput,
+    state: State<'_, AppState>,
+) -> Result<Persona, String> {
+    reseed_persona_draft_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn reseed_persona_draft_for_state(
+    input: PersonaIdInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
     service(state)
-        .approve_persona(feature_enabled, &persona_id(input.id)?)
+        .reseed_persona_draft(feature_enabled, &persona_id(input.id)?)
+        .await
+        .map_err(to_string)
+}
+
+#[tauri::command]
+pub async fn approve_persona_as_new(
+    input: ApprovePersonaAsNewInput,
+    state: State<'_, AppState>,
+) -> Result<Persona, String> {
+    approve_persona_as_new_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn approve_persona_as_new_for_state(
+    input: ApprovePersonaAsNewInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    let id = persona_id(input.id)?;
+    service(state)
+        .approve_persona_as_new(feature_enabled, &id, input.new_slug.as_deref())
         .await
         .map_err(to_string)
 }
