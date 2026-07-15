@@ -1609,6 +1609,12 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /^Provider,/ }));
     await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
     expect(screen.getByText("Claude is not enabled")).toBeInTheDocument();
@@ -1655,9 +1661,16 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^Provider,/ }));
     await userEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+    await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
     await userEvent.click(screen.getByTestId("agents-start-model-opus"));
-    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
     await userEvent.click(screen.getByTestId("agents-start-effort-max"));
 
     await waitFor(() =>
@@ -1719,7 +1732,14 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await user.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /^Provider,/ }));
     await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+    await user.click(screen.getByRole("button", { name: /^Model,/ }));
 
     expect(useHarnessProvidersMock).toHaveBeenCalledWith({ refreshRuntime: true });
     expect(await screen.findByTestId("agents-start-model-fable")).toBeInTheDocument();
@@ -1735,6 +1755,12 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^Model,/ }));
 
     expect(screen.getByText("Manage models in Settings")).toBeInTheDocument();
   });
