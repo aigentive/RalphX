@@ -1,7 +1,7 @@
 import type { InfiniteData } from "@tanstack/react-query";
 
 import type { AgentSidebarConversationGroup } from "@/api/chat";
-import { seedAgentArtifactTab } from "@/components/agents/agentArtifactState";
+import { revealAgentArtifactTab } from "@/components/agents/agentArtifactState";
 import { getQueryClient } from "@/lib/queryClient";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -37,8 +37,7 @@ export function navigateToAgentPlan(
   projectId: string,
   conversationId: string,
 ): void {
-  seedAgentArtifactTab(conversationId, "plan", false);
-  useAgentSessionStore.getState().setArtifactTab(conversationId, "plan");
+  revealAgentArtifactTab(conversationId, "plan", false);
   navigateToAgentConversation(projectId, conversationId);
 }
 
