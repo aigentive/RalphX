@@ -47,6 +47,7 @@ fn automation_with_goal_items(goal_items_json: Option<String>) -> Automation {
         first_run_prompt: Some("Run 1 prompt".to_string()),
         setup_analysis_summary: Some("Setup summary".to_string()),
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }

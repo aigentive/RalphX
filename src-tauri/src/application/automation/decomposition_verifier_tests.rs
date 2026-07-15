@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use super::decomposition_verifier::{
-    build_decomposition_verifier_prompt, parse_decomposition_verdict,
-    AutomationAuthoringMode, AutomationAuthoringState, AutomationDecompositionInput,
-    AutomationDecompositionVerdictDecision, AutomationDecompositionVerificationStatus,
+    build_decomposition_verifier_prompt, parse_decomposition_verdict, AutomationAuthoringMode,
+    AutomationAuthoringState, AutomationDecompositionInput, AutomationDecompositionVerdictDecision,
+    AutomationDecompositionVerificationStatus,
 };
 
 fn decomposition_input() -> AutomationDecompositionInput {
@@ -17,6 +17,19 @@ fn decomposition_input() -> AutomationDecompositionInput {
         first_run_prompt: "Implement phase 1 with focused tests and publish its PR.".to_string(),
         spec_artifact_id: "spec-1".to_string(),
         spec_content: "# Plan\n\nPhase 1 adds the backend. Phase 2 adds the UI.".to_string(),
+        provider_harness: "codex".to_string(),
+        model_id: "gpt-5.5".to_string(),
+        logical_effort: Some("high".to_string()),
+        run_mode: "edit".to_string(),
+        base_ref_kind: "project_default".to_string(),
+        base_ref: "main".to_string(),
+        chain_mode: "merged_base".to_string(),
+        completion_signal: "pr_merged".to_string(),
+        plan_approval_mode: "automatic".to_string(),
+        pr_merge_mode: "automatic".to_string(),
+        plan_deep_verification: true,
+        max_runs: 25,
+        max_consecutive_failures: 3,
     }
 }
 
@@ -29,6 +42,9 @@ fn decomposition_prompt_carries_the_full_authoritative_contract() {
     assert!(prompt.contains("<goal_items "));
     assert!(prompt.contains("phase-1"));
     assert!(prompt.contains("<first_run_prompt "));
+    assert!(prompt.contains("<execution_policy "));
+    assert!(prompt.contains("\"planApprovalMode\":\"automatic\""));
+    assert!(prompt.contains("\"prMergeMode\":\"automatic\""));
     assert!(prompt.contains("<spec artifact_id=\"spec-1\""));
     assert!(prompt.contains("<output_contract "));
     assert!(prompt.contains("coverage"));

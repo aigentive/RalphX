@@ -26,6 +26,7 @@ import {
 } from "./automations.transforms";
 import type {
   Automation,
+  AutomationAuthoringMode,
   AutomationDetail,
   AutomationRun,
   AutomationRunScopedInput,
@@ -41,9 +42,11 @@ import type {
 export type {
   Automation,
   AutomationBaseRefKind,
+  AutomationAuthoringMode,
   AutomationChainMode,
   AutomationCompletionSignal,
   AutomationDetail,
+  AutomationDecompositionVerificationStatus,
   AutomationJudgeState,
   AutomationPlanApprovalMode,
   AutomationPlanJudgeState,
@@ -101,10 +104,14 @@ const CALLER_SESSION_ID_HEADER = "x-ralphx-caller-session-id";
 function createDraftArgs(input: CreateAutomationDraftInput): {
   projectId: string;
   name?: string;
+  authoringMode?: AutomationAuthoringMode;
 } {
   return {
     projectId: input.projectId,
     ...(input.name !== undefined && { name: input.name }),
+    ...(input.authoringMode !== undefined && {
+      authoringMode: input.authoringMode,
+    }),
   };
 }
 

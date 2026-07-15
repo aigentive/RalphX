@@ -21,6 +21,12 @@ Automation run presentation is state-only on the wire and selector-owned in the 
 - Parked `awaiting_plan_approval` runs keep the composer editable for plan revisions. Other runs are read-only while the latest run still holds goal authority; fully settled audit conversations may accept chat turns without re-entering the automation lifecycle.
 - Run update events carry the owning automation id and refresh only that automation detail. Automation-level events refresh lists, the detail record, and the Automation sidebar grouping.
 
+## Outline Authoring
+
+Starting an automation from the Automations page uses trusted one-shot authoring. The setup agent turns the outline into the complete goal, ordered goal-item list, first-run prompt, spec, and automatic plan/merge policy, then calls the dedicated decomposition verifier. The verifier checks coverage, phase boundaries, ordering, and autonomy risk against the exact persisted inputs. Approval atomically records that input snapshot before activation; any concurrent edit makes the verdict stale and leaves the draft inactive. A revision verdict returns actionable findings to the setup agent instead of finalizing.
+
+Direct automation setup conversations retain the reviewed mode: the setup agent may draft and revise the configuration, but activation remains an explicit user decision. Legacy rows without authoring metadata are treated as reviewed and unverified.
+
 ## Run Plan Gate
 
 Every run plans before it implements. The run conversation is provisioned in workspace **plan mode**: the read-only plan profile explores the repo and authors a versioned plan artifact in a hidden Planning ideation session, then the run parks at `awaiting_plan_approval`. Approval switches the same conversation to edit mode and delivers the implement prompt; from there the run behaves exactly as before (publish, merge, run-level judge).

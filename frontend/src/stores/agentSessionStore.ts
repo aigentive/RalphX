@@ -17,6 +17,7 @@ import type {
   TeamIntent,
 } from "@/api/chat";
 import type {
+  AutomationAuthoringMode,
   AutomationJudgeState,
   AutomationRunStatus,
 } from "@/api/automations";
@@ -87,6 +88,7 @@ export interface AgentStartConversationDraft {
   projectId: string;
   content: string;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -98,6 +100,7 @@ export interface AgentStartConversationRetryInput {
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
   teamIntent?: TeamIntent | null;
@@ -337,6 +340,9 @@ function cloneStartConversationDraft(
     projectId: draft.projectId,
     content: draft.content,
     mode: draft.mode,
+    ...(draft.automationAuthoringMode
+      ? { automationAuthoringMode: draft.automationAuthoringMode }
+      : {}),
     ...(draft.composerProjectReferences
       ? {
           composerProjectReferences: draft.composerProjectReferences.map(

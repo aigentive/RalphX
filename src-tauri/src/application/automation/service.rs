@@ -7,6 +7,10 @@ use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTrans
 use serde_json::Value;
 
 use crate::application::agent_conversation_workspace::reject_persona_builder_workspace_mode;
+use crate::application::automation::decomposition_verifier::{
+    parse_authoring_state, AutomationAuthoringMode, AutomationAuthoringState,
+    AutomationDecompositionInput,
+};
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
     revert_in_progress_goal_items_to_pending, AutomationJudgeDecision,
@@ -69,6 +73,7 @@ pub struct CreateAutomationDraftInput {
     pub base_ref_kind: Option<String>,
     pub base_ref: Option<String>,
     pub base_display_name: Option<String>,
+    pub authoring_mode: Option<AutomationAuthoringMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +238,18 @@ impl AutomationService {
 
     pub async fn create_draft(&self, input: CreateAutomationDraftInput) -> AppResult<Automation> {
         let now = Utc::now();
+        let authoring_state_json = match input.authoring_mode.unwrap_or_default() {
+            AutomationAuthoringMode::Reviewed => None,
+            AutomationAuthoringMode::TrustedAutoFinalize => Some(
+                serde_json::to_string(&AutomationAuthoringState::trusted_unverified()).map_err(
+                    |error| {
+                        AppError::Infrastructure(format!(
+                            "failed to serialize automation authoring state: {error}"
+                        ))
+                    },
+                )?,
+            ),
+        };
         let automation = Automation {
             id: input.id.unwrap_or_else(AutomationId::new),
             project_id: input.project_id,
@@ -263,6 +280,7 @@ impl AutomationService {
             first_run_prompt: None,
             setup_analysis_summary: None,
             spec_artifact_id: None,
+            authoring_state_json,
             created_at: now,
             updated_at: now,
         };
@@ -1010,6 +1028,15 @@ impl AutomationService {
     pub async fn finalize(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
         validate_finalizable(&automation)?;
+        let authoring_state = parse_authoring_state(automation.authoring_state_json.as_deref())?;
+        if authoring_state.mode == AutomationAuthoringMode::TrustedAutoFinalize {
+            let input = self.load_decomposition_input(&automation).await?;
+            if !authoring_state.is_verified_for(&input) {
+                return Err(AppError::Validation(
+                    "trusted auto-finalize requires a current verified decomposition".to_string(),
+                ));
+            }
+        }
         self.transition_automation_status_or_conflict(
             id,
             automation.status,
@@ -1018,6 +1045,116 @@ impl AutomationService {
             None,
         )
         .await
+    }
+
+    pub(crate) async fn load_decomposition_input(
+        &self,
+        automation: &Automation,
+    ) -> AppResult<AutomationDecompositionInput> {
+        if automation.run_mode != "edit"
+            || automation.completion_signal != "pr_merged"
+            || automation.chain_mode != "merged_base"
+            || automation.plan_approval_mode != AutomationPlanApprovalMode::Automatic
+            || automation.pr_merge_mode != AutomationPrMergeMode::Automatic
+        {
+            return Err(AppError::Validation(
+                "trusted auto-finalize requires edit runs, merged-base chaining, PR-merged completion, automatic plan approval, and automatic PR merge"
+                    .to_string(),
+            ));
+        }
+        let goal_items_json = automation
+            .goal_items_json
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "trusted auto-finalize requires structured goal items".to_string(),
+                )
+            })?
+            .to_string();
+        let first_run_prompt = automation
+            .first_run_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "trusted auto-finalize requires a first run prompt".to_string(),
+                )
+            })?
+            .to_string();
+        let spec_artifact_id = automation
+            .spec_artifact_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "trusted auto-finalize requires a linked specification".to_string(),
+                )
+            })?
+            .to_string();
+        let artifact = self
+            .artifact_repo
+            .get_by_id(&ArtifactId::from_string(spec_artifact_id.clone()))
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "trusted auto-finalize specification {spec_artifact_id} was not found"
+                ))
+            })?;
+        let ArtifactContent::Inline { text: spec_content } = artifact.content else {
+            return Err(AppError::Validation(
+                "trusted auto-finalize requires an inline-readable specification".to_string(),
+            ));
+        };
+        Ok(AutomationDecompositionInput {
+            goal_prompt: automation.goal_prompt.trim().to_string(),
+            goal_items_json,
+            first_run_prompt,
+            spec_artifact_id,
+            spec_content,
+            provider_harness: automation.provider_harness.clone(),
+            model_id: automation.model_id.clone(),
+            logical_effort: automation.logical_effort.clone(),
+            run_mode: automation.run_mode.clone(),
+            base_ref_kind: automation.base_ref_kind.clone(),
+            base_ref: automation.base_ref.clone(),
+            chain_mode: automation.chain_mode.clone(),
+            completion_signal: automation.completion_signal.clone(),
+            plan_approval_mode: automation.plan_approval_mode.as_str().to_string(),
+            pr_merge_mode: automation.pr_merge_mode.as_str().to_string(),
+            plan_deep_verification: automation.plan_deep_verification,
+            max_runs: automation.max_runs,
+            max_consecutive_failures: automation.max_consecutive_failures,
+        })
+    }
+
+    pub(crate) async fn persist_authoring_state_if_unchanged(
+        &self,
+        automation: &Automation,
+        state: &AutomationAuthoringState,
+    ) -> AppResult<bool> {
+        let serialized = serde_json::to_string(state).map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to serialize automation authoring state: {error}"
+            ))
+        })?;
+        let changed = self
+            .automation_repo
+            .update_authoring_state_if_unchanged(
+                &automation.id,
+                automation.updated_at,
+                Some(serialized),
+            )
+            .await?;
+        if changed {
+            self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+                automation_id: automation.id.clone(),
+            });
+        }
+        Ok(changed)
     }
 
     pub async fn create_run(&self, input: CreateAutomationRunInput) -> AppResult<AutomationRun> {
@@ -1959,7 +2096,7 @@ fn validate_stacked_chain_merge_mode(
     Ok(())
 }
 
-fn validate_finalizable(automation: &Automation) -> AppResult<()> {
+pub(crate) fn validate_finalizable(automation: &Automation) -> AppResult<()> {
     if automation.status != AutomationStatus::Draft {
         return Err(AppError::InvalidTransition {
             from: automation.status.as_str().to_string(),

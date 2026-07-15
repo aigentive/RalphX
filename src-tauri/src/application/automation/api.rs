@@ -14,6 +14,9 @@ use crate::domain::entities::{
     is_open_automation_run, AgentConversationWorkspaceMode, AgentRun, Automation, AutomationRun,
 };
 
+use super::decomposition_verifier::{
+    parse_authoring_state, AutomationAuthoringState, AutomationDecompositionVerificationStatus,
+};
 use super::plan_gate::{
     current_plan_artifact_id_for_workspace, matching_plan_approval_for_workspace,
 };
@@ -47,6 +50,9 @@ pub struct AutomationResponse {
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
     pub spec_artifact_id: Option<String>,
+    pub authoring_mode: String,
+    pub decomposition_verification_status: String,
+    pub decomposition_verification_verdict_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -267,6 +273,11 @@ async fn automation_run_plan_read_model_for_state(
 
 impl From<Automation> for AutomationResponse {
     fn from(automation: Automation) -> Self {
+        let authoring_state = parse_authoring_state(automation.authoring_state_json.as_deref())
+            .unwrap_or_else(|_| AutomationAuthoringState {
+                verification_status: AutomationDecompositionVerificationStatus::Failed,
+                ..AutomationAuthoringState::default()
+            });
         Self {
             id: automation.id.as_str().to_string(),
             project_id: automation.project_id.as_str().to_string(),
@@ -295,6 +306,12 @@ impl From<Automation> for AutomationResponse {
             first_run_prompt: automation.first_run_prompt,
             setup_analysis_summary: automation.setup_analysis_summary,
             spec_artifact_id: automation.spec_artifact_id,
+            authoring_mode: authoring_state.mode.as_str().to_string(),
+            decomposition_verification_status: authoring_state
+                .verification_status
+                .as_str()
+                .to_string(),
+            decomposition_verification_verdict_json: authoring_state.verdict_json,
             created_at: automation.created_at.to_rfc3339(),
             updated_at: automation.updated_at.to_rfc3339(),
         }

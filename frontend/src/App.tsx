@@ -888,6 +888,7 @@ function AppContent() {
       projectId: currentProjectId,
       content: "",
       mode: "automation",
+      automationAuthoringMode: "trusted_auto_finalize",
     });
     clearAgentSelection();
     setFocusedAgentProject(currentProjectId);

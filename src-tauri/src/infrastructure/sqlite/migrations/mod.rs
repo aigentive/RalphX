@@ -423,6 +423,9 @@ mod v20260712190416_branch_update_authority;
 mod v20260712190416_branch_update_authority_tests;
 mod v20260713063349_persona_run_attribution;
 mod v20260713131052_disable_auto_followup_by_default;
+mod v20260715170000_automation_authoring_state;
+#[cfg(test)]
+mod v20260715170000_automation_authoring_state_tests;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
 #[cfg(test)]
@@ -1514,6 +1517,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260713131052,
         name: "disable_auto_followup_by_default",
         migrate: v20260713131052_disable_auto_followup_by_default::migrate,
+    },
+    Migration {
+        version: 20260715170000,
+        name: "automation_authoring_state",
+        migrate: v20260715170000_automation_authoring_state::migrate,
     },
 ];
 

@@ -197,6 +197,11 @@ const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
         "automation-plan-judge",
         "ralphx-automation-plan-judge",
     ),
+    (
+        "ralphx-automation-decomposition-verifier",
+        "automation-decomposition-verifier",
+        "ralphx-automation-decomposition-verifier",
+    ),
     ("ralphx-review-history", "review_history", "review-history"),
     (
         "ralphx-project-analyzer",
@@ -285,6 +290,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-plan-complexity",
     "ralphx-automation-judge",
     "ralphx-automation-plan-judge",
+    "ralphx-automation-decomposition-verifier",
     "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
@@ -313,6 +319,7 @@ const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
     "ralphx-automation-judge",
     "ralphx-automation-plan-judge",
+    "ralphx-automation-decomposition-verifier",
     "ralphx-automation-setup",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
@@ -420,6 +427,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-automation-setup",
     "ralphx-automation-judge",
     "ralphx-automation-plan-judge",
+    "ralphx-automation-decomposition-verifier",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -479,6 +487,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-workspace-reviewer", "sonnet"),
     ("ralphx-automation-setup", "sonnet"),
     ("ralphx-automation-judge", "haiku"),
+    ("ralphx-automation-decomposition-verifier", "haiku"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -1755,6 +1764,35 @@ fn automation_judge_surface_is_output_only_and_zero_tool() {
             !prompt.contains("MCP Tools Available"),
             "judge prompt must not describe an unavailable MCP surface"
         );
+    }
+}
+
+#[test]
+fn automation_decomposition_verifier_surface_is_output_only_and_zero_tool() {
+    let root = project_root();
+    let agent_name = "ralphx-automation-decomposition-verifier";
+    let definition = load_canonical_agent_definition(&root, agent_name)
+        .expect("expected canonical automation decomposition verifier definition");
+    let claude_prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Claude)
+        .expect("expected decomposition verifier Claude prompt");
+    let codex_prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
+        .expect("expected decomposition verifier Codex prompt");
+    let codex_metadata = load_canonical_codex_metadata(&root, agent_name);
+    let runtime_config =
+        get_agent_config(agent_name).expect("expected runtime config for decomposition verifier");
+
+    assert_eq!(definition.capabilities.mcp_tools, Vec::<String>::new());
+    assert_eq!(runtime_config.allowed_mcp_tools, Vec::<String>::new());
+    assert!(runtime_config.mcp_only);
+    assert_eq!(
+        codex_metadata.runtime_features.get("shell_tool"),
+        Some(&false)
+    );
+    for prompt in [&claude_prompt, &codex_prompt] {
+        assert!(prompt.contains("Return exactly one JSON object"));
+        assert!(prompt.contains("automatic plan approval"));
+        assert!(!prompt.contains("mcp__ralphx__"));
+        assert!(!prompt.contains("MCP Tools Available"));
     }
 }
 

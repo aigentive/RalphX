@@ -134,6 +134,18 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
     },
   },
   {
+    name: "verify_automation_decomposition",
+    description:
+      "Run the independent decomposition-quality verifier for the trusted auto-finalize automation bound to this setup conversation. " +
+      "A verified current decomposition is finalized automatically; a revise verdict leaves the draft editable and returns actionable findings. " +
+      "The backend resolves ownership from the caller conversation; do not pass an automation id.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: "finalize_automation",
     description:
       "Mark the draft automation spec approved after backend validation passes. " +
@@ -196,6 +208,8 @@ export async function callAutomationSetupTool(
         updateAutomationPayload(args),
         { headers }
       );
+    case "verify_automation_decomposition":
+      return callTauri("verify_automation_decomposition", {}, { headers });
     case "finalize_automation":
       return callTauri("finalize_automation", {}, { headers });
     default:

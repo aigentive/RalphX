@@ -42,6 +42,10 @@ export function transformAutomation(raw: RawAutomation): Automation {
     goalPrompt: raw.goal_prompt,
     setupConversationId: raw.setup_conversation_id,
     specArtifactId: raw.spec_artifact_id,
+    authoringMode: raw.authoring_mode,
+    decompositionVerificationStatus: raw.decomposition_verification_status,
+    decompositionVerificationVerdictJson:
+      raw.decomposition_verification_verdict_json,
     providerHarness: raw.provider_harness,
     modelId: raw.model_id,
     logicalEffort: raw.logical_effort,

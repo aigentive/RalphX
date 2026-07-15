@@ -28,6 +28,14 @@ export type AutomationPlanApprovalMode = "manual" | "automatic";
 
 export type AutomationPrMergeMode = "manual" | "automatic";
 
+export type AutomationAuthoringMode = "reviewed" | "trusted_auto_finalize";
+
+export type AutomationDecompositionVerificationStatus =
+  | "unverified"
+  | "verified"
+  | "needs_revision"
+  | "failed";
+
 export type AutomationPlanJudgeState =
   | "none"
   | "in_progress"
@@ -61,6 +69,9 @@ export interface Automation {
   goalPrompt: string;
   setupConversationId: string | null;
   specArtifactId: string | null;
+  authoringMode: AutomationAuthoringMode;
+  decompositionVerificationStatus: AutomationDecompositionVerificationStatus;
+  decompositionVerificationVerdictJson: string | null;
   providerHarness: string;
   modelId: string;
   logicalEffort: string | null;
@@ -156,6 +167,7 @@ export interface ListAutomationsInput {
 export interface CreateAutomationDraftInput {
   projectId: string;
   name?: string | undefined;
+  authoringMode?: AutomationAuthoringMode | undefined;
 }
 
 export interface UpdateAutomationSettingsInput {

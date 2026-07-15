@@ -77,6 +77,7 @@ fn automation() -> Automation {
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }
@@ -619,6 +620,7 @@ async fn create_draft_creates_bound_setup_conversation_with_automation_workspace
         CreateAutomationDraftInput {
             project_id: "project-1".to_string(),
             name: Some("Nightly cleanup".to_string()),
+            authoring_mode: None,
         },
         &state,
     )
@@ -697,6 +699,7 @@ async fn create_draft_cleans_setup_conversation_when_draft_validation_fails() {
         CreateAutomationDraftInput {
             project_id: "project-1".to_string(),
             name: Some("   ".to_string()),
+            authoring_mode: None,
         },
         &state,
     )

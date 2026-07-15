@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -46,11 +45,14 @@ use crate::application::automation::service::{
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
 };
+use crate::application::automation::utility_agent::{
+    invoke_automation_utility_agent, AutomationUtilityModelPolicy,
+};
 use crate::application::harness_runtime_registry::{
     default_automation_judge_timeout_secs, default_automation_max_run_duration_secs,
     default_automation_plan_judge_models, default_automation_plan_max_revision_rounds,
     default_automation_publish_grace_secs, default_automation_scheduler_poll_secs,
-    default_automation_signal_failure_pause_threshold, resolve_harness_agent_bootstrap,
+    default_automation_signal_failure_pause_threshold,
 };
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
 use crate::application::services::pr_auto_merge_status::{
@@ -59,9 +61,7 @@ use crate::application::services::pr_auto_merge_status::{
 };
 use crate::application::AppState;
 use crate::application::NotificationService;
-use crate::domain::agents::{
-    plan_judge_model_for_provider, AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS,
-};
+use crate::domain::agents::{plan_judge_model_for_provider, AgentHarnessKind};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
     ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState,
@@ -82,7 +82,6 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
-use crate::utils::path_safety::validate_absolute_non_root_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationSchedulerConfig {
@@ -385,71 +384,19 @@ impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
             );
         }
 
-        let harness = AgentHarnessKind::from_str(input.automation.provider_harness.trim())
-            .map_err(AppError::Validation)?;
-        let runtime = AppState::lock_utility_agent_runtime_model(
-            self.state
-                .resolve_background_agent_runtime_for_harness(harness, "automation judge")
-                .await?,
-        );
-        let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-        let project = self
-            .state
-            .project_repo
-            .get_by_id(&input.automation.project_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "automation judge project {} not found",
-                    input.automation.project_id.as_str()
-                ))
-            })?;
-        let project_working_directory = validate_absolute_non_root_path(
-            Path::new(&project.working_directory),
-            "automation judge project checkout",
-        )?;
-        let bootstrap = resolve_harness_agent_bootstrap(
-            helper_harness,
+        let output = invoke_automation_utility_agent(
+            &self.state,
+            &input.automation,
             agent_names::AGENT_AUTOMATION_JUDGE,
-            project_working_directory,
-        );
-        let env = runtime.env_with_overrides(bootstrap.env);
-        let client = Arc::clone(&runtime.client);
-        let model_id = runtime.model.clone();
-        let handle = client
-            .spawn_agent(AgentConfig {
-                role: AgentRole::Custom(bootstrap.agent_role.clone()),
-                prompt,
-                working_directory: bootstrap.working_directory,
-                plugin_dir: Some(bootstrap.plugin_dir),
-                agent: Some(bootstrap.agent_name),
-                model: runtime.model,
-                harness: runtime.harness,
-                cli_path_override: runtime.cli_path_override,
-                logical_effort: runtime.logical_effort,
-                approval_policy: runtime.approval_policy,
-                sandbox_mode: runtime.sandbox_mode,
-                service_tier: runtime.service_tier,
-                max_tokens: None,
-                timeout_secs: Some(input.timeout.as_secs().max(1)),
-                env,
-            })
-            .await
-            .map_err(|error| {
-                AppError::Infrastructure(format!("failed to spawn automation judge: {error}"))
-            })?;
-        let output = client.wait_for_completion(&handle).await.map_err(|error| {
-            AppError::Infrastructure(format!("automation judge failed: {error}"))
-        })?;
-        if !output.success {
-            return Err(AppError::Infrastructure(format!(
-                "automation judge exited unsuccessfully: {}",
-                output.content.trim()
-            )));
-        }
+            "automation judge",
+            prompt,
+            input.timeout,
+            AutomationUtilityModelPolicy::LockedDefault,
+        )
+        .await?;
         Ok(AutomationJudgeInvocationOutput {
-            raw_output: output.content,
-            model_id,
+            raw_output: output.raw_output,
+            model_id: output.model_id,
         })
     }
 }
@@ -516,71 +463,19 @@ impl AutomationPlanJudgeInvoker for HarnessAutomationPlanJudgeInvoker {
             );
         }
 
-        let harness = AgentHarnessKind::from_str(input.automation.provider_harness.trim())
-            .map_err(AppError::Validation)?;
-        let mut runtime = self
-            .state
-            .resolve_background_agent_runtime_for_harness(harness, "automation plan judge")
-            .await?;
-        runtime.model = input.plan_judge_model.clone();
-        let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-        let project = self
-            .state
-            .project_repo
-            .get_by_id(&input.automation.project_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "automation plan judge project {} not found",
-                    input.automation.project_id.as_str()
-                ))
-            })?;
-        let project_working_directory = validate_absolute_non_root_path(
-            Path::new(&project.working_directory),
-            "automation plan judge project checkout",
-        )?;
-        let bootstrap = resolve_harness_agent_bootstrap(
-            helper_harness,
+        let output = invoke_automation_utility_agent(
+            &self.state,
+            &input.automation,
             agent_names::AGENT_AUTOMATION_PLAN_JUDGE,
-            project_working_directory,
-        );
-        let env = runtime.env_with_overrides(bootstrap.env);
-        let client = Arc::clone(&runtime.client);
-        let model_id = runtime.model.clone();
-        let handle = client
-            .spawn_agent(AgentConfig {
-                role: AgentRole::Custom(bootstrap.agent_role.clone()),
-                prompt,
-                working_directory: bootstrap.working_directory,
-                plugin_dir: Some(bootstrap.plugin_dir),
-                agent: Some(bootstrap.agent_name),
-                model: runtime.model,
-                harness: runtime.harness,
-                cli_path_override: runtime.cli_path_override,
-                logical_effort: runtime.logical_effort,
-                approval_policy: runtime.approval_policy,
-                sandbox_mode: runtime.sandbox_mode,
-                service_tier: runtime.service_tier,
-                max_tokens: None,
-                timeout_secs: Some(input.timeout.as_secs().max(1)),
-                env,
-            })
-            .await
-            .map_err(|error| {
-                AppError::Infrastructure(format!("failed to spawn automation plan judge: {error}"))
-            })?;
-        let output = client.wait_for_completion(&handle).await.map_err(|error| {
-            AppError::Infrastructure(format!("automation plan judge failed: {error}"))
-        })?;
-        if !output.success {
-            return Err(AppError::Infrastructure(format!(
-                "automation plan judge exited unsuccessfully: {}",
-                output.content.trim()
-            )));
-        }
+            "automation plan judge",
+            prompt,
+            input.timeout,
+            AutomationUtilityModelPolicy::Override(input.plan_judge_model.clone()),
+        )
+        .await?;
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: output.content,
-            model_id,
+            raw_output: output.raw_output,
+            model_id: output.model_id,
         })
     }
 }

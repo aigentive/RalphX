@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -6,6 +7,11 @@ use ralphx_domain::entities::is_open_automation_run;
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 use serde_json::{json, Value};
 
+use crate::application::automation::decomposition_verifier::{
+    parse_authoring_state, AutomationAuthoringMode, AutomationDecompositionVerificationStatus,
+    AutomationDecompositionVerifier, AutomationDecompositionVerifierInvocation,
+    AutomationDecompositionVerifierInvocationOutput, AutomationDecompositionVerifierInvoker,
+};
 use crate::application::automation::judge::{
     automation_judge_loop_suspected, AutomationGoalItemStatus, AutomationJudgeDecision,
     AutomationJudgeItemStatusUpdate, AutomationJudgeNextBaseBranch, AutomationJudgeVerdict,
@@ -273,6 +279,44 @@ fn service_with_auto_merge_controls(
     (service, automation_repo, run_repo)
 }
 
+struct StaticDecompositionVerifierInvoker {
+    raw_output: String,
+    mutate_repo: Option<Arc<MemoryAutomationRepository>>,
+}
+
+#[async_trait]
+impl AutomationDecompositionVerifierInvoker for StaticDecompositionVerifierInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationDecompositionVerifierInvocation,
+    ) -> crate::error::AppResult<AutomationDecompositionVerifierInvocationOutput> {
+        if let Some(repo) = self.mutate_repo.as_ref() {
+            repo.update_goal_items_json(
+                &input.automation.id,
+                Some(
+                    r#"[{"id":"phase-new","title":"Changed while verifying","status":"pending"}]"#
+                        .to_string(),
+                ),
+            )
+            .await?;
+        }
+        Ok(AutomationDecompositionVerifierInvocationOutput {
+            raw_output: self.raw_output.clone(),
+            model_id: Some("verifier-model".to_string()),
+        })
+    }
+}
+
+fn approved_decomposition_output() -> String {
+    json!({
+        "decision": "approve",
+        "reason": "The phases cover the complete spec in dependency-safe order.",
+        "confidence": "high",
+        "findings": []
+    })
+    .to_string()
+}
+
 fn automation(id: &str, status: AutomationStatus) -> Automation {
     let now = Utc::now();
     Automation {
@@ -305,6 +349,7 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }
@@ -547,6 +592,21 @@ impl AutomationRepository for LostStatusAutomationRepository {
         automation.goal_items_json = goal_items_json;
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
+    }
+
+    async fn update_authoring_state_if_unchanged(
+        &self,
+        id: &AutomationId,
+        expected_updated_at: chrono::DateTime<Utc>,
+        authoring_state_json: Option<String>,
+    ) -> crate::error::AppResult<bool> {
+        let mut automation = self.automation.lock().unwrap();
+        if automation.id != *id || automation.updated_at != expected_updated_at {
+            return Ok(false);
+        }
+        automation.authoring_state_json = authoring_state_json;
+        automation.updated_at = Utc::now();
+        Ok(true)
     }
 
     async fn compare_and_swap_status(
@@ -891,6 +951,7 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            authoring_mode: None,
         })
         .await
         .unwrap();
@@ -1366,6 +1427,7 @@ async fn service_create_draft_then_config_then_finalize_activates_automation() {
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            authoring_mode: None,
         })
         .await
         .unwrap();
@@ -3749,4 +3811,152 @@ fn stop_verdict(goal_met: bool, reason: &str) -> AutomationJudgeVerdict {
         next_run_prompt: None,
         next_base_branch: None,
     }
+}
+
+#[tokio::test]
+async fn trusted_decomposition_verification_activates_only_after_current_approval() {
+    let (service, automation_repo, _run_repo, _artifact_repo) =
+        service_with_emitter_and_artifacts(Arc::new(NoopAutomationEventEmitter));
+    let draft = service
+        .create_draft(CreateAutomationDraftInput {
+            id: None,
+            project_id: ProjectId::from_string("project-1".to_string()),
+            name: Some("Trusted pipeline".to_string()),
+            setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            authoring_mode: Some(AutomationAuthoringMode::TrustedAutoFinalize),
+        })
+        .await
+        .unwrap();
+    service
+        .update_config(UpdateAutomationConfigInput {
+            id: draft.id.clone(),
+            goal_prompt: Some("Ship the complete trusted pipeline.".to_string()),
+            first_run_prompt: Some(
+                "Implement the first backend phase with focused tests and publish the PR."
+                    .to_string(),
+            ),
+            goal_items_json: Some(
+                json!([
+                    { "id": "phase-1", "title": "Backend", "status": "pending" },
+                    { "id": "phase-2", "title": "Frontend", "status": "pending" }
+                ])
+                .to_string(),
+            ),
+            spec_content: Some(
+                "# Trusted pipeline\n\nPhase 1 adds the backend. Phase 2 adds the UI.".to_string(),
+            ),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap();
+    let manual_policy_error = service.finalize(&draft.id).await.unwrap_err();
+    assert!(manual_policy_error
+        .to_string()
+        .contains("automatic plan approval, and automatic PR merge"));
+    service
+        .update_settings(UpdateAutomationSettingsInput {
+            id: draft.id.clone(),
+            name: None,
+            max_runs: None,
+            max_consecutive_failures: None,
+            plan_approval_mode: Some(AutomationPlanApprovalMode::Automatic),
+            pr_merge_mode: Some(AutomationPrMergeMode::Automatic),
+            plan_deep_verification: None,
+        })
+        .await
+        .unwrap();
+
+    let premature = service.finalize(&draft.id).await.unwrap_err();
+    assert!(premature
+        .to_string()
+        .contains("requires a current verified decomposition"));
+
+    let verifier = AutomationDecompositionVerifier::new(
+        service,
+        Arc::new(StaticDecompositionVerifierInvoker {
+            raw_output: approved_decomposition_output(),
+            mutate_repo: None,
+        }),
+        Duration::from_secs(30),
+    );
+    let outcome = verifier.verify_and_finalize(&draft.id).await.unwrap();
+
+    assert_eq!(outcome.automation.status, AutomationStatus::Active);
+    let stored = automation_repo.get_by_id(&draft.id).await.unwrap().unwrap();
+    let state = parse_authoring_state(stored.authoring_state_json.as_deref()).unwrap();
+    assert_eq!(
+        state.verification_status,
+        AutomationDecompositionVerificationStatus::Verified
+    );
+}
+
+#[tokio::test]
+async fn trusted_decomposition_verification_rejects_stale_agent_output() {
+    let (service, automation_repo, _run_repo, _artifact_repo) =
+        service_with_emitter_and_artifacts(Arc::new(NoopAutomationEventEmitter));
+    let draft = service
+        .create_draft(CreateAutomationDraftInput {
+            id: None,
+            project_id: ProjectId::from_string("project-1".to_string()),
+            name: Some("Stale verifier".to_string()),
+            setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            authoring_mode: Some(AutomationAuthoringMode::TrustedAutoFinalize),
+        })
+        .await
+        .unwrap();
+    service
+        .update_config(UpdateAutomationConfigInput {
+            id: draft.id.clone(),
+            goal_prompt: Some("Ship without accepting stale verification.".to_string()),
+            first_run_prompt: Some(
+                "Implement phase one with focused tests and publish the PR.".to_string(),
+            ),
+            goal_items_json: Some(
+                json!([{ "id": "phase-1", "title": "Initial", "status": "pending" }]).to_string(),
+            ),
+            spec_content: Some("# Spec\n\nImplement the initial phase.".to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap();
+    service
+        .update_settings(UpdateAutomationSettingsInput {
+            id: draft.id.clone(),
+            name: None,
+            max_runs: None,
+            max_consecutive_failures: None,
+            plan_approval_mode: Some(AutomationPlanApprovalMode::Automatic),
+            pr_merge_mode: Some(AutomationPrMergeMode::Automatic),
+            plan_deep_verification: None,
+        })
+        .await
+        .unwrap();
+    let verifier = AutomationDecompositionVerifier::new(
+        service,
+        Arc::new(StaticDecompositionVerifierInvoker {
+            raw_output: approved_decomposition_output(),
+            mutate_repo: Some(automation_repo.clone()),
+        }),
+        Duration::from_secs(30),
+    );
+
+    let error = verifier.verify_and_finalize(&draft.id).await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("changed while decomposition verification was running"));
+    let stored = automation_repo.get_by_id(&draft.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationStatus::Draft);
+    assert_ne!(
+        parse_authoring_state(stored.authoring_state_json.as_deref())
+            .unwrap()
+            .verification_status,
+        AutomationDecompositionVerificationStatus::Verified
+    );
 }

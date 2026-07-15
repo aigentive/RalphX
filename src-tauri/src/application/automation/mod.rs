@@ -11,6 +11,7 @@ pub mod review_gate;
 pub mod scheduler;
 pub mod service;
 pub mod transition;
+pub(crate) mod utility_agent;
 
 #[cfg(test)]
 mod decomposition_verifier_tests;

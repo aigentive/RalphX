@@ -65,6 +65,18 @@ export const AutomationCompletionSignalSchema = z.enum([
   "agent_completed",
 ]);
 
+export const AutomationAuthoringModeSchema = z.enum([
+  "reviewed",
+  "trusted_auto_finalize",
+]);
+
+export const AutomationDecompositionVerificationStatusSchema = z.enum([
+  "unverified",
+  "verified",
+  "needs_revision",
+  "failed",
+]);
+
 export const AutomationSchema = z.object({
   id: z.string(),
   project_id: z.string(),
@@ -75,6 +87,10 @@ export const AutomationSchema = z.object({
   goal_prompt: z.string(),
   setup_conversation_id: z.string().nullable(),
   spec_artifact_id: z.string().nullable(),
+  authoring_mode: AutomationAuthoringModeSchema.default("reviewed"),
+  decomposition_verification_status:
+    AutomationDecompositionVerificationStatusSchema.default("unverified"),
+  decomposition_verification_verdict_json: z.string().nullable().default(null),
   provider_harness: z.string(),
   model_id: z.string(),
   logical_effort: z.string().nullable(),
