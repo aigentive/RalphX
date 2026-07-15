@@ -53,6 +53,8 @@ macro_rules! register_tauri_commands {
             commands::persona_commands::create_persona_draft,
             commands::persona_commands::update_persona,
             commands::persona_commands::approve_persona,
+            commands::persona_commands::reseed_persona_draft,
+            commands::persona_commands::approve_persona_as_new,
             commands::persona_commands::archive_persona,
             commands::persona_commands::delete_persona_draft,
             commands::persona_builder_commands::create_persona_builder_conversation,

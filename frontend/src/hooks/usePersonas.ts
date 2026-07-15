@@ -3,12 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { chatKeys } from "@/hooks/useChat";
 import {
+  IngestPersonaContextInputSchema,
   PersonaIngestManifestSchema,
   PersonaBuilderIngestStatusSchema,
   PersonaResponseSchema,
   transformPersona,
   type Persona,
   type PersonaBuilderIngestStatus,
+  type IngestPersonaContextInput,
   type PersonaIngestManifest,
 } from "@/types/persona";
 
@@ -36,10 +38,7 @@ export type UpdatePersonaInput = {
   description?: string;
   body?: string;
 };
-export type IngestPersonaContextInput = {
-  conversationId: string;
-  pickedPath: string;
-};
+export type { IngestPersonaContextInput } from "@/types/persona";
 export type SwitchConversationPersonaInput = {
   conversationId: string;
   personaId: string | null;
@@ -98,7 +97,9 @@ export async function deletePersonaDraft(id: string): Promise<void> {
 export async function ingestPersonaContext(
   input: IngestPersonaContextInput,
 ): Promise<PersonaIngestManifest> {
-  const raw = await invoke<unknown>("ingest_persona_context", { input });
+  const raw = await invoke<unknown>("ingest_persona_context", {
+    input: IngestPersonaContextInputSchema.parse(input),
+  });
   return PersonaIngestManifestSchema.parse(raw);
 }
 

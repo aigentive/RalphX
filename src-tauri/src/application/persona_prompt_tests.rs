@@ -16,6 +16,8 @@ fn persona_with(slug: &str, name: &str, content: &str) -> Persona {
         version: 7,
         content_hash: "content-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,
