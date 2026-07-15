@@ -41,6 +41,8 @@ fn persona(id: &str, slug: &str, status: PersonaStatus, content: &str) -> Person
         version: 1,
         content_hash: format!("{slug}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,
@@ -67,6 +69,10 @@ impl PersonaRepository for FailingPersonaRepository {
 
     async fn get_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
         Err(AppError::Database("unexpected slug read".to_string()))
+    }
+
+    async fn get_active_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
+        Err(AppError::Database("unexpected active slug read".to_string()))
     }
 
     async fn list(&self) -> AppResult<Vec<Persona>> {
@@ -107,6 +113,10 @@ impl PersonaRepository for CountingPersonaRepository {
 
     async fn get_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
         Err(AppError::Database("unexpected slug read".to_string()))
+    }
+
+    async fn get_active_by_slug(&self, _: &str) -> AppResult<Option<Persona>> {
+        Err(AppError::Database("unexpected active slug read".to_string()))
     }
 
     async fn list(&self) -> AppResult<Vec<Persona>> {

@@ -10,7 +10,7 @@ use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
-const PERSONA_COLUMNS: &str = "id, slug, name, description, content, status, version, content_hash, source_session_id, source_json, created_at, updated_at";
+const PERSONA_COLUMNS: &str = "id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
 
 pub struct SqlitePersonaRepository {
     db: DbConnection,
@@ -70,6 +70,10 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
         version: row.get("version")?,
         content_hash: row.get("content_hash")?,
         source_session_id: row.get("source_session_id")?,
+        source_persona_id: row
+            .get::<_, Option<String>>("source_persona_id")?
+            .map(PersonaId::from),
+        source_content_hash: row.get("source_content_hash")?,
         source_json: row.get("source_json")?,
         created_at,
         updated_at,
@@ -112,6 +116,11 @@ impl PersonaRepository for SqlitePersonaRepository {
         let version = persona.version;
         let content_hash = persona.content_hash.clone();
         let source_session_id = persona.source_session_id.clone();
+        let source_persona_id = persona
+            .source_persona_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let source_content_hash = persona.source_content_hash.clone();
         let source_json = persona.source_json.clone();
         let created_at = persona.created_at.to_rfc3339();
         let updated_at = persona.updated_at.to_rfc3339();
@@ -122,8 +131,9 @@ impl PersonaRepository for SqlitePersonaRepository {
                 conn.execute(
                     "INSERT INTO personas (
                         id, slug, name, description, content, status, version, content_hash,
-                        source_session_id, source_json, created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        source_session_id, source_persona_id, source_content_hash, source_json,
+                        created_at, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     rusqlite::params![
                         id,
                         slug,
@@ -134,6 +144,8 @@ impl PersonaRepository for SqlitePersonaRepository {
                         version,
                         content_hash,
                         source_session_id,
+                        source_persona_id,
+                        source_content_hash,
                         source_json,
                         created_at,
                         updated_at,
@@ -164,6 +176,19 @@ impl PersonaRepository for SqlitePersonaRepository {
             .query_optional(move |conn| {
                 conn.query_row(
                     &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE slug = ?1 ORDER BY created_at DESC LIMIT 1"),
+                    [slug],
+                    persona_from_row,
+                )
+            })
+            .await
+    }
+
+    async fn get_active_by_slug(&self, slug: &str) -> AppResult<Option<Persona>> {
+        let slug = slug.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE slug = ?1 AND status = 'active' LIMIT 1"),
                     [slug],
                     persona_from_row,
                 )
@@ -223,10 +248,16 @@ impl PersonaRepository for SqlitePersonaRepository {
     }
 
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()> {
+        let collision_slug = self
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?
+            .slug;
         let id = id.as_str().to_string();
         self.db
             .run(move |conn| persona_set_status_sync(conn, &id, status))
             .await
+            .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
     }
 
     async fn delete(&self, id: &PersonaId) -> AppResult<()> {

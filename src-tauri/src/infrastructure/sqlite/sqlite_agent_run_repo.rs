@@ -527,6 +527,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         c.upstream_provider as conv_upstream_provider,
                         c.provider_profile as conv_provider_profile,
                         c.persona_id as conv_persona_id,
+                        c.builder_draft_id as conv_builder_draft_id,
                         c.coordination_mode as conv_coordination_mode,
                         c.automation_id,
                         c.automation_run_id,
@@ -594,6 +595,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             row.get("conv_upstream_provider")?;
                         let provider_profile: Option<String> = row.get("conv_provider_profile")?;
                         let persona_id: Option<String> = row.get("conv_persona_id")?;
+                        let builder_draft_id: Option<String> =
+                            row.get("conv_builder_draft_id")?;
                         let coordination_mode = row
                             .get::<_, Option<String>>("conv_coordination_mode")
                             .ok()
@@ -616,6 +619,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             provider_profile,
                             agent_mode: None,
                             persona_id,
+                            builder_draft_id,
                             coordination_mode,
                             automation_id: row
                                 .get::<_, Option<String>>("automation_id")?

@@ -49,6 +49,8 @@ pub async fn save_persona_draft(
                         source_session_id: request
                             .source_session_id
                             .or_else(|| caller_session_id(&headers)),
+                        source_persona_id: None,
+                        source_content_hash: None,
                     },
                 )
                 .await

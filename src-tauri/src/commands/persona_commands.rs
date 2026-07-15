@@ -104,6 +104,8 @@ pub async fn create_persona_draft_for_state(
                 slug: input.slug,
                 content,
                 source_session_id: input.source_session_id,
+                source_persona_id: None,
+                source_content_hash: None,
             },
         )
         .await

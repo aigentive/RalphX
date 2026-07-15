@@ -30,6 +30,8 @@ pub struct SavePersonaDraftInput {
     pub slug: String,
     pub content: String,
     pub source_session_id: Option<String>,
+    pub source_persona_id: Option<PersonaId>,
+    pub source_content_hash: Option<String>,
 }
 
 /// Application authority for persona lifecycle changes.
@@ -63,7 +65,9 @@ impl PersonaService {
     ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let parsed = validate_persona_content(&input.slug, &input.content)?;
-        self.ensure_live_slug_available(&input.slug, None).await?;
+        if input.source_persona_id.is_none() {
+            self.ensure_live_slug_available(&input.slug, None).await?;
+        }
         let now = Utc::now();
         self.persona_repo
             .create(Persona {
@@ -76,6 +80,8 @@ impl PersonaService {
                 version: 1,
                 content_hash: parsed.content_hash,
                 source_session_id: input.source_session_id,
+                source_persona_id: input.source_persona_id,
+                source_content_hash: input.source_content_hash,
                 source_json: "{}".to_string(),
                 created_at: now,
                 updated_at: now,
@@ -111,6 +117,8 @@ impl PersonaService {
         ensure_enabled(feature_enabled)?;
         let persona = self.require_status(id, PersonaStatus::Draft).await?;
         let parsed = validate_persona_content(&persona.slug, &persona.content)?;
+        self.ensure_active_slug_available(&persona.slug, Some(id))
+            .await?;
         self.persona_repo
             .update_content(id, &persona.content, &parsed.content_hash)
             .await?;
@@ -201,6 +209,24 @@ impl PersonaService {
                 && persona.status != PersonaStatus::Archived
                 && excluding.is_none_or(|id| id != &persona.id)
         });
+        if occupied {
+            return Err(AppError::Validation(format!(
+                "Persona slug `{slug}` is already in use"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn ensure_active_slug_available(
+        &self,
+        slug: &str,
+        excluding: Option<&PersonaId>,
+    ) -> AppResult<()> {
+        let occupied = self
+            .persona_repo
+            .get_active_by_slug(slug)
+            .await?
+            .is_some_and(|persona| excluding.is_none_or(|id| id != &persona.id));
         if occupied {
             return Err(AppError::Validation(format!(
                 "Persona slug `{slug}` is already in use"

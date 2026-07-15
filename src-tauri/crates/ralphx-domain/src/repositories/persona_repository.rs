@@ -11,6 +11,8 @@ pub trait PersonaRepository: Send + Sync {
 
     async fn get_by_slug(&self, slug: &str) -> AppResult<Option<Persona>>;
 
+    async fn get_active_by_slug(&self, slug: &str) -> AppResult<Option<Persona>>;
+
     async fn list(&self) -> AppResult<Vec<Persona>>;
 
     async fn list_by_status(&self, status: PersonaStatus) -> AppResult<Vec<Persona>>;

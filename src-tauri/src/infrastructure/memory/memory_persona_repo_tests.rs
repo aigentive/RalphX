@@ -15,10 +15,45 @@ fn persona(slug: &str, status: PersonaStatus) -> Persona {
         version: 1,
         content_hash: format!("hash-{slug}"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,
     }
+}
+
+#[tokio::test]
+async fn memory_persona_repo_round_trips_update_provenance() {
+    let repo = MemoryPersonaRepository::new();
+    let mut expected = persona("reviewer", PersonaStatus::Draft);
+    expected.source_persona_id = Some(PersonaId::from("source-persona"));
+    expected.source_content_hash = Some("source-hash".to_string());
+
+    repo.create(expected.clone()).await.unwrap();
+    let actual = repo.get_by_id(&expected.id).await.unwrap().unwrap();
+
+    assert_eq!(actual.source_persona_id, expected.source_persona_id);
+    assert_eq!(actual.source_content_hash, expected.source_content_hash);
+}
+
+#[tokio::test]
+async fn memory_persona_repo_allows_drafts_but_rejects_duplicate_active_slugs() {
+    let repo = MemoryPersonaRepository::new();
+    let first_draft = persona("reviewer", PersonaStatus::Draft);
+    let second_draft = persona("reviewer", PersonaStatus::Draft);
+    repo.create(first_draft.clone()).await.unwrap();
+    repo.create(second_draft).await.unwrap();
+    repo.set_status(&first_draft.id, PersonaStatus::Active)
+        .await
+        .unwrap();
+
+    let third_draft = persona("reviewer", PersonaStatus::Draft);
+    repo.create(third_draft.clone()).await.unwrap();
+    assert!(repo
+        .set_status(&third_draft.id, PersonaStatus::Active)
+        .await
+        .is_err());
 }
 
 #[tokio::test]

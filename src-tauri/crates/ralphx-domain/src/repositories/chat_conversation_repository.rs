@@ -124,6 +124,13 @@ pub trait ChatConversationRepository: Send + Sync {
         persona_id: Option<&str>,
     ) -> AppResult<()>;
 
+    /// Set or clear the persona draft owned by a builder conversation.
+    async fn update_builder_draft_binding(
+        &self,
+        id: &ChatConversationId,
+        builder_draft_id: Option<&str>,
+    ) -> AppResult<()>;
+
     /// Update the conversation-level team coordination mode.
     async fn update_coordination_mode(
         &self,

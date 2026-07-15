@@ -18,6 +18,38 @@ async fn test_create_and_get() {
 }
 
 #[tokio::test]
+async fn test_update_builder_draft_binding_sets_and_clears() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation = ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_builder_draft_binding(&conversation.id, Some("draft-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id
+            .as_deref(),
+        Some("draft-1")
+    );
+
+    repo.update_builder_draft_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id,
+        None
+    );
+}
+
+#[tokio::test]
 async fn test_get_by_context() {
     let repo = MemoryChatConversationRepository::new();
     let session_id = IdeationSessionId::new();

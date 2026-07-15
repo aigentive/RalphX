@@ -252,6 +252,19 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(())
     }
 
+    async fn update_builder_draft_binding(
+        &self,
+        id: &ChatConversationId,
+        builder_draft_id: Option<&str>,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.builder_draft_id = builder_draft_id.map(str::to_string);
+            conversation.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
     async fn update_coordination_mode(
         &self,
         id: &ChatConversationId,
