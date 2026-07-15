@@ -423,8 +423,11 @@ mod v20260712190416_branch_update_authority;
 mod v20260712190416_branch_update_authority_tests;
 mod v20260713063349_persona_run_attribution;
 mod v20260713131052_disable_auto_followup_by_default;
+mod v20260715172058_persona_update_draft_provenance;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
+#[cfg(test)]
+mod v20260715172058_persona_update_draft_provenance_tests;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -545,7 +548,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260713131052;
+pub const SCHEMA_VERSION: i64 = 20260715172058;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1514,6 +1517,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260713131052,
         name: "disable_auto_followup_by_default",
         migrate: v20260713131052_disable_auto_followup_by_default::migrate,
+    },
+    Migration {
+        version: 20260715172058,
+        name: "persona_update_draft_provenance",
+        migrate: v20260715172058_persona_update_draft_provenance::migrate,
     },
 ];
 
