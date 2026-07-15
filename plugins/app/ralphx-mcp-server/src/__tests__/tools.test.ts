@@ -236,15 +236,15 @@ describe('getToolRecoveryHint', () => {
 
 
 
-  it('returns verifier-debugging guidance for get_child_session_status', () => {
+  it('returns child-debugging guidance for get_child_session_status', () => {
     const hint = getToolRecoveryHint('get_child_session_status');
     expect(hint).toContain('include_recent_messages=true');
     expect(hint).toContain('Example payload:');
   });
 
-  it('returns invariant-context guidance for send_ideation_session_message', () => {
+  it('returns full-context guidance for send_ideation_session_message', () => {
     const hint = getToolRecoveryHint('send_ideation_session_message');
-    expect(hint).toContain('SESSION_ID, ROUND, critic/schema');
+    expect(hint).toContain('full task context');
     expect(hint).toContain('Example payload:');
   });
 
@@ -731,12 +731,12 @@ describe('New team tool definitions', () => {
       expect(artifactType.enum).toEqual(['TeamResearch', 'TeamAnalysis', 'TeamSummary']);
     });
 
-    it('should document parent-session targeting for verification flows', () => {
-      expect(tool?.description).toContain('PARENT ideation session_id');
-      expect(tool?.description).toContain('backend remaps it to the parent ideation session automatically');
-      expect(tool?.description).toContain('general team-artifact path');
+    it('should expose only the general team-artifact contract', () => {
+      expect(tool?.description).toContain('specialist findings');
+      expect(tool?.description).not.toContain('verification child');
+      expect(tool?.description).not.toContain('typed verification-finding');
       expect((tool?.inputSchema.properties?.session_id as any)?.description).toContain(
-        'auto-remapped to that parent'
+        'owns this team artifact'
       );
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
         session_id: 'parent-session-id',
@@ -759,10 +759,9 @@ describe('New team tool definitions', () => {
       expect(tool?.inputSchema.required).toContain('session_id');
     });
 
-    it('should document round-oriented verification lookup guidance', () => {
-      expect(tool?.description).toContain('PARENT ideation session_id');
-      expect(tool?.description).toContain('backend remaps it to the parent ideation session automatically');
+    it('should document the general raw artifact lookup', () => {
       expect(tool?.description).toContain('raw artifact listing surface');
+      expect(tool?.description).not.toContain('verification child');
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
         session_id: 'parent-session-id',
       });
@@ -797,12 +796,12 @@ describe('New team tool definitions', () => {
   describe('get_child_session_status', () => {
     const tool = allTools.find((t) => t.name === 'get_child_session_status');
 
-    it('should document verifier debugging guidance and example payload', () => {
+    it('should document child debugging guidance and example payload', () => {
       expect(tool).toBeDefined();
       expect(tool?.description).toContain('include_recent_messages=true');
       expect(tool?.description).toContain('last assistant/tool outputs');
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        session_id: 'verification-child-session-id',
+        session_id: 'child-session-id',
         include_recent_messages: true,
         message_limit: 10,
       });
@@ -812,16 +811,15 @@ describe('New team tool definitions', () => {
   describe('send_ideation_session_message', () => {
     const tool = allTools.find((t) => t.name === 'send_ideation_session_message');
 
-    it('should document full-context verifier nudges and example payload', () => {
+    it('should document full-context nudges without retired verifier protocol', () => {
       expect(tool).toBeDefined();
-      expect(tool?.description).toContain('repeat the full invariant context');
-      expect(tool?.description).toContain('SESSION_ID, ROUND, expected critic/schema');
+      expect(tool?.description).toContain('full task context');
+      expect(tool?.description).not.toContain('verification child');
       expect((tool?.inputSchema as any).examples?.[0]).toMatchObject({
-        session_id: 'verification-child-session-id',
+        session_id: 'child-session-id',
       });
-      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('SESSION_ID');
-      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('ROUND: 2');
-      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('publish_verification_finding');
+      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).toContain('team artifact');
+      expect(((tool?.inputSchema as any).examples?.[0]?.message as string)).not.toContain('publish_verification_finding');
     });
   });
 

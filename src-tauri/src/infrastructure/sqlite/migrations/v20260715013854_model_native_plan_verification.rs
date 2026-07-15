@@ -34,6 +34,10 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
     add_column_if_not_exists(conn, "agent_runs", "action_kind", "TEXT NULL")?;
     add_column_if_not_exists(conn, "agent_runs", "action_context_id", "TEXT NULL")?;
     add_column_if_not_exists(conn, "agent_runs", "action_target_id", "TEXT NULL")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runs_action_lookup
+         ON agent_runs(action_kind, action_context_id, action_target_id, started_at DESC);",
+    )?;
 
     conn.execute(
         "UPDATE ideation_sessions

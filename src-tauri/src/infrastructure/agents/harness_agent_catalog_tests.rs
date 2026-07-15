@@ -954,7 +954,7 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "edit_plan_artifact",
         "get_session_plan",
         "get_plan_verification",
-        "stop_verification",
+        "complete_plan_verification",
         "delegate_start",
         "delegate_wait",
         "delegate_cancel",
@@ -2049,24 +2049,6 @@ fn codex_ideation_pilot_prompts_declare_codex_native_delegation_contract() {
 }
 
 #[test]
-fn codex_ideation_prompt_prioritizes_explicit_reverify_requests() {
-    let root = project_root();
-    let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Codex)
-        .expect("missing codex prompt for ralphx-ideation");
-
-    assert!(
-        prompt.contains("If the user explicitly asks to re-run or start a fresh verification round"),
-        "codex ideation prompt must prioritize explicit rerun requests over stale terminal verification results"
-    );
-    assert!(
-        prompt.contains(
-            "start the fresh verification child instead of summarizing blockers and reopening choices"
-        ),
-        "codex ideation prompt must not reopen planning choices when the user already requested a rerun"
-    );
-}
-
-#[test]
 fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
     let root = project_root();
     let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Codex)
@@ -2080,6 +2062,40 @@ fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
         prompt.contains("Do not narrate routine refreshes to the user unless the check changes the answer"),
         "codex ideation prompt must avoid user-facing recovery chatter on ordinary resumed follow-ups"
     );
+}
+
+#[test]
+fn ideation_prompts_preserve_model_native_verification_without_legacy_topology() {
+    let root = project_root();
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", harness)
+            .unwrap_or_else(|| panic!("missing {harness:?} prompt for ralphx-ideation"));
+        assert!(prompt.contains("backend-started Verify Plan"));
+        assert!(prompt.contains("complete_plan_verification"));
+        for retired in [
+            "ralphx-plan-verifier",
+            "create_child_session(purpose: \"verification\")",
+            "stop_verification",
+            "revert_and_skip",
+            "max_rounds",
+        ] {
+            assert!(
+                !prompt.contains(retired),
+                "{harness:?} ideation prompt still contains retired verification contract {retired}"
+            );
+        }
+    }
+
+    let team_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-ideation-team-lead",
+        AgentPromptHarness::Claude,
+    )
+    .expect("missing Claude prompt for ralphx-ideation-team-lead");
+    assert!(team_prompt.contains("backend-started Verify Plan"));
+    assert!(team_prompt.contains("complete_plan_verification"));
+    assert!(!team_prompt.contains("ralphx-plan-verifier"));
+    assert!(!team_prompt.contains("stop_verification"));
 }
 
 #[test]

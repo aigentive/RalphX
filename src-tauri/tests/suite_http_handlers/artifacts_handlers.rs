@@ -530,11 +530,14 @@ async fn verification_action_can_complete_the_plan_version_it_revises() {
         "the live action authority must follow the version it created"
     );
 
-    let completed = complete_plan_verification_http(State(state.clone()), headers)
+    let completed = complete_plan_verification_http(State(state.clone()), headers.clone())
         .await
         .expect("the live action should complete proof for its revised artifact")
         .0;
     assert_eq!(completed.plan_artifact_id, revised.id);
+    let _ = complete_plan_verification_http(State(state.clone()), headers)
+        .await
+        .expect("retrying an already-recorded completion should be idempotent");
 
     let verified = state
         .app_state
@@ -549,6 +552,20 @@ async fn verification_action_can_complete_the_plan_version_it_revises() {
             .as_ref()
             .map(ArtifactId::as_str),
         Some(revised.id.as_str())
+    );
+    let events = state
+        .app_state
+        .external_events_repo
+        .get_events_after_cursor(&[verified.project_id.as_str().to_string()], 0, 20)
+        .await
+        .expect("external verification events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "ideation:verified")
+            .count(),
+        1,
+        "authoritative completion must emit one ideation:verified event"
     );
 }
 

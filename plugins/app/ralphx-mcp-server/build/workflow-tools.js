@@ -104,23 +104,21 @@ export const WORKFLOW_TOOLS = [
         description: "Create a team artifact documenting research findings, analysis, or summary. " +
             "Automatically sets bucket_id='team-findings' and populates metadata with team info. " +
             "Use for documenting specialist findings, debate analyses, or lead-synthesized summaries. " +
-            "Verification specialists should target the PARENT ideation session_id. If a verification child session_id is passed, the backend remaps it to the parent ideation session automatically. " +
-            "If a caller is retrying after an incomplete run, reuse the same parent session_id and publish a partial artifact rather than omitting the artifact entirely. " +
-            "This is the general team-artifact path, not the typed verification-finding path.",
+            "If a caller is retrying after an incomplete run, reuse the same session_id and publish a partial artifact rather than omitting the artifact entirely.",
         inputSchema: {
             type: "object",
             examples: [
                 {
                     session_id: "parent-session-id",
-                    title: "Completeness: Round 1 cold boot coverage",
-                    content: "{\"status\":\"partial\",\"critic\":\"completeness\",\"round\":1,\"coverage\":\"affected_files\",\"summary\":\"Need one more pass on recovery edge cases\",\"gaps\":[]}",
+                    title: "Cold boot coverage review",
+                    content: "Reviewed recovery paths and identified one remaining cold-boot edge case.",
                     artifact_type: "TeamResearch",
                 },
             ],
             properties: {
                 session_id: {
                     type: "string",
-                    description: "The ideation or execution session ID. For verification critics/specialists the PARENT ideation session ID is canonical; verification child session IDs are auto-remapped to that parent.",
+                    description: "The ideation or execution session ID that owns this team artifact.",
                 },
                 title: {
                     type: "string",
@@ -147,7 +145,6 @@ export const WORKFLOW_TOOLS = [
         name: "get_team_artifacts",
         description: "Retrieve all team artifacts for a session. " +
             "Returns artifacts from the 'team-findings' bucket filtered by session ID. " +
-            "Use the PARENT ideation session_id for verification flows; if a verification child session_id is passed, the backend remaps it to the parent ideation session automatically. " +
             "This is the raw artifact listing surface for cases where you genuinely need the full unfiltered team-artifact list.",
         inputSchema: {
             type: "object",

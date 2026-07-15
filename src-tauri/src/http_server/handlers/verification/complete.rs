@@ -48,12 +48,55 @@ pub async fn complete_plan_verification_http(
         .ok_or_else(|| {
             HttpError::validation("Verification run is missing its session binding".to_string())
         })?;
-    let artifact_id = complete_plan_verification(&state.app_state, &session_id, run_id)
+    let completion = complete_plan_verification(&state.app_state, &session_id, run_id)
         .await
         .map_err(map_app_err_local)?;
 
+    if completion.newly_recorded {
+        if let Some(session) = state
+            .app_state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .map_err(map_app_err_local)?
+        {
+            let project_id = session.project_id.as_str().to_string();
+            let payload = serde_json::json!({
+                "session_id": session_id.as_str(),
+                "project_id": project_id,
+                "plan_artifact_id": completion.artifact_id.clone(),
+                "status": "verified",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            });
+            if let Some(publisher) = state.app_state.webhook_publisher.as_ref() {
+                if let Err(error) = crate::domain::services::emit_external_webhook_event(
+                    "ideation:verified",
+                    session.project_id.as_str(),
+                    payload,
+                    &state.app_state.external_events_repo,
+                    publisher,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "Failed to emit ideation:verified webhook event");
+                }
+            } else if let Err(error) = state
+                .app_state
+                .external_events_repo
+                .insert_event(
+                    "ideation:verified",
+                    session.project_id.as_str(),
+                    &payload.to_string(),
+                )
+                .await
+            {
+                tracing::warn!(%error, "Failed to persist ideation:verified event");
+            }
+        }
+    }
+
     Ok(Json(CompletePlanVerificationResponse {
         status: "verified",
-        plan_artifact_id: artifact_id,
+        plan_artifact_id: completion.artifact_id,
     }))
 }

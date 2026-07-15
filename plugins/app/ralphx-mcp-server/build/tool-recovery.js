@@ -34,29 +34,29 @@ export function getToolRecoveryHintFromRegistry(tools, toolName) {
         case "create_team_artifact": {
             const examples = formatToolExamples(tool);
             return [
-                "Use the PARENT ideation session_id as the canonical target. If a verification child session id is passed, the backend remaps it to the parent automatically.",
-                "Use this for general specialist findings and team summaries. It is not the typed verification-finding path.",
+                "Use the ideation or execution session that owns the team work as the canonical target.",
+                "Use this for specialist findings and team summaries.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
         case "get_team_artifacts": {
             const examples = formatToolExamples(tool);
             return [
-                "Read artifacts from the PARENT ideation session_id as the canonical target. If a verification child session id is passed, the backend remaps it to the parent automatically.",
+                "Read artifacts from the ideation or execution session that owns the team work.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
         case "get_child_session_status": {
             const examples = formatToolExamples(tool);
             return [
-                "When debugging a verification child, set include_recent_messages=true so you can inspect the last assistant/tool outputs.",
+                "Set include_recent_messages=true when you need the child agent's latest assistant/tool outputs.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
         case "send_ideation_session_message": {
             const examples = formatToolExamples(tool);
             return [
-                "When nudging a verifier/critic, repeat full invariant context: SESSION_ID, ROUND, critic/schema, and explicit parent-session target.",
+                "Include the full task context and intended outcome when nudging another ideation session.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }

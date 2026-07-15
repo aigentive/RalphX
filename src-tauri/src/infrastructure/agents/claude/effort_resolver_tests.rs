@@ -24,18 +24,6 @@ fn test_effort_bucket_mapping_primary_agents() {
 }
 
 #[test]
-fn test_effort_bucket_mapping_verifier() {
-    assert_eq!(
-        effort_bucket_for_agent("ralphx-plan-verifier"),
-        Some(EffortBucket::Verifier)
-    );
-    assert_eq!(
-        effort_bucket_for_agent("ralphx:ralphx-plan-verifier"),
-        Some(EffortBucket::Verifier)
-    );
-}
-
-#[test]
 fn test_effort_bucket_mapping_primary_agents_fully_qualified() {
     assert_eq!(
         effort_bucket_for_agent("ralphx:ralphx-ideation"),
@@ -61,11 +49,6 @@ fn test_effort_bucket_mapping_legacy_aliases() {
             name
         );
     }
-
-    assert_eq!(
-        effort_bucket_for_agent("plan-verifier"),
-        Some(EffortBucket::Verifier)
-    );
 }
 
 #[test]

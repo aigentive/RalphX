@@ -9,7 +9,8 @@ use std::str::FromStr;
 use crate::application::git_service::GitService;
 use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::commands::ideation_commands::{
-    apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse,
+    apply_pending_proposals_core, apply_proposals_core, is_local_proposal, ApplyProposalsInput,
+    TaskProposalResponse,
 };
 use crate::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
@@ -966,35 +967,9 @@ pub async fn finalize_proposals_impl(
     }
     // ─── End Acceptance Gate ────────────────────────────────────────────────────
 
-    // Short-circuit if no local proposals — all have been migrated to foreign projects
-    if count_local == 0 {
-        // All proposals are foreign (migrated) — transition session to Accepted
-        state
-            .ideation_session_repo
-            .update_status(&session_id_typed, IdeationSessionStatus::Accepted)
-            .await?;
-        return Ok(crate::http_server::types::FinalizeProposalsResponse {
-            created_task_ids: vec![],
-            dependencies_created: 0,
-            tasks_created: 0,
-            message: Some(format!(
-                "No local proposals to finalize ({} foreign skipped)",
-                count_foreign
-            )),
-            session_status: "accepted".to_string(),
-            execution_plan_id: None,
-            warnings: vec![],
-            project_id: session.project_id.to_string(),
-            skipped_foreign_count: count_foreign,
-            any_ready_tasks: false,
-            status: "success".to_string(),
-            session_title: session.title.clone(),
-            project_name: Some(project.name.clone()),
-        });
-    }
-
     let proposal_ids: Vec<String> = local_proposals
         .into_iter()
+        .chain(foreign_proposals.into_iter())
         .map(|p| p.id.as_str().to_string())
         .collect();
 
@@ -1038,23 +1013,17 @@ pub async fn finalize_proposals_impl(
 /// # Errors
 /// - `AppError::NotFound` if session or project not found
 /// - Errors from `apply_proposals_core`
-pub async fn apply_proposals_core_for_session(
+pub async fn apply_pending_proposals_core_for_session(
     state: &AppState,
     session_id: &str,
 ) -> AppResult<crate::commands::ideation_commands::ApplyProposalsResult> {
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
 
-    let session = state
+    let _session = state
         .ideation_session_repo
         .get_by_id(&session_id_typed)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
-
-    let project = state
-        .project_repo
-        .get_by_id(&session.project_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Project {} not found", session.project_id)))?;
 
     let all_proposals = state
         .task_proposal_repo
@@ -1065,12 +1034,8 @@ pub async fn apply_proposals_core_for_session(
         .filter(|p| p.archived_at.is_none())
         .collect();
 
-    let project_dir = std::fs::canonicalize(&project.working_directory)
-        .unwrap_or_else(|_| PathBuf::from(&project.working_directory));
-
     let proposal_ids: Vec<String> = active_proposals
         .into_iter()
-        .filter(|p| is_local_proposal(p, &project_dir))
         .map(|p| p.id.as_str().to_string())
         .collect();
 
@@ -1081,7 +1046,7 @@ pub async fn apply_proposals_core_for_session(
         base_branch_override: None,
     };
 
-    apply_proposals_core(state, input).await
+    apply_pending_proposals_core(state, input).await
 }
 
 // ============================================================================

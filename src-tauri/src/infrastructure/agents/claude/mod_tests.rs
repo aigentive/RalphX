@@ -1517,13 +1517,13 @@ fn test_materialize_generated_plugin_dir_skips_canonical_agent_symlinks_outside_
 #[test]
 fn test_materialize_generated_plugin_dir_renders_canonical_claude_max_turns() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
-    let agent_root = root.join("agents/ralphx-plan-verifier");
+    let agent_root = root.join("agents/ralphx-utility-session-namer");
     std::fs::create_dir_all(agent_root.join("claude")).expect("create canonical claude dir");
     std::fs::write(
         agent_root.join("agent.yaml"),
-        r#"name: ralphx-plan-verifier
-role: plan_verifier
-description: Dedicated plan verification agent that runs the adversarial round loop for ideation plans.
+        r#"name: ralphx-utility-session-namer
+role: session_namer
+description: Test-only canonical agent for generated plugin coverage.
 "#,
     )
     .expect("write shared definition");
@@ -1539,20 +1539,21 @@ max_turns: 80
     .expect("write claude metadata");
     std::fs::write(
         agent_root.join("claude/prompt.md"),
-        "Canonical plan verifier prompt",
+        "Canonical test agent prompt",
     )
     .expect("write claude prompt");
 
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"));
+    let generated_prompt =
+        read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"));
 
     assert!(
         generated_prompt.contains("maxTurns: 80"),
         "expected canonical claude maxTurns in generated frontmatter"
     );
     assert!(
-        generated_prompt.contains("Canonical plan verifier prompt"),
+        generated_prompt.contains("Canonical test agent prompt"),
         "expected canonical prompt body to be preserved"
     );
 }
@@ -1661,7 +1662,7 @@ fn test_materialize_generated_plugin_dir_prefers_root_canonical_claude_disallowe
     let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
     let generated_dir =
         materialize_generated_plugin_dir(&plugin_dir).expect("materialize generated plugin dir");
-    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"));
+    let generated_prompt = read_test_file(generated_dir.join("agents/ralphx-ideation.md"));
     let (frontmatter, _) = split_frontmatter(&generated_prompt);
     let disallowed_tools = frontmatter["disallowedTools"]
         .as_sequence()
@@ -1672,12 +1673,8 @@ fn test_materialize_generated_plugin_dir_prefers_root_canonical_claude_disallowe
 
     assert_eq!(
         disallowed_tools,
-        vec!["Write", "Edit", "NotebookEdit"],
+        vec!["Write", "Edit", "NotebookEdit", "Task(ralphx:*)"],
         "expected root canonical Claude disallowedTools in generated frontmatter"
-    );
-    assert!(
-        generated_prompt.contains("maxTurns: 80"),
-        "legacy max_turns should still flow through when root metadata does not override it"
     );
 }
 
@@ -1783,16 +1780,16 @@ fn generated_plugin_agents_contain_no_persona_content() {
 fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_local_bundle_is_incomplete(
 ) {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
-    std::fs::create_dir_all(root.join("agents/ralphx-plan-verifier/claude"))
+    std::fs::create_dir_all(root.join("agents/ralphx-utility-session-namer/claude"))
         .expect("create canonical claude dir");
     std::fs::write(
-        root.join("agents/ralphx-plan-verifier/agent.yaml"),
-        "name: ralphx-plan-verifier\nrole: plan_verifier\n",
+        root.join("agents/ralphx-utility-session-namer/agent.yaml"),
+        "name: ralphx-utility-session-namer\nrole: session_namer\n",
     )
     .expect("write shared definition");
     std::fs::write(
-        root.join("agents/ralphx-plan-verifier/claude/prompt.md"),
-        "Local canonical verifier prompt",
+        root.join("agents/ralphx-utility-session-namer/claude/prompt.md"),
+        "Local canonical test prompt",
     )
     .expect("write local canonical prompt");
     std::fs::write(
@@ -1833,8 +1830,8 @@ fn test_materialize_generated_plugin_dir_uses_fallback_runtime_entries_when_loca
         "generated plugin should link the runnable fallback runtime bundle"
     );
     assert!(
-        read_test_file(generated_dir.join("agents/ralphx-plan-verifier.md"))
-            .contains("Local canonical verifier prompt"),
+        read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"))
+            .contains("Local canonical test prompt"),
         "generated plugin should keep canonical prompts from the local RalphX checkout"
     );
 }

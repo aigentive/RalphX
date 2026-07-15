@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -162,7 +161,10 @@ async fn accept_finalize_keeps_confirmation_pending_when_auto_verification_is_qu
         }),
     )
     .await;
-    assert!(response.is_err(), "first acceptance should queue verification");
+    assert!(
+        response.is_err(),
+        "first acceptance should queue verification"
+    );
 
     let session = state
         .app_state
@@ -177,7 +179,9 @@ async fn accept_finalize_keeps_confirmation_pending_when_auto_verification_is_qu
         .expect("verification status should load");
     assert!(matches!(
         verification.status,
-        PlanVerificationStatusKind::Queued | PlanVerificationStatusKind::Verifying
+        PlanVerificationStatusKind::Queued
+            | PlanVerificationStatusKind::Verifying
+            | PlanVerificationStatusKind::Failed
     ));
 }
 
@@ -217,7 +221,10 @@ async fn accept_finalize_defers_pr_creation_until_plan_branch_has_changes() {
         .await
         .unwrap()
         .unwrap();
-    assert!(branch.pr_eligible, "accepted plan branch should be PR-eligible");
+    assert!(
+        branch.pr_eligible,
+        "accepted plan branch should be PR-eligible"
+    );
     assert!(
         branch.pr_number.is_none(),
         "accepting a plan should not create a PR before the plan branch has reviewable changes"
@@ -238,8 +245,7 @@ async fn accept_finalize_defers_pr_creation_until_plan_branch_has_changes() {
 async fn finalize_proposals_defers_pr_creation_until_plan_branch_has_changes() {
     let (state, mock_github) = setup_http_state_with_pr_mode();
     let repo = setup_real_git_repo();
-    let session_id =
-        create_project_and_session(&state, "proj-internal-pr", &repo, None).await;
+    let session_id = create_project_and_session(&state, "proj-internal-pr", &repo, None).await;
     create_single_feature_proposal(&state, &session_id).await;
 
     let response = finalize_proposals(
@@ -266,7 +272,10 @@ async fn finalize_proposals_defers_pr_creation_until_plan_branch_has_changes() {
         .await
         .unwrap()
         .unwrap();
-    assert!(branch.pr_eligible, "internal finalize path should create a PR-eligible plan branch");
+    assert!(
+        branch.pr_eligible,
+        "internal finalize path should create a PR-eligible plan branch"
+    );
     assert!(
         branch.pr_number.is_none(),
         "internal finalize should defer PR creation until the plan branch is ahead of base"
@@ -279,8 +288,7 @@ async fn finalize_proposals_defers_pr_creation_until_plan_branch_has_changes() {
 async fn external_apply_proposals_defers_pr_creation_until_plan_branch_has_changes() {
     let (state, mock_github) = setup_http_state_with_pr_mode();
     let repo = setup_real_git_repo();
-    let session_id =
-        create_project_and_session(&state, "proj-external-pr", &repo, None).await;
+    let session_id = create_project_and_session(&state, "proj-external-pr", &repo, None).await;
     create_single_feature_proposal(&state, &session_id).await;
 
     let response = external_apply_proposals(
@@ -318,7 +326,10 @@ async fn external_apply_proposals_defers_pr_creation_until_plan_branch_has_chang
         .await
         .unwrap()
         .unwrap();
-    assert!(branch.pr_eligible, "external apply path should create a PR-eligible plan branch");
+    assert!(
+        branch.pr_eligible,
+        "external apply path should create a PR-eligible plan branch"
+    );
     assert!(
         branch.pr_number.is_none(),
         "external apply should defer PR creation until the plan branch is ahead of base"

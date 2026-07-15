@@ -143,6 +143,10 @@ async fn complete_plan_verification_requires_live_exact_action_authority() {
         .complete_plan_verification(&session.id, &valid.id.as_str(), "artifact-current")
         .await
         .unwrap());
+    assert!(!session_repo
+        .complete_plan_verification(&session.id, &valid.id.as_str(), "artifact-current")
+        .await
+        .unwrap());
 
     let verified = session_repo.get_by_id(&session.id).await.unwrap().unwrap();
     assert_eq!(

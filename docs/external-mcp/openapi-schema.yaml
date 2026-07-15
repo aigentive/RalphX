@@ -980,7 +980,7 @@ paths:
                 session_id: "sess-xyz789"
       responses:
         "200":
-          description: Verification triggered
+          description: Verification request outcome
           content:
             application/json:
               schema:
@@ -988,8 +988,10 @@ paths:
                 properties:
                   session_id:
                     type: string
-                  triggered:
-                    type: boolean
+                  status:
+                    type: string
+                    enum: [queued, already_queued, already_running, already_verified, no_plan]
+                required: [session_id, status]
 
   /mcp#v1_get_plan_verification:
     post:

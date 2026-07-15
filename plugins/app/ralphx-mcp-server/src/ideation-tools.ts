@@ -472,8 +472,8 @@ export const IDEATION_TOOLS: Tool[] = [
         },
         purpose: {
           type: "string",
-          enum: ["general", "verification"],
-          description: "Purpose of the child session. 'general' for regular follow-on sessions (default), 'verification' for plan verification sessions that run in the background.",
+          enum: ["general"],
+          description: "Purpose of the child session. Only general follow-on sessions are supported.",
         },
         is_external_trigger: {
           type: "boolean",

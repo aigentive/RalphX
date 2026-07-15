@@ -28,7 +28,11 @@ fn setup_test_db() -> Connection {
             ('unverified', 'artifact-draft', 'unverified', 0, 'active', 'general'),
             ('stuck', 'artifact-stuck', 'reviewing', 1, 'active', 'general'),
             ('legacy-child', NULL, 'reviewing', 1, 'active', 'verification');
-         CREATE TABLE agent_runs (id TEXT PRIMARY KEY, status TEXT NOT NULL);",
+         CREATE TABLE agent_runs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+         );",
     )
     .expect("create preceding schema");
     conn
@@ -47,6 +51,17 @@ fn test_migration_adds_policy_proof_and_action_metadata() {
         )
         .unwrap();
     assert_eq!(policy, (0, None));
+
+    let action_lookup_index: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_agent_runs_action_lookup'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("action lookup index should exist");
+    assert!(action_lookup_index
+        .contains("action_kind, action_context_id, action_target_id, started_at DESC"));
 
     let proofs = ["verified", "ambiguous", "unverified"].map(|id| {
         conn.query_row(

@@ -651,6 +651,10 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                          updated_at = ?4
                      WHERE id = ?1
                        AND plan_artifact_id = ?2
+                       AND (
+                         verified_plan_artifact_id IS NOT ?2
+                         OR verified_plan_agent_run_id IS NOT ?3
+                       )
                        AND EXISTS (
                          SELECT 1
                          FROM agent_runs ar

@@ -86,6 +86,12 @@ pub struct PlanVerificationStatus {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanVerificationCompletion {
+    pub artifact_id: String,
+    pub newly_recorded: bool,
+}
+
 #[derive(Debug)]
 struct ConversationTarget {
     context_type: ChatContextType,
@@ -292,6 +298,15 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
     session_id: &IdeationSessionId,
     source: PlanVerificationRequestSource,
 ) -> AppResult<PlanVerificationRequestOutcome> {
+    let admission_key = session_id.as_str().to_string();
+    let admission_lock = {
+        state
+            .plan_verification_locks
+            .entry(admission_key.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _admission_guard = admission_lock.lock().await;
     let session = state
         .ideation_session_repo
         .get_by_id(session_id)
@@ -301,6 +316,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         return Ok(PlanVerificationRequestOutcome::NoPlan);
     };
     if session.verified_plan_artifact_id.as_ref() == Some(artifact_id) {
+        state.plan_verification_admissions.remove(&admission_key);
         return Ok(PlanVerificationRequestOutcome::AlreadyVerified);
     }
 
@@ -317,6 +333,7 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         if run.status == AgentRunStatus::Running {
             return Ok(PlanVerificationRequestOutcome::AlreadyRunning);
         }
+        state.plan_verification_admissions.remove(&admission_key);
     }
     if action_is_queued(
         state,
@@ -327,10 +344,23 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
     )
     .await?
     {
+        state.plan_verification_admissions.remove(&admission_key);
         return Ok(PlanVerificationRequestOutcome::AlreadyQueued);
     }
 
-    chat_service
+    if state
+        .plan_verification_admissions
+        .get(&admission_key)
+        .is_some_and(|target| target.value() == artifact_id.as_str())
+    {
+        state.plan_verification_admissions.remove(&admission_key);
+        return Ok(PlanVerificationRequestOutcome::AlreadyQueued);
+    }
+
+    state
+        .plan_verification_admissions
+        .insert(admission_key.clone(), artifact_id.as_str().to_string());
+    let send_result = chat_service
         .send_message(
             target.context_type,
             &target.context_id,
@@ -342,8 +372,11 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
                 ..Default::default()
             },
         )
-        .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+        .await;
+    if let Err(error) = send_result {
+        state.plan_verification_admissions.remove(&admission_key);
+        return Err(AppError::Infrastructure(error.to_string()));
+    }
     Ok(PlanVerificationRequestOutcome::Queued)
 }
 
@@ -415,7 +448,7 @@ pub async fn complete_plan_verification(
     state: &AppState,
     session_id: &IdeationSessionId,
     agent_run_id: &str,
-) -> AppResult<String> {
+) -> AppResult<PlanVerificationCompletion> {
     let session = state
         .ideation_session_repo
         .get_by_id(session_id)
@@ -429,11 +462,28 @@ pub async fn complete_plan_verification(
         .ideation_session_repo
         .complete_plan_verification(session_id, agent_run_id, artifact_id.as_str())
         .await?;
-    if !completed {
-        return Err(AppError::Validation(
-            "Verification completion rejected: stale, failed, cancelled, ordinary, or mismatched action"
-                .to_string(),
-        ));
+    if completed {
+        return Ok(PlanVerificationCompletion {
+            artifact_id: artifact_id.as_str().to_string(),
+            newly_recorded: true,
+        });
     }
-    Ok(artifact_id.as_str().to_string())
+    let current = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
+    if current.plan_artifact_id.as_ref() == Some(artifact_id)
+        && current.verified_plan_artifact_id.as_ref() == Some(artifact_id)
+        && current.verified_plan_agent_run_id.as_deref() == Some(agent_run_id)
+    {
+        return Ok(PlanVerificationCompletion {
+            artifact_id: artifact_id.as_str().to_string(),
+            newly_recorded: false,
+        });
+    }
+    Err(AppError::Validation(
+        "Verification completion rejected: stale, failed, cancelled, ordinary, or mismatched action"
+            .to_string(),
+    ))
 }

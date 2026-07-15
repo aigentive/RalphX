@@ -1,5 +1,8 @@
 use crate::application::chat_service::MockChatService;
-use crate::application::plan_verification_service::ensure_plan_verification_for_acceptance;
+use crate::application::plan_verification_service::{
+    ensure_plan_verification_for_acceptance, request_plan_verification,
+    PlanVerificationRequestSource,
+};
 use crate::application::AppState;
 use crate::domain::entities::{ArtifactId, IdeationSession, ProjectId};
 use crate::domain::services::EffectiveGatePolicy;
@@ -104,5 +107,35 @@ async fn exact_current_proof_allows_acceptance_without_another_turn() {
         chat.call_count(),
         0,
         "verified plans must not queue duplicate work"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_verification_requests_admit_exactly_one_turn() {
+    let state = AppState::new_test();
+    let session = session_with_plan(&state).await;
+    let chat = MockChatService::new();
+
+    let (first, second) = tokio::join!(
+        request_plan_verification(
+            &state,
+            &chat,
+            &session.id,
+            PlanVerificationRequestSource::Manual,
+        ),
+        request_plan_verification(
+            &state,
+            &chat,
+            &session.id,
+            PlanVerificationRequestSource::Automatic,
+        ),
+    );
+
+    first.expect("first request should settle");
+    second.expect("second request should settle");
+    assert_eq!(
+        chat.call_count(),
+        1,
+        "admission must be serialized per plan"
     );
 }
