@@ -14,8 +14,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspaceReviewAutoMergeGuard,
     AgentWorkspaceReviewAutoMergeGuardStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
-    ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrStatus, PrSyncState,
@@ -346,6 +347,53 @@ async fn manual_preview_captures_the_target_bound_auto_merge_effect() {
 }
 
 #[tokio::test]
+async fn manual_preview_fails_closed_for_a_pr_target_without_a_github_service() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (mut state, _github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-preview-no-github").await;
+    state.github_service = None;
+
+    let error = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect_err("PR-backed preview should require the GitHub integration");
+
+    assert!(error.to_string().contains("GitHub integration is unavailable"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
+}
+
+#[tokio::test]
+async fn automated_review_fails_closed_for_a_pr_target_without_a_github_service() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (mut state, _github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-start-no-github").await;
+    state.github_service = None;
+    let state = Arc::new(state);
+
+    let error = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await
+    .expect_err("PR-backed automated start should require the GitHub integration");
+
+    assert!(error.to_string().contains("GitHub integration is unavailable"));
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .is_none());
+}
+
+#[tokio::test]
 async fn manual_review_without_a_receipt_never_mutates_github_or_starts_a_reviewer() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo = temp.path().join("repository");
@@ -604,6 +652,127 @@ async fn automated_review_settles_current_passing_selected_source_after_pausing_
             .expect("unconfirmed restore should remain retryable")
             .status,
         AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    );
+}
+
+#[tokio::test]
+async fn automated_review_restores_a_new_guard_when_the_start_is_already_reviewing() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) = selected_source_workspace_context(
+        temp.path(),
+        "workspace-review-already-reviewing-new-guard",
+    )
+    .await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let target = preview.target.expect("target should resolve");
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint);
+    monitor.last_run_id = Some("existing-review-run".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    let state = Arc::new(state);
+
+    let start = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await
+    .expect("already-reviewing skip should settle the guard created by this attempt");
+
+    assert!(!start.started);
+    assert_eq!(start.skipped_reason.as_deref(), Some("already_reviewing"));
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard
+            .expect("unconfirmed restore should remain retryable")
+            .status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    );
+}
+
+#[tokio::test]
+async fn automated_review_keeps_an_existing_guard_when_the_start_is_already_reviewing() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) = selected_source_workspace_context(
+        temp.path(),
+        "workspace-review-already-reviewing-existing-guard",
+    )
+    .await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let effect = preview.auto_merge.expect("auto-merge effect should resolve");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: effect.pr_number,
+        merge_method: effect.merge_method,
+        target_scope: effect.target.scope,
+        diff_fingerprint: effect.target.diff_fingerprint.clone(),
+        head_sha: effect.target.head_sha,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(effect.target.diff_fingerprint);
+    monitor.last_run_id = Some("existing-review-run".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    github.state().fetch_pr_health_result =
+        Some(Ok(no_auto_merge_health("feature/review", &feature_head)));
+    let state = Arc::new(state);
+
+    let start = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await
+    .expect("already-reviewing skip should retain the pre-existing guard");
+
+    assert!(!start.started);
+    assert_eq!(start.skipped_reason.as_deref(), Some("already_reviewing"));
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
     );
 }
 
