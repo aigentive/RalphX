@@ -31,6 +31,15 @@ function runningTask(toolUseId: string): StreamingTask {
   };
 }
 
+function delegatedTask(toolUseId: string): StreamingTask {
+  return {
+    ...runningTask(toolUseId),
+    toolName: "ralphx::delegate_start",
+    subagentType: "delegated",
+    delegatedJobId: `job-${toolUseId}`,
+  };
+}
+
 describe("ChatMessageList live transcript rows", () => {
   it("returns no rows for empty live blocks", () => {
     expect(buildLiveTranscriptRows([], new Map())).toEqual([]);
@@ -69,7 +78,7 @@ describe("ChatMessageList live transcript rows", () => {
     expect(rows.at(-1)).toMatchObject({ kind: "text", text: "Live update 45" });
   });
 
-  it("keeps task rows whenever task metadata is available", () => {
+  it("keeps task entries promoted inside activity rows whenever task metadata is available", () => {
     const activeTask = runningTask("task-active");
     const completedTask: StreamingTask = {
       ...runningTask("task-complete"),
@@ -89,8 +98,13 @@ describe("ChatMessageList live transcript rows", () => {
       ])
     );
 
-    expect(rows).toContainEqual(expect.objectContaining({ kind: "task", toolUseId: activeTask.toolUseId }));
-    expect(rows).toContainEqual(expect.objectContaining({ kind: "task", toolUseId: completedTask.toolUseId }));
+    expect(rows[0]).toMatchObject({
+      kind: "tool_group",
+      taskEntries: [
+        { toolUseId: activeTask.toolUseId },
+        { toolUseId: completedTask.toolUseId },
+      ],
+    });
     expect(rows.at(-1)).toMatchObject({ kind: "text", text: "Live update 60" });
   });
 
@@ -109,6 +123,26 @@ describe("ChatMessageList live transcript rows", () => {
     expect(rows.map((row) => row.kind)).toEqual(["text", "tool_group", "text"]);
     const toolGroup = rows[1];
     expect(toolGroup).toMatchObject({ kind: "tool_group", count: 3 });
+  });
+
+  it("keeps adjacent delegated tasks in one activity run without hiding their promoted rows", () => {
+    const task = delegatedTask("delegate-1");
+    const rows = buildLiveTranscriptRows(
+      [
+        toolBlock(1, "Write"),
+        { type: "task", toolUseId: task.toolUseId, seq: 2 },
+        toolBlock(3, "Edit"),
+      ],
+      new Map([[task.toolUseId, task]]),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "tool_group",
+      count: 3,
+      taskEntries: [{ toolUseId: "delegate-1" }],
+    });
+    expect(rows[0]?.kind === "tool_group" ? rows[0].entries : []).toHaveLength(2);
   });
 
   it("filters hidden tool calls before grouping visible rows", () => {
