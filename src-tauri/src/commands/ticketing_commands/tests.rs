@@ -729,8 +729,7 @@ fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
 
 #[test]
 fn clickup_batch_associations_resolve_to_empty_without_error() {
-    // ClickUp conversation-linking is deferred, so batched association matching
-    // returns empty rather than hitting the unknown-provider error path.
+    // An empty batch returns empty rather than hitting the unknown-provider path.
     let project_id = ProjectId::from_string("proj-clickup".to_string());
     let reference = ticket_ref_to_composer_reference(
         "clickup",
@@ -768,10 +767,7 @@ async fn list_ticketing_providers_includes_clickup() {
 }
 
 #[tokio::test]
-async fn clickup_conversation_associations_are_empty_pending_followup() {
-    // ClickUp conversation-linking is deferred, so ClickUp tickets must resolve
-    // to zero associations (not a fallthrough provider error) so the unified list
-    // can hydrate association counts for ClickUp like the other providers.
+async fn clickup_project_associations_are_empty_when_no_links_exist() {
     let state = AppState::new_test();
     let project_id = seed_ticketing_project(&state, "ticket-clickup-assoc").await;
 
@@ -1049,6 +1045,29 @@ impl ClickUpApiClient for FakeClickUpTicketingClient {
         Ok(())
     }
 
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        if task_id != "8689abc" {
+            return Err("ClickUp API returned HTTP 404".to_string());
+        }
+        Ok(clickup_task_content(task_id, Some("CU-42")))
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        custom_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        if !custom_id.eq_ignore_ascii_case("CU-42") {
+            return Err("ClickUp API returned HTTP 404".to_string());
+        }
+        Ok(clickup_task_content("8689abc", Some("CU-42")))
+    }
+
     async fn list_workspaces(
         &self,
         _auth: &ClickUpAuthContext,
@@ -1240,6 +1259,28 @@ impl ClickUpApiClient for FakeClickUpTicketingClient {
             username: Some("Alex Developer".to_string()),
             email: Some("alex@example.com".to_string()),
         })
+    }
+}
+
+fn clickup_task_content(id: &str, custom_id: Option<&str>) -> ClickUpTaskContent {
+    ClickUpTaskContent {
+        id: id.to_string(),
+        custom_id: custom_id.map(str::to_string),
+        name: "ClickUp ticket work".to_string(),
+        url: Some(format!("https://app.clickup.com/t/{id}")),
+        description: String::new(),
+        status_name: Some("Todo".to_string()),
+        status_type: Some("open".to_string()),
+        status_category: Some("todo".to_string()),
+        creator: None,
+        assignees: Vec::new(),
+        watchers: Vec::new(),
+        tags: Vec::new(),
+        comments: Vec::new(),
+        attachments: Vec::new(),
+        updated_at: Some("2026-07-14T00:00:00Z".to_string()),
+        space_id: Some("space-1".to_string()),
+        list_name: Some("Delivery".to_string()),
     }
 }
 
@@ -3804,11 +3845,13 @@ async fn start_work_from_ticket_queues_message_and_links_jira_after_successful_s
 }
 
 #[tokio::test]
-async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() {
+async fn start_work_from_clickup_persists_provider_neutral_conversation_link() {
     // Seed harness availability so the start runtime check passes on sandboxed CI
     // runners that have no real agent CLI on PATH (the probe is otherwise ambient).
     crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
-    let state = AppState::new_test();
+    let mut state = AppState::new_test();
+    state.clickup_integration_service =
+        valid_clickup_service(Arc::new(FakeClickUpTicketingClient::default())).await;
     let project_id = seed_ticketing_project(&state, "ticket-start-clickup").await;
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.pause();
@@ -3829,7 +3872,7 @@ async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() 
         app.handle().clone(),
     )
     .await
-    .expect("clickup ticket start should succeed without a link table");
+    .expect("clickup ticket start should validate and persist its link");
 
     assert_eq!(response.conversation.context_id, project_id.as_str());
     assert_eq!(response.conversation.title.as_deref(), Some("CU-42"));
@@ -3849,6 +3892,15 @@ async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() 
         queued[0].composer_integration_references[0].key.as_deref(),
         Some("CU-42")
     );
+    let links = app
+        .state::<AppState>()
+        .external_issue_link_service
+        .list_ticket_links_for_conversation(&response.conversation.id)
+        .await
+        .expect("ClickUp links should load");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].external_id, "8689abc");
+    assert_eq!(links[0].external_key.as_deref(), Some("CU-42"));
 }
 
 #[tokio::test]
@@ -3927,6 +3979,82 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
     );
     assert_eq!(github.state().push_branch_calls, 0);
     assert!(result.send_result.was_queued);
+}
+
+#[tokio::test]
+async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let (_temp, repo) = init_ticket_start_repo();
+    let status = Command::new("git")
+        .args(["branch", "feature/CU-42-existing"])
+        .current_dir(&repo)
+        .status()
+        .expect("git branch should run");
+    assert!(status.success());
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::new(MockGithubService::new()));
+    state.clickup_integration_service =
+        valid_clickup_service(Arc::new(FakeClickUpTicketingClient::default())).await;
+    let project_id = seed_ticketing_project_with_working_directory(
+        &state,
+        "clickup-linked-start",
+        repo.to_string_lossy().into_owned(),
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, execution_state);
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: app.state::<AppState>().inner(),
+        execution_state: app.state::<Arc<ExecutionState>>().inner(),
+        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
+        app_handle: app.handle().clone(),
+    })
+    .start(StartAgentConversationInput {
+        project_id: project_id.to_string(),
+        content: "Continue existing ClickUp work".to_string(),
+        persona_id: None,
+        conversation_id: None,
+        parent_conversation_id: None,
+        title: None,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
+        codex_fast_mode: None,
+        mode: Some("edit".to_string()),
+        base_ref_kind: Some("project_default".to_string()),
+        base_branch_mode: Some("isolated".to_string()),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: vec![ComposerIntegrationReference {
+            provider: PROVIDER_CLICKUP.to_string(),
+            kind: PROVIDER_CLICKUP.to_string(),
+            id: "8689abc".to_string(),
+            key: Some("CU-42".to_string()),
+            title: Some("Existing ClickUp work".to_string()),
+            url: None,
+            summary_excerpt: None,
+            include_transcript: None,
+        }],
+        composer_artifact_references: Vec::new(),
+        team_intent: None,
+    })
+    .await
+    .expect("unique ClickUp branch should be selected");
+
+    let workspace = result
+        .workspace
+        .expect("edit mode should create a workspace");
+    assert_eq!(
+        workspace.branch_mode,
+        crate::domain::entities::AgentConversationWorkspaceBranchMode::Linked
+    );
+    assert_eq!(workspace.branch_name, "feature/CU-42-existing");
+    assert_eq!(workspace.base_ref, "main");
 }
 
 #[tokio::test]
@@ -4147,6 +4275,58 @@ async fn get_ticket_associations_returns_linked_agent_conversations() {
         linked.deep_link.project_id.as_deref(),
         Some(project_id.as_str())
     );
+}
+
+#[tokio::test]
+async fn clickup_links_are_visible_from_ticket_and_conversation_reverse_lookups() {
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "ticket-associations-clickup").await;
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_title("Started from CU-42");
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should be created");
+    let ticket_ref = TicketRefInput {
+        provider: PROVIDER_CLICKUP.to_string(),
+        id: "8689abc".to_string(),
+        key: Some("CU-42".to_string()),
+    };
+    let ticket_reference = ticket_ref_to_composer_reference(PROVIDER_CLICKUP, &ticket_ref);
+    link_started_ticket_to_conversation(
+        &state,
+        PROVIDER_CLICKUP,
+        &conversation.id,
+        &project_id,
+        &ticket_reference,
+    )
+    .await
+    .expect("ClickUp link should be persisted");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let associations = get_ticket_associations(
+        PROVIDER_CLICKUP.to_string(),
+        ticket_ref.clone(),
+        project_id.as_str().to_string(),
+        app.state(),
+    )
+    .await
+    .expect("ClickUp associations should load");
+    assert_eq!(associations.conversations.len(), 1);
+    assert_eq!(associations.conversations[0].id, conversation.id.as_str());
+
+    let reverse = get_conversation_ticket(conversation.id.as_str(), app.state())
+        .await
+        .expect("conversation ticket should load")
+        .expect("ClickUp ticket should be linked");
+    assert_eq!(reverse.ticket_ref.provider, PROVIDER_CLICKUP);
+    assert_eq!(reverse.ticket_ref.id, "8689abc");
+    assert_eq!(reverse.ticket_ref.key.as_deref(), Some("CU-42"));
 }
 
 #[tokio::test]

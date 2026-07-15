@@ -252,6 +252,10 @@ export function AgentsStartComposer({
   const [draftArtifactReferences, setDraftArtifactReferences] = useState<
     ComposerArtifactReference[]
   >([]);
+  const clickupTicketToken = useMemo(
+    () => clickupTokenFromIntegrationReferences(draftIntegrationReferences),
+    [draftIntegrationReferences],
+  );
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
@@ -849,18 +853,35 @@ export function AgentsStartComposer({
             : null) ??
           selectedStartFromKey ??
           result.selectedKey;
-        const nextBranchSelectedKey =
+        const normalSelectedKey =
           resolveBranchSelectionKey(result.options, preferredKey) ??
           resolveBranchSelectionKey(result.options, result.selectedKey) ??
           result.selectedKey;
+        const clickupCandidates = clickupTicketToken
+          ? result.options.filter(
+              (option) =>
+                option.selection.kind === "local_branch" &&
+                containsTicketToken(option.selection.ref, clickupTicketToken),
+            )
+          : [];
+        const clickupSelectedKey =
+          !userSelectedStartFromRef.current && clickupCandidates.length === 1
+            ? clickupCandidates[0]?.key
+            : null;
+        const nextBranchSelectedKey = clickupSelectedKey ?? normalSelectedKey;
         setStartFromOptions(result.options);
         setSelectedStartFromKey((currentKey) =>
           currentKey.startsWith("pull_request:")
             ? currentKey
             : nextBranchSelectedKey
         );
-        setBranchBaseCacheForProject(activeProjectId, result.options, nextBranchSelectedKey);
-        setLastBranchBaseSelectionForProject(activeProjectId, nextBranchSelectedKey);
+        if (clickupSelectedKey) {
+          setIsStartFromIsolatedBranch(false);
+        }
+        setBranchBaseCacheForProject(activeProjectId, result.options, normalSelectedKey);
+        if (!clickupSelectedKey) {
+          setLastBranchBaseSelectionForProject(activeProjectId, nextBranchSelectedKey);
+        }
         setHydratedStartFromProjectId(activeProjectId);
         setIsLoadingStartFrom(false);
       })
@@ -875,6 +896,7 @@ export function AgentsStartComposer({
     activeProjectBaseBranch,
     activeProjectId,
     activeProjectWorkingDirectory,
+    clickupTicketToken,
     hydratedStartFromProjectId,
     isLoadingStartFrom,
     lastBranchBaseSelectionByProjectId,
@@ -882,6 +904,12 @@ export function AgentsStartComposer({
     setBranchBaseCacheForProject,
     setLastBranchBaseSelectionForProject,
   ]);
+
+  useEffect(() => {
+    if (clickupTicketToken) {
+      ensureStartFromOptionsLoaded();
+    }
+  }, [clickupTicketToken, ensureStartFromOptionsLoaded]);
 
   const handleRemoveAttachment = (attachmentId: string) => {
     clearStartError();
@@ -1487,6 +1515,40 @@ function startSelectionDefaultsToIsolatedBranch(
 
 function isTransientStartFromKey(key: string) {
   return key.startsWith("pull_request:");
+}
+
+function clickupTokenFromIntegrationReferences(
+  references: ComposerIntegrationReference[],
+): string | null {
+  const reference = references.find(
+    (item) =>
+      item.provider.trim().toLowerCase() === "clickup" &&
+      item.kind.trim().toLowerCase() === "clickup",
+  );
+  if (!reference) {
+    return null;
+  }
+  const key = reference.key?.trim();
+  if (key) {
+    return key;
+  }
+  const id = reference.id.trim();
+  return id ? (id.toUpperCase().startsWith("CU-") ? id : `CU-${id}`) : null;
+}
+
+function containsTicketToken(value: string, token: string): boolean {
+  const lowerValue = value.toLowerCase();
+  const lowerToken = token.toLowerCase();
+  let start = lowerValue.indexOf(lowerToken);
+  while (start >= 0) {
+    const before = start === 0 ? "" : lowerValue[start - 1];
+    const after = lowerValue[start + lowerToken.length] ?? "";
+    if (!/[a-z0-9]/.test(before ?? "") && !/[a-z0-9]/.test(after)) {
+      return true;
+    }
+    start = lowerValue.indexOf(lowerToken, start + 1);
+  }
+  return false;
 }
 
 function useAnimatedStarterWord(paused = false) {

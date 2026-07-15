@@ -995,6 +995,8 @@ fn schedule_external_pr_reconciliation_for_workspace(
             workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
             project_repo: Arc::clone(&state.project_repo),
             github,
+            clickup_integration_service: Some(Arc::clone(&state.clickup_integration_service)),
+            external_issue_link_service: Some(Arc::clone(&state.external_issue_link_service)),
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
@@ -7131,7 +7133,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
     let describe_started = Instant::now();
-    let pr_description = match if let Some(cache_key) = pr_description_cache_key {
+    let mut pr_description = match if let Some(cache_key) = pr_description_cache_key {
         get_or_draft_agent_workspace_pr_description(
             state,
             &conversation,
@@ -7189,6 +7191,18 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             return Err(error);
         }
     };
+    if let Some(token) =
+        primary_clickup_token_for_conversation(state, &workspace.conversation_id).await
+    {
+        let title = pr_description
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .or(conversation.title.as_deref())
+            .unwrap_or("RalphX changes");
+        pr_description.title = Some(normalize_title_with_clickup_token(title, &token));
+    }
 
     // B1/B2/B5: for automation runs whose base is a local-only automation branch,
     // publish that base to origin BEFORE the PR references it as `--base`. Both
@@ -10389,6 +10403,61 @@ async fn primary_jira_key_for_conversation(
         .ok()?
         .into_iter()
         .find_map(|message| primary_jira_key_from_composer_metadata(message.metadata.as_deref()))
+}
+
+async fn primary_clickup_token_for_conversation(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    let conversation_id = conversation_id.as_str();
+    state
+        .external_issue_link_service
+        .list_ticket_links_for_conversation(&conversation_id)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|link| {
+            link.provider.eq_ignore_ascii_case("clickup")
+                && link.external_kind.eq_ignore_ascii_case("clickup")
+        })
+        .map(|link| {
+            link.external_key
+                .filter(|key| !key.trim().is_empty())
+                .unwrap_or_else(|| {
+                    let id = link.external_id.trim();
+                    if id.to_ascii_uppercase().starts_with("CU-") {
+                        id.to_string()
+                    } else {
+                        format!("CU-{id}")
+                    }
+                })
+        })
+}
+
+fn normalize_title_with_clickup_token(title: &str, token: &str) -> String {
+    let token = token.trim();
+    let title = title.trim();
+    if token.is_empty() {
+        return title.to_string();
+    }
+    let identity = crate::application::clickup_git_association::ClickUpTaskIdentity::new(
+        token,
+        Some(token.to_string()),
+        None,
+    );
+    let evidence = crate::application::clickup_git_association::ClickUpGitEvidence {
+        title: title.to_string(),
+        ..Default::default()
+    };
+    if crate::application::clickup_git_association::matching_clickup_evidence(&identity, &evidence)
+        .is_some()
+    {
+        title.to_string()
+    } else if title.is_empty() {
+        token.to_string()
+    } else {
+        format!("{token}: {title}")
+    }
 }
 
 #[cfg(test)]

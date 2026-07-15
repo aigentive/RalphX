@@ -45,6 +45,7 @@ pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
 pub mod clickup_integration_service;
+pub mod clickup_git_association;
 pub mod dependency_service;
 #[cfg(all(dev, target_os = "macos"))]
 pub(crate) mod dev_dock_icon;
