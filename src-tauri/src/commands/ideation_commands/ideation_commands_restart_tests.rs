@@ -3,7 +3,8 @@ use std::process::Command;
 use std::sync::Arc;
 
 use super::ideation_commands_restart::{
-    archive_execution_plan_tasks, preflight_branch_updates_for_restart, RestartInFlightGuard,
+    archive_execution_plan_tasks, cleanup_branch_update_worktrees_for_restart,
+    preflight_branch_updates_for_restart, stop_branch_updates_for_restart, RestartInFlightGuard,
 };
 use super::*;
 use crate::application::agent_conversation_workspace::{
@@ -13,12 +14,19 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::{AppState, GitService};
 use crate::domain::entities::plan_branch::PrStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ArtifactId, ChatConversation, IdeationAnalysisBaseRefKind,
+    AgentConversationWorkspaceMode, ArtifactId, BranchUpdateCapacityOwnership,
+    BranchUpdateContinuation, BranchUpdateDirection, BranchUpdateOperation,
+    BranchUpdateWorkspaceOwnership, ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind,
     IdeationAnalysisState, IdeationAnalysisWorkspaceKind, IdeationSession, IdeationSessionId,
-    Priority, Project, ProposalCategory, TaskProposal,
+    InternalStatus, Priority, Project, ProposalCategory, TaskProposal,
 };
+use crate::domain::repositories::{BranchUpdateActivation, BranchUpdateActivationOutcome};
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus as RemotePrStatus};
-use crate::domain::state_machine::transition_handler::compute_merge_worktree_path;
+use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
+use crate::domain::state_machine::transition_handler::{
+    compute_merge_worktree_path, compute_plan_update_worktree_path,
+    compute_source_update_worktree_path,
+};
 use crate::tests::mock_github_service::MockGithubService;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 
@@ -158,6 +166,219 @@ async fn restart_branch_update_preflight_rejects_missing_durable_authority() {
     assert!(error
         .to_string()
         .contains("without active durable authority"));
+}
+
+#[tokio::test]
+async fn restart_branch_update_stop_releases_authority_and_deletes_operation_worktree() {
+    let state = setup_apply_state();
+    let repo_dir = setup_git_repo();
+    let worktree_parent = tempfile::TempDir::new().expect("worktree parent should be created");
+    let mut project = Project::new(
+        "Restart active branch update".to_string(),
+        repo_dir.path().to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    let mut task = crate::domain::entities::Task::new(
+        project.id.clone(),
+        "Task with active branch update".to_string(),
+    );
+    task.task_branch = Some(format!("task/update-{}", task.id.as_str()));
+    let task_branch = task.task_branch.clone().expect("task branch should be set");
+    git_ok(repo_dir.path(), &["branch", &task_branch, "main"]);
+    let task = state
+        .task_repo
+        .create(task)
+        .await
+        .expect("task should be created");
+    let workspace_path = validate_absolute_non_root_path(
+        Path::new(&compute_source_update_worktree_path(
+            &project,
+            task.id.as_str(),
+        )),
+        "restart branch-update test workspace",
+    )
+    .expect("derived workspace path should be safe");
+    GitService::checkout_existing_branch_worktree_strict(
+        repo_dir.path(),
+        &workspace_path,
+        &task_branch,
+    )
+    .await
+    .expect("branch-update operation worktree should be registered");
+    let target_identity = GitService::canonical_target_identity(repo_dir.path(), &task_branch)
+        .await
+        .expect("target identity should resolve");
+    let mut operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::TaskBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "restart-history-1",
+        "main",
+        task_branch,
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        target_identity,
+        chrono::Utc::now(),
+    );
+    operation.workspace_path = Some(workspace_path.clone());
+    let activation = state
+        .branch_update_repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingTaskBranch,
+            trigger: "restart_branch_update_stop_test".to_string(),
+        })
+        .await
+        .expect("branch update should activate");
+    assert!(matches!(
+        activation,
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+    let plan_task = state
+        .task_repo
+        .create(crate::domain::entities::Task::new(
+            project.id.clone(),
+            "Plan branch update without materialized worktree".to_string(),
+        ))
+        .await
+        .expect("plan update task should be created");
+    let plan_workspace_path = validate_absolute_non_root_path(
+        Path::new(&compute_plan_update_worktree_path(
+            &project,
+            plan_task.id.as_str(),
+        )),
+        "restart plan branch-update test workspace",
+    )
+    .expect("derived plan update workspace should be safe");
+    let plan_target_identity = GitService::canonical_target_identity(repo_dir.path(), "main")
+        .await
+        .expect("plan target identity should resolve");
+    let mut plan_operation = BranchUpdateOperation::new(
+        plan_task.id.clone(),
+        BranchUpdateDirection::PlanBranch,
+        BranchUpdateContinuation::RetryPendingMerge,
+        "restart-history-plan",
+        task.task_branch
+            .as_deref()
+            .expect("task branch should remain available"),
+        "main",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        plan_target_identity,
+        chrono::Utc::now(),
+    );
+    plan_operation.workspace_path = Some(plan_workspace_path.clone());
+    let plan_activation = state
+        .branch_update_repo
+        .activate(BranchUpdateActivation {
+            operation: plan_operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "restart_plan_branch_update_stop_test".to_string(),
+        })
+        .await
+        .expect("plan branch update should activate");
+    assert!(matches!(
+        plan_activation,
+        BranchUpdateActivationOutcome::Applied { .. }
+    ));
+    let queue_key = QueueKey::new(ChatContextType::BranchUpdate, task.id.as_str());
+    state
+        .queued_message_repo
+        .enqueue_back(
+            &queue_key,
+            &QueuedMessage::new("queued during update".to_string()),
+        )
+        .await
+        .expect("queued branch-update message should persist");
+    state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new(ChatContextType::BranchUpdate.to_string(), task.id.as_str()),
+            42,
+            "branch-update-conversation".to_string(),
+            "branch-update-run".to_string(),
+            Some(workspace_path.to_string_lossy().into_owned()),
+            None,
+        )
+        .await;
+
+    let updates =
+        preflight_branch_updates_for_restart(&state, &project, &[task.clone(), plan_task.clone()])
+            .await
+            .expect("active branch updates should preflight");
+    assert_eq!(updates.len(), 2);
+
+    stop_branch_updates_for_restart(&state, &updates)
+        .await
+        .expect("restart should stop the branch update with durable authority");
+    cleanup_branch_update_worktrees_for_restart(&project, &updates)
+        .await
+        .expect("restart should delete the owned operation worktree");
+
+    assert!(
+        state
+            .branch_update_repo
+            .get_active_operation(&task.id)
+            .await
+            .expect("operation lookup should succeed")
+            .is_none(),
+        "stopped branch update should no longer be active"
+    );
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&task.id)
+            .await
+            .expect("task lookup should succeed")
+            .expect("task should remain")
+            .internal_status,
+        InternalStatus::Stopped
+    );
+    assert_eq!(
+        state
+            .task_repo
+            .get_by_id(&plan_task.id)
+            .await
+            .expect("plan task lookup should succeed")
+            .expect("plan task should remain")
+            .internal_status,
+        InternalStatus::Stopped
+    );
+    assert!(
+        !workspace_path.exists(),
+        "owned branch-update worktree should be removed"
+    );
+    assert!(
+        !plan_workspace_path.exists(),
+        "non-materialized plan update worktree should remain absent"
+    );
+    assert!(
+        state
+            .running_agent_registry
+            .get(&RunningAgentKey::new(
+                ChatContextType::BranchUpdate.to_string(),
+                task.id.as_str(),
+            ))
+            .await
+            .is_none(),
+        "branch-update runtime should be stopped"
+    );
+    assert!(
+        state
+            .queued_message_repo
+            .list(&queue_key)
+            .await
+            .expect("queued messages should load")
+            .is_empty(),
+        "branch-update queue should be cleared"
+    );
 }
 
 #[tokio::test]

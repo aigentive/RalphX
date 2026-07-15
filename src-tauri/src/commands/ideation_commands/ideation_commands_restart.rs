@@ -165,7 +165,7 @@ pub(super) async fn preflight_branch_updates_for_restart(
                 std::path::Path::new(&worktree.path),
                 "registered branch-update worktree",
             )
-            .is_ok_and(|path| path == workspace_path)
+            .is_ok_and(|path| restart_paths_match(&path, &workspace_path))
         });
         if workspace_path.exists() && !registered {
             return Err(AppError::Validation(format!(
@@ -182,7 +182,7 @@ pub(super) async fn preflight_branch_updates_for_restart(
     Ok(updates)
 }
 
-async fn stop_branch_updates_for_restart(
+pub(super) async fn stop_branch_updates_for_restart(
     app_state: &AppState,
     updates: &[RestartBranchUpdate],
 ) -> AppResult<()> {
@@ -233,7 +233,7 @@ async fn stop_branch_updates_for_restart(
     Ok(())
 }
 
-async fn cleanup_branch_update_worktrees_for_restart(
+pub(super) async fn cleanup_branch_update_worktrees_for_restart(
     project: &Project,
     updates: &[RestartBranchUpdate],
 ) -> AppResult<()> {
@@ -247,6 +247,15 @@ async fn cleanup_branch_update_worktrees_for_restart(
         }
     }
     Ok(())
+}
+
+fn restart_paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
 }
 
 #[derive(Debug)]
