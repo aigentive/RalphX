@@ -888,6 +888,154 @@ async fn list_reviewing_workspace_review_monitors_returns_only_running_reviews()
 }
 
 #[tokio::test]
+async fn complete_workspace_review_auto_merge_restore_clears_guard_atomically() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    repo.create_or_update(workspace).await.unwrap();
+
+    let restoring_guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("workspace-delta".to_string());
+    monitor.auto_merge_guard = Some(restoring_guard.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    assert!(repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, restoring_guard)
+        .await
+        .unwrap());
+
+    let loaded_workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should load");
+    assert_eq!(loaded_workspace.pr_auto_merge_current, Some(true));
+    assert_eq!(
+        loaded_workspace.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
+    assert!(repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should load")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn complete_workspace_review_auto_merge_restore_rejects_stale_authority() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    repo.create_or_update(workspace).await.unwrap();
+
+    let restoring_guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("new-workspace-delta".to_string());
+    monitor.auto_merge_guard = Some(restoring_guard.clone());
+    repo.upsert_workspace_review_monitor(monitor).await.unwrap();
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, restoring_guard.clone())
+        .await
+        .unwrap());
+
+    let loaded_workspace = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should load");
+    assert_eq!(loaded_workspace.pr_auto_merge_current, Some(false));
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .expect("monitor should load")
+            .auto_merge_guard,
+        Some(restoring_guard)
+    );
+}
+
+#[tokio::test]
+async fn list_active_workspace_review_auto_merge_guards_returns_only_guarded_monitors() {
+    let (db, repo, guarded_id) = setup_repo();
+    repo.create_or_update(make_workspace(guarded_id.clone()))
+        .await
+        .unwrap();
+
+    let unguarded_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &unguarded_id);
+    repo.create_or_update(make_workspace(unguarded_id.clone()))
+        .await
+        .unwrap();
+
+    let mut guarded = AgentWorkspaceReviewMonitor::new(
+        guarded_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    guarded.auto_merge_guard = Some(AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    });
+    repo.upsert_workspace_review_monitor(guarded).await.unwrap();
+
+    let unguarded = AgentWorkspaceReviewMonitor::new(
+        unguarded_id,
+        ProjectId::from_string("project-1".to_string()),
+    );
+    repo.upsert_workspace_review_monitor(unguarded)
+        .await
+        .unwrap();
+
+    let guarded_monitors = repo
+        .list_active_workspace_review_auto_merge_guards()
+        .await
+        .unwrap();
+    assert_eq!(guarded_monitors.len(), 1);
+    assert_eq!(guarded_monitors[0].conversation_id, guarded_id);
+    assert_eq!(
+        guarded_monitors[0]
+            .auto_merge_guard
+            .as_ref()
+            .map(|guard| guard.status),
+        Some(AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview)
+    );
+}
+
+#[tokio::test]
 async fn workspace_review_hunk_annotations_replace_per_artifact_version() {
     let (db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id.clone()))
