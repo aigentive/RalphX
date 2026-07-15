@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -119,19 +120,22 @@ fn seed_usage(destination_root: &Path) -> AppResult<IngestUsage> {
         .map_err(|error| filesystem_error("scan app-owned ingest usage", error))?;
     for entry in entries {
         let entry = entry.map_err(|error| filesystem_error("scan ingest entry", error))?;
-        let entry_path = entry.path();
-        require_under_root(&entry_path, destination_root, "ingest usage entry")?;
-        // codeql[rust/path-injection]
-        let metadata = fs::symlink_metadata(&entry_path)
+        let file_type = entry
+            .file_type()
             .map_err(|error| filesystem_error("inspect ingest usage entry", error))?;
-        if metadata.file_type().is_symlink() {
+        if file_type.is_symlink() {
             return Err(AppError::Validation(
                 "App-owned ingest usage entries must not be symlinks".to_string(),
             ));
         }
-        if !metadata.is_dir() || !is_hashed_file_directory(&entry.file_name().to_string_lossy()) {
+        if !file_type.is_dir() {
             continue;
         }
+        let Some(entry_path) =
+            app_owned_hashed_file_entry_path(destination_root, &entry.file_name())
+        else {
+            continue;
+        };
         // codeql[rust/path-injection]
         let canonical_entry = entry_path
             .canonicalize()
@@ -154,6 +158,15 @@ fn seed_usage(destination_root: &Path) -> AppResult<IngestUsage> {
         usage.bytes = usage.bytes.saturating_add(content_metadata.len());
     }
     Ok(usage)
+}
+
+fn app_owned_hashed_file_entry_path(destination_root: &Path, file_name: &OsStr) -> Option<PathBuf> {
+    let name = file_name.to_str()?;
+    if is_hashed_file_directory(name) {
+        Some(destination_root.join(name))
+    } else {
+        None
+    }
 }
 
 fn is_hashed_file_directory(name: &str) -> bool {

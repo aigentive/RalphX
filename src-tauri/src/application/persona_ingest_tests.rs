@@ -447,6 +447,31 @@ fn repeat_ingests_merge_manifest_and_seed_cumulative_file_usage() {
 }
 
 #[test]
+fn cumulative_usage_ignores_non_hashed_app_owned_entries_before_counting() {
+    let temp = temp_dir();
+    let first = fixture_path(temp.path(), "first");
+    let second = fixture_path(temp.path(), "second");
+    let destination = fixture_path(temp.path(), "destination");
+    for index in 0..(MAX_INGEST_FILES - 1) {
+        write_fixture(&first, &format!("first-{index}.txt"), b"x");
+    }
+    write_fixture(&second, "allowed.txt", b"y");
+
+    ingest_picked_roots(&[first], &destination).expect("first ingest");
+    let rogue_entry = fixture_path(&destination, "not-a-persona-ingest-entry");
+    // codeql[rust/path-injection]
+    fs::create_dir_all(&rogue_entry).expect("rogue app-owned fixture entry");
+    // codeql[rust/path-injection]
+    fs::write(rogue_entry.join("content"), b"not counted").expect("rogue content");
+
+    let second_batch = ingest_picked_roots(&[second], &destination).expect("second ingest");
+
+    assert_eq!(second_batch.copied.len(), 1);
+    assert_eq!(second_batch.copied[0].path, "allowed.txt");
+    assert!(second_batch.skipped.is_empty());
+}
+
+#[test]
 fn batch_and_repeat_ingests_enforce_cumulative_total_bytes_without_repick_drift() {
     let temp = temp_dir();
     let first = fixture_path(temp.path(), "first");
