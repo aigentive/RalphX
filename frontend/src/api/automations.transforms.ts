@@ -123,6 +123,27 @@ function transformAutomationUsage(raw: RawAutomationUsage) {
   };
 }
 
+function transformAutomationPipeline(
+  raw: NonNullable<RawAutomationDetail["pipeline"]>,
+) {
+  return {
+    deliverable: raw.deliverable,
+    status: raw.status,
+    ideationSessionId: raw.ideation_session_id,
+    planArtifactId: raw.plan_artifact_id,
+    proposalCount: raw.proposal_count,
+    taskTotal: raw.task_total,
+    taskMerged: raw.task_merged,
+    taskTerminal: raw.task_terminal,
+    tasks: raw.tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      blockedBy: task.blocked_by,
+    })),
+  };
+}
+
 export function transformAutomationDetail(
   raw: RawAutomationDetail,
 ): AutomationDetail {
@@ -130,6 +151,7 @@ export function transformAutomationDetail(
     automation: transformAutomation(raw.automation),
     runs: raw.runs.map(transformAutomationRun),
     usage: transformAutomationUsage(raw.usage),
+    pipeline: raw.pipeline ? transformAutomationPipeline(raw.pipeline) : null,
   };
 }
 

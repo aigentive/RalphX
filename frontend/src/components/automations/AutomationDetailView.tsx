@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import {
   automationsApi,
   type Automation,
+  type AutomationPipelineProgress,
   type AutomationRun,
   type AutomationUsage,
 } from "@/api/automations";
@@ -336,6 +337,56 @@ function KeyValueList({ items }: { items: Array<[string, ReactNode]> }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+function PipelineProgress({ pipeline }: { pipeline: AutomationPipelineProgress }) {
+  return (
+    <div
+      className="mt-4 rounded-md p-3"
+      style={{
+        backgroundColor: "var(--bg-hover)",
+        borderColor: "var(--border-default)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      data-testid="automation-pipeline-progress"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
+            Task pipeline
+          </div>
+          <div className="mt-1 text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+            {pipeline.taskMerged} / {pipeline.taskTotal} merged
+          </div>
+        </div>
+        <Pill label={pipeline.status} status={pipeline.status} />
+      </div>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full" style={{ backgroundColor: "var(--border-default)" }}>
+        <div
+          className="h-full rounded-full"
+          style={{
+            backgroundColor: "var(--accent-primary)",
+            width: `${pipeline.taskTotal === 0 ? 0 : Math.round((pipeline.taskMerged / pipeline.taskTotal) * 100)}%`,
+          }}
+        />
+      </div>
+      <div className="mt-3 space-y-2">
+        {pipeline.tasks.map((task) => (
+          <div key={task.id} className="flex min-w-0 items-center justify-between gap-3 text-xs">
+            <span className="min-w-0 truncate" style={{ color: "var(--text-secondary)" }}>
+              {task.title}
+            </span>
+            <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
+              {task.blockedBy.length === 0
+                ? task.status
+                : `${task.blockedBy.length} ${task.blockedBy.length === 1 ? "dependency" : "dependencies"}`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1196,6 +1247,7 @@ export function AutomationDetailView({
             <Section title="Goal" testId="automation-goal-card">
               <ExpandableText text={automation.goalPrompt} />
               <GoalItems value={automation.goalItemsJson} />
+              {detail.data.pipeline ? <PipelineProgress pipeline={detail.data.pipeline} /> : null}
             </Section>
             <Section title="Spec" testId="automation-spec-card">
               <AutomationSpecView specArtifactId={automation.specArtifactId} />

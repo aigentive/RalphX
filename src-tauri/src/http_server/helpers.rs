@@ -12,8 +12,8 @@ use crate::commands::ideation_commands::{
     apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse,
 };
 use crate::domain::entities::{
-    AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
-    AutomationRunStatus, AutomationStatus, IdeationSession, IdeationSessionId,
+    AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType,
+    AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
     IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
     TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
     ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus, VerificationStatus,
@@ -1174,8 +1174,7 @@ pub(crate) async fn automation_bridge_finalize_authorized(
         return Ok(false);
     };
     if automation.status != AutomationStatus::Active
-        || automation.run_mode
-            != crate::application::automation::service::IDEATION_BRIDGE_RUN_MODE
+        || automation.run_mode != crate::application::automation::service::IDEATION_BRIDGE_RUN_MODE
         || automation.completion_signal
             != crate::application::automation::service::IDEATION_FINALIZED_COMPLETION_SIGNAL
     {

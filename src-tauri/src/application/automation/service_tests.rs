@@ -1514,6 +1514,35 @@ async fn ideation_bridge_finalization_requires_verified_plan_delivery_contract()
 }
 
 #[tokio::test]
+async fn trusted_decomposition_accepts_the_verified_ideation_task_graph_policy() {
+    let (service, automation_repo, _run_repo, artifact_repo) =
+        service_with_emitter_and_artifacts(Arc::new(NoopAutomationEventEmitter));
+    let spec = artifact_repo
+        .create(Artifact::new_inline(
+            "Ideation bridge spec",
+            crate::domain::entities::ArtifactType::Specification,
+            "# Plan\n\nCreate a dependency-safe task graph.",
+            "user",
+        ))
+        .await
+        .unwrap();
+    let mut draft = automation("automation-bridge-trusted", AutomationStatus::Draft);
+    draft.run_mode = "ideation".to_string();
+    draft.completion_signal = "ideation_finalized".to_string();
+    draft.plan_approval_mode = AutomationPlanApprovalMode::Automatic;
+    draft.pr_merge_mode = AutomationPrMergeMode::Manual;
+    draft.plan_deep_verification = true;
+    draft.spec_artifact_id = Some(spec.id.to_string());
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let input = service.load_decomposition_input(&draft).await.unwrap();
+
+    assert_eq!(input.run_mode, "ideation");
+    assert_eq!(input.completion_signal, "ideation_finalized");
+    assert!(input.plan_deep_verification);
+}
+
+#[tokio::test]
 async fn service_status_controls_fail_when_compare_and_swap_loses() {
     let emitter = Arc::new(RecordingEmitter::default());
 

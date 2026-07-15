@@ -19,7 +19,8 @@ use crate::domain::entities::{
     AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
     AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
     AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, Project, ProjectId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, IdeationSessionStatus,
+    InternalStatus, Project, ProjectId, Task,
 };
 use crate::domain::repositories::{PlanArtifactApproval, PlanArtifactApprovalRepository};
 use crate::error::AppError;
@@ -370,6 +371,67 @@ async fn automation_detail_response_aggregates_usage_from_run_conversations() {
     assert_eq!(response.usage.cache_creation_tokens, 7);
     assert_eq!(response.usage.cache_read_tokens, 9);
     assert_eq!(response.usage.estimated_usd, Some(0.06));
+}
+
+#[tokio::test]
+async fn automation_detail_response_exposes_ideation_task_graph_progress() {
+    let state = AppState::new_test();
+    let mut automation = automation();
+    automation.run_mode = "ideation".to_string();
+    automation.completion_signal = "ideation_finalized".to_string();
+    let conversation_id = ChatConversationId::new();
+    let mut run = automation_run(&automation.id);
+    run.conversation_id = Some(conversation_id.clone());
+    let session_id = link_run_to_plan_session(
+        &state,
+        &automation,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Ideation,
+        Some("plan-artifact-1"),
+    )
+    .await;
+    state
+        .ideation_session_repo
+        .update_status(&session_id, IdeationSessionStatus::Accepted)
+        .await
+        .unwrap();
+
+    let mut merged = Task::new(automation.project_id.clone(), "Backend".to_string());
+    merged.ideation_session_id = Some(session_id.clone());
+    merged.internal_status = InternalStatus::Merged;
+    let merged = state.task_repo.create(merged).await.unwrap();
+    let mut ready = Task::new(automation.project_id.clone(), "Frontend".to_string());
+    ready.ideation_session_id = Some(session_id);
+    ready.internal_status = InternalStatus::Ready;
+    let ready = state.task_repo.create(ready).await.unwrap();
+    state
+        .task_dependency_repo
+        .add_dependency(&ready.id, &merged.id)
+        .await
+        .unwrap();
+
+    let response = automation_detail_response_for_state(
+        AutomationDetail {
+            automation,
+            runs: vec![run],
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let pipeline = response.pipeline.expect("ideation pipeline progress");
+
+    assert_eq!(pipeline.deliverable, "task_graph");
+    assert_eq!(pipeline.status, "executing");
+    assert_eq!(pipeline.task_total, 2);
+    assert_eq!(pipeline.task_merged, 1);
+    assert_eq!(pipeline.task_terminal, 1);
+    let frontend = pipeline
+        .tasks
+        .iter()
+        .find(|task| task.id == ready.id.to_string())
+        .expect("frontend task");
+    assert_eq!(frontend.blocked_by, vec![merged.id.to_string()]);
 }
 
 #[tokio::test]

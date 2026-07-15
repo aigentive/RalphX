@@ -63,6 +63,7 @@ export const AutomationChainModeSchema = z.enum([
 export const AutomationCompletionSignalSchema = z.enum([
   "pr_merged",
   "agent_completed",
+  "ideation_finalized",
 ]);
 
 export const AutomationAuthoringModeSchema = z.enum([
@@ -163,10 +164,30 @@ export const AutomationUsageSchema = z.object({
   estimated_usd: z.number().nullable(),
 });
 
+export const AutomationPipelineTaskSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+  blocked_by: z.array(z.string()),
+});
+
+export const AutomationPipelineProgressSchema = z.object({
+  deliverable: z.literal("task_graph"),
+  status: z.enum(["authoring", "executing", "completed", "attention"]),
+  ideation_session_id: z.string(),
+  plan_artifact_id: z.string().nullable(),
+  proposal_count: z.number().int().nonnegative(),
+  task_total: z.number().int().nonnegative(),
+  task_merged: z.number().int().nonnegative(),
+  task_terminal: z.number().int().nonnegative(),
+  tasks: z.array(AutomationPipelineTaskSchema),
+});
+
 export const AutomationDetailSchema = z.object({
   automation: AutomationSchema,
   runs: z.array(AutomationRunSchema),
   usage: AutomationUsageSchema,
+  pipeline: AutomationPipelineProgressSchema.nullable().optional(),
 });
 
 export const CreateAutomationDraftResponseSchema = z.object({

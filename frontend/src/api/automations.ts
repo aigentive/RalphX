@@ -50,6 +50,8 @@ export type {
   AutomationJudgeState,
   AutomationPlanApprovalMode,
   AutomationPlanJudgeState,
+  AutomationPipelineProgress,
+  AutomationPipelineTask,
   AutomationPrMergeMode,
   AutomationPromptAuthor,
   AutomationRun,

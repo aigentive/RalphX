@@ -61,8 +61,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
-    AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
-    AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
     IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
     PlanArtifactApprovalRepository,
 };
@@ -1277,11 +1276,7 @@ impl ParkedPlanGateScenario {
         self.enable_plan_deep_verification().await;
         if verified {
             self.session_repo
-                .update_verification_state(
-                    &self.session_id,
-                    VerificationStatus::Verified,
-                    false,
-                )
+                .update_verification_state(&self.session_id, VerificationStatus::Verified, false)
                 .await
                 .unwrap();
         }
@@ -4646,6 +4641,49 @@ async fn automation_scheduler_ideation_bridge_rejects_approval_without_verified_
 }
 
 #[tokio::test]
+async fn automation_scheduler_ideation_bridge_pauses_when_linked_session_is_missing() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let mut workspace = scenario
+        .workspace_repo
+        .get_by_conversation_id(&scenario.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.linked_ideation_session_id = None;
+    scenario
+        .workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 1);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Paused);
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some("ideation_bridge_missing_session")
+    );
+    assert_eq!(run.status, AutomationRunStatus::AwaitingPlanApproval);
+}
+
+#[tokio::test]
 async fn automation_scheduler_completes_ideation_bridge_only_after_session_is_accepted() {
     let scenario =
         ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
@@ -4655,7 +4693,10 @@ async fn automation_scheduler_completes_ideation_bridge_only_after_session_is_ac
     scheduler.tick_once().await.unwrap();
     scenario
         .session_repo
-        .update_status(&scenario.session_id, crate::domain::entities::IdeationSessionStatus::Accepted)
+        .update_status(
+            &scenario.session_id,
+            crate::domain::entities::IdeationSessionStatus::Accepted,
+        )
         .await
         .unwrap();
 
@@ -4676,6 +4717,36 @@ async fn automation_scheduler_completes_ideation_bridge_only_after_session_is_ac
         .unwrap();
     assert_eq!(automation.status, AutomationStatus::Completed);
     assert_eq!(run.status, AutomationRunStatus::Completed);
+}
+
+#[tokio::test]
+async fn automation_scheduler_repairs_completed_ideation_bridge_automation_after_partial_commit() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario
+        .run_repo
+        .compare_and_swap_status(
+            &AutomationRunId::from_string("run-1"),
+            AutomationRunStatus::AwaitingPlanApproval,
+            AutomationRunStatus::Completed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 0);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Completed);
 }
 
 #[tokio::test]

@@ -254,6 +254,41 @@ describe("AutomationDetailView", () => {
     toastInfoMock.mockReset();
   });
 
+  it("shows ideation task-graph progress in the automation pipeline", async () => {
+    renderDetail({
+      automation: automation({
+        runMode: "ideation",
+        completionSignal: "ideation_finalized",
+      }),
+      runs: [run({ status: "completed", prNumber: null, prUrl: null })],
+      usage,
+      pipeline: {
+        deliverable: "task_graph",
+        status: "executing",
+        ideationSessionId: "session-1",
+        planArtifactId: "plan-1",
+        proposalCount: 2,
+        taskTotal: 2,
+        taskMerged: 1,
+        taskTerminal: 1,
+        tasks: [
+          {
+            id: "task-2",
+            title: "Build the detail surface",
+            status: "ready",
+            blockedBy: ["task-1"],
+          },
+        ],
+      },
+    });
+
+    const pipeline = await screen.findByTestId("automation-pipeline-progress");
+    expect(within(pipeline).getByText("Task pipeline")).toBeInTheDocument();
+    expect(within(pipeline).getByText("1 / 2 merged")).toBeInTheDocument();
+    expect(within(pipeline).getByText("Build the detail surface")).toBeInTheDocument();
+    expect(within(pipeline).getByText("1 dependency")).toBeInTheDocument();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });

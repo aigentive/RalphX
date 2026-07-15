@@ -1076,14 +1076,20 @@ impl AutomationService {
         &self,
         automation: &Automation,
     ) -> AppResult<AutomationDecompositionInput> {
-        if automation.run_mode != "edit"
-            || automation.completion_signal != "pr_merged"
-            || automation.chain_mode != "merged_base"
-            || automation.plan_approval_mode != AutomationPlanApprovalMode::Automatic
-            || automation.pr_merge_mode != AutomationPrMergeMode::Automatic
-        {
+        let trusted_edit_policy = automation.run_mode == DEFAULT_RUN_MODE
+            && automation.completion_signal == DEFAULT_COMPLETION_SIGNAL
+            && automation.chain_mode == DEFAULT_CHAIN_MODE
+            && automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic
+            && automation.pr_merge_mode == AutomationPrMergeMode::Automatic;
+        let trusted_ideation_policy = automation.run_mode == IDEATION_BRIDGE_RUN_MODE
+            && automation.completion_signal == IDEATION_FINALIZED_COMPLETION_SIGNAL
+            && automation.chain_mode == DEFAULT_CHAIN_MODE
+            && automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic
+            && automation.pr_merge_mode == AutomationPrMergeMode::Manual
+            && automation.plan_deep_verification;
+        if !trusted_edit_policy && !trusted_ideation_policy {
             return Err(AppError::Validation(
-                "trusted auto-finalize requires edit runs, merged-base chaining, PR-merged completion, automatic plan approval, and automatic PR merge"
+                "trusted auto-finalize requires either the automatic edit/PR-merge policy or the verified ideation/task-graph policy"
                     .to_string(),
             ));
         }
@@ -2303,8 +2309,8 @@ pub(crate) fn validate_finalizable(automation: &Automation) -> AppResult<()> {
                 "pr_merged automations require edit run_mode".to_string(),
             ));
         }
-        IDEATION_FINALIZED_COMPLETION_SIGNAL
-            if automation.run_mode == IDEATION_BRIDGE_RUN_MODE => {}
+        IDEATION_FINALIZED_COMPLETION_SIGNAL if automation.run_mode == IDEATION_BRIDGE_RUN_MODE => {
+        }
         DEFAULT_COMPLETION_SIGNAL | AGENT_COMPLETED_COMPLETION_SIGNAL => {}
         value => {
             return Err(AppError::Validation(format!(

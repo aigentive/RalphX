@@ -532,12 +532,15 @@ async fn transition_service_records_only_actionable_automation_pauses() {
         )
         .await
         .unwrap());
-    for reason in [
+    let actionable_reasons = [
         "signal_verification_failed",
         "judge_loop_suspected",
         "judge_stopped_unmet",
         "goal_replan_stale",
-    ] {
+        "ideation_bridge_verification_failed",
+        "ideation_bridge_missing_session",
+    ];
+    for reason in actionable_reasons {
         assert!(service
             .transition_automation_status(
                 &automation.id,
@@ -566,7 +569,7 @@ async fn transition_service_records_only_actionable_automation_pauses() {
             .unwrap()
             .notifications
             .len(),
-        4
+        actionable_reasons.len()
     );
 }
 

@@ -22,13 +22,13 @@ use crate::application::automation::judge::{
 use crate::application::automation::merged_run_finalizer::AutomationMergedRunFinalizer;
 use crate::application::automation::plan_gate::{
     approval_delivery_prompt, clear_plan_phase_publication_metadata,
-    current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
-    ideation_bridge_delivery_prompt,
-    matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
-    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
-    AutomationPlanVerificationStarter, AutomationRunResumer, ResumeDelivery,
-    AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
-    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
+    current_plan_artifact_id_for_workspace, ideation_bridge_delivery_prompt,
+    is_plan_gate_pause_reason, matching_plan_approval_for_workspace, refresh_plan_park_baseline,
+    revision_delivery_prompt, AutomationPlanVerificationStartOutcome,
+    AutomationPlanVerificationStartRequest, AutomationPlanVerificationStarter,
+    AutomationRunResumer, ResumeDelivery, AUTOMATION_PLAN_REMINDER_PROMPT,
+    PLAN_JUDGE_FAILED_PAUSED_REASON_CODE, PLAN_RESUME_FAILED_ERROR_CODE,
+    PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use crate::application::automation::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
@@ -42,8 +42,7 @@ use crate::application::automation::provisioning::{
 };
 use crate::application::automation::service::{
     AutomationJudgeApplyOutcome, AutomationService, CompleteAutomationJudgeInput,
-    PendingGoalReplanApplyOutcome, IDEATION_BRIDGE_RUN_MODE,
-    IDEATION_FINALIZED_COMPLETION_SIGNAL,
+    PendingGoalReplanApplyOutcome, IDEATION_BRIDGE_RUN_MODE, IDEATION_FINALIZED_COMPLETION_SIGNAL,
 };
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
@@ -1667,6 +1666,20 @@ impl AutomationScheduler {
             | AutomationRunStatus::Completed
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed => {
+                if run.status == AutomationRunStatus::Completed
+                    && automation.completion_signal == IDEATION_FINALIZED_COMPLETION_SIGNAL
+                {
+                    self.transition_service
+                        .transition_automation_status(
+                            &automation.id,
+                            AutomationStatus::Active,
+                            AutomationStatus::Completed,
+                            None,
+                            None,
+                        )
+                        .await?;
+                    return Ok(());
+                }
                 if run.status == AutomationRunStatus::Merged
                     && !self.finalize_merged_run_conversation(automation, run).await
                 {
@@ -2014,16 +2027,26 @@ impl AutomationScheduler {
             .get_active_for_context(ChatContextType::Ideation, session_id.as_str())
             .await?;
         let bridge_agent_run = match bridge_conversation.as_ref() {
-            Some(conversation) => self
-                .latest_agent_run_for_current_phase(&conversation.id, run)
-                .await?,
+            Some(conversation) => {
+                self.latest_agent_run_for_current_phase(&conversation.id, run)
+                    .await?
+            }
             None => None,
         };
         let restart_orphan = bridge_agent_run
             .as_ref()
             .is_some_and(agent_run_is_restart_orphan);
         match bridge_agent_run.as_ref().map(|agent_run| agent_run.status) {
-            Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled) if !restart_orphan => {
+            Some(AgentRunStatus::Failed) => {
+                self.fail_running_run(
+                    run,
+                    "ideation_bridge_agent_failed",
+                    "Automation ideation bridge agent exited before finalizing proposals",
+                    summary,
+                )
+                .await?;
+            }
+            Some(AgentRunStatus::Cancelled) if !restart_orphan => {
                 self.fail_running_run(
                     run,
                     "ideation_bridge_agent_failed",
@@ -2704,13 +2727,32 @@ impl AutomationScheduler {
         let Some(conversation_id) = run.conversation_id.as_ref() else {
             return Ok(());
         };
-        let Some(workspace) = self
+        let workspace = self
             .workspace_repo
             .get_by_conversation_id(conversation_id)
-            .await?
-        else {
+            .await?;
+        let Some(workspace) = workspace else {
+            if automation.run_mode == IDEATION_BRIDGE_RUN_MODE {
+                self.pause_ideation_bridge_for_missing_session(
+                    automation,
+                    "Automation ideation bridge lost its planning workspace",
+                    summary,
+                )
+                .await?;
+            }
             return Ok(());
         };
+        if automation.run_mode == IDEATION_BRIDGE_RUN_MODE
+            && workspace.linked_ideation_session_id.is_none()
+        {
+            self.pause_ideation_bridge_for_missing_session(
+                automation,
+                "Automation ideation bridge has no linked planning session",
+                summary,
+            )
+            .await?;
+            return Ok(());
+        }
 
         if self.resumer.is_agent_running(conversation_id).await? {
             let agent_phase_started_at = self
@@ -2878,9 +2920,8 @@ impl AutomationScheduler {
 
         let bridge_session_id = if automation.run_mode == IDEATION_BRIDGE_RUN_MODE {
             let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
-                self.fail_running_run(
-                    run,
-                    "ideation_bridge_missing_session",
+                self.pause_ideation_bridge_for_missing_session(
+                    automation,
                     "Automation ideation bridge has no linked planning session",
                     summary,
                 )
@@ -2998,6 +3039,28 @@ impl AutomationScheduler {
                 )
                 .await?;
             }
+        }
+        Ok(())
+    }
+
+    async fn pause_ideation_bridge_for_missing_session(
+        &self,
+        automation: &Automation,
+        detail: &str,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some("ideation_bridge_missing_session".to_string()),
+                Some(detail.to_string()),
+            )
+            .await?
+        {
+            summary.paused_automations += 1;
         }
         Ok(())
     }

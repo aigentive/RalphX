@@ -5,8 +5,8 @@ Automations run a project-scoped goal as a sequence of ordinary agent conversati
 ## V1 Contract
 
 - Source of truth: `automations` and `automation_runs`; setup conversations are authoring surfaces only.
-- Completion signal: `pr_merged` for `edit` mode runs.
-- Run mode: `edit` is the only finalizable mode for `pr_merged` v1 automations. `plan` and `ideation` remain schema-reserved until a non-PR completion signal is designed. (The plan gate below is a conversation-mode *phase* inside an `edit` run, not an automation run mode.)
+- Completion signals: `pr_merged` for `edit` mode runs; `ideation_finalized` for the task-graph bridge.
+- Run modes: `edit` publishes one PR per run. `ideation` is a single-run bridge that turns its verified plan into proposals, task dependencies, and World A execution. `plan` remains schema-reserved.
 - Single flight: one open automation run at a time, enforced by the run-state machine and repository constraints.
 - Conversations: automation-owned setup and run conversations keep project context and are hidden from the normal project/publication Agents lists. They surface in the sidebar only when grouped by Automation; direct automation links can still open them for audit.
 - Visibility: the Automations page is on by default after P7, with runtime flag overrides still available through `ui.feature_flags.automations_page` and `RALPHX_UI_AUTOMATIONS_PAGE`.
@@ -46,6 +46,14 @@ Per-automation config (editable at any status via settings; also exposed through
 
 The terminal judge may propose a complete replacement goal-item list when implementation discovers that unfinished work should be added, split, or reordered. Completed/skipped history is immutable. The proposal is attached to the successor run's planning context but does not mutate the active goal immediately: the existing successor plan approval is the authorization boundary. Approval applies the proposal with an exact-snapshot compare-and-swap before edit mode starts. A human goal edit while paused rejects the pending proposal; a concurrent/stale edit pauses with `goal_replan_stale` and never overwrites newer work.
 
+## Ideation Task-Graph Bridge
+
+An automation configured with `run_mode = ideation`, `completion_signal = ideation_finalized`, and `plan_deep_verification = true` uses its normal hidden Planning session as the handoff into the task pipeline. Approval is accepted only when the current plan artifact has reached native `Verified` status. The scheduler then changes the owning workspace to ideation mode and delivers one `<auto-propose>` turn that creates scoped proposals, records dependency edges, and finalizes them through the normal proposal-to-task entry path.
+
+The generic human acceptance gate is bypassed only when authoritative state proves all of the following: the session is verified, the approved artifact is current, the automation and latest run are active, the run owns the linked workspace conversation, and the run uses the ideation bridge contract. Any stale or missing link fails closed. The bridge run completes only after the session is `Accepted`; an agent that exits before acceptance is a failed run, and restart recovery redelivers only the approved current plan.
+
+Once accepted, World A owns task scheduling, dependency unblocking, review, and local merge recovery. Automation detail responses expose this lineage as one pipeline read model (session, plan, proposal count, task statuses, and blockers), so the detail screen can show progress after the automation run itself has completed.
+
 PR-status polling retries one transient infrastructure failure immediately, then falls back to the durable consecutive-failure counter and pauses at the configured threshold. Every system pause reason appears in the live attention center and durable notification history. Paused-automation notifications expose a direct Resume action; the backend still requires the automation to be Paused, so stale notification actions fail closed and refresh attention state.
 
 Migration note: existing Active automations default to `manual` and park at their next run's plan gate — the runs-list pill and paused-reason banner are the discovery path. Runs provisioned before the upgrade never enter plan-phase code paths.
@@ -75,12 +83,12 @@ Drafts are validated fail-closed before activation. Required fields include goal
 ## Deferred Beyond V1
 
 - Cron or time-based triggers.
-- Non-PR completion signals such as CI green, human approval, or plan artifact produced.
+- Additional completion signals such as CI green or human approval.
 - Parallel runs within one automation.
 - Team-mode automation runs.
 - Cross-project automations.
 - External/webhook triggers.
-- Finalizable `plan` and `ideation` automation modes.
+- Finalizable standalone `plan` automation mode.
 
 ## Validation Checklist
 
@@ -89,7 +97,7 @@ Drafts are validated fail-closed before activation. Required fields include goal
 - Terminal agent-run evidence is freshness-scoped to `agent_phase_started_at`; parked time never counts toward `max_run_duration`.
 - Plan approvals are written only through the actor-parameterized approval helper and read only via the artifact-id match — never bare approval status.
 - Gate prompts flow through exactly one `send_message` with spawn proof (`was_queued == false`); queued landmines are purged; `run_prompt` stays byte-identical to the judge's `next_run_prompt`.
-- User-initiated mode switches on automation-run conversations are rejected at the command layer; only the scheduler's system path switches `plan -> edit`.
+- User-initiated mode switches on automation-run conversations are rejected at the command layer; only the scheduler's system path switches `plan -> edit` or `plan -> ideation`.
 - Automation delete archives each run's plan artifact chain and deletes its approval row and Planning session.
 - Successor creation checks max runs, consecutive failures, and latest-run identity before inserting.
 - Stacked chaining creates a `local_branch` successor from the previous PR head and never carries source-PR linkage.

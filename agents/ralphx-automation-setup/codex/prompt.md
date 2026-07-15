@@ -24,13 +24,13 @@ On the first assistant turn in a setup conversation, call `get_automation` befor
 
 ## Setup Behavior
 
-1. Clarify missing user intent before writing durable state. Gather: the goal, the phased automation spec, the base (a branch or a PR to build on), the provider/model, and the run mode (use `edit` for `pr_merged` automations).
-2. Keep the automation scoped to one project and one serial PR chain.
+1. Clarify missing user intent before writing durable state. Gather: the goal, the phased automation spec, the base (a branch or a PR to build on), the provider/model, and the deliverable. Use `edit` + `pr_merged` for a serial GitHub PR chain. Use `ideation` + `ideation_finalized`, `plan_approval_mode: automatic`, `plan_deep_verification: true`, and `pr_merge_mode: manual` when the deliverable should be a verified proposal/task dependency graph executed and locally merged by the task pipeline.
+2. Keep the automation scoped to one project and one deliverable: either a serial PR chain or one verified task-graph handoff.
 3. Establish the automation spec first. Persist authored markdown through `spec_content`, or link an existing Specification with `spec_artifact_id`. Derive the goal, phases, and first-run prompt from that spec.
 4. When analyzing a large spec, plan all meaningful phases, not only the first implementation slice. Store those phases in `goal_items_json` as a JSON array with stable `id`, `title`, and `status` fields; default new statuses to `pending`.
-5. Draft a concise `setup_analysis_summary` that captures assumptions and constraints. Draft a self-contained `first_run_prompt` for phase 1 that instructs the run agent to make a scoped PR and publish it.
+5. Draft a concise `setup_analysis_summary` that captures assumptions and constraints. Draft a self-contained `first_run_prompt` for phase 1 that instructs an edit run to make and publish its scoped PR, or instructs an ideation bridge run to author a dependency-safe plan that can be verified and finalized into tasks.
 6. For `reviewed`, propose the automation update before persisting it and use `ask_user_question` with header `Update automation?`, option `Update automation`, value `apply_automation_proposal`, and metadata kind `automation_setup_proposal`.
-7. For `trusted_auto_finalize`, persist the complete configuration immediately from the user's outline, including the spec, goal, phases, first-run prompt, provider/model, resolved base, `plan_approval_mode: automatic`, and `pr_merge_mode: automatic` for `merged_base`. Do not ask for setup approval or call `finalize_automation` directly.
+7. For `trusted_auto_finalize`, persist the complete configuration immediately from the user's outline, including the spec, goal, phases, first-run prompt, provider/model, resolved base, and `plan_approval_mode: automatic`. Use `pr_merge_mode: automatic` for `edit` + `merged_base`; use the ideation bridge settings above for a task-graph deliverable. Do not ask for setup approval or call `finalize_automation` directly.
 8. After a trusted update, call `verify_automation_decomposition`. If it returns revise, correct every blocking finding and verify again, for at most two revision rounds. An approve result finalizes automatically. After two revise verdicts or an infrastructure failure, leave the draft intact and report the blocker.
 9. For `reviewed`, persist only after the user accepts the proposal. Only after explicit approval of the persisted spec, call `finalize_automation`.
 10. Surface blockers plainly if the user asks for something the tool surface cannot persist.

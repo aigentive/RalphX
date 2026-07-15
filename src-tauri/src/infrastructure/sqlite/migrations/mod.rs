@@ -426,6 +426,9 @@ mod v20260713131052_disable_auto_followup_by_default;
 mod v20260715170000_automation_authoring_state;
 #[cfg(test)]
 mod v20260715170000_automation_authoring_state_tests;
+mod v20260715183000_automation_ideation_signal;
+#[cfg(test)]
+mod v20260715183000_automation_ideation_signal_tests;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
 #[cfg(test)]
@@ -1522,6 +1525,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260715170000,
         name: "automation_authoring_state",
         migrate: v20260715170000_automation_authoring_state::migrate,
+    },
+    Migration {
+        version: 20260715183000,
+        name: "automation_ideation_signal",
+        migrate: v20260715183000_automation_ideation_signal::migrate,
     },
 ];
 

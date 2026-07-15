@@ -57,7 +57,10 @@ export type AutomationBaseRefKind =
 
 export type AutomationChainMode = "merged_base" | "pr_head_stacked";
 
-export type AutomationCompletionSignal = "pr_merged" | "agent_completed";
+export type AutomationCompletionSignal =
+  | "pr_merged"
+  | "agent_completed"
+  | "ideation_finalized";
 
 export interface Automation {
   id: string;
@@ -144,10 +147,30 @@ export interface AutomationUsage {
   estimatedUsd: number | null;
 }
 
+export interface AutomationPipelineTask {
+  id: string;
+  title: string;
+  status: string;
+  blockedBy: string[];
+}
+
+export interface AutomationPipelineProgress {
+  deliverable: "task_graph";
+  status: "authoring" | "executing" | "completed" | "attention";
+  ideationSessionId: string;
+  planArtifactId: string | null;
+  proposalCount: number;
+  taskTotal: number;
+  taskMerged: number;
+  taskTerminal: number;
+  tasks: AutomationPipelineTask[];
+}
+
 export interface AutomationDetail {
   automation: Automation;
   runs: AutomationRun[];
   usage: AutomationUsage;
+  pipeline?: AutomationPipelineProgress | null;
 }
 
 export interface CreateAutomationDraftResponse {

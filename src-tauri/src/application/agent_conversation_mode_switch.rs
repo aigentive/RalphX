@@ -6,8 +6,7 @@ use crate::domain::entities::{
 };
 use crate::error::{AppError, AppResult};
 
-pub const AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE: &str =
-    "[ralphx:automation_run_mode_locked]";
+pub const AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE: &str = "[ralphx:automation_run_mode_locked]";
 
 pub(crate) fn is_automation_run_mode_switch_locked(conversation: &ChatConversation) -> bool {
     conversation.automation_run_id.is_some()
@@ -23,12 +22,8 @@ pub(crate) async fn system_switch_automation_run_to_edit(
     conversation_id: &ChatConversationId,
     state: &AppState,
 ) -> AppResult<()> {
-    system_switch_automation_run_mode(
-        conversation_id,
-        AgentConversationWorkspaceMode::Edit,
-        state,
-    )
-    .await
+    system_switch_automation_run_mode(conversation_id, AgentConversationWorkspaceMode::Edit, state)
+        .await
 }
 
 pub(crate) async fn system_switch_automation_run_to_ideation(

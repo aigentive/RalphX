@@ -60,7 +60,7 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         plan_deep_verification: {
           type: "boolean",
           description:
-            "Enable deeper plan verification before an approved plan proceeds.",
+            "Enable deeper plan verification before an approved plan proceeds. Required for the ideation task-graph bridge.",
         },
         goal_prompt: {
           type: "string",
@@ -70,7 +70,7 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         first_run_prompt: {
           type: "string",
           description:
-            "Self-contained prompt for run 1 instructing the run agent to make a scoped PR and publish it. Required before finalize.",
+            "Self-contained prompt for run 1 instructing the agent to produce the configured PR or verified task-graph deliverable. Required before finalize.",
         },
         provider_harness: {
           type: "string",
@@ -86,7 +86,9 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         },
         run_mode: {
           type: "string",
-          description: "Run mode for the automation. Use 'edit' for pr_merged automations.",
+          enum: ["edit", "ideation"],
+          description:
+            "Run deliverable: 'edit' publishes a PR; 'ideation' turns a verified plan into proposals, task dependencies, and the local task pipeline.",
         },
         base_ref_kind: {
           type: "string",
@@ -113,7 +115,9 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         },
         completion_signal: {
           type: "string",
-          description: "Completion signal for the automation (e.g. 'pr_merged').",
+          enum: ["pr_merged", "agent_completed", "ideation_finalized"],
+          description:
+            "Completion signal. Use 'pr_merged' for edit runs and 'ideation_finalized' for the ideation task-graph bridge.",
         },
         setup_analysis_summary: {
           type: "string",

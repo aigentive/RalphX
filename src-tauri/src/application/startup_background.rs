@@ -226,9 +226,7 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
             )
             .await
             .map_err(|error| {
-                AppError::Infrastructure(format!(
-                    "automation ideation bridge send failed: {error}"
-                ))
+                AppError::Infrastructure(format!("automation ideation bridge send failed: {error}"))
             })?;
         if result.was_queued {
             tracing::info!(

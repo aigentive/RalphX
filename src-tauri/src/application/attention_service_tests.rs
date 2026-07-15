@@ -584,6 +584,8 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         "judge_loop_suspected",
         "judge_stopped_unmet",
         "goal_replan_stale",
+        "ideation_bridge_verification_failed",
+        "ideation_bridge_missing_session",
     ] {
         let mut paused = automation(
             project.id.clone(),
@@ -647,6 +649,8 @@ async fn attention_items_include_actionable_automation_runs_and_pauses_only() {
         "judge_loop_suspected",
         "judge_stopped_unmet",
         "goal_replan_stale",
+        "ideation_bridge_verification_failed",
+        "ideation_bridge_missing_session",
     ] {
         assert!(items.iter().any(|item| {
             item.title == format!("Automation paused: Automation actionable-{reason}")
