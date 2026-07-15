@@ -8,9 +8,7 @@
 // - GET  /api/team/plan/pending/:context_id — get_pending_plan (frontend reconciliation)
 // - POST /api/team/spawn          — request_teammate_spawn (validates, spawns, registers, streams)
 // - POST /api/team/artifact       — create_team_artifact
-// - POST /api/team/verification_finding — publish_verification_finding
 // - GET  /api/team/artifacts/:session_id — get_team_artifacts
-// - GET  /api/team/verification-findings/:session_id — get_verification_findings
 // - GET  /api/team/session_state/:session_id — get_team_session_state
 // - POST /api/team/session_state  — save_team_session_state
 

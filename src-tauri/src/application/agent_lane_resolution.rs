@@ -250,7 +250,6 @@ fn ideation_lane_for_agent(agent_name: &str) -> Option<AgentLane> {
         | "ralphx-ideation-team-lead"
         | "ideation-team-member"
         | "ralphx-ideation-readonly" => Some(AgentLane::IdeationPrimary),
-        "ralphx-plan-verifier" => Some(AgentLane::IdeationVerifier),
         _ => None,
     }
 }

@@ -7,8 +7,6 @@ import { z } from "zod";
 // Verification
 // ============================================================================
 
-export const AUTO_VERIFICATION_KEY = "auto_verification";
-export const VERIFICATION_RESULT_KEY = "verification_result";
 
 export const VERIFICATION_STATUS_VALUES = [
   "unverified",
@@ -21,32 +19,6 @@ export const VERIFICATION_STATUS_VALUES = [
 
 export const VerificationStatusSchema = z.enum(VERIFICATION_STATUS_VALUES);
 export type VerificationStatus = z.infer<typeof VerificationStatusSchema>;
-
-export const VerificationGapSchema = z.object({
-  severity: z.enum(["critical", "high", "medium", "low"]),
-  category: z.string(),
-  description: z.string(),
-  whyItMatters: z.string().optional(),
-});
-
-export type VerificationGap = z.infer<typeof VerificationGapSchema>;
-
-export const RoundSummarySchema = z.object({
-  round: z.number(),
-  gapScore: z.number(),
-  gapCount: z.number(),
-});
-
-export type RoundSummary = z.infer<typeof RoundSummarySchema>;
-
-export const VerificationRoundDetailSchema = z.object({
-  round: z.number(),
-  gapScore: z.number(),
-  gapCount: z.number(),
-  gaps: z.array(VerificationGapSchema),
-});
-
-export type VerificationRoundDetail = z.infer<typeof VerificationRoundDetailSchema>;
 
 // ============================================================================
 // Ideation Session

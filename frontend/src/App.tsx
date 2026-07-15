@@ -18,7 +18,7 @@ import {
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
 import { AppTopBar, LeftNavRail } from "@/components/layout";
 import { PermissionDialog } from "@/components/PermissionDialog";
-import { FinalizeConfirmationDialog, VerificationConfirmDialog } from "@/components/Ideation";
+import { FinalizeConfirmationDialog } from "@/components/Ideation";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
 import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
@@ -1299,9 +1299,6 @@ function AppContent() {
 
       {/* Finalize Confirmation Dialog - Agent-initiated plan acceptance gate */}
       <FinalizeConfirmationDialog />
-
-      {/* Verification Confirm Dialog - Agent/user-initiated verification gate with specialist selection */}
-      <VerificationConfirmDialog />
 
       {/* Toast notifications */}
       <Toaster position="bottom-left" offset={toastOffset} />

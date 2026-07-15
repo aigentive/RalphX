@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::{collections::HashMap, time::Instant};
 
-use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{
     plan_judge_model_for_provider, standard_harness_map, standard_harness_registry,
     AgentHarnessKind, AgentProviderSettings, DEFAULT_AGENT_HARNESS,
@@ -14,7 +13,7 @@ use crate::infrastructure::agents::claude::{
     probe_claude_cli_cached, reconciliation_config, register_mcp_server, resolve_plugin_dir,
     scheduler_config, ui_feature_flags_config, validate_external_mcp_config, verification_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
-    SpecialistEntry, UiFeatureFlagsConfig, VerificationConfig,
+    UiFeatureFlagsConfig,
 };
 use crate::infrastructure::agents::{
     find_codex_cli, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, ResolvedCodexCli,
@@ -816,36 +815,12 @@ pub(crate) fn default_external_session_similarity_threshold() -> f64 {
     default_external_mcp_config().external_session_similarity_threshold
 }
 
-pub(crate) fn default_verification_config() -> VerificationConfig {
-    verification_config().clone()
-}
-
-pub(crate) fn default_verification_auto_verify_enabled() -> bool {
-    verification_config().auto_verify
-}
-
 pub(crate) fn default_verification_max_rounds() -> u32 {
     verification_config().max_rounds
 }
 
-pub(crate) fn default_verification_specialists() -> Vec<SpecialistEntry> {
-    verification_config().specialists.clone()
-}
-
 pub(crate) fn default_ui_feature_flags() -> UiFeatureFlagsConfig {
     ui_feature_flags_config().clone()
-}
-
-pub(crate) fn default_verification_reconciliation_config() -> VerificationReconciliationConfig {
-    let verification = default_verification_config();
-    let external_mcp = default_external_mcp_config();
-    VerificationReconciliationConfig {
-        stale_after_secs: verification.reconciliation_stale_after_secs,
-        auto_verify_stale_secs: verification.auto_verify_stale_secs,
-        interval_secs: verification.reconciliation_interval_secs,
-        external_session_stale_secs: external_mcp.external_session_stale_secs,
-        external_session_startup_grace_secs: external_mcp.external_session_startup_grace_secs,
-    }
 }
 
 pub(crate) fn default_execution_settings_config() -> ExecutionDefaultsConfig {

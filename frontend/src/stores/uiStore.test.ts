@@ -1353,54 +1353,6 @@ describe("uiStore", () => {
     });
   });
 
-  // ============================================================================
-  // Verification queue
-  // ============================================================================
-
-  describe("verification queue", () => {
-    beforeEach(() => {
-      useUiStore.setState({ pendingVerificationQueue: [] });
-    });
-
-    describe("hydrateVerificationQueue", () => {
-      it("adds new session IDs to the queue", () => {
-        useUiStore.getState().hydrateVerificationQueue(["session-1", "session-2"]);
-        expect(useUiStore.getState().pendingVerificationQueue).toEqual(["session-1", "session-2"]);
-      });
-
-      it("deduplicates — does not add a session already in the queue", () => {
-        useUiStore.setState({ pendingVerificationQueue: ["session-1"] });
-        useUiStore.getState().hydrateVerificationQueue(["session-1", "session-2"]);
-        expect(useUiStore.getState().pendingVerificationQueue).toEqual(["session-1", "session-2"]);
-      });
-
-      it("is a no-op when called with an empty array", () => {
-        useUiStore.setState({ pendingVerificationQueue: ["session-1"] });
-        useUiStore.getState().hydrateVerificationQueue([]);
-        expect(useUiStore.getState().pendingVerificationQueue).toEqual(["session-1"]);
-      });
-
-      it("merges into existing queue without replacing event-enqueued entries", () => {
-        useUiStore.setState({ pendingVerificationQueue: ["session-live"] });
-        useUiStore.getState().hydrateVerificationQueue(["session-stale", "session-live"]);
-        expect(useUiStore.getState().pendingVerificationQueue).toEqual(["session-live", "session-stale"]);
-      });
-    });
-
-    describe("switchToProject clears pendingVerificationQueue", () => {
-      it("clears stale entries before bootstrap re-hydrates for the new project", () => {
-        useUiStore.setState({ pendingVerificationQueue: ["old-session-1", "old-session-2"] });
-        useUiStore.getState().switchToProject("proj-a", "proj-b");
-        expect(useUiStore.getState().pendingVerificationQueue).toEqual([]);
-      });
-
-      it("leaves the queue empty when it was already empty", () => {
-        useUiStore.getState().switchToProject("proj-a", "proj-b");
-        expect(useUiStore.getState().pendingVerificationQueue).toEqual([]);
-      });
-    });
-  });
-
   describe("navigateToTask", () => {
     it("switches currentView to Agents", () => {
       useUiStore.setState({ currentView: "graph" });

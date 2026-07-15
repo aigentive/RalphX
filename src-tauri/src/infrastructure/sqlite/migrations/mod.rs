@@ -401,45 +401,66 @@ mod v20260701174810_workspace_review_hunk_annotations;
 mod v20260701174810_workspace_review_hunk_annotations_tests;
 mod v20260703143000_task_validation_runs;
 mod v20260704193000_automations_p1;
+#[cfg(test)]
+mod v20260704193000_automations_p1_tests;
 mod v20260706113000_agent_conversation_issue_identity;
+#[cfg(test)]
+mod v20260706113000_agent_conversation_issue_identity_tests;
 mod v20260707113000_automation_agent_completed_signal;
+#[cfg(test)]
+mod v20260707113000_automation_agent_completed_signal_tests;
 mod v20260707120000_automations_spec_artifact_id;
+#[cfg(test)]
+mod v20260707120000_automations_spec_artifact_id_tests;
 mod v20260708120000_automation_run_plan_gate;
+#[cfg(test)]
+mod v20260708120000_automation_run_plan_gate_tests;
 mod v20260708130511_workspace_review_autofix_setting;
+#[cfg(test)]
+mod v20260708130511_workspace_review_autofix_setting_tests;
 mod v20260708131548_chat_conversation_coordination_mode;
+#[cfg(test)]
+mod v20260708131548_chat_conversation_coordination_mode_tests;
 mod v20260710000000_task_branch_base;
+#[cfg(test)]
+mod v20260710000000_task_branch_base_tests;
 mod v20260710003315_execution_plan_halt_mode;
+#[cfg(test)]
+mod v20260710003315_execution_plan_halt_mode_tests;
 mod v20260710134609_notifications_table;
+#[cfg(test)]
+mod v20260710134609_notifications_table_tests;
 mod v20260710201548_notification_settings;
+#[cfg(test)]
+mod v20260710201548_notification_settings_tests;
 mod v20260711151804_personas;
+#[cfg(test)]
+mod v20260711151804_personas_tests;
 mod v20260712090000_validation_run_content_fingerprints;
 mod v20260712153932_agent_workspace_pr_review_auto_approve;
 #[cfg(test)]
 mod v20260712153932_agent_workspace_pr_review_auto_approve_tests;
 mod v20260712155425_ui_feature_flag_overrides;
+#[cfg(test)]
+mod v20260712155425_ui_feature_flag_overrides_tests;
 mod v20260712162657_persona_builder_agent_mode;
+#[cfg(test)]
+mod v20260712162657_persona_builder_agent_mode_tests;
 mod v20260712190416_branch_update_authority;
 #[cfg(test)]
 mod v20260712190416_branch_update_authority_tests;
 mod v20260713063349_persona_run_attribution;
+#[cfg(test)]
+mod v20260713063349_persona_run_attribution_tests;
 mod v20260713131052_disable_auto_followup_by_default;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
 mod v20260714184430_workspace_review_auto_merge_guard;
 #[cfg(test)]
 mod v20260714184430_workspace_review_auto_merge_guard_tests;
+mod v20260715013854_model_native_plan_verification;
 #[cfg(test)]
-mod v20260710134609_notifications_table_tests;
-#[cfg(test)]
-mod v20260710201548_notification_settings_tests;
-#[cfg(test)]
-mod v20260711151804_personas_tests;
-#[cfg(test)]
-mod v20260712155425_ui_feature_flag_overrides_tests;
-#[cfg(test)]
-mod v20260712162657_persona_builder_agent_mode_tests;
-#[cfg(test)]
-mod v20260713063349_persona_run_attribution_tests;
+mod v20260715013854_model_native_plan_verification_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -501,24 +522,6 @@ mod v62_api_key_admin_permissions_tests;
 #[cfg(test)]
 mod v63_auto_verify_generation_tests;
 #[cfg(test)]
-mod v20260704193000_automations_p1_tests;
-#[cfg(test)]
-mod v20260706113000_agent_conversation_issue_identity_tests;
-#[cfg(test)]
-mod v20260707113000_automation_agent_completed_signal_tests;
-#[cfg(test)]
-mod v20260707120000_automations_spec_artifact_id_tests;
-#[cfg(test)]
-mod v20260708120000_automation_run_plan_gate_tests;
-#[cfg(test)]
-mod v20260708130511_workspace_review_autofix_setting_tests;
-#[cfg(test)]
-mod v20260708131548_chat_conversation_coordination_mode_tests;
-#[cfg(test)]
-mod v20260710000000_task_branch_base_tests;
-#[cfg(test)]
-mod v20260710003315_execution_plan_halt_mode_tests;
-#[cfg(test)]
 mod v65_unique_working_directory_tests;
 #[cfg(test)]
 mod v66_cross_project_import_tests;
@@ -548,7 +551,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260714184430;
+pub const SCHEMA_VERSION: i64 = 20260715013854;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1522,6 +1525,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260714184430,
         name: "workspace_review_auto_merge_guard",
         migrate: v20260714184430_workspace_review_auto_merge_guard::migrate,
+    },
+    Migration {
+        version: 20260715013854,
+        name: "model_native_plan_verification",
+        migrate: v20260715013854_model_native_plan_verification::migrate,
     },
 ];
 

@@ -18,86 +18,45 @@ export function getToolRecoveryHintFromRegistry(tools, toolName) {
         return null;
     }
     switch (toolName) {
-        case "report_verification_round": {
-            const examples = formatToolExamples(tool);
-            return [
-                "Use this verifier-friendly helper for in-progress rounds on the PARENT ideation session.",
-                "Do not pass session_id; the backend derives the canonical parent session from the active verification child context.",
-                "You only provide round and generation; status=reviewing, in_progress=true, and current-round gaps come from the backend-owned run_verification_round state.",
-                ...examples.map((example) => `Example payload: ${example}`),
-            ].join("\n");
-        }
         case "complete_plan_verification": {
-            const examples = formatToolExamples(tool);
             return [
-                "Use this verifier-friendly helper for terminal verification updates on the PARENT ideation session.",
-                "Do not pass session_id; the backend derives the canonical parent session from the active verification child context.",
-                "You provide the terminal status and generation; in_progress=false is filled in automatically.",
-                "The helper uses backend-owned current-round state from run_verification_round; do not try to pass delegate, timestamp, rescue, or wait bookkeeping through the model.",
-                "External sessions cannot use status=skipped.",
-                ...examples.map((example) => `Example terminal payload: ${example}`),
+                "Call exactly once only after the current linked plan is implementation-ready.",
+                "Pass an empty object. The backend derives and validates the active run, conversation, planning session, and exact current artifact.",
+                "A stale, ordinary, failed, cancelled, or mismatched run cannot record proof.",
             ].join("\n");
         }
         case "get_plan_verification": {
-            const examples = formatToolExamples(tool);
             return [
-                "Call this before retrying report_verification_round or complete_plan_verification. The backend derives the canonical parent session from the active verification child context, so do not pass session_id.",
-                ...examples.map((example) => `Example payload: ${example}`),
+                "Read the visible Verify Plan action status and exact-artifact proof.",
+                "Pass session_id outside an ideation runtime; it is injected from context inside one.",
             ].join("\n");
         }
         case "create_team_artifact": {
             const examples = formatToolExamples(tool);
             return [
-                "Use the PARENT ideation session_id as the canonical target. If a verification child session id is passed, the backend remaps it to the parent automatically.",
-                "Use this for general specialist findings and team summaries. It is not the typed verification-finding path.",
-                ...examples.map((example) => `Example payload: ${example}`),
-            ].join("\n");
-        }
-        case "publish_verification_finding": {
-            const examples = formatToolExamples(tool);
-            return [
-                "Use this for verification-path specialists and required verification critics.",
-                "If session_id is omitted, the backend injects the current session context and remaps verification child sessions to the parent ideation session automatically.",
-                "Publish one structured finding with critic, round, status, summary, and gaps.",
+                "Use the ideation or execution session that owns the team work as the canonical target.",
+                "Use this for specialist findings and team summaries.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
         case "get_team_artifacts": {
             const examples = formatToolExamples(tool);
             return [
-                "Read artifacts from the PARENT ideation session_id as the canonical target. If a verification child session id is passed, the backend remaps it to the parent automatically.",
-                ...examples.map((example) => `Example payload: ${example}`),
-            ].join("\n");
-        }
-        case "run_verification_enrichment": {
-            const examples = formatToolExamples(tool);
-            return [
-                "Use this as the backend-owned one-time enrichment driver.",
-                "Do not pass session_id; the backend derives the canonical parent session from the active verification child context.",
-                "You choose the enrichment specialists; the backend dispatches them, waits a bounded amount, and returns the latest typed findings plus delegate snapshots.",
-                ...examples.map((example) => `Example payload: ${example}`),
-            ].join("\n");
-        }
-        case "run_verification_round": {
-            const examples = formatToolExamples(tool);
-            return [
-                "Use this as the primary verifier round driver.",
-                "Do not pass session_id; the backend derives the canonical parent session from the active verification child context.",
-                "You choose the optional specialists; the backend dispatches them, runs the required critics, waits for bounded settlement, and returns structured required critic findings plus backend-owned merged_gaps.",
+                "Read artifacts from the ideation or execution session that owns the team work.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
         case "get_child_session_status": {
             const examples = formatToolExamples(tool);
             return [
-                "When debugging a verification child, set include_recent_messages=true so you can inspect the last assistant/tool outputs.",
+                "Set include_recent_messages=true when you need the child agent's latest assistant/tool outputs.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }
         case "send_ideation_session_message": {
             const examples = formatToolExamples(tool);
             return [
-                "When nudging a verifier/critic, repeat full invariant context: SESSION_ID, ROUND, critic/schema, and explicit parent-session target.",
+                "Include the full task context and intended outcome when nudging another ideation session.",
                 ...examples.map((example) => `Example payload: ${example}`),
             ].join("\n");
         }

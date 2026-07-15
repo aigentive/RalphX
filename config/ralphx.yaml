@@ -274,37 +274,6 @@ ideation:
   # Used by get_child_session_status MCP tool to derive estimated_status. Env: RALPHX_IDEATION_ACTIVITY_THRESHOLD_SECS
   child_session_activity_threshold_secs: 10
   verification:
-    # verification_reconciliation.rs — max adversarial review rounds [1,10]; hard cap, always terminates
-    max_rounds: 5
-    # If true, verification starts automatically when a plan is created
-    auto_verify: true
-    # If true, apply_proposals is blocked unless the plan is verified or skipped
-    require_verification_for_accept: true
-    # Min proposals before auto-verification triggers (when auto_verify=true)
-    complexity_threshold: 3
-    # verification_reconciliation.rs — sessions stuck in_progress longer than this are reset (seconds)
-    # 90 minutes: 5 rounds × 10-15 min/round + buffer (D14). Env: RALPHX_VERIFICATION_RECONCILIATION_STALE_AFTER_SECS
-    reconciliation_stale_after_secs: 5400
-    # How often the reconciliation service scans for stuck sessions (seconds). Env: RALPHX_VERIFICATION_RECONCILIATION_INTERVAL_SECS
-    reconciliation_interval_secs: 300
     # accept-plan retry self-heal — supersede orphaned execution plans with no tasks/links after this many seconds
     # Env: RALPHX_VERIFICATION_ACCEPT_STALE_EXECUTION_PLAN_SECS
     accept_stale_execution_plan_secs: 30
-    # Specialist agents available in the verification pipeline.
-    # Shown as checkboxes in the VerificationConfirmDialog.
-    specialists:
-      - name: "ralphx-ideation-specialist-code-quality"
-        display_name: "Code Quality"
-        description: "Analyzes code paths for complexity, DRY violations, and extract opportunities"
-        dispatch_mode: "pre_round"
-        enabled_by_default: true
-      - name: "ralphx-ideation-specialist-ux"
-        display_name: "UX/UI Analysis"
-        description: "Verifies UI flows, screen inventory, and wireframe patterns"
-        dispatch_mode: "per_round"
-        enabled_by_default: true
-      - name: "ralphx-ideation-specialist-prompt-quality"
-        display_name: "Prompt Quality"
-        description: "Reviews agent prompts for token efficiency, scoping, and anti-bloat"
-        dispatch_mode: "per_round"
-        enabled_by_default: true

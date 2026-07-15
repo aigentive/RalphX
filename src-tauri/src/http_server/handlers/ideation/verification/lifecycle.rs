@@ -387,7 +387,8 @@ pub async fn mark_verification_infra_failure(
     State(state): State<HttpServerState>,
     Path(session_id): Path<String>,
     Json(req): Json<VerificationInfraFailureRequest>,
-) -> Result<Json<VerificationResponse>, JsonError> {
+) -> Result<Json<crate::application::plan_verification_service::PlanVerificationStatus>, JsonError>
+{
     use crate::domain::entities::ideation::VerificationStatus;
 
     let (session_id, session_id_obj, session) =
@@ -521,16 +522,7 @@ pub async fn mark_verification_infra_failure(
             .ok();
     });
 
-    let mut response = get_plan_verification(
-        State(state),
-        ProjectScope(None),
-        Path(session_id),
-        axum::extract::Query(crate::http_server::types::VerificationQueryParams::default()),
-    )
-    .await?;
-    response.0.verification_generation = next_generation;
-    response.0.convergence_reason = convergence_reason;
-    Ok(response)
+    get_plan_verification(State(state), ProjectScope(None), Path(session_id)).await
 }
 /// POST /api/ideation/sessions/:id/revert-and-skip
 ///

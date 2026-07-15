@@ -5,15 +5,13 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_AUTOMATION_PLAN_JUDGE, SHORT_AUTOMATION_SETUP, SHORT_BRANCH_UPDATER, SHORT_CHAT_PROJECT,
     SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
     SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
-    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
-    SHORT_IDEATION_SPECIALIST_FRONTEND, SHORT_IDEATION_SPECIALIST_INFRA,
-    SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
+    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_FRONTEND,
+    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
     SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
     SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY, SHORT_PERSONA_EXTRACTOR,
-    SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
-    SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
-    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
+    SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER, SHORT_QA_EXECUTOR,
+    SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY, SHORT_SESSION_NAMER,
+    SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
@@ -69,10 +67,6 @@ fn test_canonical_agent_project_root_resolves_live_claude_agents() {
     assert!(
         live_agents.contains(&SHORT_ORCHESTRATOR_IDEATION.to_string()),
         "canonical project root should expose live Claude agents for runtime config synthesis"
-    );
-    assert!(
-        live_agents.contains(&SHORT_PLAN_VERIFIER.to_string()),
-        "canonical project root should expose verifier agents for runtime config synthesis"
     );
 }
 
@@ -343,11 +337,6 @@ fn test_all_agent_names_are_known() {
         SHORT_BRANCH_UPDATER,
         SHORT_MEMORY_MAINTAINER,
         SHORT_MEMORY_CAPTURE,
-        // Plan verification critic agents
-        SHORT_PLAN_CRITIC_COMPLETENESS,
-        SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-        // Plan verifier agent (owns the verification round loop)
-        SHORT_PLAN_VERIFIER,
         // Team lead variants
         SHORT_IDEATION_TEAM_LEAD,
         SHORT_WORKER_TEAM,
@@ -356,18 +345,8 @@ fn test_all_agent_names_are_known() {
         SHORT_IDEATION_SPECIALIST_BACKEND,
         SHORT_IDEATION_SPECIALIST_FRONTEND,
         SHORT_IDEATION_SPECIALIST_INFRA,
-        SHORT_IDEATION_SPECIALIST_UX,
-        SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
         SHORT_IDEATION_ADVOCATE,
         SHORT_IDEATION_CRITIC,
-        // Prompt quality specialist added in recent commits
-        "ralphx-ideation-specialist-prompt-quality",
-        // Intent alignment specialist added in recent commits
-        "ralphx-ideation-specialist-intent",
-        // Pipeline safety specialist added in synthetic-data hardening session
-        "ralphx-ideation-specialist-pipeline-safety",
-        // State machine safety specialist added in synthetic-data hardening session
-        "ralphx-ideation-specialist-state-machine",
         // Utility agent used for plan complexity checks.
         "ralphx-utility-plan-complexity",
         SHORT_AUTOMATION_SETUP,
@@ -530,159 +509,6 @@ fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths()
             agent.system_prompt_file
         );
     }
-}
-
-#[test]
-fn test_plan_verifier_prompt_keeps_runtime_failure_and_optional_specialist_rules() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt = load_harness_agent_prompt(
-        &project_root,
-        "ralphx-plan-verifier",
-        AgentPromptHarness::Claude,
-    )
-    .expect("failed to load canonical ralphx-plan-verifier prompt");
-
-    assert!(
-        prompt.contains("run_verification_round"),
-        "ralphx-plan-verifier prompt must route round execution through the backend-owned round helper"
-    );
-    assert!(
-        prompt.contains("Optional specialists are advisory"),
-        "ralphx-plan-verifier prompt must keep optional specialists non-authoritative"
-    );
-    assert!(
-        prompt.contains("Infra/runtime failure is not a plan verdict"),
-        "ralphx-plan-verifier prompt must make runtime failure non-authoritative"
-    );
-    assert!(
-        !prompt.contains("Task("),
-        "ralphx-plan-verifier prompt should not mention removed provider-specific subagent syntax"
-    );
-}
-
-#[test]
-fn test_plan_verifier_prompt_uses_backend_owned_verification_helpers() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt = load_harness_agent_prompt(
-        &project_root,
-        "ralphx-plan-verifier",
-        AgentPromptHarness::Claude,
-    )
-    .expect("failed to load canonical ralphx-plan-verifier prompt");
-
-    assert!(
-        prompt.contains("mcp__ralphx__run_verification_enrichment"),
-        "ralphx-plan-verifier prompt must use the backend-owned enrichment helper"
-    );
-    assert!(
-        prompt.contains("mcp__ralphx__run_verification_round"),
-        "ralphx-plan-verifier prompt must route full rounds through the backend-owned round helper"
-    );
-    assert!(
-        prompt.contains("round_report"),
-        "ralphx-plan-verifier prompt must treat the backend round report as the authoritative next-step signal"
-    );
-    assert!(
-        prompt.contains("treat it as actionable plan feedback: revise the plan first"),
-        "ralphx-plan-verifier prompt must revise first on actionable needs_revision feedback"
-    );
-    assert!(
-        prompt.contains("do not call terminal cleanup immediately after an actionable `needs_revision` round report"),
-        "ralphx-plan-verifier prompt must not finalize immediately after actionable needs_revision feedback"
-    );
-    assert!(
-        prompt.contains("actionable `needs_revision` is non-terminal until you have a terminal `convergence_reason`"),
-        "ralphx-plan-verifier prompt must treat actionable needs_revision as non-terminal until a terminal convergence reason exists"
-    );
-    assert!(
-        prompt.contains("if terminal cleanup rejects actionable `needs_revision` because `convergence_reason` is missing"),
-        "ralphx-plan-verifier prompt must tell the model to continue the loop when terminal cleanup rejects actionable needs_revision"
-    );
-    assert!(
-        !prompt.contains("if `round_report.status === \"needs_revision\"` and `round_report.in_progress === false`, finish as `needs_revision`"),
-        "ralphx-plan-verifier prompt should not finalize immediately on every terminal needs_revision round report"
-    );
-    assert!(
-        !prompt.contains("created_after"),
-        "ralphx-plan-verifier prompt should not supply round-settlement timestamps from prompt memory"
-    );
-    assert!(
-        prompt.contains("omit `session_id`"),
-        "ralphx-plan-verifier prompt must rely on backend parent-session injection for verifier-owned helpers"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__delegate_start"),
-        "ralphx-plan-verifier prompt should not drift back to manual delegate orchestration"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__await_verification_round_settlement"),
-        "ralphx-plan-verifier prompt should not drift back to low-level settlement choreography"
-    );
-    assert!(
-        !prompt.contains("required_delegates"),
-        "ralphx-plan-verifier prompt should not pass required delegate state during terminal cleanup"
-    );
-    assert!(
-        prompt.contains("do not hand-assemble final gaps"),
-        "ralphx-plan-verifier prompt must leave terminal gap derivation to the backend helper"
-    );
-    assert!(
-        !prompt.contains("rescue_budget_exhausted"),
-        "ralphx-plan-verifier prompt should not pass settlement bookkeeping flags during terminal cleanup"
-    );
-    assert!(
-        !prompt.contains("\"gaps\": <final_merged_gaps>"),
-        "ralphx-plan-verifier prompt should not require hand-assembled terminal gaps once the backend helper derives canonical round gaps"
-    );
-    assert!(
-        !prompt.contains("get_session_messages(session_id: <the SESSION_ID value above>)"),
-        "ralphx-plan-verifier intent specialist prompt must anchor on the plan goal instead of raw parent chat history"
-    );
-    assert!(
-        !prompt.contains("mcp__ralphx__get_verification_round_artifacts"),
-        "ralphx-plan-verifier prompt should not drift back to manual artifact polling"
-    );
-    assert!(
-        !prompt.contains("round_result.gap_counts.critical === 0"),
-        "ralphx-plan-verifier prompt should not re-implement zero-blocking convergence in prompt logic"
-    );
-    assert!(
-        !prompt.contains("current_round >= max_rounds"),
-        "ralphx-plan-verifier prompt should not re-implement max-round terminal logic in prompt prose"
-    );
-    assert!(
-        !prompt.contains("Task(subagent_type:"),
-        "ralphx-plan-verifier prompt should use RalphX-native delegation rather than Claude Task syntax"
-    );
-    assert!(
-        !prompt.contains("max_wait_ms: 8000"),
-        "ralphx-plan-verifier prompt should not drift back to tiny required-critic wait budgets"
-    );
-    assert!(
-        !prompt.contains("max_wait_ms: 4000"),
-        "ralphx-plan-verifier prompt should not drift back to tiny enrichment wait budgets"
-    );
-}
-
-#[test]
-fn test_ideation_claude_prompt_prioritizes_explicit_reverify_requests() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let prompt =
-        load_harness_agent_prompt(&project_root, "ralphx-ideation", AgentPromptHarness::Claude)
-            .expect("failed to load canonical ralphx-ideation prompt");
-
-    assert!(
-        prompt.contains(
-            "If the user explicitly asks to re-run or start a fresh verification round"
-        ),
-        "ralphx-ideation Claude prompt must prioritize explicit rerun requests over stale terminal verification results"
-    );
-    assert!(
-        prompt.contains(
-            "start a fresh verification child immediately instead of summarizing blockers and reopening choices"
-        ),
-        "ralphx-ideation Claude prompt must not reopen planning choices when the user already requested a rerun"
-    );
 }
 
 #[test]
@@ -1888,304 +1714,6 @@ fn test_readonly_agent_has_get_plan_verification_not_update() {
             .contains(&"update_plan_verification".to_string()),
         "readonly agent must NOT include update_plan_verification"
     );
-}
-
-#[test]
-fn test_plan_verifier_mcp_tools_match_current_prompt_contract() {
-    let config =
-        get_agent_config("ralphx-plan-verifier").expect("ralphx-plan-verifier should exist");
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let codex_prompt = std::fs::read_to_string(
-        manifest_dir.join("../agents/ralphx-plan-verifier/codex/prompt.md"),
-    )
-    .expect("codex verifier prompt should load");
-    let claude_prompt = std::fs::read_to_string(
-        manifest_dir.join("../agents/ralphx-plan-verifier/claude/prompt.md"),
-    )
-    .expect("claude verifier prompt should load");
-
-    for tool in [
-        "get_session_plan",
-        "get_parent_session_context",
-        "run_verification_enrichment",
-        "run_verification_round",
-        "complete_plan_verification",
-        "get_plan_verification",
-        "update_plan_artifact",
-        "edit_plan_artifact",
-    ] {
-        assert!(
-            config.allowed_mcp_tools.contains(&tool.to_string()),
-            "ralphx-plan-verifier missing expected MCP tool {tool}"
-        );
-    }
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"send_ideation_session_message".to_string()),
-        "ralphx-plan-verifier should not be able to send chat nudges to itself or other sessions"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_session_messages".to_string()),
-        "ralphx-plan-verifier should not read raw parent chat history for intent anchoring"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_verification_round_artifacts".to_string()),
-        "ralphx-plan-verifier should not include low-level artifact polling helpers"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"run_required_verification_critic_round".to_string()),
-        "ralphx-plan-verifier should not include low-level required-critic orchestration helpers"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"await_verification_round_settlement".to_string()),
-        "ralphx-plan-verifier should not include low-level settlement choreography helpers"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_team_artifacts".to_string()),
-        "ralphx-plan-verifier should not include stale generic team artifact listing tool"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_artifact".to_string()),
-        "ralphx-plan-verifier should not include stale generic artifact fetch tool"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"update_plan_verification".to_string()),
-        "ralphx-plan-verifier should not include stale generic verification update tool"
-    );
-
-    assert!(
-        !config
-            .allowed_mcp_tools
-            .contains(&"get_child_session_status".to_string()),
-        "ralphx-plan-verifier should not include stale MCP tool get_child_session_status"
-    );
-
-    for prompt in [&codex_prompt, &claude_prompt] {
-        assert!(
-            prompt.contains(
-                "do not wait for child shutdown or terminal cleanup before editing"
-            ),
-            "verifier prompts should describe in-place revision rather than waiting for child shutdown"
-        );
-        assert!(
-            prompt.contains(
-                "do not mention or invent `caller_session_id` or any manual freeze-bypass parameter"
-            ),
-            "verifier prompts should forbid manual caller_session_id freeze-bypass narration"
-        );
-    }
-}
-
-#[test]
-fn test_enrichment_specialist_mcp_tools_match_prompt_contract() {
-    let audited_agents = [
-        (
-            "ralphx-ideation-specialist-code-quality",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-prompt-quality",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-ux",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-pipeline-safety",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-state-machine",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-        ),
-        (
-            "ralphx-ideation-specialist-intent",
-            vec![
-                "publish_verification_finding",
-                "get_session_plan",
-                "get_artifact",
-                "get_session_messages",
-                "search_memories",
-                "get_memory",
-                "get_memories_for_paths",
-            ],
-            vec![
-                "list_session_proposals",
-                "get_proposal",
-                "get_parent_session_context",
-            ],
-        ),
-    ];
-
-    for (agent_name, expected, absent) in audited_agents {
-        let config = get_agent_config(agent_name).unwrap_or_else(|| panic!("{agent_name} missing"));
-        for tool in expected {
-            assert!(
-                config.allowed_mcp_tools.contains(&tool.to_string()),
-                "{agent_name} missing expected MCP tool {tool}"
-            );
-        }
-        for tool in absent {
-            assert!(
-                !config.allowed_mcp_tools.contains(&tool.to_string()),
-                "{agent_name} should not include stale MCP tool {tool}"
-            );
-        }
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"create_team_artifact".to_string()),
-            "{agent_name} should use publish_verification_finding instead of create_team_artifact"
-        );
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"get_team_artifacts".to_string()),
-            "{agent_name} should stay on typed verification findings instead of get_team_artifacts"
-        );
-    }
-}
-
-#[test]
-fn test_plan_critic_mcp_tools_match_prompt_contract() {
-    for agent_name in [
-        "ralphx-plan-critic-completeness",
-        "ralphx-plan-critic-implementation-feasibility",
-    ] {
-        let config = get_agent_config(agent_name).expect("plan critic should exist");
-
-        for tool in ["get_session_plan", "publish_verification_finding"] {
-            assert!(
-                config.allowed_mcp_tools.contains(&tool.to_string()),
-                "{agent_name} missing expected MCP tool {tool}"
-            );
-        }
-
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"get_team_artifacts".to_string()),
-            "{agent_name} should stay bounded and not depend on get_team_artifacts"
-        );
-        assert!(
-            !config
-                .allowed_mcp_tools
-                .contains(&"create_team_artifact".to_string()),
-            "{agent_name} should use publish_verification_finding instead of generic create_team_artifact"
-        );
-    }
-}
-
-#[test]
-fn test_plan_critic_prompts_forbid_restatements_of_planned_future_state() {
-    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-
-    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
-        for agent_name in [
-            "ralphx-plan-critic-completeness",
-            "ralphx-plan-critic-implementation-feasibility",
-        ] {
-            let prompt = load_harness_agent_prompt(&project_root, agent_name, harness)
-                .unwrap_or_else(|| panic!("failed to load prompt for {agent_name} ({harness:?})"));
-
-            assert!(
-                prompt.contains("Do not restate the before-state as if that absence alone were a plan gap."),
-                "{agent_name} ({harness:?}) prompt must explicitly forbid before-state restatement gaps"
-            );
-            assert!(
-                prompt.contains("Bad gap: \"current code does not pass executionPlanId\" when the plan explicitly says to add that wiring."),
-                "{agent_name} ({harness:?}) prompt must include a concrete bad-gap example"
-            );
-            assert!(
-                prompt.contains("Good gap: \"the plan never specifies where TaskGraphView gets executionPlanId from\"."),
-                "{agent_name} ({harness:?}) prompt must include a concrete good-gap example"
-            );
-        }
-    }
 }
 
 #[test]
@@ -3436,7 +2964,6 @@ fn test_permission_mode_chat_agent_is_none() {
 fn test_get_agent_config_accepts_legacy_agent_aliases() {
     let cases = [
         ("orchestrator-ideation", "ralphx-ideation"),
-        ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
         ("pr-describer", "ralphx-utility-pr-describer"),

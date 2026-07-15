@@ -43,15 +43,6 @@ This removes the current mixed inventory (`orchestrator-ideation`, `chat-task`, 
 | `ideation-specialist-backend` | `ralphx-ideation-specialist-backend` |
 | `ideation-specialist-frontend` | `ralphx-ideation-specialist-frontend` |
 | `ideation-specialist-infra` | `ralphx-ideation-specialist-infra` |
-| `ideation-specialist-ux` | `ralphx-ideation-specialist-ux` |
-| `ideation-specialist-code-quality` | `ralphx-ideation-specialist-code-quality` |
-| `ideation-specialist-prompt-quality` | `ralphx-ideation-specialist-prompt-quality` |
-| `ideation-specialist-intent` | `ralphx-ideation-specialist-intent` |
-| `ideation-specialist-pipeline-safety` | `ralphx-ideation-specialist-pipeline-safety` |
-| `ideation-specialist-state-machine` | `ralphx-ideation-specialist-state-machine` |
-| `plan-verifier` | `ralphx-plan-verifier` |
-| `plan-critic-completeness` | `ralphx-plan-critic-completeness` |
-| `plan-critic-implementation-feasibility` | `ralphx-plan-critic-implementation-feasibility` |
 | `chat-task` | `ralphx-chat-task` |
 | `chat-project` | `ralphx-chat-project` |
 | `ralphx-worker` | `ralphx-execution-worker` |
