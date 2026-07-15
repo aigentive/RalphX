@@ -5,6 +5,7 @@ pub struct McpRuntimeContext {
     pub context_type: Option<String>,
     pub context_id: Option<String>,
     pub conversation_id: Option<String>,
+    pub coordination_mode: Option<String>,
     pub agent_run_id: Option<String>,
     pub task_id: Option<String>,
     pub task_state: Option<String>,
@@ -29,6 +30,9 @@ pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRu
     }
     if let Some(conversation_id) = runtime_context.conversation_id.as_deref() {
         params.push(("conversation_id", conversation_id));
+    }
+    if let Some(coordination_mode) = runtime_context.coordination_mode.as_deref() {
+        params.push(("coordination_mode", coordination_mode));
     }
     if let Some(agent_run_id) = runtime_context.agent_run_id.as_deref() {
         params.push(("agent_run_id", agent_run_id));
@@ -77,6 +81,10 @@ pub fn append_mcp_runtime_args(
     if let Some(conversation_id) = runtime_context.conversation_id.as_deref() {
         args.push("--conversation-id".to_string());
         args.push(conversation_id.to_string());
+    }
+    if let Some(coordination_mode) = runtime_context.coordination_mode.as_deref() {
+        args.push("--coordination-mode".to_string());
+        args.push(coordination_mode.to_string());
     }
     if let Some(agent_run_id) = runtime_context.agent_run_id.as_deref() {
         args.push("--agent-run-id".to_string());

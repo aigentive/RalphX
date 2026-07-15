@@ -23,11 +23,13 @@ describe('getAllowedToolNames', () => {
         // Clear env var before each test
         delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
         delete process.env.RALPHX_AGENT_PROFILE;
+        delete process.env.RALPHX_COORDINATION_MODE;
     });
     afterEach(() => {
         // Clean up env var after each test
         delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
         delete process.env.RALPHX_AGENT_PROFILE;
+        delete process.env.RALPHX_COORDINATION_MODE;
     });
     it('should return parsed list when RALPHX_ALLOWED_MCP_TOOLS env var is set', () => {
         process.env.RALPHX_ALLOWED_MCP_TOOLS = 'get_session_plan,create_team_artifact';
@@ -91,6 +93,18 @@ describe('getAllowedToolNames', () => {
         expect(tools).toEqual(loadCanonicalMcpTools('qa-prep'));
         expect(tools).toContain('fs_read_file');
         expect(tools).toContain('fs_grep');
+    });
+    it('grants workflow tools only inside Workflow conversations', () => {
+        setAgentType(GENERAL_WORKER);
+        expect(getAllowedToolNames()).not.toContain('create_agent_workflow_script');
+        expect(getAllowedToolNames()).not.toContain('start_agent_workflow_run');
+        process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
+        const workflowTools = getAllowedToolNames();
+        expect(workflowTools).toContain('create_agent_workflow_script');
+        expect(workflowTools).toContain('start_agent_workflow_run');
+        expect(workflowTools).toContain('get_agent_workflow_run');
+        process.env.RALPHX_COORDINATION_MODE = 'codex_native_ultra';
+        expect(getAllowedToolNames()).not.toContain('create_agent_workflow_script');
     });
     it('uses profile-specific canonical mcp_tools when RALPHX_AGENT_PROFILE is set', () => {
         setAgentType(ORCHESTRATOR_IDEATION);
@@ -1004,10 +1018,16 @@ describe('agent workspace publish tools', () => {
     });
     it('exposes publish tools to the general worker only through canonical metadata', () => {
         setAgentType(GENERAL_WORKER);
-        const toolNames = getFilteredTools().map((tool) => tool.name);
-        expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(GENERAL_WORKER)));
-        for (const toolName of publishTools) {
-            expect(toolNames).toContain(toolName);
+        process.env.RALPHX_COORDINATION_MODE = 'rx_native_workflow';
+        try {
+            const toolNames = getFilteredTools().map((tool) => tool.name);
+            expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(GENERAL_WORKER)));
+            for (const toolName of publishTools) {
+                expect(toolNames).toContain(toolName);
+            }
+        }
+        finally {
+            delete process.env.RALPHX_COORDINATION_MODE;
         }
     });
     it('keeps publish tools off unrelated agent surfaces', () => {

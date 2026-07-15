@@ -190,6 +190,7 @@ pub struct SendAgentMessageInput {
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Optional native team-mode overlay request for this send.
+    #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
     /// Optional native team mailbox target.
     pub team_message_target: Option<TeamMessageTarget>,
@@ -3783,7 +3784,39 @@ pub async fn send_agent_message(
         .as_deref()
         .map(str::parse::<AgentHarnessKind>)
         .transpose()?;
-    let requested_harness = harness_override.unwrap_or(DEFAULT_AGENT_HARNESS);
+    let persisted_conversation = if let Some(conversation_id) = input.conversation_id.as_deref() {
+        state
+            .chat_conversation_repo
+            .get_by_id(&ChatConversationId::from_string(conversation_id))
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let requested_harness = harness_override
+        .or_else(|| {
+            persisted_conversation
+                .as_ref()
+                .and_then(|conversation| conversation.provider_harness)
+        })
+        .unwrap_or(DEFAULT_AGENT_HARNESS);
+    let requested_capability = input
+        .team_intent
+        .as_ref()
+        .map(|intent| intent.coordination_mode)
+        .or_else(|| {
+            persisted_conversation
+                .as_ref()
+                .map(|conversation| conversation.coordination_mode)
+        })
+        .unwrap_or_default();
+    crate::application::agent_capability_validation::validate_agent_capability(
+        requested_capability,
+        requested_harness,
+        &state.agent_capability_gate,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
     crate::application::managed_team::validate_native_team_intent(
         input.team_intent.as_ref(),
         requested_harness,
@@ -10241,6 +10274,7 @@ pub struct CreateAgentConversationInput {
     pub context_type: String,
     pub context_id: String,
     pub title: Option<String>,
+    #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
 }
 
@@ -10272,6 +10306,13 @@ pub async fn create_agent_conversation(
 
     let context_type = parse_context_type(&input.context_type)?;
     let coordination_mode = coordination_mode_from_team_intent(input.team_intent.as_ref())?;
+    crate::application::agent_capability_validation::validate_agent_capability(
+        coordination_mode,
+        DEFAULT_AGENT_HARNESS,
+        &state.agent_capability_gate,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
 
     let mut conversation = match context_type {
         ChatContextType::Ideation => {
@@ -10334,15 +10375,26 @@ pub async fn update_agent_conversation_coordination_mode(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Conversation not found".to_string())?;
     if conversation.context_type != ChatContextType::Project {
-        return Err("Only project agent conversations can change Team mode".to_string());
+        return Err("Only project agent conversations can change capabilities".to_string());
     }
+
+    let harness = conversation
+        .provider_harness
+        .unwrap_or(DEFAULT_AGENT_HARNESS);
+    crate::application::agent_capability_validation::validate_agent_capability(
+        coordination_mode,
+        harness,
+        &state.agent_capability_gate,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
 
     let running_key = RunningAgentKey::new(
         ChatContextType::Project.to_string(),
         conversation.id.as_str(),
     );
     if state.running_agent_registry.is_running(&running_key).await {
-        return Err("Cannot change Team mode while the agent is running".to_string());
+        return Err("Cannot change capabilities while the agent is running".to_string());
     }
 
     state

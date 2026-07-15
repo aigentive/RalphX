@@ -9,6 +9,7 @@ export const AgentModelResponseSchema = z.object({
   menuLabel: z.string().min(1),
   description: z.string().nullable().optional(),
   supportedEfforts: z.array(z.string().min(1)),
+  supportsCodexUltra: z.boolean().default(false),
   defaultEffort: z.string().min(1),
   source: z.enum(["built_in", "custom"]),
   enabled: z.boolean(),

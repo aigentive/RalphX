@@ -106,6 +106,7 @@ pub struct StartAgentConversationInput {
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Optional Team request for the Agent conversation.
+    #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
 }
 
@@ -181,6 +182,18 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             harness_override,
         )
         .await?;
+        let requested_capability = input
+            .team_intent
+            .as_ref()
+            .map(|intent| intent.coordination_mode)
+            .unwrap_or_default();
+        crate::application::agent_capability_validation::validate_agent_capability(
+            requested_capability,
+            harness_override.unwrap_or(DEFAULT_AGENT_HARNESS),
+            &self.deps.state.agent_capability_gate,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
         crate::application::managed_team::validate_native_team_intent(
             input.team_intent.as_ref(),
             harness_override.unwrap_or(DEFAULT_AGENT_HARNESS),

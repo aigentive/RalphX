@@ -19,6 +19,7 @@ import {
   parseContentBlocks,
   parseToolCalls,
   type ChatMessageResponse,
+  type CapabilityIntent,
   type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
@@ -84,6 +85,7 @@ type SendMessageVariables = {
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
 };
 
@@ -1193,15 +1195,17 @@ export function useChat(
       composerArtifactReferences,
       composerProjectReferences,
       composerIntegrationReferences,
+      capabilityIntent,
       teamIntent,
     }) => {
       const sendOptions =
         composerProjectReferences?.length ||
         composerIntegrationReferences?.length ||
         composerArtifactReferences?.length ||
-        teamIntent
+        capabilityIntent || teamIntent
           ? {
               ...options?.sendOptions,
+              ...(capabilityIntent ? { capabilityIntent } : {}),
               ...(teamIntent ? { teamIntent } : {}),
               ...(composerProjectReferences?.length
                 ? { composerProjectReferences }

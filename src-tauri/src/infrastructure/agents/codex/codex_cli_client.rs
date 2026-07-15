@@ -132,6 +132,7 @@ impl CodexCliClient {
         CodexExecCliConfig {
             model: config.model.clone(),
             reasoning_effort: config.logical_effort,
+            ultra_mode: false,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             service_tier: config.service_tier.clone(),

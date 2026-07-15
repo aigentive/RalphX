@@ -17,6 +17,9 @@ pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
 pub mod sqlite_agent_run_repo;
 pub mod sqlite_agent_task_repo;
+pub mod sqlite_agent_workflow_repo;
+#[cfg(test)]
+mod sqlite_agent_workflow_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_api_key_repo;
@@ -140,6 +143,7 @@ pub use sqlite_agent_profile_repo::SqliteAgentProfileRepository;
 pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsRepository;
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
+pub use sqlite_agent_workflow_repo::SqliteAgentWorkflowRepository;
 pub use sqlite_api_key_repo::SqliteApiKeyRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;

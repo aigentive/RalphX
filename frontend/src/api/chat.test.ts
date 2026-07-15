@@ -2754,6 +2754,29 @@ describe("chat api", () => {
     });
   });
 
+  it("sends the provider-neutral workflow capability intent", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Build a workflow", undefined, undefined, {
+      conversationId: "c1",
+      capabilityIntent: { coordinationMode: "rx_native_workflow" },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Build a workflow",
+        conversationId: "c1",
+        capabilityIntent: { coordinationMode: "rx_native_workflow" },
+      },
+    });
+  });
+
   it("sends unified agent message with hidden user-message handoff", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
@@ -3888,6 +3911,21 @@ describe("startAgentConversationInvokeInput", () => {
         baseRefName: "main",
         headRefOid: "deadbeef",
       },
+    });
+  });
+
+  it("prefers capabilityIntent while retaining teamIntent compatibility", () => {
+    expect(
+      startAgentConversationInvokeInput({
+        projectId: "project-1",
+        content: "use Ultra",
+        capabilityIntent: { coordinationMode: "codex_native_ultra" },
+        teamIntent: { coordinationMode: "rx_native_team" },
+      }),
+    ).toEqual({
+      projectId: "project-1",
+      content: "use Ultra",
+      capabilityIntent: { coordinationMode: "codex_native_ultra" },
     });
   });
 

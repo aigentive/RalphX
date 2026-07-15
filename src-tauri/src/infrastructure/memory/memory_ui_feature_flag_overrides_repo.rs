@@ -8,7 +8,7 @@ use crate::domain::repositories::UiFeatureFlagOverridesRepository;
 use crate::error::AppResult;
 
 pub struct MemoryUiFeatureFlagOverridesRepository {
-    agent_personas: Arc<RwLock<Option<bool>>>,
+    overrides: Arc<RwLock<UiFeatureFlagOverrides>>,
 }
 
 impl Default for MemoryUiFeatureFlagOverridesRepository {
@@ -20,7 +20,7 @@ impl Default for MemoryUiFeatureFlagOverridesRepository {
 impl MemoryUiFeatureFlagOverridesRepository {
     pub fn new() -> Self {
         Self {
-            agent_personas: Arc::new(RwLock::new(None)),
+            overrides: Arc::new(RwLock::new(UiFeatureFlagOverrides::default())),
         }
     }
 }
@@ -28,13 +28,26 @@ impl MemoryUiFeatureFlagOverridesRepository {
 #[async_trait]
 impl UiFeatureFlagOverridesRepository for MemoryUiFeatureFlagOverridesRepository {
     async fn get(&self) -> AppResult<UiFeatureFlagOverrides> {
-        Ok(UiFeatureFlagOverrides {
-            agent_personas: *self.agent_personas.read().await,
-        })
+        Ok(self.overrides.read().await.clone())
     }
 
     async fn set_agent_personas(&self, value: Option<bool>) -> AppResult<()> {
-        *self.agent_personas.write().await = value;
+        self.overrides.write().await.agent_personas = value;
         Ok(())
+    }
+
+    async fn update_agent_capabilities(
+        &self,
+        team: Option<bool>,
+        workflows: Option<bool>,
+    ) -> AppResult<UiFeatureFlagOverrides> {
+        let mut overrides = self.overrides.write().await;
+        if let Some(team) = team {
+            overrides.agent_conversation_team = team;
+        }
+        if let Some(workflows) = workflows {
+            overrides.agent_conversation_workflows = workflows;
+        }
+        Ok(overrides.clone())
     }
 }

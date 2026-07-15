@@ -592,12 +592,28 @@ describe("AgentsView start conversation", () => {
   it("starts a new conversation with Team enabled", async () => {
     mockAgentViewData();
 
-    renderAgentsView();
+    const { queryClient } = renderAgentsView();
+    queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, {
+      activityPage: true,
+      extensibilityPage: true,
+      ideationPage: false,
+      automationsPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+      agentPersonas: false,
+      agentConversationTeam: true,
+      agentConversationWorkflows: false,
+    });
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument(),
+      expect(screen.getByTestId("agents-start-capability")).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByTestId("agents-start-team-control"));
+    await userEvent.click(screen.getByTestId("agents-start-capability"));
+    await userEvent.click(
+      screen.getByTestId("agents-start-capability-rx_native_team"),
+    );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "coordinate this implementation" },
     });
@@ -607,7 +623,7 @@ describe("AgentsView start conversation", () => {
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           content: "coordinate this implementation",
-          teamIntent: { coordinationMode: "rx_native_team" },
+          capabilityIntent: { coordinationMode: "rx_native_team" },
         }),
       ),
     );

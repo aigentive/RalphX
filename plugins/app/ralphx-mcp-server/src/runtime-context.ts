@@ -9,6 +9,7 @@ type RuntimeContextKey =
   | "contextType"
   | "contextId"
   | "conversationId"
+  | "coordinationMode"
   | "parentConversationId"
   | "agentRunId"
   | "leadSessionId"
@@ -31,6 +32,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   { key: "contextType", argName: "context-type", envName: "RALPHX_CONTEXT_TYPE" },
   { key: "contextId", argName: "context-id", envName: "RALPHX_CONTEXT_ID" },
   { key: "conversationId", argName: "conversation-id", envName: "RALPHX_CONVERSATION_ID" },
+  { key: "coordinationMode", argName: "coordination-mode", envName: "RALPHX_COORDINATION_MODE" },
   {
     key: "parentConversationId",
     argName: "parent-conversation-id",
