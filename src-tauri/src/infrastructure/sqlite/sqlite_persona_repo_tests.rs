@@ -23,6 +23,8 @@ fn persona(slug: &str, status: PersonaStatus) -> Persona {
         version: 1,
         content_hash: format!("hash-{slug}"),
         source_session_id: Some("session-1".to_string()),
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{\"source\":\"test\"}".to_string(),
         created_at: now,
         updated_at: now,
@@ -32,7 +34,11 @@ fn persona(slug: &str, status: PersonaStatus) -> Persona {
 #[tokio::test]
 async fn create_and_get_round_trips_all_columns() {
     let (_db, repo) = setup_repo();
-    let expected = persona("reviewer", PersonaStatus::Draft);
+    let source = persona("source-reviewer", PersonaStatus::Active);
+    repo.create(source.clone()).await.unwrap();
+    let mut expected = persona("reviewer", PersonaStatus::Draft);
+    expected.source_persona_id = Some(source.id);
+    expected.source_content_hash = Some("source-content-hash".to_string());
 
     repo.create(expected.clone()).await.unwrap();
     let actual = repo.get_by_id(&expected.id).await.unwrap().unwrap();
@@ -46,22 +52,39 @@ async fn create_and_get_round_trips_all_columns() {
     assert_eq!(actual.version, expected.version);
     assert_eq!(actual.content_hash, expected.content_hash);
     assert_eq!(actual.source_session_id, expected.source_session_id);
+    assert_eq!(actual.source_persona_id, expected.source_persona_id);
+    assert_eq!(actual.source_content_hash, expected.source_content_hash);
     assert_eq!(actual.source_json, expected.source_json);
 }
 
 #[tokio::test]
-async fn slug_unique_violation_maps_to_validation_error() {
+async fn active_slug_unique_violation_maps_to_validation_error() {
     let (_db, repo) = setup_repo();
     repo.create(persona("reviewer", PersonaStatus::Active))
         .await
         .unwrap();
 
     let error = repo
-        .create(persona("reviewer", PersonaStatus::Draft))
+        .create(persona("reviewer", PersonaStatus::Active))
         .await
-        .expect_err("live slug collision should fail");
+        .expect_err("active slug collision should fail");
 
     assert!(matches!(error, AppError::Validation(message) if message.contains("reviewer")));
+}
+
+#[tokio::test]
+async fn drafts_may_share_an_active_slug_at_the_repository_boundary() {
+    let (_db, repo) = setup_repo();
+    repo.create(persona("reviewer", PersonaStatus::Active))
+        .await
+        .unwrap();
+
+    repo.create(persona("reviewer", PersonaStatus::Draft))
+        .await
+        .expect("seeded draft may share an active slug");
+    repo.create(persona("reviewer", PersonaStatus::Draft))
+        .await
+        .expect("multiple seeded drafts may coexist");
 }
 
 #[tokio::test]
@@ -80,15 +103,18 @@ async fn archived_slug_is_reusable_by_new_persona() {
 }
 
 #[tokio::test]
-async fn live_slug_collision_still_rejected() {
+async fn promoting_a_draft_rejects_an_existing_active_slug() {
     let (_db, repo) = setup_repo();
     repo.create(persona("reviewer", PersonaStatus::Draft))
         .await
         .unwrap();
+    let draft = persona("reviewer", PersonaStatus::Draft);
+    repo.create(draft.clone()).await.unwrap();
+    let active = persona("reviewer", PersonaStatus::Active);
+    repo.create(active).await.unwrap();
 
     assert!(matches!(
-        repo.create(persona("reviewer", PersonaStatus::Active))
-            .await,
+        repo.set_status(&draft.id, PersonaStatus::Active).await,
         Err(AppError::Validation(_))
     ));
 }

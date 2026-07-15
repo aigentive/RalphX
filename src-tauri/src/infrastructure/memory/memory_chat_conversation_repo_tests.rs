@@ -18,6 +18,76 @@ async fn test_create_and_get() {
 }
 
 #[tokio::test]
+async fn test_update_builder_draft_binding_sets_and_clears() {
+    let repo = MemoryChatConversationRepository::new();
+    let conversation =
+        ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_builder_draft_binding(&conversation.id, Some("draft-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id
+            .as_deref(),
+        Some("draft-1")
+    );
+
+    repo.update_builder_draft_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn test_get_by_builder_draft_id_returns_newest_active_binding() {
+    let repo = MemoryChatConversationRepository::new();
+    let project = ProjectId::from_string("project-1".to_string());
+    let mut older = ChatConversation::new_project(project.clone());
+    older.builder_draft_id = Some("draft-1".to_string());
+    older.created_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+    let mut newest = ChatConversation::new_project(project.clone());
+    newest.builder_draft_id = Some("draft-1".to_string());
+    newest.created_at = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let mut archived = ChatConversation::new_project(project);
+    archived.builder_draft_id = Some("draft-1".to_string());
+    archived.archived_at = Some(chrono::Utc::now());
+    let mut other_draft =
+        ChatConversation::new_project(ProjectId::from_string("project-2".to_string()));
+    other_draft.builder_draft_id = Some("draft-2".to_string());
+
+    repo.create(older).await.unwrap();
+    repo.create(newest.clone()).await.unwrap();
+    repo.create(archived).await.unwrap();
+    repo.create(other_draft).await.unwrap();
+
+    assert_eq!(
+        repo.get_by_builder_draft_id("draft-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        newest.id
+    );
+    assert!(repo
+        .get_by_builder_draft_id("missing-draft")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn test_get_by_context() {
     let repo = MemoryChatConversationRepository::new();
     let session_id = IdeationSessionId::new();
