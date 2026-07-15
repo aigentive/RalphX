@@ -63,6 +63,11 @@ interface AgentsArtifactPaneRegionProps {
   onResizeStart: (event: ReactMouseEvent) => void;
   onResizeReset: (event: ReactMouseEvent) => void;
   onTabChange: (tab: AgentArtifactTab) => void;
+  onHideTab: (
+    tab: AgentArtifactTab,
+    availableTabs: readonly AgentArtifactTab[],
+  ) => void;
+  onShowTab: (tab: AgentArtifactTab) => void;
   onOpenPublish: () => void;
   onOpenAutomation?: (automationId: string) => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
@@ -115,6 +120,8 @@ export function AgentsArtifactPaneRegion({
   onResizeStart,
   onResizeReset,
   onTabChange,
+  onHideTab,
+  onShowTab,
   onOpenPublish,
   onOpenAutomation,
   onTaskModeChange,
@@ -185,8 +192,11 @@ export function AgentsArtifactPaneRegion({
                     focusedIdeationSessionId={focusedIdeationSessionId}
                     automationRunFocusTarget={automationRunFocusTarget}
                     activeTab={artifactState.activeTab}
+                    hiddenTabs={artifactState.hiddenTabs}
                     taskMode={artifactState.taskMode}
                     onTabChange={onTabChange}
+                    onHideTab={onHideTab}
+                    onShowTab={onShowTab}
                     onOpenPublish={onOpenPublish}
                     {...(onOpenAutomation ? { onOpenAutomation } : {})}
                     onTaskModeChange={onTaskModeChange}
