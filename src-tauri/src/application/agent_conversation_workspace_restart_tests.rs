@@ -558,6 +558,49 @@ async fn restart_owner_inspection_accepts_only_the_exact_current_attempt_merge_w
     assert!(merge_path.is_dir(), "inspection must not mutate the owner");
 }
 
+#[tokio::test]
+async fn restart_owner_inspection_refuses_unregistered_derived_linked_path() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_repo(&repo_path);
+    let project = project_with_worktrees(&repo_path, &worktree_parent);
+    let conversation_id =
+        ChatConversationId::from_string("conversation-restart-unregistered-linked".to_string());
+    let mut workspace = prepare_ideation_workspace(&project, &conversation_id).await;
+    let direct_path = PathBuf::from(&workspace.worktree_path);
+    let session_id = IdeationSessionId::from_string("session-restart-unregistered-linked");
+    let execution_plan_id = ExecutionPlanId::from_string("execution-unregistered-linked");
+    let mut plan_branch =
+        linked_plan_branch_for_workspace(&project, &mut workspace, session_id.clone());
+    plan_branch.execution_plan_id = Some(execution_plan_id.clone());
+    GitService::delete_worktree(&repo_path, &direct_path)
+        .await
+        .expect("owned direct worktree should be removed");
+    let linked_path = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+        .expect("linked path should resolve");
+    // codeql[rust/path-injection]
+    std::fs::create_dir_all(&linked_path).expect("unregistered linked directory should exist");
+
+    let error = inspect_linked_plan_branch_owner_for_restart(
+        &project,
+        &workspace,
+        &plan_branch,
+        &session_id,
+        &execution_plan_id,
+        &[],
+        RestartWorkspaceCleanupProof::None,
+    )
+    .await
+    .expect_err("an unregistered physical linked path must fail closed");
+
+    assert!(matches!(
+        error,
+        RestartWorkspacePreparationError::UnsafeOwnership { .. }
+    ));
+    assert!(linked_path.is_dir(), "inspection must not mutate unknown data");
+}
+
 #[test]
 fn restart_cleanup_proof_requires_merged_terminal_state_with_cleaned_marker() {
     use crate::domain::entities::plan_branch::PrStatus;

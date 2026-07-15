@@ -24,6 +24,7 @@ use crate::domain::repositories::{ProjectRepository, TaskRepository};
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::domain::state_machine::transition_handler::{
     compute_merge_worktree_path, compute_plan_update_worktree_path, compute_rebase_worktree_path,
+    compute_source_update_worktree_path,
 };
 use crate::error::{AppError, AppResult};
 use crate::utils::path_safety::validate_absolute_non_root_path;
@@ -284,6 +285,36 @@ impl TaskCleanupService {
     ///
     /// Use this when the caller needs to perform a larger database transition atomically
     /// after runtime resources have been torn down.
+    pub async fn preflight_tasks_for_replacement(
+        &self,
+        tasks: &[Task],
+        preserved_branch: Option<&str>,
+    ) -> AppResult<()> {
+        for task in tasks {
+            let current_task = self.load_current_task_strict(task).await?;
+            if current_task.task_branch.is_some() || current_task.worktree_path.is_some() {
+                self.validate_git_resources_strict(&current_task, preserved_branch)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn stop_tasks_for_replacement(
+        &self,
+        tasks: &[Task],
+        stop_mode: StopMode,
+    ) -> AppResult<usize> {
+        let mut stopped_task_ids = HashSet::new();
+        for task in tasks {
+            let current_task = self.load_current_task_strict(task).await?;
+            if self.stop_task_for_cleanup(&current_task, stop_mode).await {
+                stopped_task_ids.insert(current_task.id);
+            }
+        }
+        Ok(stopped_task_ids.len())
+    }
+
     pub async fn prepare_tasks_for_replacement(
         &self,
         tasks: &[Task],
@@ -295,13 +326,40 @@ impl TaskCleanupService {
         let mut current_tasks = Vec::with_capacity(tasks.len());
 
         for task in tasks {
-            let current_task = self.load_current_task(task).await;
+            let current_task = match self.load_current_task_strict(task).await {
+                Ok(task) => task,
+                Err(error) => {
+                    report
+                        .errors
+                        .push(format!("Task reload {}: {error}", task.id.as_str()));
+                    return report;
+                }
+            };
+            current_tasks.push(current_task);
+        }
+
+        // Validate every target before stopping agents or mutating any worktree/ref.
+        // A later unsafe task must not leave earlier tasks partially torn down.
+        for task in &current_tasks {
+            if task.task_branch.is_some() || task.worktree_path.is_some() {
+                if let Err(error) = self
+                    .validate_git_resources_strict(task, preserved_branch)
+                    .await
+                {
+                    report
+                        .errors
+                        .push(format!("Git cleanup {}: {error}", task.id.as_str()));
+                    return report;
+                }
+            }
+        }
+
+        for current_task in &current_tasks {
             if self.stop_task_for_cleanup(&current_task, stop_mode).await
                 && stopped_task_ids.insert(current_task.id.clone())
             {
                 report.tasks_stopped += 1;
             }
-            current_tasks.push(current_task);
         }
 
         for task in &current_tasks {
@@ -483,6 +541,15 @@ impl TaskCleanupService {
         }
     }
 
+    async fn load_current_task_strict(&self, task: &Task) -> AppResult<Task> {
+        self.task_repo.get_by_id(&task.id).await?.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Task {} no longer exists during replacement cleanup",
+                task.id
+            ))
+        })
+    }
+
     async fn stop_task_for_cleanup(&self, task: &Task, stop_mode: StopMode) -> bool {
         match stop_mode {
             StopMode::Graceful => {
@@ -499,7 +566,7 @@ impl TaskCleanupService {
     async fn stop_task_contexts_by_identity(&self, task_id: &TaskId) -> bool {
         let mut stopped_any = false;
 
-        for context_type in ["task_execution", "review", "merge"] {
+        for context_type in ["task_execution", "review", "merge", "branch_update"] {
             if let Some(ref ipr) = self.interactive_process_registry {
                 let ipr_key = InteractiveProcessKey::new(context_type, task_id.as_str());
                 ipr.remove(&ipr_key).await;
@@ -522,10 +589,29 @@ impl TaskCleanupService {
     }
 
     /// Clean task Git resources for destructive attempt replacement.
+    async fn validate_git_resources_strict(
+        &self,
+        task: &Task,
+        preserved_branch: Option<&str>,
+    ) -> AppResult<()> {
+        self.handle_git_resources_strict(task, preserved_branch, false)
+            .await
+    }
+
     async fn cleanup_git_resources_strict(
         &self,
         task: &Task,
         preserved_branch: Option<&str>,
+    ) -> AppResult<()> {
+        self.handle_git_resources_strict(task, preserved_branch, true)
+            .await
+    }
+
+    async fn handle_git_resources_strict(
+        &self,
+        task: &Task,
+        preserved_branch: Option<&str>,
+        mutate: bool,
     ) -> AppResult<()> {
         let project = self
             .project_repo
@@ -561,7 +647,9 @@ impl TaskCleanupService {
                     if owner.branch.as_deref() == task.task_branch.as_deref()
                         || owner.branch.as_deref() == preserved_branch =>
                 {
-                    GitService::delete_worktree(&repo_path, &worktree_path).await?;
+                    if mutate {
+                        GitService::delete_worktree(&repo_path, &worktree_path).await?;
+                    }
                 }
                 Some(owner) => {
                     return Err(AppError::Validation(format!(
@@ -588,10 +676,32 @@ impl TaskCleanupService {
 
         let base_branch = project.base_branch.as_deref().unwrap_or("main");
         let current_branch = GitService::get_current_branch(&repo_path).await?;
-        if current_branch == task_branch {
+        let registered_worktrees = GitService::list_worktrees(&repo_path).await?;
+        for owner in registered_worktrees {
+            if owner.branch.as_deref() != Some(task_branch) {
+                continue;
+            }
+            let owner_path = validate_absolute_non_root_path(
+                Path::new(&owner.path),
+                "registered replacement branch owner",
+            )?;
+            let is_project_root = replacement_paths_match(&owner_path, &repo_path);
+            let is_task_worktree = task
+                .worktree_path
+                .as_deref()
+                .and_then(|path| validate_replacement_worktree_path(&project, task, path).ok())
+                .is_some_and(|path| replacement_paths_match(&owner_path, &path));
+            if !is_project_root && !is_task_worktree {
+                return Err(AppError::Validation(format!(
+                    "Task {} branch is checked out by an unexpected worktree",
+                    task.id
+                )));
+            }
+        }
+        if mutate && current_branch == task_branch {
             GitService::checkout_branch(&repo_path, base_branch).await?;
         }
-        if GitService::branch_exists_strict(&repo_path, task_branch).await? {
+        if mutate && GitService::branch_exists_strict(&repo_path, task_branch).await? {
             GitService::delete_branch(&repo_path, task_branch, true).await?;
         }
         Ok(())
@@ -707,6 +817,7 @@ fn validate_replacement_worktree_path(
         compute_merge_worktree_path(project, task.id.as_str()),
         compute_rebase_worktree_path(project, task.id.as_str()),
         compute_plan_update_worktree_path(project, task.id.as_str()),
+        compute_source_update_worktree_path(project, task.id.as_str()),
     ]
     .map(PathBuf::from);
     if !allowed_paths.iter().any(|path| path == &stored_path) {

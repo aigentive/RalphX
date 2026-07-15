@@ -176,3 +176,84 @@ async fn replacement_cleanup_removes_only_derived_task_worktrees_and_reports_err
         "unknown path must remain untouched"
     );
 }
+
+#[tokio::test]
+async fn replacement_cleanup_validates_the_whole_batch_before_mutating_any_worktree() {
+    let repo = setup_git_repo();
+    let worktree_parent = tempfile::tempdir().expect("worktree parent should be created");
+    let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let running_registry = Arc::new(crate::domain::services::MemoryRunningAgentRegistry::new());
+
+    let mut project = Project::new(
+        "Replacement preflight".to_string(),
+        repo.path().to_string_lossy().into_owned(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    let project = project_repo.create(project).await.unwrap();
+
+    let mut valid_task = Task::new(project.id.clone(), "Valid first task".to_string());
+    let valid_branch = format!("cleanup/valid-{}", valid_task.id.as_str());
+    let valid_worktree = project.task_worktree_path(valid_task.id.as_str());
+    GitService::create_worktree(repo.path(), &valid_worktree, &valid_branch, "main")
+        .await
+        .expect("valid worktree should be created");
+    valid_task.task_branch = Some(valid_branch);
+    valid_task.worktree_path = Some(valid_worktree.to_string_lossy().into_owned());
+    let valid_task = task_repo.create(valid_task).await.unwrap();
+
+    let outside = tempfile::tempdir().expect("unknown path should be created");
+    let mut unsafe_task = Task::new(project.id.clone(), "Unsafe later task".to_string());
+    unsafe_task.worktree_path = Some(outside.path().to_string_lossy().into_owned());
+    let unsafe_task = task_repo.create(unsafe_task).await.unwrap();
+
+    let service = TaskCleanupService::new(
+        Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        None,
+    );
+    let report = service
+        .prepare_tasks_for_replacement(
+            &[valid_task, unsafe_task],
+            StopMode::DirectStop,
+            None,
+        )
+        .await;
+
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        valid_worktree.is_dir(),
+        "a later validation failure must preserve earlier valid worktrees"
+    );
+    assert!(outside.path().is_dir(), "unknown data must remain untouched");
+}
+
+#[tokio::test]
+async fn replacement_cleanup_fails_closed_when_a_task_row_disappeared() {
+    let repo = setup_git_repo();
+    let task_repo = Arc::new(crate::infrastructure::memory::MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let running_registry = Arc::new(crate::domain::services::MemoryRunningAgentRegistry::new());
+    let project = project_repo
+        .create(Project::new(
+            "Missing task row".to_string(),
+            repo.path().to_string_lossy().into_owned(),
+        ))
+        .await
+        .unwrap();
+    let missing = Task::new(project.id, "Missing snapshot".to_string());
+    let service = TaskCleanupService::new(
+        Arc::clone(&task_repo) as Arc<dyn crate::domain::repositories::TaskRepository>,
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>,
+        Arc::clone(&running_registry) as Arc<dyn crate::domain::services::RunningAgentRegistry>,
+        None,
+    );
+
+    let report = service
+        .prepare_tasks_for_replacement(&[missing], StopMode::DirectStop, None)
+        .await;
+
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.errors[0].contains("no longer exists"));
+}

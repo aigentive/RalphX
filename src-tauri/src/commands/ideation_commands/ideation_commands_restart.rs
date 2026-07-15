@@ -1,6 +1,6 @@
 // Restart an accepted implementation attempt from the accepted plan/proposals.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use dashmap::mapref::entry::Entry;
@@ -8,6 +8,7 @@ use dashmap::DashMap;
 use tauri::{Emitter, Manager, State};
 
 use crate::application::task_cleanup_service::StopMode;
+use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::{
     agent_conversation_archive::close_agent_workspace_pr_for_restart,
     agent_conversation_workspace_restart::{
@@ -19,8 +20,15 @@ use crate::application::{
 };
 use crate::commands::{emit_queue_changed, ExecutionState};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ArtifactId, ExecutionPlanId, IdeationSessionId,
-    IdeationSessionStatus, ProjectId, Task, TaskProposal, TaskProposalId,
+    AgentConversationWorkspaceMode, ArtifactId, BranchUpdateDirection, BranchUpdateOperation,
+    ChatContextType, ExecutionPlanId, GitTargetLease, GitTargetLeaseOwner, IdeationSessionId,
+    IdeationSessionStatus, InternalStatus, Project, ProjectId, Task, TaskId, TaskProposal,
+    TaskProposalId,
+};
+use crate::domain::repositories::{BranchUpdateCasOutcome, StopBranchUpdate};
+use crate::domain::services::{QueueKey, RunningAgentKey};
+use crate::domain::state_machine::transition_handler::{
+    compute_plan_update_worktree_path, compute_source_update_worktree_path,
 };
 use crate::error::{AppError, AppResult};
 
@@ -39,6 +47,189 @@ struct RestartTxOutput {
     created_tasks: Vec<Task>,
     archived_task_count: usize,
     any_ready_tasks: bool,
+}
+
+struct RestartBranchUpdate {
+    operation: BranchUpdateOperation,
+    lease: GitTargetLease,
+    workspace_path: std::path::PathBuf,
+}
+
+async fn preflight_branch_updates_for_restart(
+    app_state: &AppState,
+    project: &Project,
+    tasks: &[Task],
+) -> AppResult<Vec<RestartBranchUpdate>> {
+    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        std::path::Path::new(&project.working_directory),
+        "restart branch-update project checkout",
+    )?;
+    let registered_worktrees = GitService::list_worktrees(&project_root).await?;
+    let mut updates = Vec::new();
+    for task in tasks {
+        let operation = app_state
+            .branch_update_repo
+            .get_active_operation(&task.id)
+            .await?;
+        let Some(operation) = operation else {
+            if matches!(
+                task.internal_status,
+                InternalStatus::UpdatingPlanBranch | InternalStatus::UpdatingTaskBranch
+            ) {
+                return Err(AppError::Validation(format!(
+                    "Task {} is updating a branch without active durable authority",
+                    task.id
+                )));
+            }
+            continue;
+        };
+        let expected_status = match operation.direction {
+            BranchUpdateDirection::PlanBranch => InternalStatus::UpdatingPlanBranch,
+            BranchUpdateDirection::TaskBranch => InternalStatus::UpdatingTaskBranch,
+        };
+        if task.internal_status != expected_status {
+            return Err(AppError::Validation(format!(
+                "Task {} branch-update status does not match its active operation",
+                task.id
+            )));
+        }
+        let lease = app_state
+            .branch_update_repo
+            .get_target_lease(&operation.target_identity)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "Task {} branch-update target authority is missing",
+                    task.id
+                ))
+            })?;
+        let expected_owner =
+            GitTargetLeaseOwner::branch_update(task.id.as_str(), operation.id.as_str());
+        if lease.owner() != &expected_owner
+            || lease.fencing_epoch() != operation.target_lease_epoch
+            || lease.is_released()
+            || lease.active_mutation().is_some()
+        {
+            return Err(AppError::Validation(format!(
+                "Task {} branch-update authority is busy or stale",
+                task.id
+            )));
+        }
+        let expected_workspace = match operation.direction {
+            BranchUpdateDirection::PlanBranch => {
+                compute_plan_update_worktree_path(project, task.id.as_str())
+            }
+            BranchUpdateDirection::TaskBranch => {
+                compute_source_update_worktree_path(project, task.id.as_str())
+            }
+        };
+        let workspace_path = operation.workspace_path.as_ref().ok_or_else(|| {
+            AppError::Validation(format!(
+                "Task {} branch-update operation has no workspace path",
+                task.id
+            ))
+        })?;
+        let workspace_path = crate::utils::path_safety::validate_absolute_non_root_path(
+            workspace_path,
+            "restart branch-update workspace",
+        )?;
+        let expected_workspace = crate::utils::path_safety::validate_absolute_non_root_path(
+            std::path::Path::new(&expected_workspace),
+            "derived restart branch-update workspace",
+        )?;
+        if workspace_path != expected_workspace {
+            return Err(AppError::Validation(format!(
+                "Task {} branch-update workspace is not process-owned",
+                task.id
+            )));
+        }
+        let registered = registered_worktrees.iter().any(|worktree| {
+            crate::utils::path_safety::validate_absolute_non_root_path(
+                std::path::Path::new(&worktree.path),
+                "registered branch-update worktree",
+            )
+            .is_ok_and(|path| path == workspace_path)
+        });
+        if workspace_path.exists() && !registered {
+            return Err(AppError::Validation(format!(
+                "Task {} branch-update workspace exists without Git registration",
+                task.id
+            )));
+        }
+        updates.push(RestartBranchUpdate {
+            operation,
+            lease,
+            workspace_path,
+        });
+    }
+    Ok(updates)
+}
+
+async fn stop_branch_updates_for_restart(
+    app_state: &AppState,
+    updates: &[RestartBranchUpdate],
+) -> AppResult<()> {
+    for update in updates {
+        let operation = &update.operation;
+        let expected_status = match operation.direction {
+            BranchUpdateDirection::PlanBranch => InternalStatus::UpdatingPlanBranch,
+            BranchUpdateDirection::TaskBranch => InternalStatus::UpdatingTaskBranch,
+        };
+        let outcome = app_state
+            .branch_update_repo
+            .stop_operation(StopBranchUpdate {
+                operation_id: operation.id.clone(),
+                task_id: operation.task_id.clone(),
+                originating_history_id: operation.originating_history_id.clone(),
+                update_status: expected_status,
+                owner: update.lease.owner().clone(),
+                fencing_epoch: update.lease.fencing_epoch(),
+                history_id: uuid::Uuid::new_v4().to_string(),
+                reason: Some("implementation_attempt_restarted".to_string()),
+            })
+            .await?;
+        if outcome != BranchUpdateCasOutcome::Applied {
+            return Err(AppError::Conflict(format!(
+                "Task {} branch-update authority changed during restart: {outcome:?}",
+                operation.task_id
+            )));
+        }
+        let context_type = ChatContextType::BranchUpdate.to_string();
+        app_state
+            .interactive_process_registry
+            .remove(&InteractiveProcessKey::new(
+                context_type.clone(),
+                operation.task_id.as_str(),
+            ))
+            .await;
+        let _ = app_state
+            .running_agent_registry
+            .stop(&RunningAgentKey::new(
+                context_type,
+                operation.task_id.as_str(),
+            ))
+            .await;
+        let queue_key = QueueKey::new(ChatContextType::BranchUpdate, operation.task_id.as_str());
+        app_state.message_queue.clear_with_key(&queue_key);
+        app_state.queued_message_repo.clear(&queue_key).await?;
+    }
+    Ok(())
+}
+
+async fn cleanup_branch_update_worktrees_for_restart(
+    project: &Project,
+    updates: &[RestartBranchUpdate],
+) -> AppResult<()> {
+    let project_root = crate::utils::path_safety::validate_absolute_non_root_path(
+        std::path::Path::new(&project.working_directory),
+        "restart branch-update project checkout",
+    )?;
+    for update in updates {
+        if update.workspace_path.exists() {
+            GitService::delete_worktree(&project_root, &update.workspace_path).await?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -92,8 +283,39 @@ fn clear_proposal_task_links(
 fn archive_execution_plan_tasks(
     conn: &rusqlite::Connection,
     execution_plan_id: &ExecutionPlanId,
+    expected_task_ids: &[TaskId],
     now_str: &str,
 ) -> AppResult<usize> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id FROM tasks
+             WHERE execution_plan_id = ?1 AND archived_at IS NULL",
+        )
+        .map_err(|error| {
+            AppError::Database(format!("Failed to inspect current attempt tasks: {error}"))
+        })?;
+    let actual_task_ids = statement
+        .query_map(rusqlite::params![execution_plan_id.as_str()], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| {
+            AppError::Database(format!("Failed to query current attempt tasks: {error}"))
+        })?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| {
+            AppError::Database(format!("Failed to read current attempt tasks: {error}"))
+        })?;
+    let expected_task_ids = expected_task_ids
+        .iter()
+        .map(|task_id| task_id.as_str().to_string())
+        .collect::<HashSet<_>>();
+    if actual_task_ids != expected_task_ids {
+        return Err(AppError::Validation(
+            "Current implementation tasks changed while restart was preparing; retry restart"
+                .to_string(),
+        ));
+    }
+
     conn.execute(
         "UPDATE tasks
          SET archived_at = ?2, updated_at = ?2
@@ -432,13 +654,6 @@ pub async fn restart_ideation_implementation_core(
         ));
     }
 
-    if let (Some(workspace), Some((plan_branch, _, _, _))) = (
-        linked_agent_workspace.as_ref(),
-        linked_plan_branch_context.as_ref(),
-    ) {
-        close_agent_workspace_pr_for_restart(workspace, plan_branch, app_state).await?;
-    }
-
     let task_cleanup = TaskCleanupService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.project_repo),
@@ -446,14 +661,29 @@ pub async fn restart_ideation_implementation_core(
         None,
     )
     .with_interactive_process_registry(Arc::clone(&app_state.interactive_process_registry));
+    let preserved_branch = linked_plan_branch_context
+        .as_ref()
+        .map(|(plan_branch, _, _, _)| plan_branch.branch_name.as_str());
+    task_cleanup
+        .preflight_tasks_for_replacement(&current_tasks, preserved_branch)
+        .await?;
+    let branch_updates =
+        preflight_branch_updates_for_restart(app_state, &project, &current_tasks).await?;
+    stop_branch_updates_for_restart(app_state, &branch_updates).await?;
+    task_cleanup
+        .stop_tasks_for_replacement(&current_tasks, StopMode::DirectStop)
+        .await?;
+
+    if let (Some(workspace), Some((plan_branch, _, _, _))) = (
+        linked_agent_workspace.as_ref(),
+        linked_plan_branch_context.as_ref(),
+    ) {
+        close_agent_workspace_pr_for_restart(workspace, plan_branch, app_state).await?;
+    }
+    cleanup_branch_update_worktrees_for_restart(&project, &branch_updates).await?;
+
     let cleanup_report = task_cleanup
-        .prepare_tasks_for_replacement(
-            &current_tasks,
-            StopMode::DirectStop,
-            linked_plan_branch_context
-                .as_ref()
-                .map(|(plan_branch, _, _, _)| plan_branch.branch_name.as_str()),
-        )
+        .prepare_tasks_for_replacement(&current_tasks, StopMode::DirectStop, preserved_branch)
         .await;
     if !cleanup_report.errors.is_empty() {
         return Err(AppError::Database(format!(
@@ -489,6 +719,10 @@ pub async fn restart_ideation_implementation_core(
     let project_id_str = session.project_id.as_str().to_string();
     let plan_artifact_id_tx: Option<ArtifactId> = session.plan_artifact_id.clone();
     let old_execution_plan_id = old_execution_plan.id.clone();
+    let old_task_ids_tx = current_tasks
+        .iter()
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
     let base_branch_override_tx = effective_base_branch_override.clone();
     let agent_workspace_branch_name_tx = linked_agent_workspace
         .as_ref()
@@ -517,8 +751,12 @@ pub async fn restart_ideation_implementation_core(
         .db
         .run_transaction(move |conn| {
             let now_str = chrono::Utc::now().to_rfc3339();
-            let archived_task_count =
-                archive_execution_plan_tasks(conn, &old_execution_plan_id, &now_str)?;
+            let archived_task_count = archive_execution_plan_tasks(
+                conn,
+                &old_execution_plan_id,
+                &old_task_ids_tx,
+                &now_str,
+            )?;
             mark_execution_plan_superseded(conn, &session_id_str, &old_execution_plan_id)?;
             clear_proposal_task_links(conn, &proposals_tx, &now_str)?;
 

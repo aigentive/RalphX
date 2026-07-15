@@ -125,8 +125,16 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
     linked_plan_branch: &PlanBranch,
     state: &AppState,
 ) -> crate::error::AppResult<()> {
-    let target = resolve_effective_pr(workspace, Some(linked_plan_branch));
-    if let Some(target) = target.as_ref().filter(|target| target.is_open) {
+    let mut pr_numbers = Vec::with_capacity(2);
+    if let Some(number) = linked_plan_branch.pr_number {
+        pr_numbers.push(number);
+    }
+    if let Some(number) = workspace.publication_pr_number {
+        if !pr_numbers.contains(&number) {
+            pr_numbers.push(number);
+        }
+    }
+    if !pr_numbers.is_empty() {
         let project = state
             .project_repo
             .get_by_id(&workspace.project_id)
@@ -134,8 +142,8 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
             .map_err(|error| crate::error::AppError::Database(error.to_string()))?
             .ok_or_else(|| {
                 crate::error::AppError::NotFound(format!(
-                    "Project not found while closing PR {} for restart: {}",
-                    target.number, workspace.project_id
+                    "Project not found while closing PRs for restart: {}",
+                    workspace.project_id
                 ))
             })?;
         let project_path = crate::utils::path_safety::validate_absolute_non_root_path(
@@ -144,29 +152,31 @@ pub(crate) async fn close_agent_workspace_pr_for_restart(
         )?;
         let github_svc = state.github_service.as_ref().ok_or_else(|| {
             crate::error::AppError::Validation(format!(
-                "Restart cannot close existing PR {} because GitHub integration is unavailable",
-                target.number
+                "Restart cannot reconcile existing PRs {:?} because GitHub integration is unavailable",
+                pr_numbers
             ))
         })?;
-        let remote_status = github_svc
-            .check_pr_status(&project_path, target.number)
-            .await
-            .map_err(|error| {
-                crate::error::AppError::Infrastructure(format!(
-                    "Restart could not check existing PR {}: {}",
-                    target.number, error
-                ))
-            })?;
-        if remote_status == RemotePrStatus::Open {
-            github_svc
-                .close_pr(&project_path, target.number)
+        for number in pr_numbers {
+            let remote_status = github_svc
+                .check_pr_status(&project_path, number)
                 .await
                 .map_err(|error| {
                     crate::error::AppError::Infrastructure(format!(
-                        "Restart could not close existing PR {}: {}",
-                        target.number, error
+                        "Restart could not check existing PR {}: {}",
+                        number, error
                     ))
                 })?;
+            if remote_status == RemotePrStatus::Open {
+                github_svc
+                    .close_pr(&project_path, number)
+                    .await
+                    .map_err(|error| {
+                        crate::error::AppError::Infrastructure(format!(
+                            "Restart could not close existing PR {}: {}",
+                            number, error
+                        ))
+                    })?;
+            }
         }
     }
     Ok(())
