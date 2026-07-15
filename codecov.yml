@@ -51,7 +51,9 @@ coverage:
           - "!src-tauri/src/infrastructure/agents/spawn_isolation.rs"
           # Pure trait/module export glue has no runtime branch to exercise directly.
           # Implementations and call sites carry the behavioral coverage.
+          - "!src-tauri/crates/ralphx-domain/src/repositories/agent_conversation_workspace_repository.rs"
           - "!src-tauri/src/domain/repositories/orphan_worktree_cleanup_marker_repository.rs"
+          - "!src-tauri/crates/ralphx-domain/src/repositories/plan_branch_repository.rs"
           - "!src-tauri/src/domain/repositories/mod.rs"
           - "!src-tauri/src/infrastructure/memory/mod.rs"
           - "!src-tauri/src/infrastructure/sqlite/mod.rs"

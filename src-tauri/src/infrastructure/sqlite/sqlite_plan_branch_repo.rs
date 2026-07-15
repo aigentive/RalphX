@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::DbConnection;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
@@ -383,6 +383,37 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                         e
                     ))
                 })?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn get_local_cleanup_status(&self, id: &PlanBranchId) -> AppResult<Option<String>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT local_cleanup_status FROM plan_branches WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map(|value| value.flatten())
+                .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn clear_local_cleanup_status(&self, id: &PlanBranchId) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE plan_branches
+                     SET local_cleanup_status = NULL, local_cleanup_checked_at = NULL
+                     WHERE id = ?1",
+                    rusqlite::params![id],
+                )?;
                 Ok(())
             })
             .await
