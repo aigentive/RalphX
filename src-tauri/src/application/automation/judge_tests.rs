@@ -147,16 +147,18 @@ fn build_automation_run_context_block_exposes_matching_pending_goal_replan() {
         { "id": "item-2b", "title": "Split UI", "status": "pending" }
     ])
     .to_string();
-    let mut state = AutomationAuthoringState::default();
-    state.pending_goal_replan = Some(AutomationGoalReplanState {
-        source_run_id: "run-2".to_string(),
-        base_goal_items_json: automation.goal_items_json.clone().unwrap(),
-        proposed_goal_items_json: proposal,
-        reason: "Split the remaining work.".to_string(),
-        status: AutomationGoalReplanStatus::Pending,
-        created_at: Utc::now().to_rfc3339(),
-        applied_at: None,
-    });
+    let state = AutomationAuthoringState {
+        pending_goal_replan: Some(AutomationGoalReplanState {
+            source_run_id: "run-2".to_string(),
+            base_goal_items_json: automation.goal_items_json.clone().unwrap(),
+            proposed_goal_items_json: proposal,
+            reason: "Split the remaining work.".to_string(),
+            status: AutomationGoalReplanStatus::Pending,
+            created_at: Utc::now().to_rfc3339(),
+            applied_at: None,
+        }),
+        ..Default::default()
+    };
     automation.authoring_state_json = Some(serde_json::to_string(&state).unwrap());
     let mut matching = automation_run(3, AutomationRunStatus::Pending);
     matching.base_from_run_id = Some(AutomationRunId::from_string("run-2"));
