@@ -195,9 +195,11 @@ fn ingest_directory_tree(
         // codeql[rust/path-injection]
         let entries = fs::read_dir(&directory)
             .map_err(|error| filesystem_error("read a picked directory", error))?;
+        let mut entries = entries
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| filesystem_error("read a picked directory entry", error))?;
+        entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
-            let entry =
-                entry.map_err(|error| filesystem_error("read a picked directory entry", error))?;
             let file_name = entry.file_name();
             let relative_path = safe_relative_join(&relative_directory, Path::new(&file_name))?;
             let display_path = relative_display_path(&relative_path)?;
