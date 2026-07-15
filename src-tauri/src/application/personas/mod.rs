@@ -15,6 +15,10 @@ use crate::infrastructure::sqlite::sqlite_persona_repo::{
 };
 use crate::infrastructure::sqlite::DbConnection;
 
+mod persona_update_approval;
+
+pub use persona_update_approval::draft_applied_payload;
+
 /// Prefix used by every caller that reports a persona that cannot be bound.
 pub const PERSONA_UNAVAILABLE_PREFIX: &str = "[Persona unavailable:";
 /// Prefix used by every persona surface when the feature is disabled.
@@ -147,6 +151,9 @@ impl PersonaService {
     ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let persona = self.require_status(id, PersonaStatus::Draft).await?;
+        if persona.source_persona_id.is_some() {
+            return self.apply_seeded_draft(id).await;
+        }
         let parsed = validate_persona_content(&persona.slug, &persona.content)?;
         self.ensure_active_slug_available(&persona.slug, Some(id))
             .await?;
@@ -198,7 +205,16 @@ impl PersonaService {
 
     pub async fn hard_delete_draft(&self, feature_enabled: bool, id: &PersonaId) -> AppResult<()> {
         ensure_enabled(feature_enabled)?;
-        self.require_status(id, PersonaStatus::Draft).await?;
+        let draft = self.require_status(id, PersonaStatus::Draft).await?;
+        if draft.source_persona_id.is_some()
+            || self
+                .chat_conversation_repo
+                .get_by_builder_draft_id(id.as_str())
+                .await?
+                .is_some()
+        {
+            return self.delete_bound_draft(id).await;
+        }
         self.persona_repo.delete(id).await
     }
 

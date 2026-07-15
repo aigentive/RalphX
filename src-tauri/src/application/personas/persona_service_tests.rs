@@ -104,24 +104,18 @@ async fn seeded_update_draft_can_share_source_slug_and_preserves_provenance() {
 #[tokio::test]
 async fn approve_fails_closed_when_another_active_persona_owns_the_slug() {
     let service = memory_service();
-    let source_id = create_active(&service, "approval-collision").await;
-    let source = service
-        .get_persona(true, &source_id)
-        .await
-        .expect("source persona");
     let draft = service
-        .create_draft(
-            true,
-            SavePersonaDraftInput {
-                slug: source.slug.clone(),
-                content: persona_content(&source.slug, "Seeded update"),
-                source_session_id: Some("builder-conversation".to_string()),
-                source_persona_id: Some(source.id),
-                source_content_hash: Some(source.content_hash),
-            },
-        )
+        .create_draft(true, draft_input("approval-collision", "Waiting draft"))
         .await
-        .expect("seeded draft");
+        .expect("draft should create before the active-slug race");
+    let mut active_owner = draft.clone();
+    active_owner.id = PersonaId::new();
+    active_owner.status = PersonaStatus::Active;
+    service
+        .persona_repo
+        .create(active_owner)
+        .await
+        .expect("repository fixture should simulate another activation after draft creation");
 
     let error = service
         .approve_persona(true, &draft.id)
@@ -460,6 +454,8 @@ async fn all_lifecycle_entry_points_fail_closed_when_flag_off() {
     assert_disabled(service.update_draft(false, &id, &content).await);
     assert_disabled(service.get_draft(false, &id).await);
     assert_disabled(service.approve_persona(false, &id).await);
+    assert_disabled(service.reseed_persona_draft(false, &id).await);
+    assert_disabled(service.approve_persona_as_new(false, &id, None).await);
     assert_disabled(service.update_persona(false, &id, &content).await);
     assert_disabled(service.archive_persona(false, &id).await);
     assert_disabled(service.hard_delete_draft(false, &id).await);

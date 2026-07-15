@@ -167,6 +167,18 @@ pub(crate) fn update_builder_draft_binding_sync(
     Ok(())
 }
 
+pub(crate) fn clear_builder_draft_bindings_sync(
+    conn: &rusqlite::Connection,
+    draft_id: &str,
+) -> AppResult<u64> {
+    Ok(conn.execute(
+        "UPDATE chat_conversations
+         SET builder_draft_id = NULL, updated_at = ?1
+         WHERE builder_draft_id = ?2",
+        rusqlite::params![Utc::now().to_rfc3339(), draft_id],
+    )? as u64)
+}
+
 /// SQLite implementation of ChatConversationRepository
 pub struct SqliteChatConversationRepository {
     db: DbConnection,

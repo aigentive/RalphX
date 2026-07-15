@@ -10,7 +10,7 @@ use crate::domain::repositories::PersonaRepository;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
-const PERSONA_COLUMNS: &str = "id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
+pub(crate) const PERSONA_COLUMNS: &str = "id, slug, name, description, content, status, version, content_hash, source_session_id, source_persona_id, source_content_hash, source_json, created_at, updated_at";
 
 pub struct SqlitePersonaRepository {
     db: DbConnection,
@@ -30,7 +30,7 @@ impl SqlitePersonaRepository {
     }
 }
 
-fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
+pub(crate) fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     let status = row
         .get::<_, String>("status")?
         .parse::<PersonaStatus>()

@@ -146,7 +146,9 @@ async fn stale_source_blocks_apply_until_the_draft_is_explicitly_reseeded() {
         .await
         .expect_err("stale seeded draft must not overwrite the source");
 
-    assert!(matches!(error, AppError::Conflict(message) if message.starts_with("SourceChangedSinceSeed:")));
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.starts_with("SourceChangedSinceSeed:"))
+    );
     assert_eq!(
         service.get_persona(true, &source.id).await.unwrap(),
         manually_updated
@@ -171,7 +173,12 @@ async fn stale_source_blocks_apply_until_the_draft_is_explicitly_reseeded() {
     assert_eq!(applied.id, source.id);
     assert_eq!(applied.content, draft.content);
     assert_eq!(applied.version, manually_updated.version + 1);
-    assert!(service.persona_repo.get_by_id(&draft.id).await.unwrap().is_none());
+    assert!(service
+        .persona_repo
+        .get_by_id(&draft.id)
+        .await
+        .unwrap()
+        .is_none());
     assert_bindings(&service, &conversations, None).await;
 }
 
@@ -186,7 +193,12 @@ async fn double_approval_writes_the_source_once_and_clears_every_binding() {
         .expect("first approval should apply the seeded draft");
     assert_eq!(applied.id, source.id);
     assert_eq!(applied.version, source.version + 1);
-    assert!(service.persona_repo.get_by_id(&draft.id).await.unwrap().is_none());
+    assert!(service
+        .persona_repo
+        .get_by_id(&draft.id)
+        .await
+        .unwrap()
+        .is_none());
     assert_bindings(&service, &conversations, None).await;
 
     let error = service
@@ -203,6 +215,26 @@ async fn double_approval_writes_the_source_once_and_clears_every_binding() {
 }
 
 #[tokio::test]
+async fn deleting_a_seeded_draft_clears_every_builder_binding_atomically() {
+    let db = SqliteTestDb::new("seeded_draft_delete_bindings");
+    let (service, source, draft, conversations) = seeded_fixture(&db, "delete-seeded").await;
+
+    service
+        .hard_delete_draft(true, &draft.id)
+        .await
+        .expect("seeded draft deletion should commit with binding cleanup");
+
+    assert!(service
+        .persona_repo
+        .get_by_id(&draft.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(service.get_persona(true, &source.id).await.unwrap(), source);
+    assert_bindings(&service, &conversations, None).await;
+}
+
+#[tokio::test]
 async fn archived_source_requires_explicit_approve_as_new_recovery() {
     let db = SqliteTestDb::new("seeded_approval_as_new");
     let (service, source, draft, conversations) = seeded_fixture(&db, "archived-source").await;
@@ -215,7 +247,9 @@ async fn archived_source_requires_explicit_approve_as_new_recovery() {
         .approve_persona(true, &draft.id)
         .await
         .expect_err("ordinary approval must not silently become create-new");
-    assert!(matches!(error, AppError::Conflict(message) if message.starts_with("SourceNoLongerActive:")));
+    assert!(
+        matches!(error, AppError::Conflict(message) if message.starts_with("SourceNoLongerActive:"))
+    );
     assert_bindings(&service, &conversations, Some(draft.id.as_str())).await;
 
     let approved = service
@@ -234,7 +268,16 @@ async fn approve_as_new_atomically_renames_when_the_inherited_slug_is_taken() {
     let db = SqliteTestDb::new("seeded_approval_as_new_rename");
     let (service, source, draft, conversations) = seeded_fixture(&db, "taken-source").await;
     service.archive_persona(true, &source.id).await.unwrap();
-    let replacement = create_active(&service, &source.slug).await;
+    let mut replacement = source.clone();
+    replacement.id = crate::domain::entities::PersonaId::new();
+    replacement.status = PersonaStatus::Active;
+    replacement.created_at = chrono::Utc::now();
+    replacement.updated_at = replacement.created_at;
+    let replacement = service
+        .persona_repo
+        .create(replacement)
+        .await
+        .expect("database fixture may occupy the active slug beside a seeded draft");
 
     let collision = service
         .approve_persona_as_new(true, &draft.id, None)
