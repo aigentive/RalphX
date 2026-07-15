@@ -219,7 +219,7 @@ async fn persona_builder_send_accepts_only_a_live_bound_draft_without_ingest() {
         )
         .with_persona_feature_enabled(true);
     let options = SendMessageOptions {
-        conversation_id_override: Some(conversation.id.clone()),
+        conversation_id_override: Some(conversation.id),
         ..Default::default()
     };
 
