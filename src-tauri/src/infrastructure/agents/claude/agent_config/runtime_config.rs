@@ -47,9 +47,11 @@ pub struct SpecialistEntry {
 
 /// Configuration for the plan verification feature.
 ///
-/// All fields required in config/ralphx.yaml under `ideation.verification:`.
-/// `Default` impl retained only for fallback/test use.
+/// Legacy verification-orchestration fields may be omitted from
+/// `config/ralphx.yaml`; model-native verification only overrides the values it
+/// still consumes.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct VerificationConfig {
     /// Maximum number of adversarial review rounds [1, 10]. Hard cap — always terminates.
     pub max_rounds: u32,
