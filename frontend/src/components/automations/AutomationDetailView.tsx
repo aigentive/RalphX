@@ -49,6 +49,7 @@ import { AutomationRunStatusHeader } from "@/components/automations/AutomationRu
 import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import type { AutomationRunOpenTarget } from "@/components/automations/automationRunNavigation";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
+import { AutomationDetailsTabs } from "@/components/automations/AutomationDetailsTabs";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -1249,58 +1250,60 @@ export function AutomationDetailView({
               <GoalItems value={automation.goalItemsJson} />
               {detail.data.pipeline ? <PipelineProgress pipeline={detail.data.pipeline} /> : null}
             </Section>
-            <Section title="Spec" testId="automation-spec-card">
-              <AutomationSpecView specArtifactId={automation.specArtifactId} />
-            </Section>
-            <Section title="Inputs">
-              <SourcePrInput automation={automation} />
-            </Section>
-            <Section title="Config">
-              <KeyValueList
-                items={[
-                  ["Mode / model", formatMode(automation)],
-                  [
-                    "Setup conversation",
-                    automation.setupConversationId ? (
-                      <Button
-                        type="button"
-                        variant="link"
-                        className="h-auto gap-1 p-0 text-sm"
-                        disabled={!projectId || !onOpenRunConversation}
-                        onClick={handleEdit}
-                        data-testid="automation-setup-conversation-link"
-                      >
-                        Open setup conversation
-                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                      </Button>
-                    ) : (
-                      "Not recorded"
-                    ),
-                  ],
-                  ["Base", formatBase(automation)],
-                  ["Branch", <BranchConfigValue automation={automation} />],
-                  ["Chain mode", automation.chainMode],
-                  ["Completion signal", automation.completionSignal],
-                  ["Max runs", `${runs.length} / ${automation.maxRuns}`],
-                  ["Max failures", automation.maxConsecutiveFailures],
-                  ["Input tokens", formatNumber(usage.inputTokens)],
-                  ["Output tokens", formatNumber(usage.outputTokens)],
-                  ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)],
-                  ["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)],
-                  ["Created", formatDate(automation.createdAt)],
-                  ["Updated", formatDate(automation.updatedAt)],
-                ]}
-              />
-              {automation.pausedReasonCode && (
-                <div className="mt-4 rounded-md p-3 text-sm" style={{
-                  backgroundColor: "var(--bg-hover)",
-                  color: "var(--text-secondary)",
-                }}>
-                  Paused: {automation.pausedReasonCode}
-                  {automation.pausedReasonDetail ? ` - ${automation.pausedReasonDetail}` : ""}
-                </div>
+            <AutomationDetailsTabs
+              hasSpec={Boolean(automation.specArtifactId)}
+              inputCount={parseRecord(automation.baseSourcePullRequestJson) ? 1 : 0}
+              spec={<AutomationSpecView specArtifactId={automation.specArtifactId} />}
+              inputs={<SourcePrInput automation={automation} />}
+              config={(
+                <>
+                  <KeyValueList
+                    items={[
+                      ["Mode / model", formatMode(automation)],
+                      [
+                        "Setup conversation",
+                        automation.setupConversationId ? (
+                          <Button
+                            type="button"
+                            variant="link"
+                            className="h-auto gap-1 p-0 text-sm"
+                            disabled={!projectId || !onOpenRunConversation}
+                            onClick={handleEdit}
+                            data-testid="automation-setup-conversation-link"
+                          >
+                            Open setup conversation
+                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                          </Button>
+                        ) : (
+                          "Not recorded"
+                        ),
+                      ],
+                      ["Base", formatBase(automation)],
+                      ["Branch", <BranchConfigValue automation={automation} />],
+                      ["Chain mode", automation.chainMode],
+                      ["Completion signal", automation.completionSignal],
+                      ["Max runs", `${runs.length} / ${automation.maxRuns}`],
+                      ["Max failures", automation.maxConsecutiveFailures],
+                      ["Input tokens", formatNumber(usage.inputTokens)],
+                      ["Output tokens", formatNumber(usage.outputTokens)],
+                      ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)],
+                      ["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)],
+                      ["Created", formatDate(automation.createdAt)],
+                      ["Updated", formatDate(automation.updatedAt)],
+                    ]}
+                  />
+                  {automation.pausedReasonCode && (
+                    <div className="mt-4 rounded-md p-3 text-sm" style={{
+                      backgroundColor: "var(--bg-hover)",
+                      color: "var(--text-secondary)",
+                    }}>
+                      Paused: {automation.pausedReasonCode}
+                      {automation.pausedReasonDetail ? ` - ${automation.pausedReasonDetail}` : ""}
+                    </div>
+                  )}
+                </>
               )}
-            </Section>
+            />
           </div>
 
           <Section title="Runs timeline" testId="automation-runs-timeline">
