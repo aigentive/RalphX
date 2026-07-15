@@ -871,6 +871,7 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         Some("plan"),
         "Create a plan",
         None,
+        None,
     )
     .expect("plan profile prompt");
 
@@ -884,6 +885,7 @@ fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
         "ralphx-ideation",
         None,
         "Create a plan",
+        None,
         None,
     )
     .expect("default profile prompt");
@@ -901,6 +903,7 @@ fn claude_prompt_orders_persona_after_base_and_appendices_before_skills_and_runt
         Some("plan"),
         "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
         Some(persona),
+        None,
     )
     .expect("plan profile prompt");
 
@@ -957,6 +960,7 @@ This skill must not be selected from persona text.
         None,
         "ordinary user request",
         Some("<ralphx_agent_persona>persona-only-trigger</ralphx_agent_persona>"),
+        None,
     )
     .expect("system prompt");
 
@@ -989,6 +993,7 @@ capabilities:
         None,
         "ordinary user request",
         Some(persona),
+        None,
     )
     .expect("system prompt");
 
@@ -1019,6 +1024,8 @@ fn add_prompt_args_with_persona_appends_block_in_append_system_prompt_mode() {
         None,
         None,
         false,
+        None,
+        None,
     );
     assert!(outcome.persona_injected);
     assert_eq!(outcome.persona_injection_skipped_reason, None);
@@ -1056,6 +1063,8 @@ fn fallback_prompt_without_persona_pins_none_metadata() {
         None,
         None,
         false,
+        None,
+        None,
     );
 
     assert!(
@@ -1512,6 +1521,7 @@ role: project_chat
         "ralphx:ralphx-chat-project",
         None,
         "Plan the domain change.",
+        None,
         Some(&context),
     )
     .expect("load prompt");
@@ -1585,6 +1595,8 @@ role: project_chat
         filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation-1".to_string()),
+        agent_run_id: None,
+        task_state: None,
     };
 
     let spawnable = build_spawnable_command_with_mcp_runtime_context_for_test(
@@ -1602,14 +1614,18 @@ role: project_chat
     let args = spawnable.get_args_for_test();
     let prompt_index = args
         .iter()
-        .position(|arg| arg == "--append-system-prompt")
-        .expect("expected inline system prompt with learned-skill citations");
-    let system_prompt = &args[prompt_index + 1];
+        .position(|arg| arg == "--append-system-prompt-file")
+        .expect("expected system prompt file with learned-skill citations");
+    let system_prompt = read_test_file(Path::new(&args[prompt_index + 1]));
 
     assert!(system_prompt.contains("Project chat prompt"));
     assert!(system_prompt.contains("<ralphx_learned_skill_citations>"));
     assert!(system_prompt.contains("skill-planning"));
     assert!(!system_prompt.contains("skill-review"));
+    assert!(
+        !args.contains(&"--append-system-prompt".to_string()),
+        "Claude must not use an inline prompt when learned-skill context is selected"
+    );
 }
 
 #[test]

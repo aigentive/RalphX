@@ -23,6 +23,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryTaskOutcomeRepository,
 };
 
 fn conversation_id(suffix: u8) -> ChatConversationId {
@@ -122,6 +123,7 @@ async fn startup_recovery_wrappers_finish_on_empty_repositories() {
     recover_stale_agent_workspace_publish_repairs_on_startup(
         workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
         agent_run_repo as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
     )
     .await;
     recover_stale_agent_workspace_publish_repairs_on_startup_for_state(&AppState::new_test()).await;
@@ -194,6 +196,7 @@ async fn recovery_with_review_target_preserves_current_reviewing_handoff() {
         recover_stale_publish_repair_for_workspace_and_reload_with_review_target(
             Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
             Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+            Arc::new(MemoryTaskOutcomeRepository::new()),
             workspace,
             Some(&target),
         )
@@ -247,6 +250,7 @@ async fn stale_review_handoff_without_matching_target_is_recovered_and_reloaded(
     let refreshed = recover_stale_publish_repair_for_workspace_and_reload(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         workspace,
     )
     .await
@@ -288,6 +292,7 @@ async fn batch_recovery_counts_only_recovered_workspaces() {
     let recovered = recover_stale_agent_workspace_publish_repairs(
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Arc::new(MemoryTaskOutcomeRepository::new()),
     )
     .await
     .expect("recover batch");

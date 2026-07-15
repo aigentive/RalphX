@@ -233,6 +233,7 @@ async fn recover_review_pr_poller_fixture(fixture: &ReviewPrPollerRecoveryFixtur
         Arc::clone(&fixture.plan_branch_repo),
         Arc::clone(&fixture.registry),
         Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         Arc::new(MockChatService::new()),
         Arc::new(HashSet::new()),
     )

@@ -45,6 +45,7 @@ fn make_services_with_tracked_chat(
             Arc::clone(&chat_service) as Arc<dyn ChatService>,
         ),
         Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+        Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)

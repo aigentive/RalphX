@@ -3232,6 +3232,7 @@ async fn agent_workspace_review_feedback_disables_auto_merge_before_pr_fixer() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -3294,6 +3295,7 @@ async fn agent_workspace_review_feedback_waits_when_auto_merge_disable_fails() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await

@@ -551,6 +551,7 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
         },
@@ -649,6 +650,7 @@ async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr()
                 transition_service: None,
                 chat_service: None,
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+                task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
                 app_handle: None,
                 pr_fix_review_publish_resumer: None,
             },
@@ -744,6 +746,7 @@ async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
                 transition_service: None,
                 chat_service: None,
                 agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+                task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
                 app_handle: None,
                 pr_fix_review_publish_resumer: None,
             },
@@ -1288,6 +1291,7 @@ async fn active_run_does_not_hide_terminal_linked_plan_pr_during_supervision_rec
             Arc::clone(&chat) as Arc<dyn crate::application::chat_service::ChatService>
         ),
         agent_run_repo: Arc::clone(&active_run_repo) as Arc<dyn AgentRunRepository>,
+        task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
         app_handle: None,
         pr_fix_review_publish_resumer: None,
     };
@@ -1534,6 +1538,7 @@ async fn startup_recovery_resumes_passed_pr_fix_workspace_review_handoff() {
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -1639,6 +1644,7 @@ async fn startup_recovery_does_not_publish_pr_fix_from_stale_review_fingerprint(
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: Some(
                 Arc::clone(&publish_resumer) as Arc<dyn AgentWorkspacePrFixReviewPublishResumer>
@@ -1703,6 +1709,7 @@ async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
             transition_service: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            task_outcome_repo: Arc::new(MemoryTaskOutcomeRepository::new()),
             app_handle: None,
             pr_fix_review_publish_resumer: None,
         },

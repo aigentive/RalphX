@@ -7691,6 +7691,7 @@ mod provider_spawn_gate_tests {
             Arc::clone(&state.message_queue),
             Arc::clone(&state.running_agent_registry),
             Arc::clone(&state.memory_event_repo),
+            Arc::clone(&state.project_memory_settings_repo),
         )
         .with_execution_state(Arc::clone(&execution_state))
         .with_execution_settings_repo(Arc::clone(&state.execution_settings_repo))
@@ -7755,6 +7756,7 @@ mod provider_spawn_gate_tests {
             Arc::clone(&state.message_queue),
             Arc::clone(&state.running_agent_registry),
             Arc::clone(&state.memory_event_repo),
+            Arc::clone(&state.project_memory_settings_repo),
         )
         .with_execution_settings_repo(Arc::clone(&state.execution_settings_repo))
         .with_agent_lane_settings_repo(Arc::clone(&state.agent_lane_settings_repo))

@@ -3,11 +3,12 @@ use super::{
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
     compose_codex_prompt, compose_codex_prompt_for_profile,
     compose_codex_prompt_for_profile_with_learned_skills,
+    compose_codex_prompt_for_profile_with_outcome,
     compose_codex_prompt_for_profile_with_runtime_context, configure_spawn,
-    compose_codex_prompt_for_profile_with_outcome, parse_codex_fast_mode_feature,
-    parse_codex_fast_mode_supported_models, parse_codex_model_catalog_capabilities,
-    probe_codex_cli, redact_persona_from_codex_prompt, resolve_codex_cli_from_candidates,
-    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
+    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models,
+    parse_codex_model_catalog_capabilities, probe_codex_cli, redact_persona_from_codex_prompt,
+    resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
+    CodexMcpRuntimeContext,
 };
 
 use crate::domain::agents::LogicalEffort;
@@ -1005,6 +1006,8 @@ role: project_chat
         filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation-1".to_string()),
+        agent_run_id: None,
+        task_state: None,
     };
 
     let composed = compose_codex_prompt_for_profile_with_runtime_context(
