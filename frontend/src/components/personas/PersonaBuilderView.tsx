@@ -2,10 +2,16 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, FilePlus2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, FilePlus2, Files, FolderOpen } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -65,12 +71,61 @@ function ManifestEntries({ entries }: { entries: PersonaIngestManifest["rejected
   ) : null;
 }
 
+function PersonaContextPicker({
+  className,
+  disabled,
+  isAddingContext,
+  onAddFiles,
+  onAddFolder,
+  size = "default",
+  testId,
+}: {
+  className?: string;
+  disabled: boolean;
+  isAddingContext: boolean;
+  onAddFiles: () => void;
+  onAddFolder: () => void;
+  size?: "default" | "sm";
+  testId?: string;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size={size}
+          className={className}
+          disabled={disabled}
+          data-testid={testId}
+        >
+          <FilePlus2 aria-hidden="true" />
+          {isAddingContext ? "Adding…" : "Add context…"}
+          <ChevronDown aria-hidden="true" className="size-3.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-44">
+        <DropdownMenuItem className="cursor-pointer" onSelect={onAddFiles}>
+          <Files aria-hidden="true" />
+          Add files
+        </DropdownMenuItem>
+        <DropdownMenuItem className="cursor-pointer" onSelect={onAddFolder}>
+          <FolderOpen aria-hidden="true" />
+          Add folder
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function PersonaBuilderContextGate({
   isAddingContext,
-  onAddContext,
+  onAddFiles,
+  onAddFolder,
 }: {
   isAddingContext: boolean;
-  onAddContext: () => void;
+  onAddFiles: () => void;
+  onAddFolder: () => void;
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-6 text-center">
@@ -82,17 +137,14 @@ function PersonaBuilderContextGate({
         The builder agent can only read files you add. Add project docs, style guides, or examples,
         then describe the persona you want.
       </p>
-      <Button
-        type="button"
-        variant="outline"
+      <PersonaContextPicker
         className="mt-5"
-        onClick={onAddContext}
         disabled={isAddingContext}
-        data-testid="persona-builder-empty-add-context"
-      >
-        <FilePlus2 aria-hidden="true" />
-        {isAddingContext ? "Adding…" : "Add context…"}
-      </Button>
+        isAddingContext={isAddingContext}
+        onAddFiles={onAddFiles}
+        onAddFolder={onAddFolder}
+        testId="persona-builder-empty-add-context"
+      />
     </div>
   );
 }
@@ -140,21 +192,34 @@ export function PersonaBuilderView({
     };
   }, [chatReady, conversationId, creationError, projectId]);
 
-  const handleAddContext = async () => {
+  const handleAddContext = async (kind: "files" | "folder") => {
     if (!conversationId) {
       return;
     }
     setActionError(null);
     try {
-      const pickedPath = await openDialog({
-        directory: true,
-        multiple: false,
-        title: "Add persona context",
-      });
-      if (typeof pickedPath !== "string") {
+      const picked = await openDialog(
+        kind === "files"
+          ? {
+              directory: false,
+              multiple: true,
+              title: "Add persona context files",
+            }
+          : {
+              directory: true,
+              multiple: false,
+              title: "Add persona context folder",
+            },
+      );
+      const pickedPaths = Array.isArray(picked)
+        ? picked.filter((path): path is string => typeof path === "string" && path.length > 0)
+        : typeof picked === "string" && picked.length > 0
+          ? [picked]
+          : [];
+      if (pickedPaths.length === 0) {
         return;
       }
-      await ingestContext.mutateAsync({ conversationId, pickedPaths: [pickedPath] });
+      await ingestContext.mutateAsync({ conversationId, pickedPaths });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
@@ -218,7 +283,8 @@ export function PersonaBuilderView({
           ) : (
             <PersonaBuilderContextGate
               isAddingContext={ingestContext.isPending}
-              onAddContext={() => void handleAddContext()}
+              onAddFiles={() => void handleAddContext("files")}
+              onAddFolder={() => void handleAddContext("folder")}
             />
           )}
         </div>
@@ -260,10 +326,13 @@ export function PersonaBuilderView({
 
           {actionError && <ErrorNotice message={actionError} />}
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => void handleAddContext()} disabled={!conversationId || ingestContext.isPending}>
-              <FilePlus2 aria-hidden="true" />
-              {ingestContext.isPending ? "Adding…" : "Add context…"}
-            </Button>
+            <PersonaContextPicker
+              disabled={!conversationId || ingestContext.isPending}
+              isAddingContext={ingestContext.isPending}
+              onAddFiles={() => void handleAddContext("files")}
+              onAddFolder={() => void handleAddContext("folder")}
+              size="sm"
+            />
             <Button type="button" size="sm" onClick={() => void handleApprove()} disabled={!draft || isApproving} className="bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-secondary)]">
               {isApproving ? "Approving…" : "Approve"}
             </Button>
