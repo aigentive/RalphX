@@ -1557,8 +1557,12 @@ describe("AgentsArtifactPane", () => {
       isLoading: false,
     });
     useVerificationStatusMock.mockReturnValue({
-      data: null,
+      data: {
+        status: "unverified",
+        inProgress: false,
+      },
       isLoading: false,
+      isFetching: false,
     });
     useGitAuthDiagnosticsMock.mockReturnValue({
       data: {
@@ -4633,7 +4637,6 @@ describe("AgentsArtifactPane", () => {
     });
     expect(getIdeationSessionMock).not.toHaveBeenCalled();
     expect(useDependencyGraphMock).toHaveBeenCalledWith("");
-    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
   });
 
   it("does not hydrate graph or verification data for the ideation plan tab", async () => {
@@ -6530,6 +6533,11 @@ describe("AgentsArtifactPane", () => {
 
   it("shows and disables Plan tab CTAs while the recommendation check is running", async () => {
     const assessment = deferred<null>();
+    useVerificationStatusMock.mockReturnValue({
+      data: { status: "verifying", inProgress: true },
+      isLoading: false,
+      isFetching: false,
+    });
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -6602,7 +6610,7 @@ describe("AgentsArtifactPane", () => {
     const createButton = screen.getByRole("button", {
       name: /Create Proposals/i,
     });
-    const verifyButton = screen.getByRole("button", { name: /Verify Plan/i });
+    const verifyButton = screen.getByRole("button", { name: /Verifying/i });
 
     expect(implementButton).toBeDisabled();
     expect(createButton).toBeDisabled();
@@ -6909,12 +6917,12 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() =>
-      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1", [
-        "security-review",
-      ]),
+      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1"),
     );
-    expect(onTabChange).toHaveBeenCalledWith("verification");
-    expect(toastSuccessMock).toHaveBeenCalledWith("Plan verification started");
+    expect(onTabChange).not.toHaveBeenCalledWith("verification");
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Verify Plan queued in this conversation",
+    );
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
@@ -7003,12 +7011,12 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() =>
-      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1", [
-        "security-review",
-      ]),
+      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1"),
     );
-    expect(onTabChange).toHaveBeenCalledWith("verification");
-    expect(toastSuccessMock).toHaveBeenCalledWith("Plan verification started");
+    expect(onTabChange).not.toHaveBeenCalledWith("verification");
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      "Verify Plan queued in this conversation",
+    );
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
@@ -7239,93 +7247,8 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
-  it("keeps the parent plan conversation focused when the verification tab opens", async () => {
+  it("does not revive the retired verification surface from a stale tab key", () => {
     const onFocusVerificationSession = vi.fn();
-    getIdeationSessionMock.mockResolvedValue({
-      session: {
-        id: "session-1",
-        projectId: "project-1",
-        title: "Agent Plan",
-        titleSource: "auto",
-        status: "active",
-        planArtifactId: "artifact-1",
-        seedTaskId: null,
-        parentSessionId: null,
-        teamMode: null,
-        teamConfig: null,
-        createdAt: "2026-04-23T09:00:00Z",
-        updatedAt: "2026-04-23T09:00:00Z",
-        archivedAt: null,
-        convertedAt: null,
-        verificationStatus: "verified",
-        verificationInProgress: false,
-        gapScore: 0,
-        inheritedPlanArtifactId: null,
-        sessionPurpose: "general",
-        acceptanceStatus: null,
-      },
-      proposals: [],
-      messages: [],
-    });
-    getIdeationChildrenMock.mockResolvedValue([
-      {
-        id: "verification-old",
-        projectId: "project-1",
-        title: "Old verifier",
-        titleSource: "auto",
-        status: "active",
-        planArtifactId: null,
-        seedTaskId: null,
-        parentSessionId: "session-1",
-        teamMode: null,
-        teamConfig: null,
-        createdAt: "2026-04-23T09:00:00Z",
-        updatedAt: "2026-04-23T09:00:00Z",
-        archivedAt: null,
-        convertedAt: null,
-        verificationStatus: "unverified",
-        verificationInProgress: false,
-        gapScore: null,
-        inheritedPlanArtifactId: null,
-        sessionPurpose: "verification",
-        acceptanceStatus: null,
-      },
-      {
-        id: "verification-new",
-        projectId: "project-1",
-        title: "New verifier",
-        titleSource: "auto",
-        status: "active",
-        planArtifactId: null,
-        seedTaskId: null,
-        parentSessionId: "session-1",
-        teamMode: null,
-        teamConfig: null,
-        createdAt: "2026-04-23T10:00:00Z",
-        updatedAt: "2026-04-23T10:00:00Z",
-        archivedAt: null,
-        convertedAt: null,
-        verificationStatus: "unverified",
-        verificationInProgress: false,
-        gapScore: null,
-        inheritedPlanArtifactId: null,
-        sessionPurpose: "verification",
-        acceptanceStatus: null,
-      },
-    ]);
-    useVerificationStatusMock.mockReturnValue({
-      data: {
-        sessionId: "session-1",
-        status: "verified",
-        inProgress: false,
-        gaps: [],
-        rounds: [],
-        roundDetails: [],
-        runHistory: [],
-      },
-      isLoading: false,
-    });
-
     renderPane(
       "verification",
       workspace({ mode: "ideation", linkedIdeationSessionId: "session-1" }),
@@ -7335,7 +7258,7 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    await waitFor(() => expect(useVerificationStatusMock).toHaveBeenCalled());
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
     expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
       "session-1",
       "verification",

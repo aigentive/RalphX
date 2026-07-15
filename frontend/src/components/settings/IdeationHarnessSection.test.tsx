@@ -78,10 +78,10 @@ const globalLanes: AgentHarnessLaneView[] = [
     error: null,
   },
   {
-    lane: "ideation_verifier",
+    lane: "ideation_subagent",
     row: {
       projectId: null,
-      lane: "ideation_verifier",
+      lane: "ideation_subagent",
       harness: "claude",
       model: null,
       effort: null,
@@ -297,7 +297,7 @@ describe("IdeationHarnessSection", () => {
     render(<IdeationHarnessSection />);
 
     expect(screen.getByLabelText("Primary Ideation model")).toBeVisible();
-    expect(screen.getByLabelText("Verification model")).not.toBeVisible();
+    expect(screen.getByLabelText("Ideation Subagents model")).not.toBeVisible();
   });
 
   it("persists the selected agent settings tab", async () => {
@@ -445,16 +445,16 @@ describe("IdeationHarnessSection", () => {
     );
   });
 
-  it("applies verifier Codex defaults when switching the verifier provider", async () => {
+  it("applies active defaults when switching the ideation delegate provider", async () => {
     const user = userEvent.setup();
     render(<IdeationHarnessSection />);
 
-    openSelect("harness-ideation_verifier");
+    openSelect("harness-ideation_subagent");
     await user.click(screen.getByRole("option", { name: /Codex/ }));
 
     expect(updateLane).toHaveBeenCalledWith(
       {
-        lane: "ideation_verifier",
+        lane: "ideation_subagent",
         harness: "codex",
         model: "gpt-5.4-mini",
         effort: "medium",
@@ -495,7 +495,7 @@ describe("IdeationHarnessSection", () => {
     render(<IdeationHarnessSection />);
     expandAllLanes();
 
-    openSelect("model-ideation_verifier");
+    openSelect("model-ideation_subagent");
 
     expect(screen.getByRole("option", { name: /sonnet/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /opus/ })).toBeInTheDocument();
@@ -624,20 +624,20 @@ describe("IdeationHarnessSection", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Reset Verification to default provider",
+        name: "Reset Ideation Subagents to default provider",
       }),
     );
 
     await waitFor(() => {
       expect(confirm).toHaveBeenCalledWith(
         expect.objectContaining({
-          title: "Reset Verification to default provider?",
+          title: "Reset Ideation Subagents to default provider?",
           confirmText: "Reset lane",
         }),
       );
       expect(updateLane).toHaveBeenCalledWith(
         {
-          lane: "ideation_verifier",
+          lane: "ideation_subagent",
           harness: "codex",
           model: "gpt-5.5",
           effort: "xhigh",
@@ -655,14 +655,14 @@ describe("IdeationHarnessSection", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Reset Verification to default provider",
+        name: "Reset Ideation Subagents to default provider",
       }),
     );
 
     await waitFor(() => {
       expect(confirm).toHaveBeenCalledWith(
         expect.objectContaining({
-          title: "Reset Verification to default provider?",
+          title: "Reset Ideation Subagents to default provider?",
         }),
       );
     });

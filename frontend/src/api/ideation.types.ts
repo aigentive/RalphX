@@ -5,9 +5,6 @@ import type {
   TeamMode,
   TeamConfig,
   VerificationStatus,
-  VerificationGap,
-  RoundSummary,
-  VerificationRoundDetail,
 } from "../types/ideation";
 
 export interface IdeationSessionResponse {
@@ -69,39 +66,14 @@ export interface IdeationAnalysisBaseSelection {
 
 export interface VerificationStatusResponse {
   sessionId: string;
-  status: VerificationStatus;
+  status: "unverified" | "queued" | "verifying" | "verified" | "failed" | "cancelled";
   inProgress: boolean;
-  generation?: number;
-  selectedGeneration?: number;
-  currentRound?: number;
-  maxRounds?: number;
-  gapScore?: number;
-  convergenceReason?: string;
-  bestRoundIndex?: number;
-  gaps: VerificationGap[];
-  rounds: RoundSummary[];
-  roundDetails: VerificationRoundDetail[];
-  runHistory: Array<{
-    generation: number;
-    status: VerificationStatus;
-    inProgress: boolean;
-    currentRound?: number;
-    maxRounds?: number;
-    roundCount: number;
-    gapCount: number;
-    gapScore?: number;
-    convergenceReason?: string;
-  }>;
-  planVersion?: number;
-  verificationChild?: {
-    activeChildSessionId?: string | undefined;
-    latestChildSessionId?: string | undefined;
-    latestChildArchived?: boolean | undefined;
-    latestChildUpdatedAt?: string | undefined;
-    agentState?: string | undefined;
-    lastAssistantMessage?: string | null | undefined;
-    lastAssistantMessageAt?: string | null | undefined;
-  };
+  planArtifactId: string | null;
+  verifiedPlanArtifactId: string | null;
+  agentRunId: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
 }
 
 export interface TaskProposalResponse {

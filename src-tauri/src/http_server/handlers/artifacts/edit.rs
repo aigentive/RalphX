@@ -7,6 +7,7 @@ pub async fn edit_plan_artifact(
 ) -> Result<Json<ArtifactResponse>, HttpError> {
     let input_artifact_id = req.artifact_id.clone();
     let caller_session_id = resolve_caller_session_id(&headers, req.caller_session_id.as_deref());
+    let mutation_authority = resolve_artifact_mutation_authority(&headers);
     let edits = req.edits;
 
     if edits.is_empty() {
@@ -51,7 +52,13 @@ pub async fn edit_plan_artifact(
     .await
     .map_err(map_app_err)?;
 
-    let (created, old_artifact_id_str, sessions, linked_proposal_ids, verification_reset) = state
+    let (
+        created,
+        old_artifact_id_str,
+        sessions,
+        linked_proposal_ids,
+        verification_reset,
+    ) = state
         .app_state
         .db
         .run_transaction(move |conn| {
@@ -99,7 +106,12 @@ pub async fn edit_plan_artifact(
                 )));
             }
 
-            finalize_plan_update(conn, &old_artifact, new_content)
+            finalize_plan_update(
+                conn,
+                &old_artifact,
+                new_content,
+                mutation_authority.as_ref(),
+            )
         })
         .await
         .map_err(|e| {
@@ -115,7 +127,6 @@ pub async fn edit_plan_artifact(
         linked_proposal_ids,
         verification_reset,
     );
-
     let mut response = ArtifactResponse::from(created);
     response.previous_artifact_id = Some(old_artifact_id_str);
     response.session_id = sessions.first().map(|s| s.id.to_string());

@@ -1,6 +1,5 @@
 use super::*;
 use crate::domain::agents::AgentHarnessKind;
-use crate::infrastructure::agents::claude::agent_names::AGENT_PLAN_VERIFIER;
 
 #[test]
 fn test_resolve_agent_review_approved_returns_review_history() {
@@ -33,18 +32,16 @@ fn test_resolve_agent_ideation_accepted_returns_readonly() {
 }
 
 #[test]
-fn test_resolve_agent_ideation_verification_returns_plan_verifier() {
-    // Verification sessions route to ralphx-plan-verifier (prevents infinite cascade)
+fn test_legacy_verification_purpose_uses_normal_ideation_agent() {
     let agent = resolve_agent(&ChatContextType::Ideation, Some("verification"));
-    assert_eq!(agent, AGENT_PLAN_VERIFIER);
+    assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION);
 }
 
 #[test]
-fn test_resolve_agent_ideation_verification_overrides_team_mode() {
-    // Verification purpose takes priority over team_mode
+fn test_legacy_verification_purpose_does_not_override_team_mode() {
     let agent =
         resolve_agent_with_team_mode(&ChatContextType::Ideation, Some("verification"), true);
-    assert_eq!(agent, AGENT_PLAN_VERIFIER);
+    assert_eq!(agent, AGENT_IDEATION_TEAM_LEAD);
 }
 
 #[test]
