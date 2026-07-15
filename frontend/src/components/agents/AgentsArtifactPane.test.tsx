@@ -1557,8 +1557,12 @@ describe("AgentsArtifactPane", () => {
       isLoading: false,
     });
     useVerificationStatusMock.mockReturnValue({
-      data: null,
+      data: {
+        status: "unverified",
+        inProgress: false,
+      },
       isLoading: false,
+      isFetching: false,
     });
     useGitAuthDiagnosticsMock.mockReturnValue({
       data: {
@@ -4606,6 +4610,7 @@ describe("AgentsArtifactPane", () => {
       expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"),
     );
     expect(useDependencyGraphMock).toHaveBeenCalledWith("");
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
   });
 
   it("hydrates a Plan workspace from a plan artifact tool result when the workspace link is stale", async () => {
@@ -6435,6 +6440,11 @@ describe("AgentsArtifactPane", () => {
 
   it("shows and disables Plan tab CTAs while the recommendation check is running", async () => {
     const assessment = deferred<null>();
+    useVerificationStatusMock.mockReturnValue({
+      data: { status: "verifying", inProgress: true },
+      isLoading: false,
+      isFetching: false,
+    });
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -6507,7 +6517,7 @@ describe("AgentsArtifactPane", () => {
     const createButton = screen.getByRole("button", {
       name: /Create Proposals/i,
     });
-    const verifyButton = screen.getByRole("button", { name: /Verify Plan/i });
+    const verifyButton = screen.getByRole("button", { name: /Verifying/i });
 
     expect(implementButton).toBeDisabled();
     expect(createButton).toBeDisabled();
@@ -7155,7 +7165,7 @@ describe("AgentsArtifactPane", () => {
       { onFocusVerificationSession },
     );
 
-    expect(useVerificationStatusMock).not.toHaveBeenCalled();
+    expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
     expect(getIdeationChildrenMock).not.toHaveBeenCalledWith(
       "session-1",
       "verification",

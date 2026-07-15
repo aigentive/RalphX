@@ -57,10 +57,17 @@ export const IdeationSettingsResponseSchema = z.object({
   require_accept_for_finalize: z.boolean(),
   require_verification_for_accept: z.boolean().default(false),
   require_verification_for_proposals: z.boolean().default(false),
-  ext_auto_verify_plans: z.number().nullable().default(null),
-  ext_require_verification_for_accept: z.number().nullable().default(null),
-  ext_require_verification_for_proposals: z.number().nullable().default(null),
-  ext_require_accept_for_finalize: z.number().nullable().default(null),
+  external_overrides: z.object({
+    auto_verify_plans: z.boolean().nullable().default(null),
+    require_verification_for_accept: z.boolean().nullable().default(null),
+    require_verification_for_proposals: z.boolean().nullable().default(null),
+    require_accept_for_finalize: z.boolean().nullable().default(null),
+  }).default({
+    auto_verify_plans: null,
+    require_verification_for_accept: null,
+    require_verification_for_proposals: null,
+    require_accept_for_finalize: null,
+  }),
 });
 
 export type IdeationSettingsResponse = z.infer<typeof IdeationSettingsResponseSchema>;

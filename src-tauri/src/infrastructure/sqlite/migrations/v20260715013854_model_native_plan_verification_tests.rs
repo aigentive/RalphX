@@ -12,13 +12,22 @@ fn setup_test_db() -> Connection {
          CREATE TABLE ideation_sessions (
             id TEXT PRIMARY KEY,
             plan_artifact_id TEXT,
-            verification_status TEXT NOT NULL DEFAULT 'unverified'
+            verification_status TEXT NOT NULL DEFAULT 'unverified',
+            verification_in_progress INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            session_purpose TEXT NOT NULL DEFAULT 'general',
+            archived_at TEXT
          );
-         INSERT INTO ideation_sessions (id, plan_artifact_id, verification_status)
+         INSERT INTO ideation_sessions (
+            id, plan_artifact_id, verification_status, verification_in_progress,
+            status, session_purpose
+         )
          VALUES
-            ('verified', 'artifact-current', 'verified'),
-            ('ambiguous', NULL, 'verified'),
-            ('unverified', 'artifact-draft', 'unverified');
+            ('verified', 'artifact-current', 'verified', 0, 'active', 'general'),
+            ('ambiguous', NULL, 'verified', 0, 'active', 'general'),
+            ('unverified', 'artifact-draft', 'unverified', 0, 'active', 'general'),
+            ('stuck', 'artifact-stuck', 'reviewing', 1, 'active', 'general'),
+            ('legacy-child', NULL, 'reviewing', 1, 'active', 'verification');
          CREATE TABLE agent_runs (id TEXT PRIMARY KEY, status TEXT NOT NULL);",
     )
     .expect("create preceding schema");
@@ -50,6 +59,27 @@ fn test_migration_adds_policy_proof_and_action_metadata() {
     assert_eq!(proofs[0].as_deref(), Some("artifact-current"));
     assert_eq!(proofs[1], None);
     assert_eq!(proofs[2], None);
+
+    let reset: (String, i64) = conn
+        .query_row(
+            "SELECT verification_status, verification_in_progress
+             FROM ideation_sessions WHERE id = 'stuck'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(reset, ("unverified".to_string(), 0));
+    let archived_child: (String, Option<String>, i64) = conn
+        .query_row(
+            "SELECT status, archived_at, verification_in_progress
+             FROM ideation_sessions WHERE id = 'legacy-child'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(archived_child.0, "archived");
+    assert!(archived_child.1.is_some());
+    assert_eq!(archived_child.2, 0);
 
     conn.execute(
         "INSERT INTO agent_runs (id, status, action_kind, action_context_id, action_target_id)

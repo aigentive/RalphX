@@ -1752,9 +1752,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const isPlanVerificationLoading =
     (planVerificationQuery.isLoading || planVerificationQuery.isFetching) &&
     !planVerificationQuery.data;
-  const isPlanVerificationSatisfied =
-    planVerificationState === "verified" ||
-    planVerificationState === "imported_verified";
+  const isPlanVerificationSatisfied = planVerificationState === "verified";
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
       planApprovalArtifact &&

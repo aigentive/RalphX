@@ -42,6 +42,23 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
            AND verification_status IN ('verified', 'imported_verified')",
         [],
     )?;
+    conn.execute(
+        "UPDATE ideation_sessions
+         SET status = 'archived',
+             archived_at = COALESCE(archived_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         WHERE session_purpose = 'verification'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE ideation_sessions
+         SET verification_in_progress = 0,
+             verification_status = CASE
+                 WHEN verification_status IN ('verified', 'imported_verified')
+                     THEN verification_status
+                 ELSE 'unverified'
+             END",
+        [],
+    )?;
     conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS clear_failed_plan_verification_proof
          AFTER UPDATE OF status ON agent_runs

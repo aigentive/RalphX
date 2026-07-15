@@ -30,7 +30,8 @@ use crate::application::chat_service::{ChatService, SendCallerContext, SendMessa
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
 use crate::application::plan_verification_service::{
-    request_plan_verification, PlanVerificationRequestOutcome, PlanVerificationRequestSource,
+    get_plan_verification_status, request_plan_verification, PlanVerificationRequestOutcome,
+    PlanVerificationRequestSource, PlanVerificationStatusKind,
 };
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::{AppState, TeamService};
@@ -267,6 +268,17 @@ impl AutomationPlanVerificationStarter for AgentConversationAutomationPlanVerifi
                 })
             }
         }
+    }
+
+    async fn verification_status(
+        &self,
+        request: &AutomationPlanVerificationStartRequest,
+    ) -> AppResult<PlanVerificationStatusKind> {
+        Ok(
+            get_plan_verification_status(&self.state, &request.session_id)
+                .await?
+                .status,
+        )
     }
 }
 

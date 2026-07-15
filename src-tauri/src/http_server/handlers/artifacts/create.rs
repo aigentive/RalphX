@@ -1,10 +1,6 @@
 use super::*;
 use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
-use crate::application::plan_verification_service::{
-    request_plan_verification, PlanVerificationRequestSource,
-};
 use crate::application::NotificationContextResolver;
-use crate::domain::services::resolve_effective_gate_policy;
 
 pub async fn create_plan_artifact(
     State(state): State<HttpServerState>,
@@ -13,75 +9,60 @@ pub async fn create_plan_artifact(
     let session_id_str = req.session_id.clone();
     let title = req.title.clone();
     let content = req.content.clone();
-    let (
-        session_id,
-        created,
-        project_id,
-        session_title,
-        is_planning_flow,
-        should_auto_verify,
-        notification_session,
-    ) = state
-        .app_state
-        .db
-        .run_transaction(move |conn| {
-            let sid = IdeationSessionId::from_string(session_id_str);
+    let (session_id, created, project_id, session_title, is_planning_flow, notification_session) =
+        state
+            .app_state
+            .db
+            .run_transaction(move |conn| {
+                let sid = IdeationSessionId::from_string(session_id_str);
 
-            let session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
-                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
+                let session = SessionRepo::get_by_id_sync(conn, sid.as_str())?
+                    .ok_or_else(|| AppError::NotFound(format!("Session {} not found", sid)))?;
 
-            let is_planning_flow = session.session_flow == IdeationSessionFlow::Planning;
-            let settings =
-                crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync(
+                let is_planning_flow = session.session_flow == IdeationSessionFlow::Planning;
+                crate::http_server::helpers::assert_session_mutable(&session)?;
+
+                let bucket_id = ArtifactBucketId::from_string("prd-library");
+                let artifact = Artifact {
+                    id: ArtifactId::new(),
+                    artifact_type: ArtifactType::Specification,
+                    name: title,
+                    content: ArtifactContent::inline(&content),
+                    metadata: ArtifactMetadata::new("orchestrator").with_version(1),
+                    derived_from: vec![],
+                    bucket_id: Some(bucket_id),
+                    archived_at: None,
+                };
+
+                let created = if let Some(existing_plan_id) = &session.plan_artifact_id {
+                    let prev_id = existing_plan_id.as_str().to_string();
+                    ArtifactRepo::create_with_previous_version_sync(conn, artifact, &prev_id)?
+                } else {
+                    ArtifactRepo::create_sync(conn, artifact)?
+                };
+
+                SessionRepo::update_plan_artifact_id_sync(
                     conn,
+                    sid.as_str(),
+                    Some(created.id.as_str()),
                 )?;
-            let should_auto_verify =
-                resolve_effective_gate_policy(&settings, session.origin).auto_verify_plans;
+                SessionRepo::update_plan_version_last_read_sync(conn, sid.as_str(), 1)?;
 
-            crate::http_server::helpers::assert_session_mutable(&session)?;
-
-            let bucket_id = ArtifactBucketId::from_string("prd-library");
-            let artifact = Artifact {
-                id: ArtifactId::new(),
-                artifact_type: ArtifactType::Specification,
-                name: title,
-                content: ArtifactContent::inline(&content),
-                metadata: ArtifactMetadata::new("orchestrator").with_version(1),
-                derived_from: vec![],
-                bucket_id: Some(bucket_id),
-                archived_at: None,
-            };
-
-            let created = if let Some(existing_plan_id) = &session.plan_artifact_id {
-                let prev_id = existing_plan_id.as_str().to_string();
-                ArtifactRepo::create_with_previous_version_sync(conn, artifact, &prev_id)?
-            } else {
-                ArtifactRepo::create_sync(conn, artifact)?
-            };
-
-            SessionRepo::update_plan_artifact_id_sync(
-                conn,
-                sid.as_str(),
-                Some(created.id.as_str()),
-            )?;
-            SessionRepo::update_plan_version_last_read_sync(conn, sid.as_str(), 1)?;
-
-            let session_title = session.title.clone();
-            Ok((
-                sid,
-                created,
-                session.project_id.clone(),
-                session_title,
-                is_planning_flow,
-                should_auto_verify,
-                session,
-            ))
-        })
-        .await
-        .map_err(|e| {
-            error!("create_plan_artifact transaction failed: {}", e);
-            map_app_err(e)
-        })?;
+                let session_title = session.title.clone();
+                Ok((
+                    sid,
+                    created,
+                    session.project_id.clone(),
+                    session_title,
+                    is_planning_flow,
+                    session,
+                ))
+            })
+            .await
+            .map_err(|e| {
+                error!("create_plan_artifact transaction failed: {}", e);
+                map_app_err(e)
+            })?;
 
     if is_planning_flow {
         let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
@@ -147,20 +128,6 @@ pub async fn create_plan_artifact(
             }
         }),
     );
-
-    if should_auto_verify {
-        let chat_service = state
-            .app_state
-            .build_chat_service_with_execution_state(state.execution_state.clone());
-        request_plan_verification(
-            &state.app_state,
-            &chat_service,
-            &session_id,
-            PlanVerificationRequestSource::Automatic,
-        )
-        .await
-        .map_err(map_app_err)?;
-    }
 
     // Project lookup for webhook enrichment (non-fatal if not found)
     let project_name = state

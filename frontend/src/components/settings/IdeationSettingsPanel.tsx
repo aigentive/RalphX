@@ -257,8 +257,8 @@ export function IdeationSettingsPanel() {
         {/* Require verification before accepting proposals */}
         <CheckboxSettingRow
           id="auto-verify-plans"
-          label="Verify plans automatically"
-          description="Queue a visible Verify Plan turn in the active Plan conversation whenever the linked plan changes"
+          label="Verify automatically on acceptance"
+          description="When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting"
           checked={settings.autoVerifyPlans}
           disabled={isUpdating}
           onChange={handleAutoVerifyPlansChange}
@@ -302,8 +302,8 @@ export function IdeationSettingsPanel() {
             <div className="space-y-1 mt-1">
               <OverrideSelectRow
                 id="ext-override-auto-verify-plans"
-                label="Automatic plan verification"
-                description="Override automatic Verify Plan turns for external sessions"
+                label="Automatic verification on acceptance"
+                description="Override acceptance-triggered Verify Plan turns for external sessions"
                 value={settings.externalOverrides.autoVerifyPlans}
                 disabled={isUpdating}
                 onChange={(v) =>

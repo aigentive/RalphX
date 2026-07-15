@@ -3,8 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { backendApiUrl } from "./backend";
 import { ideationApi } from "./ideation";
 import {
-  ApiVerificationGapSchema,
-  ApiRoundSummarySchema,
   VerificationResponseSchema,
   CreateChildSessionResponseSchema,
 } from "./ideation.schemas";
@@ -898,143 +896,33 @@ describe("ideationApi.taskDependencies", () => {
 // Schema unit tests (no network/invoke required)
 // ============================================================================
 
-describe("ApiVerificationGapSchema", () => {
-  it("transforms why_it_matters → whyItMatters when present", () => {
-    const raw = {
-      severity: "high" as const,
-      category: "security",
-      description: "Missing auth check",
-      why_it_matters: "Allows unauthorized access",
-    };
-    const result = ApiVerificationGapSchema.parse(raw);
-    expect(result).toEqual({
-      severity: "high",
-      category: "security",
-      description: "Missing auth check",
-      whyItMatters: "Allows unauthorized access",
-    });
-  });
-
-  it("omits whyItMatters when why_it_matters is absent", () => {
-    const raw = {
-      severity: "medium" as const,
-      category: "performance",
-      description: "Slow query",
-    };
-    const result = ApiVerificationGapSchema.parse(raw);
-    expect(result).toEqual({
-      severity: "medium",
-      category: "performance",
-      description: "Slow query",
-    });
-    expect("whyItMatters" in result).toBe(false);
-  });
-
-  it("accepts all severity levels", () => {
-    for (const severity of ["critical", "high", "medium", "low"] as const) {
-      const result = ApiVerificationGapSchema.parse({
-        severity,
-        category: "test",
-        description: "desc",
-      });
-      expect(result.severity).toBe(severity);
-    }
-  });
-});
-
-describe("ApiRoundSummarySchema", () => {
-  it("transforms gap_score → gapScore and gap_count → gapCount", () => {
-    const raw = { round: 2, gap_score: 75, gap_count: 3 };
-    const result = ApiRoundSummarySchema.parse(raw);
-    expect(result).toEqual({ round: 2, gapScore: 75, gapCount: 3 });
-  });
-
-  it("preserves round number", () => {
-    const result = ApiRoundSummarySchema.parse({ round: 5, gap_score: 0, gap_count: 0 });
-    expect(result.round).toBe(5);
-  });
-});
-
 describe("VerificationResponseSchema", () => {
-  it("parses response with current_gaps and rounds arrays", () => {
+  it("parses the model-native action and exact-proof response", () => {
     const raw = {
       session_id: "session-1",
-      status: "reviewing",
+      status: "verifying",
       in_progress: true,
-      verification_generation: 1,
-      selected_generation: 1,
-      current_round: 1,
-      max_rounds: 3,
-      gap_score: 60,
-      current_gaps: [
-        { severity: "high", category: "security", description: "Missing auth" },
-      ],
-      rounds: [
-        { round: 1, gap_score: 60, gap_count: 1 },
-      ],
-      round_details: [
-        {
-          round: 1,
-          gap_score: 60,
-          gap_count: 1,
-          gaps: [{ severity: "high", category: "security", description: "Missing auth" }],
-        },
-      ],
+      plan_artifact_id: "plan-v2",
+      verified_plan_artifact_id: null,
+      agent_run_id: "run-1",
+      started_at: "2026-07-15T12:00:00Z",
+      completed_at: null,
+      error: null,
     };
     const result = VerificationResponseSchema.parse(raw);
-    expect(result.current_gaps).toEqual([
-      { severity: "high", category: "security", description: "Missing auth" },
-    ]);
-    expect(result.rounds).toEqual([{ round: 1, gapScore: 60, gapCount: 1 }]);
-    expect(result.round_details).toEqual([
-      {
-        round: 1,
-        gapScore: 60,
-        gapCount: 1,
-        gaps: [{ severity: "high", category: "security", description: "Missing auth" }],
-      },
-    ]);
+    expect(result.status).toBe("verifying");
+    expect(result.plan_artifact_id).toBe("plan-v2");
+    expect(result.agent_run_id).toBe("run-1");
   });
 
-  it("defaults current_gaps and rounds to [] when omitted", () => {
-    const raw = {
-      session_id: "session-1",
-      status: "unverified",
-      in_progress: false,
-      verification_generation: 0,
-      selected_generation: 0,
-    };
-    const result = VerificationResponseSchema.parse(raw);
-    expect(result.current_gaps).toEqual([]);
-    expect(result.rounds).toEqual([]);
-    expect(result.round_details).toEqual([]);
-  });
-
-  it("transforms why_it_matters in nested gaps", () => {
-    const raw = {
-      session_id: "session-1",
-      status: "needs_revision",
-      in_progress: false,
-      verification_generation: 3,
-      selected_generation: 3,
-      current_gaps: [
-        {
-          severity: "critical",
-          category: "arch",
-          description: "No error handling",
-          why_it_matters: "Will crash in prod",
-        },
-      ],
-      rounds: [],
-    };
-    const result = VerificationResponseSchema.parse(raw);
-    expect(result.current_gaps[0]).toEqual({
-      severity: "critical",
-      category: "arch",
-      description: "No error handling",
-      whyItMatters: "Will crash in prod",
-    });
-    expect(result.verification_generation).toBe(3);
+  it("rejects retired verifier payloads", () => {
+    expect(() =>
+      VerificationResponseSchema.parse({
+        session_id: "session-1",
+        status: "reviewing",
+        in_progress: true,
+      }),
+    ).toThrow();
   });
 });
 
@@ -1092,29 +980,14 @@ describe("ideationApi.verification", () => {
 
   const makeVerificationRaw = (overrides = {}) => ({
     session_id: "session-1",
-    status: "reviewing",
+    status: "verifying",
     in_progress: true,
-    verification_generation: 2,
-    selected_generation: 2,
-    current_round: 1,
-    max_rounds: 3,
-    gap_score: 80,
-    current_gaps: [
-      { severity: "high", category: "security", description: "Missing auth", why_it_matters: "Critical risk" },
-    ],
-    rounds: [
-      { round: 1, gap_score: 80, gap_count: 1 },
-    ],
-    round_details: [
-      {
-        round: 1,
-        gap_score: 80,
-        gap_count: 1,
-        gaps: [
-          { severity: "high", category: "security", description: "Missing auth", why_it_matters: "Critical risk" },
-        ],
-      },
-    ],
+    plan_artifact_id: "plan-v2",
+    verified_plan_artifact_id: null,
+    agent_run_id: "run-1",
+    started_at: "2026-07-15T12:00:00Z",
+    completed_at: null,
+    error: null,
     ...overrides,
   });
 
@@ -1131,22 +1004,11 @@ describe("ideationApi.verification", () => {
         backendApiUrl("ideation/sessions/session-1/verification")
       );
       expect(result.sessionId).toBe("session-1");
-      expect(result.status).toBe("reviewing");
+      expect(result.status).toBe("verifying");
       expect(result.inProgress).toBe(true);
-      expect(result.generation).toBe(2);
-      expect(result.gapScore).toBe(80);
-      expect(result.gaps).toEqual([
-        { severity: "high", category: "security", description: "Missing auth", whyItMatters: "Critical risk" },
-      ]);
-      expect(result.rounds).toEqual([{ round: 1, gapScore: 80, gapCount: 1 }]);
-      expect(result.roundDetails).toEqual([
-        {
-          round: 1,
-          gapScore: 80,
-          gapCount: 1,
-          gaps: [{ severity: "high", category: "security", description: "Missing auth", whyItMatters: "Critical risk" }],
-        },
-      ]);
+      expect(result.planArtifactId).toBe("plan-v2");
+      expect(result.verifiedPlanArtifactId).toBeNull();
+      expect(result.agentRunId).toBe("run-1");
     });
 
     it("throws when response is not ok", async () => {
@@ -1156,71 +1018,7 @@ describe("ideationApi.verification", () => {
       );
     });
   });
-
-  describe("skip", () => {
-    it("sends POST and returns transformed VerificationStatusResponse", async () => {
-      const raw = makeVerificationRaw({
-        status: "skipped",
-        in_progress: false,
-        convergence_reason: "user_skipped",
-        verification_generation: 4,
-      });
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(raw) });
-
-      const result = await ideationApi.verification.skip("session-1");
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        backendApiUrl("ideation/sessions/session-1/verification"),
-        expect.objectContaining({ method: "POST" })
-      );
-      expect(result.status).toBe("skipped");
-      expect(result.generation).toBe(4);
-      expect(result.convergenceReason).toBe("user_skipped");
-      expect(result.gaps).toHaveLength(1);
-      expect(result.rounds).toHaveLength(1);
-    });
-
-    it("throws when response is not ok", async () => {
-      mockFetch.mockResolvedValue({ ok: false, status: 500 });
-      await expect(ideationApi.verification.skip("session-1")).rejects.toThrow(
-        "Failed to skip verification: 500"
-      );
-    });
-  });
-
-  describe("revertAndSkip", () => {
-    it("sends POST to revert-and-skip endpoint and returns response", async () => {
-      const raw = makeVerificationRaw({
-        status: "skipped",
-        in_progress: false,
-        convergence_reason: "user_reverted",
-        verification_generation: 6,
-      });
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(raw) });
-
-      const result = await ideationApi.verification.revertAndSkip("session-1", "v2");
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        backendApiUrl("ideation/sessions/session-1/revert-and-skip"),
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({ plan_version_to_restore: "v2" }),
-        })
-      );
-      expect(result.sessionId).toBe("session-1");
-      expect(result.generation).toBe(6);
-      expect(result.convergenceReason).toBe("user_reverted");
-      expect(result.gaps).toHaveLength(1);
-      expect(result.rounds).toHaveLength(1);
-    });
-
-    it("throws when response is not ok", async () => {
-      mockFetch.mockResolvedValue({ ok: false, status: 422 });
-      await expect(
-        ideationApi.verification.revertAndSkip("session-1", "v2")
-      ).rejects.toThrow("Failed to revert and skip: 422");
-    });
-  });
+});
 
 describe("ideationApi.settings.update — payload regression", () => {
   beforeEach(() => {
@@ -1236,10 +1034,12 @@ describe("ideationApi.settings.update — payload regression", () => {
     require_accept_for_finalize: true,
     require_verification_for_accept: false,
     require_verification_for_proposals: false,
-    ext_require_verification_for_accept: null,
-    ext_auto_verify_plans: null,
-    ext_require_verification_for_proposals: null,
-    ext_require_accept_for_finalize: null,
+    external_overrides: {
+      auto_verify_plans: null,
+      require_verification_for_accept: null,
+      require_verification_for_proposals: null,
+      require_accept_for_finalize: null,
+    },
   };
 
   it("includes require_accept_for_finalize in the update payload (bug fix)", async () => {
@@ -1278,10 +1078,11 @@ describe("ideationApi.settings.update — payload regression", () => {
     expect(calledSettings).toHaveProperty("require_verification_for_accept", true);
     expect(calledSettings).toHaveProperty("auto_verify_plans", true);
     expect(calledSettings).toHaveProperty("require_verification_for_proposals", false);
-    expect(calledSettings).toHaveProperty("ext_require_verification_for_accept", 0);
-    expect(calledSettings).toHaveProperty("ext_auto_verify_plans", 0);
-    expect(calledSettings).toHaveProperty("ext_require_verification_for_proposals", null);
-    expect(calledSettings).toHaveProperty("ext_require_accept_for_finalize", null);
+    expect(calledSettings).toHaveProperty("external_overrides", {
+      auto_verify_plans: false,
+      require_verification_for_accept: false,
+      require_verification_for_proposals: null,
+      require_accept_for_finalize: null,
+    });
   });
-});
 });

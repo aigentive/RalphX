@@ -108,6 +108,8 @@ pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_verification_service;
+#[cfg(test)]
+mod plan_verification_service_tests;
 pub mod plan_ranking;
 pub(crate) mod plan_reference_import;
 pub mod pr_startup_recovery;

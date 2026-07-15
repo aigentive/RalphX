@@ -18,17 +18,15 @@ Session Created
       ▼
 Plan Created (artifacts.rs)
       │
-      ├─ (optional) Auto-Verification ─────────────── [spawns child verification session]
-      │
-      ▼
-Plan Verification Loop (ideation.rs:1164-1680)
-      │    Unverified → Verifying → Verified | Skipped | ImportedVerified
-      │
-      ├─ [External sessions only] Auto-Propose ────── [fire-and-forget, retry 3×]
+      ├─ Draft / Revise ───────────────────────────── [no automatic verification]
       │
       ▼
 ◉ BREAKPOINT — finalize_proposals() (ideation.rs:134)
       │    Requires explicit agent call to advance
+      │
+      ├─ [required + unverified + auto] Queue visible Verify Plan turn
+      │                                      │
+      │                                      └─ record exact proof, retry acceptance
       │
       ▼
 Proposals Applied → Tasks Created
@@ -94,9 +92,11 @@ Four independent creation paths, all emitting the same 3-layer event.
 }
 ```
 
-**Auto-verify cascade:** If effective policy enables auto verification, RalphX queues a typed
-`verify_plan` turn in the same Plan conversation. Capacity-deferred turns retain their action
-metadata and appear as queued until the active planning model reviews the current artifact.
+**Acceptance-bound verification:** Draft creation and revision do not queue verification. If
+acceptance requires exact proof and effective policy enables automatic verification, the first
+unverified acceptance attempt queues a typed `verify_plan` turn in the same Plan conversation and
+remains blocked. Capacity-deferred turns retain their action metadata; acceptance is retried after
+the active planning model records proof for the current artifact.
 
 **Autonomous:** Yes.
 

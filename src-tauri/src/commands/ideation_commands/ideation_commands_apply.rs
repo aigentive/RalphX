@@ -497,8 +497,9 @@ pub async fn apply_proposals_core(
         ));
     }
 
-    // Verification gate: block acceptance if plan is not verified (when enforcement is enabled).
-    // Resolve the effective policy once from (settings, session.origin) and pass to gate.
+    // Acceptance is the only automatic-verification boundary. Draft creation and
+    // revision stay uninterrupted; a required unverified plan queues one visible
+    // Verify Plan turn here and asks the caller to retry after proof is recorded.
     let ideation_settings = app_state
         .ideation_settings_repo
         .get_settings()
@@ -506,9 +507,14 @@ pub async fn apply_proposals_core(
         .map_err(|e| AppError::Database(format!("Failed to get ideation settings: {}", e)))?;
     let effective_policy =
         crate::domain::services::resolve_effective_gate_policy(&ideation_settings, session.origin);
-    if let Err(e) = crate::domain::services::check_verification_gate(&session, &effective_policy) {
-        return Err(AppError::Validation(e.to_string()));
-    }
+    let chat_service = app_state.build_chat_service_with_managed_execution_state();
+    crate::application::plan_verification_service::ensure_plan_verification_for_acceptance(
+        app_state,
+        &chat_service,
+        &session,
+        &effective_policy,
+    )
+    .await?;
 
     let proposal_ids: HashSet<TaskProposalId> = input
         .proposal_ids
@@ -782,6 +788,7 @@ pub async fn apply_proposals_core(
     let project_base_branch_tx = project.base_branch.clone();
     let project_name_tx = project.name.clone();
     let project_pr_eligible_tx = project.github_pr_enabled;
+    let require_verification_for_accept_tx = effective_policy.require_verification_for_accept;
     let proposals_tx = proposals_to_apply.clone();
     // Convert to String-keyed map so the closure is 'static
     let proposal_deps_tx: HashMap<String, Vec<String>> = proposal_deps
@@ -797,6 +804,32 @@ pub async fn apply_proposals_core(
     let tx_output = app_state
         .db
         .run_transaction(move |conn| {
+            if require_verification_for_accept_tx {
+                let (current_plan_id, verified_plan_id): (Option<String>, Option<String>) = conn
+                    .query_row(
+                        "SELECT plan_artifact_id, verified_plan_artifact_id
+                         FROM ideation_sessions
+                         WHERE id = ?1",
+                        [&session_id_str],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| {
+                        AppError::Database(format!(
+                            "Failed to recheck plan verification proof: {}",
+                            error
+                        ))
+                    })?;
+                let expected_plan_id = plan_artifact_id_tx.as_ref().map(ArtifactId::as_str);
+                if current_plan_id.as_deref() != expected_plan_id
+                    || verified_plan_id.as_deref() != current_plan_id.as_deref()
+                {
+                    return Err(AppError::Validation(
+                        "Plan changed or lost exact verification proof before acceptance; verify the current plan and accept again"
+                            .to_string(),
+                    ));
+                }
+            }
+
             // ----------------------------------------------------------------
             // (a) INSERT execution_plan
             // ----------------------------------------------------------------

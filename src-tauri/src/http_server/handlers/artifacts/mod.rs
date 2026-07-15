@@ -40,5 +40,5 @@ pub use update::update_plan_artifact;
 use events::emit_plan_update_events;
 use shared::{
     attach_plan_approval, finalize_plan_update, map_app_err, plan_approval_view_sync,
-    resolve_caller_session_id, PlanApprovalView,
+    resolve_artifact_mutation_authority, resolve_caller_session_id, PlanApprovalView,
 };

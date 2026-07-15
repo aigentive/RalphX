@@ -59,6 +59,7 @@ import {
 } from "./question-handler.js";
 import { handleRequestTeamPlan, RequestTeamPlanArgs } from "./team-plan-handler.js";
 import {
+  buildArtifactMutationTransportHeaders,
   hydrateRalphxRuntimeEnvFromCli,
   parseCliOptionFromArgs,
 } from "./runtime-context.js";
@@ -192,16 +193,6 @@ const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
-
-function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
-  if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
-    return undefined;
-  }
-
-  return {
-    "X-RalphX-Caller-Session-Id": RALPHX_CONTEXT_ID,
-  };
-}
 
 /**
  * Validate that a tool call's task_id parameter matches the assigned task
@@ -632,7 +623,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const artifactMutationArgs = { ...((args as Record<string, unknown>) ?? {}) };
       delete artifactMutationArgs.caller_session_id;
       result = await callTauri(name, artifactMutationArgs, {
-        headers: buildArtifactMutationTransportHeaders(),
+        headers: buildArtifactMutationTransportHeaders(runtimeContext),
       });
     } else if (name === "get_plan_verification") {
       const { session_id } = args as { session_id?: string };

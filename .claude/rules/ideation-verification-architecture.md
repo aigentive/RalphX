@@ -67,7 +67,7 @@ CTA / auto policy / external MCP
 
 | Setting | Default | Meaning |
 |---|---:|---|
-| `auto_verify_plans` | `false` | Queue Verify Plan whenever the authoritative plan artifact changes. |
+| `auto_verify_plans` | `false` | When verification is required, queue Verify Plan on an unverified acceptance attempt. Never trigger from drafting mutations. |
 | `require_verification_for_accept` | `false` | Reject acceptance unless proof matches the current artifact. |
 | External overrides | `null` | Inherit the base setting; session origin alone never forces verification. |
 

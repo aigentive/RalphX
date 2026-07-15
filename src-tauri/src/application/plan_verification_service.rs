@@ -8,7 +8,9 @@ use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRun, AgentRunActionKind, AgentRunStatus, ChatContextType,
     ChatConversationId, IdeationSession, IdeationSessionId,
 };
-use crate::domain::services::{QueueKey, QueuedMessage};
+use crate::domain::services::{
+    check_verification_gate, EffectiveGatePolicy, QueueKey, QueuedMessage,
+};
 use crate::error::{AppError, AppResult};
 
 const VERIFY_PLAN_PROMPT: &str = "Verify the current linked plan now. Re-read the linked draft and relevant repository evidence; challenge goal alignment, assumptions, integration coverage, state transitions, failure and rollback edges, proof obligations, and testing. Choose context-specific reasoning lenses or allowed general-purpose exploration delegates only when useful. Update the same linked plan if you find material gaps. When the resulting current draft is genuinely implementation-ready, call complete_plan_verification exactly once. Report what changed or why no material changes were needed. Do not approve or implement the plan.";
@@ -42,15 +44,33 @@ impl PlanVerificationRequestOutcome {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanVerificationStatusKind {
+    #[default]
     Unverified,
     Queued,
     Verifying,
     Verified,
     Failed,
     Cancelled,
+}
+
+impl PlanVerificationStatusKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unverified => "unverified",
+            Self::Queued => "queued",
+            Self::Verifying => "verifying",
+            Self::Verified => "verified",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub const fn is_in_progress(self) -> bool {
+        matches!(self, Self::Queued | Self::Verifying)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -325,6 +345,70 @@ pub async fn request_plan_verification<C: ChatService + ?Sized>(
         .await
         .map_err(|error| AppError::Infrastructure(error.to_string()))?;
     Ok(PlanVerificationRequestOutcome::Queued)
+}
+
+/// Enforce the exact-plan verification policy at the acceptance boundary.
+///
+/// When verification is required and automatic triggering is enabled, the first
+/// acceptance attempt queues the normal visible Verify Plan action and remains
+/// blocked. The caller retries acceptance after that action records exact proof.
+/// Draft creation and revision never call this path.
+///
+/// # Errors
+///
+/// Returns [`AppError::Validation`] while required proof is absent, including
+/// after a verification action is queued or already in progress. Infrastructure
+/// and persistence failures from verification request admission are propagated.
+pub async fn ensure_plan_verification_for_acceptance<C: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &C,
+    session: &IdeationSession,
+    policy: &EffectiveGatePolicy,
+) -> AppResult<()> {
+    let gate_error = match check_verification_gate(session, policy) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+
+    if !policy.auto_verify_plans {
+        return Err(AppError::Validation(gate_error.to_string()));
+    }
+
+    match request_plan_verification(
+        state,
+        chat_service,
+        &session.id,
+        PlanVerificationRequestSource::Automatic,
+    )
+    .await?
+    {
+        PlanVerificationRequestOutcome::Queued => Err(AppError::Validation(
+            "Plan verification was queued. Accept the plan again after verification completes."
+                .to_string(),
+        )),
+        PlanVerificationRequestOutcome::AlreadyQueued => Err(AppError::Validation(
+            "Plan verification is already queued. Accept the plan again after verification completes."
+                .to_string(),
+        )),
+        PlanVerificationRequestOutcome::AlreadyRunning => Err(AppError::Validation(
+            "Plan verification is in progress. Accept the plan again after verification completes."
+                .to_string(),
+        )),
+        PlanVerificationRequestOutcome::AlreadyVerified => {
+            let current = state
+                .ideation_session_repo
+                .get_by_id(&session.id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("Session {} not found", session.id))
+                })?;
+            check_verification_gate(&current, policy)
+                .map_err(|error| AppError::Validation(error.to_string()))
+        }
+        PlanVerificationRequestOutcome::NoPlan => {
+            Err(AppError::Validation(gate_error.to_string()))
+        }
+    }
 }
 
 pub async fn complete_plan_verification(

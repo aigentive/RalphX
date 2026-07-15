@@ -46,10 +46,10 @@ pub struct IdeationSettings {
     pub suggest_plans_for_complex: bool,
     /// Auto-link proposals to session plan when created
     pub auto_link_proposals: bool,
-    /// Automatically queue model-native plan verification after plan creation/versioning.
+    /// Queue model-native verification when required acceptance lacks exact proof.
     #[serde(default)]
     pub auto_verify_plans: bool,
-    /// If true, plans must be verified (or skipped) before accepting proposals
+    /// If true, the exact current plan must be verified before accepting proposals.
     #[serde(default)]
     pub require_verification_for_accept: bool,
     /// If true, plans must be verified (or skipped) before proposals can be created

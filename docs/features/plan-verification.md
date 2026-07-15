@@ -4,7 +4,7 @@ Verify Plan is an optional model-native review pass for a Plan-mode artifact. It
 
 ## Behavior
 
-1. The user, automatic policy, or external MCP triggers `Verify Plan`.
+1. The user, a verification-gated acceptance attempt, or external MCP triggers `Verify Plan`.
 2. RalphX queues a typed `verify_plan` turn in the active Plan conversation.
 3. The active model rereads the current plan and relevant repository context, chooses useful review lenses, and may use its normally allowed delegates.
 4. The model revises the existing linked plan when it finds actionable issues.
@@ -17,10 +17,12 @@ There is no separate verifier agent, fixed critic roster, hidden verification se
 
 | Setting | Default | Effect |
 |---|---:|---|
-| Auto-verify plans | Off | Automatically queues Verify Plan after the authoritative plan artifact changes. |
+| Auto-verify on acceptance | Off | When verification is required, the first unverified acceptance attempt queues Verify Plan and remains blocked until proof is recorded. |
 | Require verification before acceptance | Off | Blocks acceptance until proof matches the current plan artifact. |
 
 External sessions may override either setting. A null override inherits the global/project value. Being an external session does not itself force verification.
+
+Automatic verification is intentionally acceptance-bound. Creating or revising a draft never queues a review turn. If automatic triggering is on while the acceptance requirement is off, acceptance proceeds without a verification turn because verification is advisory.
 
 ## Exact-version proof
 
@@ -42,7 +44,7 @@ Only the live matching `verify_plan` agent run can record proof. Ordinary planni
 ## Entry points
 
 - Plan-mode `Verify Plan` CTA.
-- Automatic trigger when `auto_verify_plans` is enabled.
+- Required acceptance with `auto_verify_plans` enabled.
 - Internal MCP `get_plan_verification` and zero-argument `complete_plan_verification`.
 - External MCP `v1_trigger_plan_verification` and `v1_get_plan_verification`.
 

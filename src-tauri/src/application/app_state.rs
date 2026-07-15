@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
@@ -801,6 +801,16 @@ impl AppState {
 
     pub fn build_chat_service(&self) -> AppChatService {
         self.build_chat_service_for_runtime(None, self.app_handle.clone())
+    }
+
+    /// Build chat service with the app-managed execution halt state when available.
+    pub fn build_chat_service_with_managed_execution_state(&self) -> AppChatService {
+        let execution_state = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
+            .map(|state| state.inner().clone());
+        self.build_chat_service_for_runtime(execution_state, self.app_handle.clone())
     }
 
     pub fn build_chat_service_for_runtime<R: Runtime>(

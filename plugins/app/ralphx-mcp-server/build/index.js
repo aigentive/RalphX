@@ -24,7 +24,7 @@ import { FILESYSTEM_TOOL_NAMES, formatFilesystemToolError, handleFilesystemToolC
 import { permissionRequestTool, handlePermissionRequest, } from "./permission-handler.js";
 import { handleAskUserQuestion, handleProposePlanMode, } from "./question-handler.js";
 import { handleRequestTeamPlan } from "./team-plan-handler.js";
-import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
+import { buildArtifactMutationTransportHeaders, hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
@@ -139,14 +139,6 @@ const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
-function buildArtifactMutationTransportHeaders() {
-    if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
-        return undefined;
-    }
-    return {
-        "X-RalphX-Caller-Session-Id": RALPHX_CONTEXT_ID,
-    };
-}
 /**
  * Validate that a tool call's task_id parameter matches the assigned task
  * @param toolName - Name of the tool being called
@@ -530,7 +522,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const artifactMutationArgs = { ...(args ?? {}) };
             delete artifactMutationArgs.caller_session_id;
             result = await callTauri(name, artifactMutationArgs, {
-                headers: buildArtifactMutationTransportHeaders(),
+                headers: buildArtifactMutationTransportHeaders(runtimeContext),
             });
         }
         else if (name === "get_plan_verification") {

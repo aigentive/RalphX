@@ -1,6 +1,8 @@
 use super::*;
 use crate::domain::entities::ideation::{SessionOrigin, VerificationError};
-use crate::domain::entities::{ArtifactId, IdeationSession, IdeationSessionId, ProjectId};
+use crate::domain::entities::{
+    ArtifactId, IdeationSession, IdeationSessionId, ProjectId, VerificationStatus,
+};
 use crate::domain::ideation::config::{
     ExternalIdeationOverrides, IdeationPlanMode, IdeationSettings,
 };
@@ -54,6 +56,14 @@ fn advisory_verification_never_blocks_acceptance() {
     let settings = settings(false);
     let policy = resolve_effective_gate_policy(&settings, SessionOrigin::Internal);
     assert!(check_verification_gate(&session("plan-v2", None), &policy).is_ok());
+
+    let mut legacy_stuck = session("plan-v2", None);
+    legacy_stuck.verification_status = VerificationStatus::Reviewing;
+    legacy_stuck.verification_in_progress = true;
+    assert!(
+        check_verification_gate(&legacy_stuck, &policy).is_ok(),
+        "retired verifier state must not keep an advisory plan permanently frozen"
+    );
 }
 
 #[test]

@@ -34,7 +34,11 @@ import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
 import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
-import { ideationApi, toTaskProposal } from "@/api/ideation";
+import {
+  ideationApi,
+  toTaskProposal,
+  type VerificationStatusResponse,
+} from "@/api/ideation";
 import { tasksApi } from "@/api/tasks";
 import { verificationApi } from "@/api/verification";
 import {
@@ -80,14 +84,16 @@ import {
 import { ideationKeys } from "@/hooks/useIdeation";
 import { taskKeys, useTasks } from "@/hooks/useTasks";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
-import { verificationStatusKey } from "@/hooks/useVerificationStatus";
+import {
+  useVerificationStatus,
+  verificationStatusKey,
+} from "@/hooks/useVerificationStatus";
 import { useAutomationDetail } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import type { Artifact } from "@/types/artifact";
 import type {
   IdeationSession,
   TaskProposal,
-  VerificationStatus,
 } from "@/types/ideation";
 import type { Task } from "@/types/task";
 import {
@@ -1177,14 +1183,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? (attachedSessionId ?? "") : "",
   );
+  const verificationQuery = useVerificationStatus(
+    shouldLoadIdeationData &&
+      effectiveActiveTab === "plan" &&
+      planArtifactId
+      ? (attachedSessionId ?? undefined)
+      : undefined,
+  );
   const dependencyGraph =
     attachedSessionId && sessionData ? (dependencyQuery.data ?? null) : null;
-  const verificationState =
-    sessionData?.session.verificationStatus ??
-    "unverified";
-  const verificationInProgress =
-    sessionData?.session.verificationInProgress ??
-    false;
+  const verificationState = verificationQuery.data?.status ?? null;
+  const verificationInProgress = verificationQuery.data?.inProgress ?? false;
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
       queryClient.setQueryData(
@@ -1200,6 +1209,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           ["agents", "plan-approval", attachedSessionId],
           updatedPlan,
         );
+        void queryClient.invalidateQueries({
+          queryKey: verificationStatusKey(attachedSessionId),
+        });
       }
     },
     [attachedSessionId, queryClient],
@@ -1695,7 +1707,7 @@ type ArtifactContentProps = {
     taskId: string,
     contextType: AgentTaskRuntimeContextType
   ) => void;
-  verificationState: VerificationStatus | null;
+  verificationState: VerificationStatusResponse["status"] | null;
   verificationInProgress: boolean;
   onOpenReview: () => void;
   onOpenPublish: () => void;
@@ -1991,7 +2003,7 @@ function AgentPlanPanel({
   implementationTaskCounts: StatusCounts;
   hasImplementationAttempt: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
-  verificationState: VerificationStatus | null;
+  verificationState: VerificationStatusResponse["status"] | null;
   verificationInProgress: boolean;
   onConversationModeSwitched:
     | ((
@@ -2161,12 +2173,11 @@ function AgentPlanPanel({
     canShowPlanModeControls && !isImplementingPlanDirectly;
   const canShowManualPlanContinuationActions =
     canShowApprovedPlanActions && !isAutomationRunConversation;
-  const isPlanVerificationSatisfied =
-    verificationState === "verified" ||
-    verificationState === "imported_verified";
+  const isPlanVerificationSatisfied = verificationState === "verified";
   const canVerifyPlan =
     canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
+    verificationState !== null &&
     !isPlanVerificationSatisfied;
   const canCreateProposals =
     canShowManualPlanContinuationActions &&

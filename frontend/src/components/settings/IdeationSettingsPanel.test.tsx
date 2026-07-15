@@ -70,6 +70,12 @@ describe("IdeationSettingsPanel", () => {
       expect(screen.getByTestId("require-accept-for-finalize")).toBeInTheDocument();
       expect(screen.getByTestId("require-verification-for-accept")).toBeInTheDocument();
       expect(screen.getByTestId("auto-verify-plans")).toBeInTheDocument();
+      expect(screen.getByText("Verify automatically on acceptance")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "When verification is required, an acceptance attempt queues a visible Verify Plan turn instead of interrupting drafting",
+        ),
+      ).toBeInTheDocument();
     });
   });
 

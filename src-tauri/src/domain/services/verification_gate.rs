@@ -2,7 +2,7 @@ use crate::domain::entities::ideation::SessionOrigin;
 /// Verification gate — checks whether a session's plan is eligible for acceptance.
 ///
 /// Called from all 3 acceptance paths: Tauri IPC, internal MCP HTTP, external MCP.
-use crate::domain::entities::ideation::{VerificationError, VerificationStatus};
+use crate::domain::entities::ideation::VerificationError;
 use crate::domain::entities::IdeationSession;
 use crate::domain::ideation::config::IdeationSettings;
 
@@ -60,17 +60,6 @@ pub fn check_verification_gate(
     session: &IdeationSession,
     policy: &EffectiveGatePolicy,
 ) -> Result<(), VerificationError> {
-    // Advisory verification may bypass proof requirements, but an active verifier still owns the
-    // plan. Finalizing during that window can accept a version while its proof is being written.
-    if session.verification_in_progress
-        || session.verification_status == VerificationStatus::Reviewing
-    {
-        return Err(VerificationError::InProgress {
-            round: session.verification_current_round.unwrap_or(0),
-            max_rounds: session.verification_max_rounds.unwrap_or(0),
-        });
-    }
-
     if !policy.require_verification_for_accept {
         return Ok(());
     }

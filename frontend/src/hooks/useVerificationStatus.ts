@@ -5,9 +5,6 @@ import type { VerificationStatusResponse } from "@/api/ideation";
 export const verificationStatusKey = (sessionId: string) =>
   ["verification", sessionId] as const;
 
-export const verificationGenerationKey = (sessionId: string, generation: number) =>
-  ["verification", sessionId, generation] as const;
-
 export function useVerificationStatus(sessionId: string | undefined) {
   return useQuery<VerificationStatusResponse, Error>({
     queryKey: sessionId ? verificationStatusKey(sessionId) : ["verification", "none"],

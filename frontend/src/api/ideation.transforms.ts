@@ -262,9 +262,9 @@ export function transformIdeationSettings(raw: IdeationSettingsResponse): Ideati
     requireAcceptForFinalize: raw.require_accept_for_finalize,
     requireVerificationForAccept: raw.require_verification_for_accept,
     externalOverrides: {
-      autoVerifyPlans: transformNullableBool(raw.ext_auto_verify_plans),
-      requireVerificationForAccept: transformNullableBool(raw.ext_require_verification_for_accept),
-      requireAcceptForFinalize: transformNullableBool(raw.ext_require_accept_for_finalize),
+      autoVerifyPlans: raw.external_overrides.auto_verify_plans,
+      requireVerificationForAccept: raw.external_overrides.require_verification_for_accept,
+      requireAcceptForFinalize: raw.external_overrides.require_accept_for_finalize,
     },
   };
 }

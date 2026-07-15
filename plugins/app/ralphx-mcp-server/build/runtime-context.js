@@ -66,4 +66,15 @@ export function hydrateRalphxRuntimeEnvFromCli(args, env = process.env) {
     }
     return context;
 }
+export function buildArtifactMutationTransportHeaders(context) {
+    const headers = {};
+    if (context.contextType === "ideation" && context.contextId) {
+        headers["X-RalphX-Caller-Session-Id"] = context.contextId;
+    }
+    if (context.agentRunId && context.conversationId) {
+        headers["x-ralphx-agent-run-id"] = context.agentRunId;
+        headers["x-ralphx-conversation-id"] = context.conversationId;
+    }
+    return Object.keys(headers).length > 0 ? headers : undefined;
+}
 //# sourceMappingURL=runtime-context.js.map
