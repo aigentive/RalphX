@@ -30,6 +30,7 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         provider_profile: None,
         agent_mode: None,
         persona_id: None,
+        builder_draft_id: None,
         coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,
@@ -86,8 +87,21 @@ async fn update_persona_binding_sets_and_clears() {
 async fn persona_id_round_trips_through_all_select_paths() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO personas (
+                 id, slug, name, content, status, content_hash, created_at, updated_at
+             ) VALUES (
+                 'draft-select-paths', 'draft-select-paths', 'Draft', 'content', 'draft',
+                 'hash', '2026-07-15T10:00:00Z', '2026-07-15T10:00:00Z'
+             )",
+            [],
+        )
+        .expect("draft fixture");
+    });
     let mut conversation = make_conversation(ChatContextType::Project, "project-persona-selects");
     conversation.persona_id = Some("persona-select-paths".to_string());
+    conversation.builder_draft_id = Some("draft-select-paths".to_string());
     conversation.automation_id = Some(AutomationId::from_string("automation-persona-selects"));
     conversation.claude_session_id = Some("claude-persona-selects".to_string());
     repo.create(conversation.clone()).await.unwrap();
@@ -141,7 +155,56 @@ async fn persona_id_round_trips_through_all_select_paths() {
 
     for selected in checks {
         assert_eq!(selected.persona_id.as_deref(), Some("persona-select-paths"));
+        assert_eq!(
+            selected.builder_draft_id.as_deref(),
+            Some("draft-select-paths")
+        );
     }
+}
+
+#[tokio::test]
+async fn update_builder_draft_binding_sets_and_clears() {
+    let db = setup_test_db();
+    let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO personas (
+                 id, slug, name, content, status, content_hash, created_at, updated_at
+             ) VALUES (
+                 'draft-1', 'draft-1', 'Draft', 'content', 'draft', 'hash',
+                 '2026-07-15T10:00:00Z', '2026-07-15T10:00:00Z'
+             )",
+            [],
+        )
+        .expect("draft fixture");
+    });
+    let conversation = make_conversation(ChatContextType::Project, "project-draft-binding");
+    repo.create(conversation.clone()).await.unwrap();
+
+    repo.update_builder_draft_binding(&conversation.id, Some("draft-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id
+            .as_deref(),
+        Some("draft-1")
+    );
+
+    repo.update_builder_draft_binding(&conversation.id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .builder_draft_id,
+        None
+    );
 }
 
 #[tokio::test]
@@ -228,6 +291,7 @@ async fn test_create_preserves_optional_fields() {
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
         persona_id: None,
+        builder_draft_id: None,
         coordination_mode: CoordinationMode::RxNativeTeam,
         automation_id: None,
         automation_run_id: None,
@@ -732,6 +796,7 @@ async fn test_clear_claude_session_id() {
         provider_profile: None,
         agent_mode: None,
         persona_id: None,
+        builder_draft_id: None,
         coordination_mode: CoordinationMode::Solo,
         automation_id: None,
         automation_run_id: None,

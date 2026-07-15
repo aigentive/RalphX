@@ -6,7 +6,9 @@ use ralphx_domain::personas::validation::compute_content_hash;
 
 use super::{PersonaService, SavePersonaDraftInput, PERSONA_UNAVAILABLE_PREFIX};
 use crate::application::AppState;
-use crate::domain::entities::{ChatConversation, IdeationSessionId, PersonaId, PersonaStatus};
+use crate::domain::entities::{
+    ChatConversation, ChatConversationId, IdeationSessionId, PersonaId, PersonaStatus,
+};
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{
     sqlite_chat_conversation_repo::clear_persona_bindings_sync,
@@ -48,7 +50,88 @@ fn draft_input(slug: &str, body: &str) -> SavePersonaDraftInput {
         slug: slug.to_string(),
         content: persona_content(slug, body),
         source_session_id: Some("source-session".to_string()),
+        source_persona_id: None,
+        source_content_hash: None,
     }
+}
+
+#[tokio::test]
+async fn bound_draft_creation_rolls_back_when_the_conversation_is_missing() {
+    let db = SqliteTestDb::new("bound_draft_creation_rollback");
+    let service = sqlite_service(&db);
+
+    let error = service
+        .create_bound_draft(
+            true,
+            &ChatConversationId::from_string("missing-conversation".to_string()),
+            draft_input("transactional-draft", "Must roll back"),
+        )
+        .await
+        .expect_err("binding failure must roll back the inserted draft");
+
+    assert!(matches!(error, AppError::NotFound(_)));
+    assert!(service.list_personas(true).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn seeded_update_draft_can_share_source_slug_and_preserves_provenance() {
+    let service = memory_service();
+    let source_id = create_active(&service, "shared-persona").await;
+    let source = service
+        .get_persona(true, &source_id)
+        .await
+        .expect("source persona");
+    let input = SavePersonaDraftInput {
+        slug: source.slug.clone(),
+        content: persona_content(&source.slug, "Seeded update"),
+        source_session_id: Some("builder-conversation".to_string()),
+        source_persona_id: Some(source.id.clone()),
+        source_content_hash: Some(source.content_hash.clone()),
+    };
+
+    let draft = service
+        .create_draft(true, input)
+        .await
+        .expect("seeded draft may share source slug");
+
+    assert_eq!(draft.source_persona_id.as_ref(), Some(&source.id));
+    assert_eq!(
+        draft.source_content_hash.as_deref(),
+        Some(source.content_hash.as_str())
+    );
+}
+
+#[tokio::test]
+async fn approve_fails_closed_when_another_active_persona_owns_the_slug() {
+    let service = memory_service();
+    let draft = service
+        .create_draft(true, draft_input("approval-collision", "Waiting draft"))
+        .await
+        .expect("draft should create before the active-slug race");
+    let mut active_owner = draft.clone();
+    active_owner.id = PersonaId::new();
+    active_owner.status = PersonaStatus::Active;
+    service
+        .persona_repo
+        .create(active_owner)
+        .await
+        .expect("repository fixture should simulate another activation after draft creation");
+
+    let error = service
+        .approve_persona(true, &draft.id)
+        .await
+        .expect_err("active slug collision must block approval");
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("approval-collision"))
+    );
+    assert_eq!(
+        service
+            .get_draft(true, &draft.id)
+            .await
+            .expect("draft remains authoritative")
+            .status,
+        PersonaStatus::Draft
+    );
 }
 
 async fn create_active(service: &PersonaService, slug: &str) -> PersonaId {
@@ -371,6 +454,8 @@ async fn all_lifecycle_entry_points_fail_closed_when_flag_off() {
     assert_disabled(service.update_draft(false, &id, &content).await);
     assert_disabled(service.get_draft(false, &id).await);
     assert_disabled(service.approve_persona(false, &id).await);
+    assert_disabled(service.reseed_persona_draft(false, &id).await);
+    assert_disabled(service.approve_persona_as_new(false, &id, None).await);
     assert_disabled(service.update_persona(false, &id, &content).await);
     assert_disabled(service.archive_persona(false, &id).await);
     assert_disabled(service.hard_delete_draft(false, &id).await);
