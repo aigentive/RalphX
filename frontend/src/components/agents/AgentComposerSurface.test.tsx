@@ -281,11 +281,17 @@ describe("AgentComposerSurface", () => {
     });
 
     fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
 
     const selectedModel = screen.getByTestId(
       "agent-composer-runtime-model-gpt-5.5",
     );
-    const runtimePopover = selectedModel.closest("[data-side='top']");
+    const runtimePopover = selectedModel.closest("[data-side]");
 
     expect(runtimePopover).toHaveClass(
       "max-h-[var(--radix-popover-content-available-height)]",
@@ -319,6 +325,457 @@ describe("AgentComposerSurface", () => {
       screen.getByText("Fast mode is not available for gpt-5.4-mini."),
     ).toBeInTheDocument();
     expect(screen.getByTestId("composer-codex-fast-mode")).toBeDisabled();
+  });
+
+  it("opens the runtime selector on Quick effort controls with catalog detail copy", () => {
+    renderComposer({
+      effort: {
+        value: "high",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "low", label: "Low", description: "Fastest responses." },
+          { id: "high", label: "High", description: "Greater depth." },
+          { id: "max", label: "Maximum", description: "Deepest reasoning." },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    expect(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Effort" })).toHaveAttribute(
+      "aria-valuetext",
+      "High",
+    );
+    expect(screen.getByText("Greater depth.")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-gpt-5.5"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("replaces Quick with Advanced and opens its peer rows on hover", () => {
+    const onModelChange = vi.fn();
+    const onEffortChange = vi.fn();
+    const onFastModeChange = vi.fn();
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: onModelChange,
+        options: [
+          { id: "gpt-5.5", label: "gpt-5.5", description: "Frontier model." },
+          { id: "gpt-5.4", label: "gpt-5.4", description: "Strong model." },
+        ],
+        fastMode: {
+          visible: true,
+          value: false,
+          onValueChange: onFastModeChange,
+          description: "1.5x speed, more usage.",
+        },
+      },
+      effort: {
+        value: "high",
+        onValueChange: onEffortChange,
+        options: [
+          { id: "low", label: "Low", description: "Lower latency." },
+          { id: "high", label: "High", description: "Greater depth." },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+
+    expect(
+      screen.queryByTestId("agent-composer-runtime-quick"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Providers & models")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Provider,/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Effort,/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Speed,/ })).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-gpt-5.4"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Back to/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-provider-submenu"),
+    ).toBeInTheDocument();
+
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Model,/ }));
+
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-submenu"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByTestId("agent-composer-runtime-model-gpt-5.4"),
+    );
+
+    expect(onModelChange).toHaveBeenCalledWith("gpt-5.4");
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-submenu"),
+    ).toBeInTheDocument();
+
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Effort,/ }));
+
+    expect(
+      screen.getByTestId("agent-composer-runtime-effort-submenu"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("slider", { name: "Effort" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Lower latency.")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-effort-low"));
+    expect(onEffortChange).toHaveBeenCalledWith("low");
+    expect(
+      screen.queryByRole("button", { name: /^Back to/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Speed,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-speed-submenu"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-speed-fast"));
+    expect(onFastModeChange).toHaveBeenCalledWith(true);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced, switch to Quick runtime settings",
+      }),
+    );
+    expect(screen.getByTestId("agent-composer-runtime-quick")).toBeInTheDocument();
+  });
+
+  it("shows only the regular provider settings action in Advanced", () => {
+    renderComposer({
+      provider: {
+        value: "codex",
+        onValueChange: vi.fn(),
+        options: [{ id: "codex", label: "Codex" }],
+        footerAction: <button type="button">Open Provider Settings</button>,
+        compactFooterAction: (
+          <button type="button" aria-label="Compact Provider Settings" />
+        ),
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+
+    expect(
+      screen.getByRole("button", { name: "Open Provider Settings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Compact Provider Settings" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses a controlled icon-only Fast mode toggle in Quick view", () => {
+    const onFastModeChange = vi.fn();
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+        fastMode: {
+          visible: true,
+          value: false,
+          onValueChange: onFastModeChange,
+          description: "Uses priority processing when available.",
+          testId: "composer-codex-fast-mode",
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const fastToggle = screen.getByTestId("composer-codex-fast-mode");
+
+    expect(fastToggle).toHaveAccessibleName("Turn Fast mode on");
+    expect(fastToggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(fastToggle);
+    expect(onFastModeChange).toHaveBeenCalledWith(true);
+  });
+
+  it("commits only option-backed effort values from slider keyboard actions", () => {
+    const onEffortChange = vi.fn();
+    renderComposer({
+      effort: {
+        value: "medium",
+        onValueChange: onEffortChange,
+        options: [
+          { id: "quick", label: "Quick" },
+          { id: "medium", label: "Balanced" },
+          { id: "deep", label: "Deep" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const effortSlider = screen.getByRole("slider", { name: "Effort" });
+    fireEvent.keyDown(effortSlider, { key: "ArrowRight" });
+    fireEvent.keyDown(effortSlider, { key: "Home" });
+
+    expect(onEffortChange.mock.calls).toEqual([["deep"], ["quick"]]);
+  });
+
+  it("previews disabled providers without mutating runtime or exposing effort controls", () => {
+    const onProviderChange = vi.fn();
+    renderComposer({
+      provider: {
+        value: "codex",
+        onValueChange: onProviderChange,
+        options: [
+          { id: "codex", label: "Codex" },
+          { id: "claude", label: "Claude", disabled: true },
+        ],
+        footerAction: <button type="button">Open provider Settings</button>,
+      },
+      effort: {
+        value: "high",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.pointerMove(screen.getByRole("button", { name: /^Provider,/ }));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
+
+    expect(onProviderChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Claude is not enabled")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Effort/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens from the composer-scoped shortcut and resets to Quick after closing", () => {
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "gpt-5.5", label: "gpt-5.5" },
+          { id: "gpt-5.4", label: "gpt-5.4" },
+        ],
+      },
+    });
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: "M", ctrlKey: true, shiftKey: true });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-gpt-5.4"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    expect(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-gpt-5.4"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses Back-based nested drill-ins only at the compact composer breakpoint", () => {
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const width = this.classList.contains("agent-composer-surface") ? 600 : 0;
+        return {
+          x: 0,
+          y: 0,
+          width,
+          height: 0,
+          top: 0,
+          right: width,
+          bottom: 0,
+          left: 0,
+          toJSON: () => ({}),
+        };
+      });
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "gpt-5.5", label: "gpt-5.5" },
+          { id: "gpt-5.4", label: "gpt-5.4" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+
+    expect(screen.getByTestId("agent-composer-runtime-advanced")).toHaveAttribute(
+      "data-layout",
+      "drill-in",
+    );
+    expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-gpt-5.4"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
+
+    expect(
+      screen.getByTestId("agent-composer-runtime-model-gpt-5.4"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Advanced runtime settings" }),
+    );
+    expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
+    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-effort-submenu"), {
+      key: "Escape",
+    });
+    expect(screen.getByRole("button", { name: /^Model,/ })).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced, switch to Quick runtime settings",
+      }),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    ).toBeInTheDocument();
+    rectSpy.mockRestore();
+  });
+
+  it("dismisses a wide child flyout before Advanced and the root selector", () => {
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "gpt-5.5", label: "gpt-5.5" },
+          { id: "gpt-5.4", label: "gpt-5.4" },
+        ],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
+    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-model-submenu"), {
+      key: "Escape",
+    });
+
+    expect(screen.getByTestId("agent-composer-runtime-advanced")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-model-submenu"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-advanced"), {
+      key: "Escape",
+    });
+
+    expect(screen.getByTestId("agent-composer-runtime-quick")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-composer-runtime-advanced"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByTestId("agent-composer-runtime-quick"), {
+      key: "Escape",
+    });
+    expect(
+      screen.queryByTestId("agent-composer-runtime-quick"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits an empty Quick scale and explains the empty Advanced effort state", () => {
+    renderComposer({
+      effort: {
+        value: "",
+        onValueChange: vi.fn(),
+        options: [],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    expect(screen.queryByRole("slider", { name: "Effort" })).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Effort,/ }));
+    expect(
+      screen.getByText("No effort options for this model"),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves custom model entry through the existing model callback", () => {
+    const onModelChange = vi.fn();
+    renderComposer({
+      model: {
+        value: "gpt-5.5",
+        onValueChange: onModelChange,
+        options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
+        allowCustomValue: true,
+        customPlaceholder: "Custom model ID",
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Advanced provider and model settings",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Model,/ }));
+    fireEvent.change(screen.getByPlaceholderText("Custom model ID"), {
+      target: { value: "future-model" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use" }));
+
+    expect(onModelChange).toHaveBeenCalledWith("future-model");
+    expect(screen.getByTestId("agent-composer-runtime-advanced")).toBeInTheDocument();
   });
 
   it("filters and selects projects from the compact project line", () => {
