@@ -1,10 +1,10 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 use crate::application::persona_ingest::{
-    ingest_picked_root, persona_builder_ingest_session_is_live, persona_ingest_conversation_path,
+    ingest_picked_roots, persona_builder_ingest_session_is_live, persona_ingest_conversation_path,
     persona_ingest_storage_path, PersonaIngestManifest,
 };
 use crate::application::personas::PERSONA_FEATURE_DISABLED_PREFIX;
@@ -25,7 +25,7 @@ pub struct CreatePersonaBuilderConversationInput {
 #[serde(rename_all = "camelCase")]
 pub struct IngestPersonaContextInput {
     pub conversation_id: String,
-    pub picked_path: String,
+    pub picked_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,8 +143,12 @@ pub async fn ingest_persona_context_for_state(
 
     let storage_root = persona_ingest_storage_path(app_data_dir);
     let destination_root = persona_ingest_conversation_path(&storage_root, &input.conversation_id);
-    ingest_picked_root(Path::new(&input.picked_path), &destination_root)
-        .map_err(|error| error.to_string())
+    let picked_paths = input
+        .picked_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    ingest_picked_roots(&picked_paths, &destination_root).map_err(|error| error.to_string())
 }
 
 #[doc(hidden)]

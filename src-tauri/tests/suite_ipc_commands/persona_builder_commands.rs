@@ -77,10 +77,7 @@ fn persona_builder_command_input_uses_camel_case_project_id() {
     )
     .expect("camelCase ingestion input should deserialize");
     assert_eq!(ingest.conversation_id, "conversation-persona-builder-input");
-    assert_eq!(
-        ingest.picked_paths,
-        ["/tmp/context.md", "/tmp/context-dir"]
-    );
+    assert_eq!(ingest.picked_paths, ["/tmp/context.md", "/tmp/context-dir"]);
 
     let status: PersonaBuilderIngestStatusInput =
         serde_json::from_str(r#"{"conversationId":"conversation-persona-builder-input"}"#)
@@ -275,11 +272,7 @@ async fn ingest_command_maps_absent_persona_builder_conversation_to_not_found() 
     let error = ingest_persona_context_for_state(
         IngestPersonaContextInput {
             conversation_id: "missing-persona-builder".to_string(),
-            picked_paths: vec![temp
-                .path()
-                .join("context.md")
-                .to_string_lossy()
-                .to_string()],
+            picked_paths: vec![temp.path().join("context.md").to_string_lossy().to_string()],
         },
         &state,
         true,

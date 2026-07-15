@@ -65,24 +65,20 @@ fn stored_content_files(destination: &Path) -> Vec<PathBuf> {
 fn rejects_parent_dir_entries() {
     let temp = temp_dir();
     let destination = fixture_path(temp.path(), "destination");
-    assert!(build_persona_ingest_file_path(
-        &destination,
-        temp.path(),
-        Path::new("../escape.txt")
-    )
-    .is_err());
+    assert!(
+        build_persona_ingest_file_path(&destination, temp.path(), Path::new("../escape.txt"))
+            .is_err()
+    );
 }
 
 #[test]
 fn rejects_absolute_path_entries() {
     let temp = temp_dir();
     let destination = fixture_path(temp.path(), "destination");
-    assert!(build_persona_ingest_file_path(
-        &destination,
-        temp.path(),
-        Path::new("/escape.txt")
-    )
-    .is_err());
+    assert!(
+        build_persona_ingest_file_path(&destination, temp.path(), Path::new("/escape.txt"))
+            .is_err()
+    );
 }
 
 #[cfg(unix)]
@@ -154,12 +150,19 @@ fn copies_extensionless_and_unknown_extension_utf8_files() {
     let source = fixture_path(temp.path(), "source");
     let destination = fixture_path(temp.path(), "destination");
     write_fixture(&source, "STYLEGUIDE", b"Concise and direct.\n");
-    write_fixture(&source, "persona.custom-format", b"Use terse review notes.\n");
+    write_fixture(
+        &source,
+        "persona.custom-format",
+        b"Use terse review notes.\n",
+    );
 
     let manifest = ingest_fixture(&source, &destination);
 
     assert_eq!(manifest.copied.len(), 2);
-    assert!(manifest.copied.iter().any(|entry| entry.path == "STYLEGUIDE"));
+    assert!(manifest
+        .copied
+        .iter()
+        .any(|entry| entry.path == "STYLEGUIDE"));
     assert!(manifest
         .copied
         .iter()
@@ -362,15 +365,13 @@ fn batch_ingests_files_and_directories_and_rejects_vanished_entries_by_basename(
     fs::write(&picked_file, b"single").expect("single file");
     write_fixture(&picked_dir, "nested.md", b"nested");
 
-    let manifest = ingest_picked_roots(
-        &[picked_file, picked_dir, missing.clone()],
-        &destination,
-    )
-    .expect("valid batch entries should continue after a vanished path");
+    let manifest = ingest_picked_roots(&[picked_file, picked_dir, missing.clone()], &destination)
+        .expect("valid batch entries should continue after a vanished path");
 
     assert_eq!(manifest.copied.len(), 2);
     assert!(manifest.rejected.iter().any(|entry| {
-        entry.path == "vanished.secret.md" && !entry.path.contains(temp.path().to_string_lossy().as_ref())
+        entry.path == "vanished.secret.md"
+            && !entry.path.contains(temp.path().to_string_lossy().as_ref())
     }));
 }
 
@@ -403,7 +404,7 @@ fn same_name_sources_use_distinct_destinations_and_repicks_refresh_in_place() {
     assert_eq!(refreshed.copied[0].reason.as_deref(), Some("updated"));
     assert_eq!(stored_content_files(&destination).len(), 2);
     assert!(stored_content_files(&destination).iter().any(|path| {
-        fs::read_to_string(path).as_deref() == Ok("alpha revised")
+        fs::read_to_string(path).is_ok_and(|contents| contents == "alpha revised")
     }));
 }
 
@@ -423,16 +424,26 @@ fn repeat_ingests_merge_manifest_and_seed_cumulative_file_usage() {
     let second_batch = ingest_picked_roots(&[second], &destination).expect("second ingest");
 
     assert_eq!(second_batch.copied.len(), 1);
-    assert!(second_batch.skipped.iter().any(|entry| {
-        entry.reason.as_deref() == Some("file count exceeds ingest limit")
-    }));
-    assert_eq!(stored_content_files(&destination).len(), MAX_INGEST_FILES as usize);
+    assert!(second_batch
+        .skipped
+        .iter()
+        .any(|entry| { entry.reason.as_deref() == Some("file count exceeds ingest limit") }));
+    assert_eq!(
+        stored_content_files(&destination).len(),
+        MAX_INGEST_FILES as usize
+    );
     let persisted: PersonaIngestManifest = serde_json::from_slice(
         &fs::read(destination.join("manifest.json")).expect("cumulative manifest"),
     )
     .expect("valid cumulative manifest");
-    assert!(persisted.copied.iter().any(|entry| entry.path == "first-0.txt"));
-    assert!(persisted.copied.iter().any(|entry| entry.path == "allowed.txt"));
+    assert!(persisted
+        .copied
+        .iter()
+        .any(|entry| entry.path == "first-0.txt"));
+    assert!(persisted
+        .copied
+        .iter()
+        .any(|entry| entry.path == "allowed.txt"));
 }
 
 #[test]
@@ -454,10 +465,14 @@ fn batch_and_repeat_ingests_enforce_cumulative_total_bytes_without_repick_drift(
 
     let batch = ingest_picked_roots(&[first.clone(), second, third], &destination)
         .expect("three-root batch");
-    assert_eq!(batch.copied.len(), (MAX_INGEST_TOTAL_BYTES / MAX_INGEST_FILE_BYTES) as usize);
-    assert!(batch.skipped.iter().any(|entry| {
-        entry.reason.as_deref() == Some("total byte limit exceeded")
-    }));
+    assert_eq!(
+        batch.copied.len(),
+        (MAX_INGEST_TOTAL_BYTES / MAX_INGEST_FILE_BYTES) as usize
+    );
+    assert!(batch
+        .skipped
+        .iter()
+        .any(|entry| { entry.reason.as_deref() == Some("total byte limit exceeded") }));
 
     let repick = ingest_picked_roots(&[first], &destination).expect("idempotent re-pick");
     assert_eq!(repick.copied.len(), 11);

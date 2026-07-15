@@ -86,8 +86,7 @@ fn prepare_picked_root(picked_root: &Path) -> Result<PreparedPickedRoot, &'stati
     )
     .map_err(|_| "picked path must be absolute and traversal-free")?;
     // codeql[rust/path-injection]
-    let metadata = fs::symlink_metadata(&picked_path)
-        .map_err(|_| "picked path is unavailable")?;
+    let metadata = fs::symlink_metadata(&picked_path).map_err(|_| "picked path is unavailable")?;
     if metadata.file_type().is_symlink() {
         return Err("picked path must not be a symlink");
     }
@@ -172,7 +171,12 @@ fn load_manifest(destination_root: &Path) -> AppResult<PersonaIngestManifest> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(PersonaIngestManifest::default())
         }
-        Err(error) => return Err(filesystem_error("inspect the app-owned ingest manifest", error)),
+        Err(error) => {
+            return Err(filesystem_error(
+                "inspect the app-owned ingest manifest",
+                error,
+            ))
+        }
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(AppError::Validation(
@@ -187,10 +191,7 @@ fn load_manifest(destination_root: &Path) -> AppResult<PersonaIngestManifest> {
     })
 }
 
-fn merge_manifest(
-    cumulative: &mut PersonaIngestManifest,
-    batch: &PersonaIngestManifest,
-) {
+fn merge_manifest(cumulative: &mut PersonaIngestManifest, batch: &PersonaIngestManifest) {
     merge_entries(&mut cumulative.copied, &batch.copied);
     merge_entries(&mut cumulative.skipped, &batch.skipped);
     merge_entries(&mut cumulative.rejected, &batch.rejected);
@@ -198,7 +199,9 @@ fn merge_manifest(
 
 fn merge_entries(cumulative: &mut Vec<PersonaIngestEntry>, batch: &[PersonaIngestEntry]) {
     let mut counts = cumulative.iter().fold(HashMap::new(), |mut counts, entry| {
-        *counts.entry((entry.path.clone(), entry.reason.clone())).or_insert(0usize) += 1;
+        *counts
+            .entry((entry.path.clone(), entry.reason.clone()))
+            .or_insert(0usize) += 1;
         counts
     });
     let mut batch_counts = HashMap::new();
