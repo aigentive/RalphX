@@ -3095,6 +3095,79 @@ async fn test_apply_proposals_core_blocks_stale_proof_without_creating_kanban_st
 }
 
 #[tokio::test]
+async fn test_apply_proposals_core_blocks_unverified_all_foreign_acceptance() {
+    use ralphx_lib::domain::entities::{
+        IdeationSession, Priority, Project, ProposalCategory, TaskProposal,
+    };
+
+    let state = setup_apply_test_state();
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Foreign-only source".to_string(),
+            "/tmp/foreign-only-source".to_string(),
+        ))
+        .await
+        .expect("project should be created");
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .expect("session should be created");
+    state
+        .ideation_session_repo
+        .update_plan_artifact_id(&session.id, Some("plan-current".to_string()))
+        .await
+        .expect("plan should be linked");
+    let mut proposal = TaskProposal::new(
+        session.id.clone(),
+        "Foreign proposal".to_string(),
+        ProposalCategory::Feature,
+        Priority::Medium,
+    );
+    proposal.target_project = Some("/tmp/another-project".to_string());
+    let proposal = state
+        .task_proposal_repo
+        .create(proposal)
+        .await
+        .expect("proposal should be created");
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("settings should load");
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("settings should update");
+
+    let error = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: vec![proposal.id.as_str().to_string()],
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect_err("required verification must also gate all-foreign acceptance");
+
+    assert!(error.to_string().contains("must be verified"));
+    let persisted = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session read should succeed")
+        .expect("session should exist");
+    assert_eq!(persisted.status, IdeationSessionStatus::Active);
+}
+
+#[tokio::test]
 async fn test_apply_proposals_core_rejects_inactive_session() {
     use ralphx_lib::error::AppError;
 

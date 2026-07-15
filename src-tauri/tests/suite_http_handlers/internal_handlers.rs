@@ -786,6 +786,70 @@ async fn test_all_foreign_finalize_blocks_active_verification_when_accept_gate_d
 }
 
 #[tokio::test]
+async fn test_all_foreign_finalize_respects_required_exact_verification() {
+    let state = setup_test_state().await;
+    let project = make_project(
+        "foreign-proj-required-verification",
+        "SourceProject",
+        "/tmp/source-project",
+    );
+    let project_id = project.id.clone();
+    state.app_state.project_repo.create(project).await.unwrap();
+
+    let session = IdeationSession::builder()
+        .project_id(project_id)
+        .plan_artifact_id(ralphx_lib::domain::entities::ArtifactId::from_string(
+            "unverified-plan".to_string(),
+        ))
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    let mut proposal =
+        make_proposal_with_target(&session_id, "Foreign Task", "/tmp/other-project");
+    proposal.affected_paths = Some("[\"README.md\"]".to_string());
+    state
+        .app_state
+        .task_proposal_repo
+        .create(proposal)
+        .await
+        .unwrap();
+
+    let mut settings = state
+        .app_state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .unwrap();
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = false;
+    state
+        .app_state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .unwrap();
+
+    let result = finalize_proposals_impl(&state.app_state, session_id.as_str(), false).await;
+    assert!(
+        matches!(result, Err(AppError::Validation(_))),
+        "all-foreign terminal acceptance must require exact proof: {result:?}"
+    );
+    let persisted = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+    assert_eq!(persisted.status, IdeationSessionStatus::Active);
+}
+
+#[tokio::test]
 async fn test_migrate_then_finalize_target_session_accepted() {
     // Use SQLite-backed state so apply_proposals_core's db.run_transaction can see
     // all rows inserted by the repo trait methods in the same test.
