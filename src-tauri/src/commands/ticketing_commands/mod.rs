@@ -8,6 +8,7 @@ use tauri::{AppHandle, Runtime, State};
 use crate::application::clickup_integration_service::{
     ClickUpFolder, ClickUpList, ClickUpStatus, ClickUpTaskListOptions,
 };
+use crate::application::external_issue_link_service::TicketConversationLinkInput;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
@@ -33,7 +34,7 @@ use crate::domain::entities::{
 };
 use crate::domain::integrations::{
     AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
-    ObservedTicketingStatus, ProviderTicketOperation, TicketingStatusCatalogEntry,
+    ExternalIssueLink, ObservedTicketingStatus, ProviderTicketOperation, TicketingStatusCatalogEntry,
     TicketingStatusPresentationPatch,
 };
 use crate::domain::services::{
@@ -58,6 +59,7 @@ const UNASSIGNED_ASSIGNEE_FILTER: &str = "__unassigned__";
 enum ProjectTicketLink {
     Jira(AgentConversationJiraIssueLink),
     Linear(AgentConversationLinearIssueLink),
+    ClickUp(ExternalIssueLink),
 }
 
 #[derive(Debug, Clone)]
@@ -813,6 +815,7 @@ pub async fn get_conversation_ticket(
     let conversation_id = conversation_id
         .parse::<ChatConversationId>()
         .map_err(|_| "Invalid conversationId".to_string())?;
+    let conversation_id_value = conversation_id.as_str();
 
     if let Some(link) = state
         .agent_conversation_jira_issue_repo
@@ -832,6 +835,39 @@ pub async fn get_conversation_ticket(
             project_id: link.project_id.as_str().to_string(),
             title: link.title,
             url: link.issue_url,
+        }));
+    }
+
+    let clickup_link = state
+        .external_issue_link_service
+        .list_ticket_links_for_conversation(&conversation_id_value)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|link| {
+            link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                && link.external_kind.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+        });
+    if let Some(link) = clickup_link {
+        let title = link.metadata_json.as_deref().and_then(|metadata| {
+            serde_json::from_str::<serde_json::Value>(metadata)
+                .ok()
+                .and_then(|metadata| {
+                    metadata
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+        });
+        return Ok(Some(ConversationTicketResponse {
+            ticket_ref: TicketRefInput {
+                provider: PROVIDER_CLICKUP.to_string(),
+                id: link.external_id,
+                key: link.external_key,
+            },
+            project_id: link.local_project_id.unwrap_or_default(),
+            title,
+            url: link.external_url,
         }));
     }
 
@@ -2761,10 +2797,50 @@ async fn link_started_ticket_to_conversation(
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
-        // ClickUp start-work is supported through the provider-neutral composer
-        // reference. A first-class ClickUp conversation link table is deferred,
-        // so there is nothing to persist here yet.
-        PROVIDER_CLICKUP => Ok(()),
+        PROVIDER_CLICKUP => {
+            let conversation_id_value = conversation_id.as_str();
+            let already_linked = state
+                .external_issue_link_service
+                .list_ticket_links_for_conversation(&conversation_id_value)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .any(|link| {
+                    link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                        && (link.external_id.eq_ignore_ascii_case(reference.id.trim())
+                            || match (link.external_key.as_deref(), reference.key.as_deref()) {
+                                (Some(left), Some(right)) => left.eq_ignore_ascii_case(right.trim()),
+                                _ => false,
+                            })
+                });
+            if already_linked {
+                return Ok(());
+            }
+            state
+                .external_issue_link_service
+                .upsert_ticket_conversation_link(TicketConversationLinkInput {
+                provider: PROVIDER_CLICKUP.to_string(),
+                external_kind: PROVIDER_CLICKUP.to_string(),
+                external_id: reference.id.clone(),
+                external_key: reference.key.clone(),
+                external_url: reference.url.clone(),
+                conversation_id: conversation_id.as_str(),
+                project_id: project_id.to_string(),
+                local_sha: None,
+                local_state: Some("active".to_string()),
+                metadata_json: Some(
+                    serde_json::json!({
+                        "source": "ticket_start",
+                        "title": reference.title,
+                        "validated_at": Utc::now().to_rfc3339(),
+                    })
+                    .to_string(),
+                ),
+                })
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
         _ => Err(format!("Unknown ticketing provider: {provider}")),
     }
 }
@@ -2834,10 +2910,29 @@ async fn project_ticket_conversation_associations(
                 }
             }
         }
-        // ClickUp conversation-linking is deferred (no link table yet), so ClickUp
-        // tickets have no conversation associations; the list still renders with a
-        // zero association count rather than erroring.
-        PROVIDER_CLICKUP => {}
+        PROVIDER_CLICKUP => {
+            for conversation in conversations {
+                let conversation_id = conversation.id.as_str();
+                let links = state
+                    .external_issue_link_service
+                    .list_ticket_links_for_conversation(&conversation_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for link in links.into_iter().filter(|link| {
+                    link.provider.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                        && link.external_kind.eq_ignore_ascii_case(PROVIDER_CLICKUP)
+                        && link.local_project_id.as_deref() == Some(project_id.as_str())
+                }) {
+                    associations.push(ProjectTicketConversationAssociation {
+                        link: ProjectTicketLink::ClickUp(link),
+                        item: agent_conversation_association_item(
+                            &conversation,
+                            project_id.as_str(),
+                        ),
+                    });
+                }
+            }
+        }
         _ => return Err(format!("Unknown ticketing provider: {provider}")),
     }
 
@@ -2882,9 +2977,16 @@ fn linked_agent_conversation_associations_from_batch(
                 })
                 .collect())
         }
-        // ClickUp conversation-linking is deferred, so there are never any batched
-        // ClickUp associations to match against.
-        PROVIDER_CLICKUP => Ok(Vec::new()),
+        PROVIDER_CLICKUP => Ok(associations
+            .iter()
+            .filter_map(|association| {
+                let ProjectTicketLink::ClickUp(link) = &association.link else {
+                    return None;
+                };
+                clickup_link_matches_ticket(link, project_id, reference)
+                    .then(|| association.item.clone())
+            })
+            .collect()),
         _ => Err(format!("Unknown ticketing provider: {provider}")),
     }
 }
@@ -2914,6 +3016,19 @@ fn linear_link_matches_ticket(
                     .as_deref()
                     .is_some_and(|link_key| link_key.eq_ignore_ascii_case(issue_key))
             }))
+}
+
+fn clickup_link_matches_ticket(
+    link: &ExternalIssueLink,
+    project_id: &ProjectId,
+    reference: &ComposerIntegrationReference,
+) -> bool {
+    link.local_project_id.as_deref() == Some(project_id.as_str())
+        && (link.external_id.eq_ignore_ascii_case(reference.id.trim())
+            || match (link.external_key.as_deref(), reference.key.as_deref()) {
+                (Some(left), Some(right)) => left.eq_ignore_ascii_case(right.trim()),
+                _ => false,
+            })
 }
 
 fn agent_conversation_association_item(
