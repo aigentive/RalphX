@@ -235,6 +235,75 @@ async fn resolve_workspace_base_keeps_existing_remote_base_valid() {
 }
 
 #[tokio::test]
+async fn resolve_workspace_base_keeps_local_only_automation_base_valid() {
+    // Regression: automation run publish base must stay on the automation branch.
+    // The automation base branch (base_ref_kind = local_branch) is created as an
+    // isolated local worktree branch and never pushed to origin. The resolver must
+    // recognize the local branch instead of retargeting the run to the project
+    // default (main), which would break automation chaining (merged_base /
+    // pr_head_stacked → PR into the automation branch, not main).
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    let automation_branch = "ralphx/ralphx/automation-3228e70e";
+    // Create a local-only branch with an extra commit — like an automation setup
+    // branch that carries setup work and is NOT contained in origin/main.
+    git(repo, &["checkout", "-b", automation_branch]);
+    std::fs::write(repo.join("setup.txt"), "automation setup\n").expect("setup file");
+    git(repo, &["add", "setup.txt"]);
+    git(repo, &["commit", "-m", "automation setup"]);
+    let automation_sha = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["checkout", "main"]);
+
+    let mut workspace = workspace(automation_branch, Some(automation_sha.clone()));
+    workspace.base_ref_kind = IdeationAnalysisBaseRefKind::LocalBranch;
+    workspace.project_id = project.id.clone();
+
+    let resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .expect("local-only automation base should resolve");
+
+    assert_eq!(
+        resolution.status,
+        BaseStatus::Valid,
+        "automation base must not retarget to project default"
+    );
+    assert_eq!(resolution.old_base_ref, automation_branch);
+    assert_eq!(
+        resolution.effective_base_ref.as_deref(),
+        Some(automation_branch)
+    );
+    assert_eq!(
+        resolution.effective_checkout_ref.as_deref(),
+        Some(automation_branch)
+    );
+    assert_eq!(
+        resolution.effective_base_commit.as_deref(),
+        Some(automation_sha.as_str())
+    );
+    // Guard against the wrong-base symptom explicitly.
+    assert_ne!(resolution.effective_base_ref.as_deref(), Some("main"));
+    // main_sha is only referenced to prove the automation head diverged from it.
+    assert_ne!(automation_sha, main_sha);
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_retargets_when_base_absent_locally_and_remotely() {
+    // Fallback path must still fire when the base branch genuinely exists nowhere:
+    // no origin ref AND no local branch. This keeps the "base branch deleted"
+    // retarget behavior for non-automation workspaces intact.
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let mut workspace = workspace("feature/never-existed", Some(main_sha.clone()));
+    workspace.project_id = project.id.clone();
+
+    let resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .expect("absent base should resolve");
+
+    assert_eq!(resolution.status, BaseStatus::Retargeted);
+    assert_eq!(resolution.effective_base_ref.as_deref(), Some("main"));
+}
+
+#[tokio::test]
 async fn resolve_workspace_base_from_local_snapshot_does_not_fetch_origin() {
     let (temp, project, main_sha) = setup_remote_repo();
     let repo = Path::new(&project.working_directory);

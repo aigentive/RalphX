@@ -12,6 +12,7 @@ import {
   PriorityAssessmentResponseSchema,
   DependencyGraphResponseSchema,
   ApplyProposalsResultResponseSchema,
+  RestartImplementationResultResponseSchema,
   CreateChildSessionResponseSchema,
   LatestChildSessionIdResponseSchema,
   ParentSessionContextResponseSchema,
@@ -26,6 +27,7 @@ import {
   transformPriorityAssessment,
   transformDependencyGraph,
   transformApplyResult,
+  transformRestartImplementationResult,
   transformIdeationSettings,
   transformCreateChildSession,
   transformParentSessionContext,
@@ -42,6 +44,7 @@ import type {
   PriorityAssessmentResponse,
   DependencyGraphResponse,
   ApplyProposalsResultResponse,
+  RestartImplementationResultResponse,
   CreateProposalInput,
   UpdateProposalInput,
   ApplyProposalsInput,
@@ -64,6 +67,7 @@ export type {
   DependencyGraphEdgeResponse,
   DependencyGraphResponse,
   ApplyProposalsResultResponse,
+  RestartImplementationResultResponse,
   CreateProposalInput,
   UpdateProposalInput,
   ApplyProposalsInput,
@@ -259,6 +263,22 @@ export const ideationApi = {
      */
     reopen: async (sessionId: string): Promise<void> => {
       await invoke("reopen_ideation_session", { id: sessionId });
+    },
+
+    /**
+     * Restart implementation for an accepted plan without reopening the plan lifecycle.
+     * @param sessionId The accepted planning session ID
+     * @returns Restart result with old/new execution plan IDs and task counts
+     */
+    restartImplementation: async (
+      sessionId: string,
+    ): Promise<RestartImplementationResultResponse> => {
+      const raw = await typedInvoke(
+        "restart_ideation_implementation",
+        { sessionId },
+        RestartImplementationResultResponseSchema,
+      );
+      return transformRestartImplementationResult(raw);
     },
 
     /**

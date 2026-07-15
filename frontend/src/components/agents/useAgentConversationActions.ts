@@ -20,6 +20,7 @@ import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
   type AgentConversation,
+  type AgentConversationArchiveOptions,
 } from "./agentConversations";
 import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
@@ -283,12 +284,15 @@ export function useAgentConversationActions({
   );
 
   const handleArchiveConversation = useCallback(
-    async (conversation: AgentConversation) => {
+    async (
+      conversation: AgentConversation,
+      options: AgentConversationArchiveOptions
+    ) => {
       try {
         if (conversation.contextType === "ideation") {
           await ideationApi.sessions.archive(conversation.contextId);
         }
-        await chatApi.archiveConversation(conversation.id);
+        await chatApi.archiveConversation(conversation.id, options);
         if (selectedConversationId === conversation.id) {
           clearAgentConversationSelection();
         }

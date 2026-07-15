@@ -265,6 +265,22 @@ describe("TaskContextMenuItems", () => {
       expect(screen.getByText("Retry")).toBeInTheDocument();
     });
 
+    it("moves failed task retry to ready", async () => {
+      renderWithContextMenu(
+        createMockTask({ internalStatus: "failed" }),
+        handlers,
+        "kanban",
+      );
+      fireEvent.click(screen.getByText("Retry"));
+      await waitFor(() => {
+        expect(screen.getByText("Retry this task?")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      await waitFor(() => {
+        expect(handlers.onStatusChange).toHaveBeenCalledWith("ready");
+      });
+    });
+
     it("shows Re-open for cancelled tasks", () => {
       renderWithContextMenu(
         createMockTask({ internalStatus: "cancelled" }),

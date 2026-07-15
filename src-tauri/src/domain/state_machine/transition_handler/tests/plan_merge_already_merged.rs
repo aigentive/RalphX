@@ -33,12 +33,16 @@ fn make_services_with_tracked_chat(
     project_repo: Arc<MemoryProjectRepository>,
 ) -> (Arc<MockChatService>, TaskServices) {
     let chat_service = Arc::new(MockChatService::new());
-    let services = TaskServices::new(
-        Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
-        Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
-        Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
-        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
-        Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+    let services = with_test_branch_update_authority(
+        TaskServices::new(
+            Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
+            Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
+            Arc::new(MockNotifier::new()) as Arc<dyn Notifier>,
+            Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+            Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
+            Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        ),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
@@ -86,7 +90,11 @@ fn setup_plan_merge_repo() -> (tempfile::TempDir, String) {
         .args(["checkout", "-b", &plan_branch])
         .current_dir(path)
         .output();
-    std::fs::write(path.join("plan-work.rs"), "// plan branch work\nfn plan() {}").unwrap();
+    std::fs::write(
+        path.join("plan-work.rs"),
+        "// plan branch work\nfn plan() {}",
+    )
+    .unwrap();
     let _ = std::process::Command::new("git")
         .args(["add", "."])
         .current_dir(path)
@@ -138,12 +146,7 @@ async fn plan_merge_not_falsely_completed_by_plan_branch_check() {
     let task_id = task.id.clone();
 
     // Create plan branch record with merge_task_id pointing to this task
-    let mut pb = make_plan_branch(
-        "artifact-1",
-        &plan_branch,
-        PlanBranchStatus::Active,
-        None,
-    );
+    let mut pb = make_plan_branch("artifact-1", &plan_branch, PlanBranchStatus::Active, None);
     pb.merge_task_id = Some(task_id.clone());
     plan_branch_repo.create(pb).await.unwrap();
 
@@ -329,12 +332,7 @@ async fn regular_plan_task_already_merged_to_plan_branch_detected() {
     project_repo.create(project).await.unwrap();
 
     // Plan branch Active with session_id="sess-1"
-    let pb = make_plan_branch(
-        "artifact-1",
-        &plan_branch,
-        PlanBranchStatus::Active,
-        None,
-    );
+    let pb = make_plan_branch("artifact-1", &plan_branch, PlanBranchStatus::Active, None);
     plan_branch_repo.create(pb).await.unwrap();
 
     let (_, services) =
@@ -431,7 +429,10 @@ async fn ghost_merge_prevented_when_plan_branch_has_no_unique_commits() {
         .current_dir(path)
         .output();
     std::fs::write(path.join("other.rs"), "// other work on main").unwrap();
-    for args in [vec!["add", "."], vec!["commit", "-m", "other: direct main work"]] {
+    for args in [
+        vec!["add", "."],
+        vec!["commit", "-m", "other: direct main work"],
+    ] {
         let _ = std::process::Command::new("git")
             .args(&args)
             .current_dir(path)

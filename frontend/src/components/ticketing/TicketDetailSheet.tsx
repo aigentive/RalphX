@@ -73,7 +73,7 @@ interface TicketDetailSheetProps {
   onStartWork?: (() => void) | undefined;
   /**
    * Whether the start-work + bind-conversation affordances are shown. Providers
-   * without a conversation-link backend (e.g. ClickUp, deferred) pass `false` so
+   * without a manual conversation-binding mutation pass `false` so
    * the non-functional affordance stays hidden. Defaults to `true`.
    */
   showConversationBinding?: boolean | undefined;

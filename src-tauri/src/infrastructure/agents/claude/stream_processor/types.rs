@@ -241,6 +241,7 @@ pub enum StreamEvent {
     ToolResultReceived {
         tool_use_id: String,
         result: serde_json::Value,
+        is_error: bool,
         parent_tool_use_id: Option<String>,
     },
     /// Session ID received (from Result or Assistant message)

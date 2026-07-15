@@ -28,6 +28,7 @@ pub mod domain;
 pub mod error;
 pub mod http_server;
 pub mod infrastructure;
+pub mod shell;
 pub mod testing;
 pub mod utils;
 
@@ -166,6 +167,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_window_state::Builder::new()
@@ -181,6 +183,18 @@ pub fn run() {
                 Arc::clone(&init_execution_state),
                 Arc::clone(&startup_execution_state),
                 Arc::clone(&startup_active_project_state),
+                Box::new(|app_state, execution_state| {
+                    Some(Arc::new(
+                        commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
+                            app_state: app_state.clone(),
+                            execution_state,
+                            team_service: None,
+                        },
+                    )
+                        as Arc<
+                            dyn application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+                        >)
+                }),
                 Arc::clone(&http_execution_state),
                 http_team_tracker.clone(),
                 service_team_tracker.clone(),

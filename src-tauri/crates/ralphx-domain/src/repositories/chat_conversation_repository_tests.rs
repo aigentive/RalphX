@@ -2,7 +2,7 @@ use super::*;
 use crate::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, ChatContextType, ChatConversation,
-    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary, CoordinationMode,
     IdeationSessionId,
 };
 use std::sync::Arc;
@@ -57,6 +57,18 @@ impl ChatConversationRepository for MockChatConversationRepository {
                     && c.context_id == context_id
                     && (include_archived || c.archived_at.is_none())
             })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &crate::entities::AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        Ok(self
+            .conversations
+            .iter()
+            .filter(|c| c.automation_id.as_ref() == Some(automation_id))
             .cloned()
             .collect())
     }
@@ -180,6 +192,22 @@ impl ChatConversationRepository for MockChatConversationRepository {
         &self,
         _id: &ChatConversationId,
         _mode: Option<AgentConversationWorkspaceMode>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_persona_binding(
+        &self,
+        _id: &ChatConversationId,
+        _persona_id: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_coordination_mode(
+        &self,
+        _id: &ChatConversationId,
+        _mode: CoordinationMode,
     ) -> AppResult<()> {
         Ok(())
     }

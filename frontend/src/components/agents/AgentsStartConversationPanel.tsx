@@ -2,9 +2,9 @@ import { useState, type ComponentProps } from "react";
 import { toast } from "sonner";
 
 import { useUiStore } from "@/stores/uiStore";
+import { isPersonaUnavailableError } from "@/lib/personaErrors";
 
 import { getAgentQueueHaltState } from "./agentExecutionPause";
-import { normalizeRuntimeSelection } from "./agentOptions";
 import { AgentsStartComposer } from "./AgentsStartComposer";
 
 type StartComposerProps = ComponentProps<typeof AgentsStartComposer>;
@@ -41,7 +41,7 @@ export function AgentsStartConversationPanel({
       <AgentsStartComposer
         projects={projects}
         defaultProjectId={defaultProjectId}
-        defaultRuntime={normalizeRuntimeSelection(defaultRuntime, modelRegistry)}
+        defaultRuntime={defaultRuntime}
         executionHaltState={executionHaltState}
         isLoadingProjects={isLoadingProjects}
         isSubmitting={isStartingConversation}
@@ -53,11 +53,13 @@ export function AgentsStartConversationPanel({
             setIsStartingConversation(true);
             await onStartAgentConversation(input);
           } catch (err) {
-            toast.error(
+            const message =
               err instanceof Error
                 ? err.message
-                : "Failed to start agent conversation",
-            );
+                : "Failed to start agent conversation";
+            if (!isPersonaUnavailableError(message)) {
+              toast.error(message);
+            }
             throw err;
           } finally {
             setIsStartingConversation(false);

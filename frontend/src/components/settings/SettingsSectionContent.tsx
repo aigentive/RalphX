@@ -97,6 +97,16 @@ const LazyAccessibilitySection = lazy(() =>
     default: module.AccessibilitySection,
   })),
 );
+const LazyNotificationSettingsPanel = lazy(() =>
+  import("./NotificationSettingsPanel").then((module) => ({
+    default: module.NotificationSettingsPanel,
+  })),
+);
+const LazyPersonasSection = lazy(() =>
+  import("./PersonasSection").then((module) => ({
+    default: module.PersonasSection,
+  })),
+);
 
 function SettingsSectionLoading() {
   return (
@@ -150,6 +160,7 @@ export function SettingsSectionContent({
       {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
+      {section === "personas" && <LazyPersonasSection />}
       {section === "workspace-review" && <LazyWorkspaceReviewSection />}
       {section === "review" && <LazyReviewPolicySection />}
       {section === "autonomy" && <LazyAutonomyPolicySection />}
@@ -166,6 +177,7 @@ export function SettingsSectionContent({
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "app-preferences" && <LazyAppPreferencesSection />}
       {section === "accessibility" && <LazyAccessibilitySection />}
+      {section === "notifications" && <LazyNotificationSettingsPanel />}
     </Suspense>
   );
 }

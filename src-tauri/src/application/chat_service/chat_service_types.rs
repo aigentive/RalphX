@@ -89,6 +89,9 @@ pub enum SendCallerContext {
     /// Drain-service-initiated send.
     /// On ideation capacity full → return `Err(SpawnFailed)` so the drain service breaks cleanly.
     DrainService,
+    /// Startup/recovery-initiated send.
+    /// Must not roll over, repair, or spawn a terminal Agent workspace automatically.
+    StartupResumption,
 }
 
 /// Result from sending a message (returns immediately while processing continues in background)
@@ -908,6 +911,7 @@ pub enum ChatServiceError {
     ConversationNotFound(String),
     RepositoryError(String),
     AgentRunFailed(String),
+    PersonaUnavailable(String),
 }
 
 impl std::fmt::Display for ChatServiceError {
@@ -921,6 +925,7 @@ impl std::fmt::Display for ChatServiceError {
             Self::ConversationNotFound(msg) => write!(f, "Conversation not found: {}", msg),
             Self::RepositoryError(msg) => write!(f, "Repository error: {}", msg),
             Self::AgentRunFailed(msg) => write!(f, "Agent run failed: {}", msg),
+            Self::PersonaUnavailable(message) => write!(f, "{message}"),
         }
     }
 }

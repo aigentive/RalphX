@@ -445,12 +445,12 @@ html[data-theme="light"] body {
   color: #1A0E07 !important;
 }
 
-[data-theme="light"] [data-testid="reviews-panel-shell"] {
+[data-theme="light"] [data-testid="notifications-panel-shell"] {
   background-color: #F4F4F6 !important;
   border-left-color: #E5E5E8 !important;
 }
 
-[data-theme="light"] [data-testid="reviews-panel-frame"] {
+[data-theme="light"] [data-testid="notifications-panel-frame"] {
   background-color: #F4F4F6 !important;
 }
 

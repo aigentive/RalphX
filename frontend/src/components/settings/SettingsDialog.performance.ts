@@ -13,6 +13,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "execution-harnesses": () => import("./IdeationHarnessSection"),
   models: () => import("./AgentModelsSection"),
   "global-execution": () => import("./sections/GlobalExecutionSection"),
+  personas: () => import("./PersonasSection"),
   "workspace-review": () => import("./sections/WorkspaceReviewSection"),
   review: () => import("./sections/ReviewPolicySection"),
   autonomy: () => import("./sections/AutonomyPolicySection"),
@@ -29,6 +30,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   "app-preferences": () => import("./AppPreferencesSection"),
   accessibility: () => import("./AccessibilitySection"),
+  notifications: () => import("./NotificationSettingsPanel"),
 };
 
 export function scheduleAfterPaint(callback: () => void): ScheduledJob {

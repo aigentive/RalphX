@@ -1,6 +1,7 @@
 mod codex_cli_client;
 pub mod stream_processor;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -34,6 +35,13 @@ use crate::infrastructure::external_mcp_supervisor::{
 };
 pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
 
+const CODEX_PLAN_AGENT_PROFILE: &str = "plan";
+const CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES: &[&str] = &[
+    "features.apply_patch_freeform=false",
+    "features.apply_patch_streaming_events=false",
+    "include_apply_patch_tool=false",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexCliCapabilities {
     pub version: Option<String>,
@@ -48,6 +56,9 @@ pub struct CodexCliCapabilities {
     pub supports_mcp_subcommand: bool,
     pub supports_fast_mode_feature: bool,
     pub fast_mode_supported_models: Vec<String>,
+    pub supported_model_aliases: Vec<String>,
+    pub supported_efforts: Vec<String>,
+    pub model_supported_efforts: BTreeMap<String, Vec<String>>,
 }
 
 impl CodexCliCapabilities {
@@ -88,6 +99,25 @@ impl CodexCliCapabilities {
         } else {
             Vec::new()
         }
+    }
+
+    pub fn supported_effort_labels(&self) -> Vec<String> {
+        self.supported_efforts.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodexModelCatalogCapabilities {
+    pub supported_model_aliases: Vec<String>,
+    pub supported_efforts: Vec<String>,
+    pub model_supported_efforts: BTreeMap<String, Vec<String>>,
+}
+
+impl CodexModelCatalogCapabilities {
+    fn is_empty(&self) -> bool {
+        self.supported_model_aliases.is_empty()
+            && self.supported_efforts.is_empty()
+            && self.model_supported_efforts.is_empty()
     }
 }
 
@@ -215,6 +245,7 @@ pub fn build_codex_mcp_overrides_for_profile(
                 Some(&codex_metadata.internal_mcp_tools),
             )?);
         }
+        append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
         return Ok(overrides);
     }
 
@@ -231,8 +262,24 @@ pub fn build_codex_mcp_overrides_for_profile(
     for (feature_name, enabled) in codex_metadata.runtime_features {
         overrides.push(format!("features.{feature_name}={enabled}"));
     }
+    append_codex_plan_read_only_feature_overrides(&mut overrides, agent_profile);
 
     Ok(overrides)
+}
+
+fn append_codex_plan_read_only_feature_overrides(
+    overrides: &mut Vec<String>,
+    agent_profile: Option<&str>,
+) {
+    if agent_profile != Some(CODEX_PLAN_AGENT_PROFILE) {
+        return;
+    }
+    // Verified on Codex CLI 0.142.5: features list exposes both apply_patch feature gates, while -c accepts the top-level include_apply_patch_tool override.
+    overrides.extend(
+        CODEX_PLAN_READ_ONLY_CONFIG_OVERRIDES
+            .iter()
+            .map(|entry| (*entry).to_string()),
+    );
 }
 
 fn build_codex_internal_mcp_overrides(
@@ -361,7 +408,7 @@ pub fn compose_codex_prompt(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
 ) -> String {
-    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None)
+    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None, None)
 }
 
 pub fn compose_codex_prompt_for_profile(
@@ -369,12 +416,42 @@ pub fn compose_codex_prompt_for_profile(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
     agent_profile: Option<&str>,
+    persona_block: Option<&str>,
 ) -> String {
-    compose_codex_prompt_for_profile_with_runtime_context(
+    compose_codex_prompt_for_profile_with_outcome(
         prompt,
         plugin_dir,
         agent_name,
         agent_profile,
+        persona_block,
+    )
+    .prompt
+}
+
+/// Body-free attribution outcome paired with the composed Codex prompt.
+pub struct CodexPromptComposition {
+    /// Prompt delivered to the Codex CLI.
+    pub prompt: String,
+    /// Whether the resolved persona overlay is present in `prompt`.
+    pub persona_injected: bool,
+    /// Body-free reason when a requested persona overlay could not be composed.
+    pub persona_injection_skipped_reason: Option<&'static str>,
+}
+
+/// Compose a Codex prompt and report the actual persona overlay outcome.
+pub fn compose_codex_prompt_for_profile_with_outcome(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+) -> CodexPromptComposition {
+    compose_codex_prompt_for_profile_with_context(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        persona_block,
         None,
     )
 }
@@ -404,11 +481,59 @@ pub fn compose_codex_prompt_for_profile_with_learned_skills(
     agent_profile: Option<&str>,
     pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
 ) -> String {
+    compose_codex_prompt_for_profile_with_context(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        None,
+        pre_execution_learned_skills,
+    )
+    .prompt
+}
+
+pub fn compose_codex_prompt_for_profile_with_runtime_context_and_outcome(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    runtime_context: Option<&McpRuntimeContext>,
+) -> CodexPromptComposition {
+    let pre_execution_learned_skills = agent_name
+        .and_then(|name| pre_execution_learned_skill_context_from_runtime(name, runtime_context));
+    compose_codex_prompt_for_profile_with_context(
+        prompt,
+        plugin_dir,
+        agent_name,
+        agent_profile,
+        persona_block,
+        pre_execution_learned_skills.as_ref(),
+    )
+}
+
+fn compose_codex_prompt_for_profile_with_context(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+    persona_block: Option<&str>,
+    pre_execution_learned_skills: Option<&PreExecutionLearnedSkillContext>,
+) -> CodexPromptComposition {
     let Some(plugin_dir) = plugin_dir else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block
+                .map(|_| "codex_plugin_dir_unavailable"),
+        };
     };
     let Some(agent_name) = agent_name else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block.map(|_| "codex_agent_unavailable"),
+        };
     };
 
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
@@ -419,8 +544,15 @@ pub fn compose_codex_prompt_for_profile_with_learned_skills(
         agent_profile,
     );
     let Some(system_prompt) = system_prompt else {
-        return prompt.to_string();
+        return CodexPromptComposition {
+            prompt: prompt.to_string(),
+            persona_injected: false,
+            persona_injection_skipped_reason: persona_block
+                .map(|_| "codex_agent_prompt_unavailable"),
+        };
     };
+    let persona_injected = persona_block.is_some();
+    let system_prompt = super::persona_overlay::apply_persona_overlay(system_prompt, persona_block);
     let runtime_profile_context =
         render_agent_runtime_profile_context(&project_root, agent_name, agent_profile);
     let system_prompt = match inject_internal_skills_into_system_prompt_for_profile(
@@ -458,9 +590,13 @@ pub fn compose_codex_prompt_for_profile_with_learned_skills(
         None => system_prompt,
     };
 
-    format!(
-        "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
-    )
+    CodexPromptComposition {
+        prompt: format!(
+            "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
+        ),
+        persona_injected,
+        persona_injection_skipped_reason: None,
+    }
 }
 
 pub fn normalize_codex_exec_output(raw_stdout: &str) -> String {
@@ -548,18 +684,24 @@ pub fn parse_codex_cli_capabilities(
     exec_help: &str,
     version_output: Option<&str>,
     features_output: Option<&str>,
-    model_catalog_output: Option<&str>,
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
 ) -> CodexCliCapabilities {
     let supports_fast_mode_feature = features_output
         .map(parse_codex_fast_mode_feature)
         .unwrap_or(false);
     let fast_mode_supported_models = if supports_fast_mode_feature {
-        model_catalog_output
-            .map(parse_codex_fast_mode_supported_models)
-            .unwrap_or_default()
+        parse_codex_fast_mode_supported_models_from_catalogs(
+            refreshed_model_catalog_output,
+            bundled_model_catalog_output,
+        )
     } else {
         Vec::new()
     };
+    let model_catalog_capabilities = parse_best_codex_model_catalog(
+        refreshed_model_catalog_output,
+        bundled_model_catalog_output,
+    );
 
     CodexCliCapabilities {
         version: version_output.and_then(parse_codex_version),
@@ -574,6 +716,140 @@ pub fn parse_codex_cli_capabilities(
         supports_mcp_subcommand: root_help.contains("mcp"),
         supports_fast_mode_feature,
         fast_mode_supported_models,
+        supported_model_aliases: model_catalog_capabilities.supported_model_aliases,
+        supported_efforts: model_catalog_capabilities.supported_efforts,
+        model_supported_efforts: model_catalog_capabilities.model_supported_efforts,
+    }
+}
+
+fn parse_best_codex_model_catalog(
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
+) -> CodexModelCatalogCapabilities {
+    let refreshed = refreshed_model_catalog_output
+        .map(parse_codex_model_catalog_capabilities)
+        .unwrap_or_default();
+    if !refreshed.is_empty() {
+        return refreshed;
+    }
+
+    bundled_model_catalog_output
+        .map(parse_codex_model_catalog_capabilities)
+        .unwrap_or_default()
+}
+
+fn parse_codex_fast_mode_supported_models_from_catalogs(
+    refreshed_model_catalog_output: Option<&str>,
+    bundled_model_catalog_output: Option<&str>,
+) -> Vec<String> {
+    let mut supported_models = Vec::new();
+    for output in [refreshed_model_catalog_output, bundled_model_catalog_output]
+        .into_iter()
+        .flatten()
+    {
+        supported_models.extend(parse_codex_fast_mode_supported_models(output));
+    }
+    supported_models.sort();
+    supported_models.dedup();
+    supported_models
+}
+
+pub fn parse_codex_model_catalog_capabilities(output: &str) -> CodexModelCatalogCapabilities {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(output) else {
+        return CodexModelCatalogCapabilities::default();
+    };
+    let Some(models) = root.get("models").and_then(serde_json::Value::as_array) else {
+        return CodexModelCatalogCapabilities::default();
+    };
+
+    let mut supported_model_aliases = Vec::new();
+    let mut supported_efforts = Vec::new();
+    let mut model_supported_efforts = BTreeMap::new();
+
+    for model in models {
+        if !codex_model_is_visible_list_entry(model) {
+            continue;
+        }
+        let Some(slug) = model
+            .get("slug")
+            .or_else(|| model.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())
+        else {
+            continue;
+        };
+
+        supported_model_aliases.push(slug.to_string());
+        if let Some(aliases) = model.get("aliases").and_then(serde_json::Value::as_array) {
+            supported_model_aliases.extend(aliases.iter().filter_map(|alias| {
+                alias
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|alias| !alias.is_empty())
+                    .map(str::to_string)
+            }));
+        }
+
+        let mut model_efforts = model
+            .get("supported_reasoning_levels")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|level| {
+                let effort = level.get("effort").and_then(serde_json::Value::as_str)?;
+                normalize_codex_reasoning_effort(effort)
+            })
+            .collect::<Vec<_>>();
+        sort_codex_reasoning_efforts(&mut model_efforts);
+        supported_efforts.extend(model_efforts.iter().cloned());
+        model_supported_efforts.insert(slug.to_string(), model_efforts);
+    }
+
+    supported_model_aliases.sort();
+    supported_model_aliases.dedup();
+    sort_codex_reasoning_efforts(&mut supported_efforts);
+
+    CodexModelCatalogCapabilities {
+        supported_model_aliases,
+        supported_efforts,
+        model_supported_efforts,
+    }
+}
+
+fn codex_model_is_visible_list_entry(model: &serde_json::Value) -> bool {
+    model
+        .get("visibility")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|visibility| visibility.eq_ignore_ascii_case("list"))
+}
+
+fn normalize_codex_reasoning_effort(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if codex_reasoning_effort_order(&normalized).is_some() {
+        return Some(normalized);
+    }
+    warn!(
+        effort = value,
+        "Ignoring unknown Codex reasoning effort in model catalog"
+    );
+    None
+}
+
+fn sort_codex_reasoning_efforts(efforts: &mut Vec<String>) {
+    efforts.sort_by_key(|effort| codex_reasoning_effort_order(effort).unwrap_or(u8::MAX));
+    efforts.dedup();
+}
+
+fn codex_reasoning_effort_order(effort: &str) -> Option<u8> {
+    match effort {
+        "low" => Some(0),
+        "medium" => Some(1),
+        "high" => Some(2),
+        "xhigh" => Some(3),
+        "max" => Some(4),
+        "ultra" => Some(5),
+        _ => None,
     }
 }
 
@@ -650,14 +926,17 @@ pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> 
     let root_help = run_codex_command(cli_path, &["--help"])?;
     let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
     let features_output = run_codex_optional_command(cli_path, &["features", "list"]);
-    let model_catalog_output =
+    let refreshed_model_catalog_output =
+        run_codex_optional_command(cli_path, &["debug", "models"]);
+    let bundled_model_catalog_output =
         run_codex_optional_command(cli_path, &["debug", "models", "--bundled"]);
     Ok(parse_codex_cli_capabilities(
         &root_help,
         &exec_help,
         Some(&version_output),
         Some(&features_output),
-        Some(&model_catalog_output),
+        Some(&refreshed_model_catalog_output),
+        Some(&bundled_model_catalog_output),
     ))
 }
 
@@ -784,6 +1063,9 @@ pub fn build_codex_exec_resume_args(
 ) -> Result<Vec<String>, String> {
     if !capabilities.supports_exec_subcommand {
         return Err("Codex CLI does not advertise the exec subcommand".to_string());
+    }
+    if !capabilities.supports_resume_subcommand {
+        return Err("Codex CLI does not advertise the resume subcommand".to_string());
     }
 
     let mut args = vec![
@@ -917,13 +1199,34 @@ fn write_codex_prompt_debug_artifact(
     })?;
 
     let path = crate::utils::runtime_log_paths::codex_prompt_debug_file(mode);
-    fs::write(&path, prompt).map_err(|error| {
+    fs::write(&path, redact_persona_from_codex_prompt(prompt)).map_err(|error| {
         format!(
             "Failed to write Codex prompt log artifact {}: {error}",
             path.display()
         )
     })?;
     Ok(path)
+}
+
+fn redact_persona_from_codex_prompt(prompt: &str) -> String {
+    const OPEN: &str = "<ralphx_agent_persona>";
+    const CLOSE: &str = "</ralphx_agent_persona>";
+    const REDACTED: &str = "<ralphx_agent_persona>[redacted]</ralphx_agent_persona>";
+
+    let mut remaining = prompt;
+    let mut redacted = String::with_capacity(prompt.len());
+    while let Some(start) = remaining.find(OPEN) {
+        redacted.push_str(&remaining[..start]);
+        let persona_and_rest = &remaining[start + OPEN.len()..];
+        let Some(end) = persona_and_rest.find(CLOSE) else {
+            redacted.push_str(REDACTED);
+            return redacted;
+        };
+        redacted.push_str(REDACTED);
+        remaining = &persona_and_rest[end + CLOSE.len()..];
+    }
+    redacted.push_str(remaining);
+    redacted
 }
 
 fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
@@ -933,7 +1236,7 @@ fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
     );
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut command);
     let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
@@ -975,7 +1278,7 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     // Put Codex (and its descendants — MCP server, any subprocesses it
     // spawns) into their own process group so the Tauri exit handler can
     // SIGTERM the whole tree without risking the app itself. See

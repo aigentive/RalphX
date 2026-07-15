@@ -1,8 +1,7 @@
-use tauri::{AppHandle, Emitter};
-
 use crate::domain::entities::merge_progress_event::{
     MergePhase, MergePhaseStatus, MergeProgressEvent,
 };
+use ralphx_events::{emit_serialized, EventSink};
 
 pub(crate) fn validation_log_dir(task_id: &str) -> std::path::PathBuf {
     crate::utils::runtime_log_paths::merge_validation_log_dir(task_id)
@@ -75,13 +74,12 @@ pub(crate) fn cleanup_validation_logs(task_id: &str) {
 
 /// Emit a high-level merge progress event for UI display.
 ///
-/// Note: All `let _ = handle.emit(...)` in this module are intentional —
-/// no frontend listeners is OK for progress/validation events.
+/// Note: no frontend listeners is OK for progress/validation events.
 ///
 /// Also stores the event in the global hydration store so the frontend
 /// can fetch it on mount (events fire before frontend subscribes).
-pub(crate) fn emit_merge_progress<R: tauri::Runtime>(
-    app_handle: Option<&AppHandle<R>>,
+pub(crate) fn emit_merge_progress(
+    event_sink: Option<&dyn EventSink>,
     task_id: &str,
     phase: MergePhase,
     status: MergePhaseStatus,
@@ -89,10 +87,16 @@ pub(crate) fn emit_merge_progress<R: tauri::Runtime>(
 ) {
     let event = MergeProgressEvent::new(task_id.to_string(), phase, status, message);
 
-    // Always store in hydration map (even without app_handle — backend-only merges still need hydration)
+    // Always store in hydration map (even without event_sink — backend-only merges still need hydration)
     crate::domain::entities::merge_progress_event::store_merge_progress(&event);
 
-    if let Some(handle) = app_handle {
-        let _ = handle.emit("task:merge_progress", event);
+    if let Some(sink) = event_sink {
+        if let Err(error) = emit_serialized(sink, "task:merge_progress", &event) {
+            tracing::warn!(
+                task_id,
+                error = %error,
+                "Failed to serialize merge progress event"
+            );
+        }
     }
 }

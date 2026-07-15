@@ -13,8 +13,26 @@ use crate::domain::entities::{
     ProjectId, SessionOrigin, Task,
 };
 use crate::domain::services::RunningAgentKey;
+use crate::infrastructure::agents::claude::StreamTimeoutsConfig;
 
 // ======= Unit tests for should_auto_recover() =======
+
+#[test]
+fn notification_retention_prune_uses_runtime_config_values() {
+    let config = StreamTimeoutsConfig {
+        notification_retention_read_days: 7,
+        notification_retention_max_rows: 42,
+        ..StreamTimeoutsConfig::default()
+    };
+    let now = chrono::DateTime::parse_from_rfc3339("2026-07-11T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let (read_before, max_rows) = notification_retention_prune_args(&config, now);
+
+    assert_eq!(read_before, now - chrono::Duration::days(7));
+    assert_eq!(max_rows, 42);
+}
 
 #[test]
 fn test_auto_recover_with_shutdown_flag() {
@@ -139,7 +157,7 @@ fn test_no_auto_recover_shutdown_false() {
 
 // ======= Integration tests for recover_crash_escalated_tasks() =======
 
-fn build_runner_for_tests(app_state: &AppState) -> StartupJobRunner<tauri::Wry> {
+fn build_runner_for_tests(app_state: &AppState) -> StartupJobRunner {
     let execution_state = Arc::new(ExecutionState::new());
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
@@ -235,7 +253,7 @@ async fn startup_unblock_marks_blocked_task_ready_when_blockers_are_complete() {
         .await
         .unwrap();
 
-    StartupJobRunner::<tauri::Wry>::unblock_ready_tasks_for(
+    StartupJobRunner::unblock_ready_tasks_for(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -279,7 +297,7 @@ async fn dependency_reconciliation_reblocks_ready_task_with_failed_blocker() {
         .await
         .unwrap();
 
-    StartupJobRunner::<tauri::Wry>::reconcile_dependency_violations_for(
+    StartupJobRunner::reconcile_dependency_violations_for(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -987,7 +1005,7 @@ async fn test_no_recovery_archived_task_skipped() {
 fn build_runner_with_chat_service(
     app_state: &AppState,
     chat_service: Arc<dyn ChatService>,
-) -> StartupJobRunner<tauri::Wry> {
+) -> StartupJobRunner {
     let execution_state = Arc::new(ExecutionState::new());
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
@@ -1071,7 +1089,7 @@ async fn test_recover_ideation_session_active_calls_send_message() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),
@@ -1097,7 +1115,7 @@ async fn test_recover_ideation_session_skips_when_not_found() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),
@@ -1136,7 +1154,7 @@ async fn test_recover_ideation_session_skips_when_archived() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),
@@ -1177,7 +1195,7 @@ async fn test_recover_ideation_session_skips_when_accepted() {
         started_at: chrono::Utc::now(),
     };
 
-    let result = StartupJobRunner::<tauri::Wry>::recover_ideation_session(
+    let result = StartupJobRunner::recover_ideation_session(
         item,
         mock.as_ref(),
         app_state.ideation_session_repo.as_ref(),

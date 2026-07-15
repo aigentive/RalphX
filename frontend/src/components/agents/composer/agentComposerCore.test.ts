@@ -7,10 +7,12 @@ import {
   extractComposerArtifactTokens,
   extractComposerIntegrationTokens,
   extractComposerPathTokens,
-  extractComposerSkillTokens,
+  extractComposerSlashSkillTokens,
+  extractPastedAtlassianResourceUrls,
   normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
+  removeResolvedAtlassianResourceUrls,
   replaceAgentComposerTrigger,
 } from "./agentComposerCore";
 
@@ -26,7 +28,19 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("detects skill triggers anywhere in a token", () => {
+  it("detects slash skill triggers at the current token start", () => {
+    const text = "Use /workspace-swe here";
+    const cursor = "Use /workspace-swe".length;
+
+    expect(detectAgentComposerTrigger(text, cursor)).toEqual({
+      kind: "skill",
+      query: "workspace-swe",
+      rangeStart: "Use ".length,
+      rangeEnd: cursor,
+    });
+  });
+
+  it("detects dollar learned-skill triggers", () => {
     const text = "Use $workspace-swe here";
     const cursor = "Use $workspace-swe".length;
 
@@ -38,7 +52,28 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("detects slash commands only at the start of the current line", () => {
+  it("ignores slash skill triggers with nested markers", () => {
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace/swe",
+        "Use /workspace/swe".length,
+      ),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace@swe",
+        "Use /workspace@swe".length,
+      ),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger(
+        "Use /workspace$swe",
+        "Use /workspace$swe".length,
+      ),
+    ).toBeNull();
+  });
+
+  it("detects slash commands at line start and slash skills in message text", () => {
     expect(detectAgentComposerTrigger("/mod", 4)).toEqual({
       kind: "slash-command",
       query: "mod",
@@ -55,7 +90,12 @@ describe("agentComposerCore", () => {
     });
     expect(
       detectAgentComposerTrigger("Use /chat", "Use /chat".length),
-    ).toBeNull();
+    ).toEqual({
+      kind: "skill",
+      query: "chat",
+      rangeStart: "Use ".length,
+      rangeEnd: "Use /chat".length,
+    });
     expect(
       detectAgentComposerTrigger("/model spark", "/model spark".length),
     ).toBeNull();
@@ -69,6 +109,18 @@ describe("agentComposerCore", () => {
       integrationKind: "jira",
       query: "RX-42",
       rangeStart: "Attach ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("detects scoped integration triggers inside the current token", () => {
+    const text = "Attach foo@jira:RX-42";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "jira",
+      query: "RX-42",
+      rangeStart: "Attach foo".length,
       rangeEnd: text.length,
     });
   });
@@ -149,12 +201,7 @@ describe("agentComposerCore", () => {
         "Find @jira:RX-1$bad",
         "Find @jira:RX-1$bad".length,
       ),
-    ).toEqual({
-      kind: "skill",
-      query: "bad",
-      rangeStart: "Find @jira:RX-1".length,
-      rangeEnd: "Find @jira:RX-1$bad".length,
-    });
+    ).toBeNull();
   });
 
   it("replaces trigger ranges and consumes one trailing space", () => {
@@ -170,12 +217,12 @@ describe("agentComposerCore", () => {
     });
   });
 
-  it("extracts unique skill tokens", () => {
+  it("extracts unique slash skill tokens and ignores dollar tokens", () => {
     expect(
-      extractComposerSkillTokens(
-        "Use $review and $review plus $plan_2 $github:yeet",
+      extractComposerSlashSkillTokens(
+        "Use /review and /review plus /workspace-swe $github:yeet /github:yeet",
       ),
-    ).toEqual(["review", "plan_2", "github:yeet"]);
+    ).toEqual(["review", "workspace-swe", "github:yeet"]);
   });
 
   it("extracts unique path tokens", () => {
@@ -198,6 +245,27 @@ describe("agentComposerCore", () => {
     expect(extractComposerArtifactTokens(text)).toEqual([
       { kind: "plan", artifactId: "artifact-1" },
     ]);
+  });
+
+  it("extracts plausible pasted Atlassian resource URLs", () => {
+    expect(
+      extractPastedAtlassianResourceUrls(
+        "See https://example.atlassian.net/browse/rx-42, docs https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy and https://example.com/browse/RX-99 plus https://example.atlassian.net/admin and https://%",
+      ),
+    ).toEqual([
+      "https://example.atlassian.net/browse/rx-42",
+      "https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy",
+      "https://example.com/browse/RX-99",
+    ]);
+  });
+
+  it("removes only backend-resolved pasted Atlassian URLs", () => {
+    expect(
+      removeResolvedAtlassianResourceUrls(
+        "See https://example.atlassian.net/browse/RX-42 and https://other.atlassian.net/browse/RX-99",
+        ["", "https://example.atlassian.net/browse/RX-42"],
+      ),
+    ).toBe("See and https://other.atlassian.net/browse/RX-99");
   });
 
   it("appends internal skill directives with safe lowercase names only", () => {

@@ -102,6 +102,8 @@ fn test_merge_into_writes_all_fields() {
         plan_update_conflict: true,
         source_update_conflict: false,
         last_freshness_check_at: Some("2026-03-08T03:00:00Z".to_owned()),
+        last_plan_freshness_check_at: Some("2026-03-08T03:00:00Z".to_owned()),
+        last_task_freshness_check_at: Some("2026-03-08T03:00:00Z".to_owned()),
         conflict_files: vec!["src/main.rs".to_owned()],
         source_branch: Some("task/branch".to_owned()),
         target_branch: Some("plan/branch".to_owned()),
@@ -164,8 +166,9 @@ fn test_merge_into_removes_optional_fields_when_none() {
     fm.merge_into(&mut metadata);
 
     // Optional fields with None values should be removed
-    assert!(metadata.get("freshness_origin_state").is_none() ||
-        metadata["freshness_origin_state"].is_null(),
+    assert!(
+        metadata.get("freshness_origin_state").is_none()
+            || metadata["freshness_origin_state"].is_null(),
         "None optional field should be removed from metadata"
     );
 }
@@ -261,6 +264,8 @@ fn test_serde_round_trip_full_struct() {
         plan_update_conflict: false,
         source_update_conflict: true,
         last_freshness_check_at: Some("2026-03-08T04:00:00Z".to_owned()),
+        last_plan_freshness_check_at: Some("2026-03-08T04:00:00Z".to_owned()),
+        last_task_freshness_check_at: Some("2026-03-08T04:00:00Z".to_owned()),
         conflict_files: vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()],
         source_branch: Some("task/t1".to_owned()),
         target_branch: Some("plan/p1".to_owned()),
@@ -273,7 +278,10 @@ fn test_serde_round_trip_full_struct() {
     original.merge_into(&mut metadata);
 
     let recovered = FreshnessMetadata::from_task_metadata(&metadata);
-    assert_eq!(recovered, original, "Round-trip must produce identical struct");
+    assert_eq!(
+        recovered, original,
+        "Round-trip must produce identical struct"
+    );
 }
 
 #[test]
@@ -284,7 +292,10 @@ fn test_serde_round_trip_defaults() {
     original.merge_into(&mut metadata);
 
     let recovered = FreshnessMetadata::from_task_metadata(&metadata);
-    assert_eq!(recovered, original, "Default struct must round-trip correctly");
+    assert_eq!(
+        recovered, original,
+        "Default struct must round-trip correctly"
+    );
 }
 
 #[test]

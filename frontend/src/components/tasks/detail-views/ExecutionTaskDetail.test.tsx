@@ -210,6 +210,36 @@ describe("ExecutionTaskDetail", () => {
     expect(progressSection.textContent).not.toContain("Step 3 of 4");
   });
 
+  it("renders completed progress separately from the active in-progress layer", () => {
+    const task = createTestTask();
+    mockUseStepProgress.mockReturnValue({
+      data: {
+        total: 5,
+        completed: 1,
+        inProgress: 1,
+        pending: 1,
+        skipped: 2,
+        failed: 0,
+        percentComplete: 33.333,
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useStepProgress>);
+
+    render(<ExecutionTaskDetail task={task} />, { wrapper: TestWrapper });
+
+    const progressSection = screen.getByTestId("execution-progress-section");
+    const completedFill = screen.getByTestId("progress-completed-fill");
+    const activeSegment = screen.getByTestId("progress-active-segment");
+
+    expect(progressSection.textContent).toContain("Step 1 of 3");
+    expect(screen.getByText("33%")).toBeInTheDocument();
+    expect(parseFloat(completedFill.style.width)).toBeCloseTo(33.333, 2);
+    expect(parseFloat(activeSegment.style.left)).toBeCloseTo(33.333, 2);
+    expect(parseFloat(activeSegment.style.width)).toBeCloseTo(33.333, 2);
+    expect(activeSegment).toHaveAttribute("data-animated", "true");
+  });
+
   it("renders revision feedback section for re_executing tasks", () => {
     const task = createTestTask({ internalStatus: "re_executing" });
     const reviewNote: ReviewNoteResponse = {
@@ -496,6 +526,30 @@ describe("ExecutionTaskDetail", () => {
       expect(
         section.textContent?.includes(new Date(errorAt).toLocaleString())
       ).toBe(true);
+    });
+
+    it("renders validation failure metadata as validation failure in historical mode", () => {
+      const task = createTestTask({
+        internalStatus: "executing",
+        completedAt: "2026-02-15T11:00:00+00:00",
+        metadata: JSON.stringify({
+          failure_source: "validation_failed",
+          last_agent_error: "Validation failed: 1 failed, 9 passed",
+          last_agent_error_context: "execution",
+        }),
+      });
+
+      render(<ExecutionTaskDetail task={task} isHistorical={true} />, {
+        wrapper: TestWrapper,
+      });
+
+      const section = screen.getByTestId("agent-error-section");
+      expect(section).toBeInTheDocument();
+      expect(screen.getByText("Validation Failed")).toBeInTheDocument();
+      expect(screen.queryByText("Worker Error")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Validation failed: 1 failed, 9 passed")
+      ).toBeInTheDocument();
     });
 
     it("renders team progress section with teammate role and activity", () => {

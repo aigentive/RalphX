@@ -2,14 +2,18 @@
 // This layer bridges the domain and infrastructure layers
 
 pub mod agent_client_bundle;
+pub mod agent_conversation_archive;
+#[cfg(test)]
+mod agent_conversation_archive_tests;
 pub mod agent_conversation_fork;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
+pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
+pub(crate) mod agent_conversation_workspace_restart;
 pub mod agent_conversation_workspace_base;
-pub mod agent_workspace_continuation;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
 pub mod agent_lane_settings_bootstrap;
@@ -17,20 +21,31 @@ pub(crate) mod agent_planning_session_titles;
 pub mod agent_task_service;
 pub mod agent_terminal;
 pub mod agent_workspace_bridge;
+pub mod agent_workspace_continuation;
 pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
+pub mod agent_workspace_review_base;
+#[cfg(test)]
+mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
+#[cfg(test)]
+mod agent_workspace_review_mode_guard_tests;
+pub(crate) mod agent_workspace_review_publish_handoff;
+pub mod app_paths;
 pub mod app_setup;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+pub mod attention_service;
+pub mod automation;
 pub mod chat_attachment_service;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;
 pub mod clickup_integration_service;
+pub mod clickup_git_association;
 pub mod dependency_service;
 #[cfg(all(dev, target_os = "macos"))]
 pub(crate) mod dev_dock_icon;
@@ -40,6 +55,15 @@ pub mod execution_settings_bootstrap;
 pub mod external_issue_link_service;
 pub(crate) mod git_artifact_cleanup;
 pub mod git_service;
+pub mod git_mutation_recovery;
+pub mod branch_update_executor;
+pub mod branch_update_workflow;
+#[cfg(test)]
+mod branch_update_executor_tests;
+#[cfg(test)]
+mod git_mutation_recovery_tests;
+#[cfg(test)]
+mod git_service_strict_worktree_tests;
 pub mod granola_integration_service;
 pub mod harness_runtime_registry;
 pub mod http_shutdown;
@@ -51,19 +75,40 @@ pub mod ideation_model_bootstrap;
 pub mod ideation_service;
 pub mod ideation_workspace;
 pub mod integration_reference_expansion;
+pub mod interactive_notification_producer;
+#[cfg(test)]
+mod interactive_notification_producer_tests;
 pub mod interactive_process_registry;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
+pub mod managed_team;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
+pub(crate) mod merge_pipeline_visibility;
 pub(crate) mod native_menu;
+pub mod notification_context_resolver;
+pub mod notification_service;
+#[cfg(test)]
+mod notification_service_tests;
 pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
+pub mod personas;
+pub mod persona_ingest;
+pub mod persona_prompt;
+pub mod persona_resolver;
 pub mod permission_state;
+#[cfg(test)]
+mod persona_ingest_tests;
+#[cfg(test)]
+mod persona_prompt_tests;
+#[cfg(test)]
+mod persona_resolver_tests;
+pub(crate) mod plan_artifact_approval;
 pub(crate) mod plan_complexity_assessment;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
+pub(crate) mod plan_reference_import;
 pub mod pr_startup_recovery;
 pub mod priority_service;
 pub mod project_pr_template;
@@ -73,6 +118,7 @@ pub(crate) mod provider_onboarding_gate;
 pub mod provider_session_fork;
 pub mod prune_engine;
 pub mod publish_resilience;
+pub mod pull_request_detail;
 pub mod qa_service;
 pub mod question_state;
 pub mod ready_task_scheduler;
@@ -105,7 +151,11 @@ pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
-pub mod pull_request_detail;
+pub mod task_notification_producer;
+pub(crate) mod task_diff_base;
+#[cfg(test)]
+mod task_diff_base_tests;
+pub mod task_restart;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
 pub mod team_events;
@@ -118,6 +168,10 @@ pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
+pub(crate) mod validation_events;
+pub mod validation_service;
+pub mod verification_child_session;
+pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
 
@@ -134,6 +188,7 @@ pub use agent_lane_settings_bootstrap::{
 };
 pub use agent_task_service::AgentTaskService;
 pub use agent_terminal::AgentTerminalService;
+pub use app_paths::AppPaths;
 pub use app_state::AppState;
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
@@ -143,8 +198,8 @@ pub use atlassian_integration_service::{
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
     AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, EmptyAtlassianApiClient, JiraIssueDetail, JiraProjectSummary,
-    JiraStatusSummary, UnavailableAtlassianApiClient,
+    AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
+    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
@@ -172,19 +227,20 @@ pub use granola_integration_service::{
     GranolaIntegrationService, GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary,
     GranolaTranscriptEntry, UnavailableGranolaApiClient,
 };
-pub(crate) use harness_runtime_registry::probe_supported_harnesses;
 pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use ideation_harness_availability::{
-    build_lane_harness_availability, resolve_lane_harness_config,
-    resolve_primary_ideation_harness_availability, team_mode_supported_for_context,
-    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override,
-    AGENT_LANES, IDEATION_LANES,
+    build_lane_harness_availability, refreshed_provider_aware_runtime_probes,
+    provider_aware_runtime_probes_for_repo, resolve_lane_harness_config,
+    resolve_primary_ideation_harness_availability_for_state, team_mode_supported_for_context,
+    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
+    IDEATION_LANES,
 };
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
     UpdateSource,
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
+pub use notification_context_resolver::NotificationContextResolver;
 pub use linear_integration_service::{
     resolve_linear_label_ids, EmptyLinearApiClient, LinearApiClient, LinearAuthContext,
     LinearComment, LinearIntegrationService, LinearIntegrationSettings,
@@ -197,7 +253,11 @@ pub use linear_webhook_reconciliation_service::{
     LinearWebhookStore, MemoryLinearWebhookStore,
 };
 pub use memory_archive_service::MemoryArchiveService;
-pub use permission_state::{PendingPermissionInfo, PermissionDecision, PermissionState};
+pub use notification_service::NotificationService;
+pub use permission_state::{
+    PendingPermissionInfo, PermissionDecision, PermissionState, PERMISSION_REQUEST_TTL,
+    PERMISSION_RESOLVED_EVENT,
+};
 pub use plan_ranking::{
     compute_activity_score, compute_final_score, compute_final_score_with_breakdown,
     compute_interaction_score, compute_recency_score, ScoreBreakdown,
@@ -221,7 +281,6 @@ pub use session_export_service::{
     SessionData, SessionExport, SessionExportService, SourceInstance,
 };
 pub use session_reopen_service::SessionReopenService;
-pub use ticketing_status_catalog_service::TicketingStatusCatalogService;
 pub use startup_jobs::StartupJobRunner;
 pub use supervisor_service::{SupervisorConfig, SupervisorService, TaskMonitorState};
 pub use task_cleanup_service::{
@@ -242,10 +301,25 @@ pub use ticketing_service::{
     TicketingMutationResult, TicketingOperationEvent, TicketingPersonResult, TicketingService,
     TicketingTicketIdentity, TicketingTransitionOption, TICKETING_OPERATION_EVENT,
 };
+pub use ticketing_status_catalog_service::TicketingStatusCatalogService;
+pub use validation_service::{
+    RunTaskValidationRequest, TaskValidationService, TaskValidationSummary,
+    ValidationCommandRequest, ValidationCommandSummary, ValidationRunSummary,
+};
 pub use webhook_service::WebhookService;
 
 #[cfg(test)]
+mod agent_conversation_mode_switch_tests;
+#[cfg(test)]
+mod agent_conversation_archive_restart_tests;
+#[cfg(test)]
 mod agent_conversation_workspace_base_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_restart_tests;
+#[cfg(test)]
+mod agent_conversation_workspace_tests;
+#[cfg(test)]
+mod agent_workspace_continuation_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
 #[cfg(test)]
@@ -258,6 +332,10 @@ mod agent_terminal_tests;
 mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]
 mod agent_workspace_pr_supervision_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_publish_recovery_tests;
+#[cfg(test)]
+mod agent_workspace_review_publish_handoff_tests;
 #[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]
@@ -299,6 +377,8 @@ mod prune_engine_tests;
 #[cfg(test)]
 mod publish_resilience_tests;
 #[cfg(test)]
+mod pull_request_detail_tests;
+#[cfg(test)]
 mod recovery_queue_tests;
 #[cfg(test)]
 mod runtime_wiring_tests;
@@ -309,15 +389,21 @@ mod session_namer_agent_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]
+mod startup_background_tests;
+#[cfg(test)]
 mod task_transition_service_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
 #[cfg(test)]
 mod ticketing_cache_invalidator_tests;
 #[cfg(test)]
-mod pull_request_detail_tests;
-#[cfg(test)]
 mod ticketing_pr_summary_tests;
+#[cfg(test)]
+mod validation_service_tests;
+#[cfg(test)]
+mod verification_child_session_tests;
+#[cfg(test)]
+mod verification_event_emitters_tests;
 #[cfg(test)]
 mod webhook_service_tests;
 

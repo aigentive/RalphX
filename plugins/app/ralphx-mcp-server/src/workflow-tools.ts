@@ -465,7 +465,7 @@ export const WORKFLOW_TOOLS: Tool[] = [
     description:
       "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
       "Use this instead of starting a new ideation when the user asks for a small follow-up on an accepted, still-open plan. " +
-      "The backend links the task to the existing session/execution plan, creates steps, and blocks the plan merge on the new task.",
+      "The backend links the task to the existing session/execution plan, infers the default graph placement, creates steps, and blocks the plan merge on the new task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -498,7 +498,7 @@ export const WORKFLOW_TOOLS: Tool[] = [
         depends_on_task_ids: {
           type: "array",
           items: { type: "string" },
-          description: "Optional existing tasks that must complete before this one starts.",
+          description: "Optional advanced backend-validated task IDs to use instead of inferred placement blockers.",
         },
         priority: {
           type: "number",
@@ -674,6 +674,57 @@ export const WORKFLOW_TOOLS: Tool[] = [
         task_id: { type: "string", description: "The task ID" },
       },
       required: ["task_id"],
+    },
+  },
+  {
+    name: "get_branch_update_context",
+    description:
+      "Get the active branch-update operation for the assigned task, including direction, source/target branches, operation workspace, conflicts, and continuation intent.",
+    inputSchema: {
+      type: "object",
+      properties: { task_id: { type: "string", description: "The assigned task ID" } },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "complete_branch_update",
+    description:
+      "Signal that all conflict files in the assigned branch update have been edited. The backend owns staging, commit, ref update, cleanup, and the durable continuation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The assigned task ID" },
+      },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "report_branch_update_conflict",
+    description:
+      "Report branch-update conflicts that cannot be resolved safely. This blocks the update operation without emitting merge lifecycle state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The assigned task ID" },
+        conflict_files: { type: "array", items: { type: "string" } },
+        reason: { type: "string" },
+        diagnostic_info: { type: "string" },
+      },
+      required: ["task_id", "conflict_files", "reason"],
+    },
+  },
+  {
+    name: "report_branch_update_incomplete",
+    description:
+      "Report a non-conflict Git/workspace/environment blocker for the active branch update.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The assigned task ID" },
+        reason: { type: "string" },
+        diagnostic_info: { type: "string" },
+      },
+      required: ["task_id", "reason"],
     },
   },
 

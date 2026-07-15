@@ -1,10 +1,10 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    flush_content_before_error, format_agent_exit_stderr,
-    normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
-    persist_assistant_message_snapshot, persist_message_text_timeline_item,
-    persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
-    process_stream_background, provider_session_ref_for_harness,
+    completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
+    is_user_attended_turn_completion, normalize_codex_cumulative_usage_for_persistence,
+    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
+    persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
     resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
     upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
@@ -36,6 +36,75 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 struct FailingTimelineRepository;
+
+#[test]
+fn completion_tool_result_accepts_success_payloads() {
+    assert!(completion_tool_result_accepted(None));
+    assert!(completion_tool_result_accepted(Some(
+        &serde_json::json!({ "success": true })
+    )));
+    assert!(completion_tool_result_accepted(Some(
+        &serde_json::json!({ "status": "ok" })
+    )));
+}
+
+#[test]
+fn completion_tool_result_rejects_error_payloads() {
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "is_error": true })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "isError": true })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "success": false })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "status": "failed" })
+    )));
+}
+
+#[test]
+fn agent_waiting_suppresses_automation_run_conversations() {
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Ideation,
+        true,
+        false,
+    ));
+}
+
+#[test]
+fn agent_waiting_suppresses_child_and_background_contexts() {
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Ideation,
+        false,
+        true,
+    ));
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::Delegation,
+        false,
+        false,
+    ));
+    assert!(!is_user_attended_turn_completion(
+        ChatContextType::TaskExecution,
+        false,
+        false,
+    ));
+}
+
+#[test]
+fn agent_waiting_allows_user_attended_interactive_conversations() {
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Ideation,
+        false,
+        false,
+    ));
+    assert!(is_user_attended_turn_completion(
+        ChatContextType::Project,
+        false,
+        false,
+    ));
+}
 
 #[async_trait::async_trait]
 impl ChatTimelineRepository for FailingTimelineRepository {
@@ -77,6 +146,14 @@ impl ChatTimelineRepository for FailingTimelineRepository {
         Ok(Vec::new())
     }
 
+    async fn delete_message_items_except_block_indices(
+        &self,
+        _message_id: &ChatMessageId,
+        _retained_block_indices: Vec<i64>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn mark_message_items_finalized(&self, _message_id: &ChatMessageId) -> AppResult<()> {
         Ok(())
     }
@@ -104,6 +181,31 @@ async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     drop(stdin);
 
     child
+}
+
+async fn spawn_jsonl_process_with_exit_status(
+    lines: &[&str],
+    exit_status: i32,
+) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s' \"$RALPHX_STREAM_LINES\"; exit \"$RALPHX_EXIT_STATUS\"")
+        .env("RALPHX_STREAM_LINES", payload)
+        .env("RALPHX_EXIT_STATUS", exit_status.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    command
+        .spawn()
+        .expect("spawn codex jsonl fixture with exit status")
 }
 
 async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::process::Child {
@@ -303,6 +405,135 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
     assert_eq!(outcome.response_text, "Done.");
     assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
     assert_eq!(outcome.turns_finalized, 0);
+}
+
+#[tokio::test]
+async fn codex_stream_accepted_completion_tool_enters_grace_path() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"result":{"success":true}}}"#,
+        r#"{"type":"turn.completed","usage":{"last_token_usage":{"input_tokens":3,"output_tokens":2}}}"#,
+    ])
+    .await
+    .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(outcome.tool_calls[0].name, "ralphx::execution_complete");
+}
+
+#[tokio::test]
+async fn codex_stream_started_completion_then_rejected_has_no_completion_authority() {
+    let result = run_codex_stream_lines(&[
+        r#"{"type":"item.started","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"}}}"#,
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","error":{"message":"ERROR: validation_failed\n\nDetails: Validation failed: 1 failed, 9 passed"}}}"#,
+    ])
+    .await
+    .expect_err("a rejected completion tool must not inherit authority from item.started");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("validation_failed"));
+            assert!(message.contains("1 failed, 9 passed"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_accepted_completion_suppresses_late_local_diagnostic() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"result":{"success":true}}}"#,
+        r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","status":"failed","aggregated_output":"late cleanup diagnostic","exit_code":1}}"#,
+    ])
+    .await
+    .expect("an accepted completion must outrank a later local diagnostic");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
+async fn codex_empty_nonzero_terminal_exit_is_typed_as_no_output() {
+    let child = spawn_jsonl_process_with_exit_status(
+        &[r#"{"type":"thread.started","thread_id":"compacted-thread"}"#],
+        1,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(StreamError::NoOutput {
+                context_type: ChatContextType::Ideation
+            })
+        ),
+        "a non-zero terminal exit without diagnostics must not be reduced to AgentExit"
+    );
+}
+
+#[tokio::test]
+async fn codex_empty_success_terminal_exit_is_typed_as_no_output() {
+    let child = spawn_jsonl_process_with_exit_status(
+        &[r#"{"type":"thread.started","thread_id":"empty-success-thread"}"#],
+        0,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(StreamError::NoOutput { context_type: ChatContextType::Ideation })),
+        "a terminal success without text, tool output, or completion signal must not settle as success"
+    );
 }
 
 #[tokio::test]
@@ -545,15 +776,20 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         },
     ];
 
+    let mut streaming_blocks = blocks.clone();
+    streaming_blocks.push(ContentBlockItem::Text {
+        text: "Obsolete streaming-only progress".to_string(),
+    });
+
     let streaming_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
-        &blocks,
+        &streaming_blocks,
         ChatTimelineItemStatus::Streaming,
     )
     .await;
-    assert_eq!(streaming_items.len(), 3);
+    assert_eq!(streaming_items.len(), 4);
     assert_eq!(streaming_items[0].status, ChatTimelineItemStatus::Streaming);
     assert_eq!(streaming_items[1].tool_call_id.as_deref(), Some("tool-1"));
 
@@ -562,7 +798,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .get_page(&conversation_id, 10, None)
         .await
         .expect("load timeline page");
-    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.items.len(), 4);
     assert_eq!(page.items[0].block_index, 1);
     assert_eq!(
         page.items[0].text.as_deref(),
@@ -599,6 +835,10 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .await
         .expect("load finalized timeline page");
     assert_eq!(finalized.items.len(), 3);
+    assert!(!finalized
+        .items
+        .iter()
+        .any(|item| item.text.as_deref() == Some("Obsolete streaming-only progress")));
     assert!(finalized
         .items
         .iter()
@@ -1015,6 +1255,45 @@ async fn claude_stream_success_result_completes_interactive_turn() {
 }
 
 #[tokio::test]
+async fn claude_stream_accepted_completion_tool_enters_grace_path() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":true},"is_error":false}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
+async fn claude_stream_accepted_completion_suppresses_late_agent_exit() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":true},"is_error":false}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["late process shutdown"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted completion must outrank a later agent-exit diagnostic");
+
+    assert!(outcome.completion_tool_called);
+}
+
+#[tokio::test]
+async fn claude_stream_rejected_completion_remains_failed() {
+    let result = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu-complete","type":"tool_result","content":{"success":false},"is_error":true}]}}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["validation_failed"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect_err("a rejected completion result must remain a failed run");
+
+    assert!(matches!(result, StreamError::AgentExit { .. }));
+}
+
+#[tokio::test]
 async fn claude_stream_runtime_rate_limit_result_still_classifies_as_provider_error() {
     let result = run_claude_stream_lines(&[
         r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["Error: rate_limit_exceeded"],"cost_usd":0.0}"#,
@@ -1047,7 +1326,7 @@ async fn claude_stream_usage_limit_assistant_banner_still_classifies_as_provider
 }
 
 #[tokio::test]
-async fn codex_stream_local_command_failures_are_agent_exit_not_provider_pause() {
+async fn codex_stream_local_command_failures_are_local_tool_failure_not_provider_pause() {
     let result = run_codex_stream_lines(
         &[
             r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","command":"rg rate_limit missing.rs","status":"failed","aggregated_output":"rg: missing.rs: No such file or directory\nlocal enum rate_limit","exit_code":2}}"#,
@@ -1055,33 +1334,63 @@ async fn codex_stream_local_command_failures_are_agent_exit_not_provider_pause()
         ],
     )
     .await
-    .expect_err("local command failures should surface as an agent error");
+    .expect_err("local command failures should surface as a local tool error");
 
     match result {
-        StreamError::AgentExit { stderr, .. } => {
-            assert!(stderr.contains("No such file or directory"));
-            assert!(stderr.contains("rate_limit"));
-            assert!(stderr.contains("Codex command_execution failed with exit code 7"));
+        StreamError::LocalToolFailed { message } => {
+            assert!(message.contains("No such file or directory"));
+            assert!(message.contains("rate_limit"));
+            assert!(message.contains("Codex command_execution failed with exit code 7"));
         }
-        other => panic!("expected local command failures to remain AgentExit, got {other:?}"),
+        other => panic!("expected local command failures to remain LocalToolFailed, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn codex_stream_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+async fn codex_stream_mcp_tool_failure_with_rate_limit_text_is_local_tool_failure() {
     let result = run_codex_stream_lines(
         &[r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"delegate_start","error":{"message":"delegate_start failed after reading local rate_limit metadata"}}}"#],
     )
     .await
-    .expect_err("local MCP failure should surface as an agent error");
+    .expect_err("local MCP failure should surface as a local tool error");
 
     match result {
-        StreamError::AgentExit { stderr, .. } => {
-            assert!(stderr.contains("delegate_start failed"));
-            assert!(stderr.contains("rate_limit"));
+        StreamError::LocalToolFailed { message } => {
+            assert!(message.contains("delegate_start failed"));
+            assert!(message.contains("rate_limit"));
         }
-        other => panic!("expected local MCP failure to remain AgentExit, got {other:?}"),
+        other => panic!("expected local MCP failure to remain LocalToolFailed, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn codex_stream_completion_rejection_with_validation_code_is_validation_failed() {
+    let result = run_codex_stream_lines(
+        &[r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","error":{"message":"ERROR: validation_failed\n\nDetails: Validation failed: 1 failed, 9 passed"}}}"#],
+    )
+    .await
+    .expect_err("validation rejection should surface as validation failure");
+
+    match result {
+        StreamError::ValidationFailed { message } => {
+            assert!(message.contains("validation_failed"));
+            assert!(message.contains("1 failed, 9 passed"));
+        }
+        other => panic!("expected validation failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_completed_after_local_command_failure_keeps_diagnostic_non_terminal() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","status":"failed","aggregated_output":"test failed while repairing","exit_code":1}}"#,
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Repaired the failure."}}"#,
+        r#"{"type":"turn.completed"}"#,
+    ])
+    .await
+    .expect("a completed Codex turn must not become AgentExit because an earlier command failed");
+
+    assert_eq!(outcome.response_text, "Repaired the failure.");
 }
 
 #[tokio::test]

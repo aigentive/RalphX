@@ -26,7 +26,11 @@ export type MockChatScenario = {
 };
 
 function createConversation(
-  conversation: Omit<ChatConversation, "claudeSessionId" | "providerSessionId" | "providerHarness"> &
+  conversation: Omit<
+    ChatConversation,
+    "claudeSessionId" | "providerSessionId" | "providerHarness" | "coordinationMode"
+  > &
+    Partial<Pick<ChatConversation, "coordinationMode">> &
     Parameters<typeof normalizeConversationProviderMetadata>[0]
 ): ChatConversation {
   return {
@@ -38,6 +42,7 @@ function createConversation(
       providerSessionId: conversation.providerSessionId,
       providerHarness: conversation.providerHarness,
     }),
+    coordinationMode: conversation.coordinationMode ?? "solo",
     title: conversation.title,
     messageCount: conversation.messageCount,
     lastMessageAt: conversation.lastMessageAt,
@@ -907,8 +912,11 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           projectId: "project-mock-1",
           taskId: "task-mock-4",
           role: "user",
-          content: "Execute task: task-mock-4",
-          metadata: null,
+          content: "Task runtime bootstrap",
+          metadata: JSON.stringify({
+            hidden_from_ui: true,
+            source: "task_runtime_bootstrap",
+          }),
           parentMessageId: null,
           conversationId: executionReplayConversationId,
           toolCalls: null,
@@ -1005,8 +1013,11 @@ const chatScenarioFixtures: Record<MockChatScenarioName, MockChatScenario> = {
           projectId: "project-mock-1",
           taskId: "task-mock-5",
           role: "user",
-          content: "Review task: task-mock-5",
-          metadata: null,
+          content: "Review runtime bootstrap",
+          metadata: JSON.stringify({
+            hidden_from_ui: true,
+            source: "task_runtime_bootstrap",
+          }),
           parentMessageId: null,
           conversationId: reviewReplayConversationId,
           toolCalls: null,

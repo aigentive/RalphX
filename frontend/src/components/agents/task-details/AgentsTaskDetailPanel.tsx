@@ -49,6 +49,7 @@ import {
   MergeConflictTaskDetail,
   MergeIncompleteTaskDetail,
   MergedTaskDetail,
+  BranchUpdateTaskDetail,
 } from "./detail-views";
 
 interface AgentsTaskDetailPanelProps {
@@ -121,6 +122,9 @@ const TASK_DETAIL_VIEWS: Record<
   waiting_on_pr: MergingTaskDetail,
   merge_incomplete: MergeIncompleteTaskDetail,
   merge_conflict: MergeConflictTaskDetail,
+  updating_plan_branch: BranchUpdateTaskDetail,
+  updating_task_branch: BranchUpdateTaskDetail,
+  branch_update_blocked: BranchUpdateTaskDetail,
   // Terminal states
   merged: MergedTaskDetail,
   failed: BasicTaskDetail,
@@ -250,6 +254,21 @@ const STATUS_CONFIG: Record<
   },
   merge_conflict: {
     label: "Merge Conflict",
+    bg: "var(--status-warning-muted)",
+    text: "var(--status-warning)",
+  },
+  updating_plan_branch: {
+    label: "Updating Plan Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  updating_task_branch: {
+    label: "Updating Task Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  branch_update_blocked: {
+    label: "Branch Update Blocked",
     bg: "var(--status-warning-muted)",
     text: "var(--status-warning)",
   },

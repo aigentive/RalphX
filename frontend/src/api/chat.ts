@@ -5,11 +5,13 @@ import { z } from "zod";
 import type {
   AgentConversationMode,
   ChatConversation,
+  CoordinationMode,
   AgentRun,
   ContextType,
 } from "../types/chat-conversation";
 import {
   AgentConversationModeSchema,
+  CoordinationModeSchema,
   ContextTypeSchema,
   normalizeConversationProviderMetadata,
 } from "../types/chat-conversation";
@@ -19,6 +21,11 @@ import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
+import {
+  ArtifactResponseSchema,
+  transformArtifactResponse,
+} from "@/api/artifact";
+import type { Artifact } from "@/types/artifact";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
 import {
   RunningIdeationSessionSchema,
@@ -88,6 +95,7 @@ export interface ChatMessageResponse {
   timelineStatus?: string | null;
   timelineKind?: string | null;
   timelineSequence?: number | null;
+  runId?: string | null;
   createdAt: string;
 }
 
@@ -425,14 +433,9 @@ export interface ConversationListPageResponse {
 }
 
 export type AgentSidebarPublicationState =
-  | "active"
-  | "draft"
-  | "merged"
-  | "closed"
-  | "uncommitted"
-  | "unpushed";
+  "active" | "draft" | "merged" | "closed" | "uncommitted" | "unpushed";
 
-export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarGroupBy = "project" | "publication" | "automation";
 export type AgentSidebarSort = "latest" | "az" | "za";
 
 export interface AgentSidebarConversationsInput {
@@ -656,6 +659,31 @@ const ChatConversationResponseSchema = z.object({
   effective_effort: z.string().nullable().optional(),
   service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
+  persona_id: z.string().nullable().optional(),
+  last_run_persona_run_id: z.string().nullable().optional(),
+  last_run_persona_id: z.string().nullable().optional(),
+  last_run_persona_slug: z.string().nullable().optional(),
+  last_run_persona_version: z.number().int().nullable().optional(),
+  last_run_persona_content_hash: z.string().nullable().optional(),
+  last_run_persona_injected: z.boolean().nullable().optional(),
+  last_run_persona_skipped_reason: z.string().nullable().optional(),
+  persona_runs: z
+    .array(
+      z.object({
+        run_id: z.string(),
+        persona_id: z.string(),
+        persona_slug: z.string(),
+        persona_version: z.number().int(),
+        persona_content_hash: z.string(),
+        injected: z.boolean(),
+        skipped_reason: z.string().nullable().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
+  coordination_mode: CoordinationModeSchema.optional().default("solo"),
+  automation_id: z.string().nullable().optional(),
+  automation_run_id: z.string().nullable().optional(),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
   message_count: z.number(),
@@ -682,6 +710,12 @@ const AgentRunResponseSchema = z.object({
   error_message: z.string().nullable(),
   model_id: z.string().nullable().optional(),
   model_label: z.string().nullable().optional(),
+  persona_id: z.string().nullable().optional(),
+  persona_slug: z.string().nullable().optional(),
+  persona_version: z.number().int().nullable().optional(),
+  persona_content_hash: z.string().nullable().optional(),
+  persona_injected: z.boolean().nullable().optional(),
+  persona_skipped_reason: z.string().nullable().optional(),
 });
 
 type RawConversation = z.infer<typeof ChatConversationResponseSchema>;
@@ -710,6 +744,27 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveEffort: raw.effective_effort ?? null,
     serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
+    personaId: raw.persona_id ?? null,
+    lastRunPersonaRunId: raw.last_run_persona_run_id ?? null,
+    lastRunPersonaId: raw.last_run_persona_id ?? null,
+    lastRunPersonaSlug: raw.last_run_persona_slug ?? null,
+    lastRunPersonaVersion: raw.last_run_persona_version ?? null,
+    lastRunPersonaContentHash: raw.last_run_persona_content_hash ?? null,
+    lastRunPersonaInjected: raw.last_run_persona_injected ?? null,
+    lastRunPersonaSkippedReason:
+      raw.last_run_persona_skipped_reason ?? null,
+    personaRuns: raw.persona_runs.map((run) => ({
+      id: run.run_id,
+      personaId: run.persona_id,
+      personaSlug: run.persona_slug,
+      personaVersion: run.persona_version,
+      personaContentHash: run.persona_content_hash,
+      personaInjected: run.injected,
+      personaSkippedReason: run.skipped_reason ?? null,
+    })),
+    coordinationMode: raw.coordination_mode ?? "solo",
+    automationId: raw.automation_id ?? null,
+    automationRunId: raw.automation_run_id ?? null,
     parentConversationId: raw.parent_conversation_id ?? null,
     title: raw.title,
     messageCount: raw.message_count,
@@ -1038,6 +1093,12 @@ function transformAgentRun(raw: RawAgentRun): AgentRun {
     errorMessage: raw.error_message,
     modelId: raw.model_id ?? null,
     modelLabel: raw.model_label ?? null,
+    personaId: raw.persona_id ?? null,
+    personaSlug: raw.persona_slug ?? null,
+    personaVersion: raw.persona_version ?? null,
+    personaContentHash: raw.persona_content_hash ?? null,
+    personaInjected: raw.persona_injected ?? null,
+    personaSkippedReason: raw.persona_skipped_reason ?? null,
   };
 }
 
@@ -1218,6 +1279,7 @@ function transformTimelineItem(
     timelineStatus: raw.status,
     timelineKind: raw.kind,
     timelineSequence: raw.sequence,
+    runId: raw.run_id ?? null,
     content: raw.content,
     metadata: raw.metadata ?? null,
     parentMessageId: raw.message_id ?? null,
@@ -1370,7 +1432,8 @@ export async function getConversation(conversationId: string): Promise<{
 }
 
 /**
- * Get a tail-first page of conversation messages.
+ * Legacy compatibility: get a tail-first page of conversation messages.
+ * Visible Agent transcripts should prefer getConversationTimelinePage().
  * `offset` counts how many newest messages to skip before loading older history.
  */
 export async function getConversationMessagesPage(
@@ -1516,10 +1579,11 @@ export async function spawnConversationSessionNamer(
 
 export async function archiveConversation(
   conversationId: string,
+  options: { closePullRequest: boolean },
 ): Promise<ChatConversation> {
   const raw = await typedInvoke(
     "archive_agent_conversation",
-    { conversationId },
+    { conversationId, closePullRequest: options.closePullRequest },
     ChatConversationResponseSchema,
   );
   return transformConversation(raw);
@@ -1615,8 +1679,11 @@ export const chatApi = {
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
+  setAgentWorkspacePrReviewAutoApprove,
+  setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
+  startAgentWorkspaceReviewFixer,
   listAgentConversationIssues,
   updateAgentConversationIssueStatus,
   convertAgentConversationIssueFollowup,
@@ -1624,12 +1691,16 @@ export const chatApi = {
   skipAgentWorkspacePrReviewAction,
   getAgentRunStatus,
   getAgentRunningStates,
+  getAgentConversationRuntimeIndex,
   getAgentConversationRuntimeStatuses,
   getBulkWorkspacePublicationStates,
   // Message sending & queue
   startAgentConversation,
   forkAgentConversation,
   switchAgentConversationMode,
+  updateAgentConversationCoordinationMode,
+  copyAgentConversationPlan,
+  importAgentConversationPlan,
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
@@ -1687,6 +1758,22 @@ export interface ComposerArtifactReference {
   status?: string;
 }
 
+export type TeamIntentStrategy = "research" | "debate" | "execution";
+
+export interface TeamIntent {
+  coordinationMode: CoordinationMode;
+  strategy?: TeamIntentStrategy | null;
+}
+
+export type TeamMessageTargetKind = "coordinator" | "member" | "broadcast";
+
+export interface TeamMessageTarget {
+  kind: TeamMessageTargetKind;
+  teamId?: string | null;
+  teamMemberId?: string | null;
+  conversationId?: string | null;
+}
+
 export interface SendAgentMessageOptions {
   conversationId?: string | null;
   providerHarness?: string | null;
@@ -1694,6 +1781,8 @@ export interface SendAgentMessageOptions {
   logicalEffort?: string | null;
   codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
+  teamIntent?: TeamIntent | null;
+  teamMessageTarget?: TeamMessageTarget | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -1701,9 +1790,7 @@ export interface SendAgentMessageOptions {
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
 export type AgentConversationBaseRefKind =
-  | "project_default"
-  | "current_branch"
-  | "local_branch";
+  "project_default" | "current_branch" | "local_branch";
 export type AgentConversationBranchMode = "isolated" | "linked";
 
 export interface AgentConversationBaseSelection {
@@ -1776,9 +1863,11 @@ export interface StartAgentConversationInput {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  personaId?: string | null;
   codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
+  teamIntent?: TeamIntent | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -1810,6 +1899,31 @@ export interface SwitchAgentConversationModeResult {
   workspace: AgentConversationWorkspace | null;
 }
 
+export interface UpdateAgentConversationCoordinationModeInput {
+  conversationId: string;
+  coordinationMode: CoordinationMode;
+}
+
+export interface CopyAgentConversationPlanInput {
+  conversationId: string;
+  sourceSessionId: string;
+  sourceArtifactId: string;
+  sourceVersion: number;
+}
+
+export interface ImportAgentConversationPlanInput {
+  conversationId: string;
+  title: string;
+  content: string;
+}
+
+export interface AgentConversationPlanSeedResult {
+  conversation: ChatConversation;
+  workspace: AgentConversationWorkspace;
+  sessionId: string;
+  artifact: Artifact;
+}
+
 export interface PublishAgentConversationWorkspaceResult {
   workspace: AgentConversationWorkspace;
   commitSha: string | null;
@@ -1837,9 +1951,7 @@ export interface AgentConversationWorkspacePublicationEvent {
 }
 
 export type AgentConversationWorkspaceBaseStatus =
-  | "valid"
-  | "retargeted"
-  | "blocked";
+  "valid" | "retargeted" | "blocked";
 export type AgentConversationWorkspaceFreshnessScope = "local" | "full";
 
 export interface AgentConversationWorkspaceFreshness {
@@ -1887,37 +1999,23 @@ export type AgentWorkspacePrReviewMonitorStatus =
   | "watching"
   | "submitting"
   | "blocked"
+  | "paused"
   | "terminal";
 
 export type AgentWorkspaceReviewMonitorStatus =
-  | "idle"
-  | "reviewing"
-  | "ready"
-  | "blocked";
+  "idle" | "reviewing" | "ready" | "blocked";
 
 export type AgentWorkspaceReviewOutcome =
-  | "none"
-  | "passed"
-  | "blocking"
-  | "no_changes"
-  | "run_failed";
+  "none" | "passed" | "blocking" | "no_changes" | "run_failed";
 
 export type AgentWorkspaceReviewGateStatus =
-  | "not_required"
-  | "required"
-  | "reviewing"
-  | "passed"
-  | "blocking"
-  | "failed";
+  "not_required" | "required" | "reviewing" | "passed" | "blocking" | "failed";
 
 export type AgentWorkspaceReviewTargetScope =
-  | "selected_source"
-  | "workspace_delta";
+  "selected_source" | "workspace_delta";
 
 export type AgentWorkspacePrReviewActionKind =
-  | "request_changes"
-  | "approve"
-  | "comment";
+  "request_changes" | "approve" | "comment";
 
 export type AgentWorkspacePrReviewActionStatus =
   | "pending"
@@ -1925,7 +2023,8 @@ export type AgentWorkspacePrReviewActionStatus =
   | "skipped"
   | "submitting"
   | "submitted"
-  | "failed";
+  | "failed"
+  | "superseded";
 
 export interface AgentWorkspacePrReviewMonitor {
   conversationId: string;
@@ -1933,7 +2032,9 @@ export interface AgentWorkspacePrReviewMonitor {
   prNumber: number;
   status: AgentWorkspacePrReviewMonitorStatus;
   monitorEnabled: boolean;
+  autoApproveEnabled: boolean;
   firstReviewCompleted: boolean;
+  firstActionResolved: boolean;
   lastSeenHeadSha: string | null;
   lastReviewedHeadSha: string | null;
   lastReviewRunId: string | null;
@@ -2049,6 +2150,17 @@ export interface StartAgentWorkspaceReviewResult {
   wasQueued: boolean;
 }
 
+export interface StartAgentWorkspaceReviewFixerResult {
+  success: boolean;
+  target: AgentWorkspaceReviewTarget | null;
+  monitor: AgentWorkspaceReviewMonitor;
+  isCurrent: boolean;
+  isOutdated: boolean;
+  shouldShowTab: boolean;
+  started: boolean;
+  skippedReason: string | null;
+}
+
 export interface SubmitAgentWorkspacePrReviewActionResult {
   success: boolean;
   monitor: AgentWorkspacePrReviewMonitor;
@@ -2061,6 +2173,11 @@ export interface SkipAgentWorkspacePrReviewActionResult {
   success: boolean;
   monitor: AgentWorkspacePrReviewMonitor;
   action: AgentWorkspacePrReviewAction;
+}
+
+export interface SetAgentWorkspacePrReviewAutoApproveResult {
+  success: boolean;
+  monitor: AgentWorkspacePrReviewMonitor;
 }
 
 const SendAgentMessageResponseSchema = z.object({
@@ -2205,10 +2322,13 @@ const AgentWorkspacePrReviewMonitorResponseSchema = z.object({
     "watching",
     "submitting",
     "blocked",
+    "paused",
     "terminal",
   ]),
   monitor_enabled: z.boolean(),
+  auto_approve_enabled: z.boolean(),
   first_review_completed: z.boolean(),
+  first_action_resolved: z.boolean(),
   last_seen_head_sha: z.string().nullable(),
   last_reviewed_head_sha: z.string().nullable(),
   last_review_run_id: z.string().nullable(),
@@ -2238,6 +2358,7 @@ const AgentWorkspacePrReviewActionResponseSchema = z.object({
     "submitting",
     "submitted",
     "failed",
+    "superseded",
   ]),
   submitted_review_id: z.string().nullable(),
   created_by_run_id: z.string().nullable(),
@@ -2277,11 +2398,22 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
     .optional()
     .default("none"),
   review_gate_status: z
-    .enum(["not_required", "required", "reviewing", "passed", "blocking", "failed"])
+    .enum([
+      "not_required",
+      "required",
+      "reviewing",
+      "passed",
+      "blocking",
+      "failed",
+    ])
     .optional()
     .default("not_required"),
-  current_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
-  reviewed_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
+  current_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable(),
+  reviewed_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable(),
   review_conversation_id: z.string().nullable().optional(),
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
@@ -2330,6 +2462,16 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   skipped_reason: z.string().nullable(),
   was_queued: z.boolean(),
 });
+const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
+  success: z.boolean(),
+  target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
+  monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  is_current: z.boolean(),
+  is_outdated: z.boolean(),
+  should_show_tab: z.boolean(),
+  started: z.boolean(),
+  skipped_reason: z.string().nullable(),
+});
 const SubmitAgentWorkspacePrReviewActionResponseSchema = z.object({
   success: z.boolean(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema,
@@ -2341,6 +2483,10 @@ const SkipAgentWorkspacePrReviewActionResponseSchema = z.object({
   success: z.boolean(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema,
   action: AgentWorkspacePrReviewActionResponseSchema,
+});
+const SetAgentWorkspacePrReviewAutoApproveResponseSchema = z.object({
+  success: z.boolean(),
+  monitor: AgentWorkspacePrReviewMonitorResponseSchema,
 });
 const WorkspaceOpenTargetResponseSchema = z.object({
   id: z.string(),
@@ -2366,6 +2512,13 @@ const ForkAgentConversationResponseSchema = z.object({
 const SwitchAgentConversationModeResponseSchema = z.object({
   conversation: ChatConversationResponseSchema,
   workspace: AgentConversationWorkspaceResponseSchema.nullable(),
+});
+
+const AgentConversationPlanSeedResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  workspace: AgentConversationWorkspaceResponseSchema,
+  session_id: z.string(),
+  artifact: ArtifactResponseSchema,
 });
 
 const PublishAgentConversationWorkspaceResponseSchema = z.object({
@@ -2410,6 +2563,9 @@ type RawForkAgentConversationResponse = z.infer<
 type RawSwitchAgentConversationModeResponse = z.infer<
   typeof SwitchAgentConversationModeResponseSchema
 >;
+type RawAgentConversationPlanSeedResponse = z.infer<
+  typeof AgentConversationPlanSeedResponseSchema
+>;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
 >;
@@ -2445,6 +2601,9 @@ type RawAgentWorkspaceReviewContext = z.infer<
 >;
 type RawStartAgentWorkspaceReviewResponse = z.infer<
   typeof StartAgentWorkspaceReviewResponseSchema
+>;
+type RawStartAgentWorkspaceReviewFixerResponse = z.infer<
+  typeof StartAgentWorkspaceReviewFixerResponseSchema
 >;
 type RawSubmitAgentWorkspacePrReviewActionResponse = z.infer<
   typeof SubmitAgentWorkspacePrReviewActionResponseSchema
@@ -2579,10 +2738,12 @@ export function startAgentConversationInvokeInput(
       : {}),
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    ...(input.personaId ? { personaId: input.personaId } : {}),
     ...(input.codexFastMode != null
       ? { codexFastMode: input.codexFastMode }
       : {}),
     ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.teamIntent ? { teamIntent: input.teamIntent } : {}),
     ...(input.composerProjectReferences?.length
       ? { composerProjectReferences: input.composerProjectReferences }
       : {}),
@@ -2635,6 +2796,17 @@ function transformSwitchAgentConversationModeResponse(
     workspace: raw.workspace
       ? transformAgentConversationWorkspace(raw.workspace)
       : null,
+  };
+}
+
+function transformAgentConversationPlanSeedResponse(
+  raw: RawAgentConversationPlanSeedResponse,
+): AgentConversationPlanSeedResult {
+  return {
+    conversation: transformConversation(raw.conversation),
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    sessionId: raw.session_id,
+    artifact: transformArtifactResponse(raw.artifact),
   };
 }
 
@@ -2708,7 +2880,9 @@ function transformAgentWorkspacePrReviewMonitor(
     prNumber: raw.pr_number,
     status: raw.status,
     monitorEnabled: raw.monitor_enabled,
+    autoApproveEnabled: raw.auto_approve_enabled,
     firstReviewCompleted: raw.first_review_completed,
+    firstActionResolved: raw.first_action_resolved,
     lastSeenHeadSha: raw.last_seen_head_sha,
     lastReviewedHeadSha: raw.last_reviewed_head_sha,
     lastReviewRunId: raw.last_review_run_id,
@@ -2771,7 +2945,7 @@ function transformAgentWorkspacePrReviewContext(
 }
 
 function transformAgentWorkspaceReviewTarget(
-  raw: RawAgentWorkspaceReviewTarget
+  raw: RawAgentWorkspaceReviewTarget,
 ): AgentWorkspaceReviewTarget {
   return {
     scope: raw.scope,
@@ -2785,7 +2959,7 @@ function transformAgentWorkspaceReviewTarget(
 }
 
 function transformAgentWorkspaceReviewMonitor(
-  raw: RawAgentWorkspaceReviewMonitor
+  raw: RawAgentWorkspaceReviewMonitor,
 ): AgentWorkspaceReviewMonitor {
   return {
     conversationId: raw.conversation_id,
@@ -2825,7 +2999,7 @@ function transformAgentWorkspaceReviewMonitor(
 }
 
 function transformAgentWorkspaceReviewContext(
-  raw: RawAgentWorkspaceReviewContext
+  raw: RawAgentWorkspaceReviewContext,
 ): AgentWorkspaceReviewContext {
   return {
     success: raw.success,
@@ -2840,7 +3014,7 @@ function transformAgentWorkspaceReviewContext(
 }
 
 function transformStartAgentWorkspaceReviewResponse(
-  raw: RawStartAgentWorkspaceReviewResponse
+  raw: RawStartAgentWorkspaceReviewResponse,
 ): StartAgentWorkspaceReviewResult {
   return {
     success: raw.success,
@@ -2852,6 +3026,21 @@ function transformStartAgentWorkspaceReviewResponse(
     started: raw.started,
     skippedReason: raw.skipped_reason,
     wasQueued: raw.was_queued,
+  };
+}
+
+function transformStartAgentWorkspaceReviewFixerResponse(
+  raw: RawStartAgentWorkspaceReviewFixerResponse,
+): StartAgentWorkspaceReviewFixerResult {
+  return {
+    success: raw.success,
+    target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
+    monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    isCurrent: raw.is_current,
+    isOutdated: raw.is_outdated,
+    shouldShowTab: raw.should_show_tab,
+    started: raw.started,
+    skippedReason: raw.skipped_reason,
   };
 }
 
@@ -3053,6 +3242,40 @@ export async function startAgentWorkspaceReview(
   return transformStartAgentWorkspaceReviewResponse(raw);
 }
 
+export async function startAgentWorkspaceReviewFixer(
+  conversationId: string,
+): Promise<StartAgentWorkspaceReviewFixerResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-fixer-runs`,
+    StartAgentWorkspaceReviewFixerResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+  return transformStartAgentWorkspaceReviewFixerResponse(raw);
+}
+
+const AgentConversationIssueOccurrenceResponseSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  source_task_id: z.string().nullable(),
+  source_context_type: z.string().nullable(),
+  source_context_id: z.string().nullable(),
+  source_agent_name: z.string().nullable(),
+  issue_kind: z.string(),
+  severity: z.string(),
+  blocking_scope: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  evidence: z.string().nullable(),
+  recommendation: z.string().nullable(),
+  raw_blocker_fingerprint: z.string().nullable(),
+  canonical_fingerprint: z.string().nullable(),
+  dedupe_decision: z.string().nullable(),
+  created_at: z.string(),
+});
+
 const AgentConversationIssueResponseSchema = z.object({
   id: z.string(),
   project_id: z.string(),
@@ -3070,6 +3293,16 @@ const AgentConversationIssueResponseSchema = z.object({
   evidence: z.string().nullable(),
   recommendation: z.string().nullable(),
   blocker_fingerprint: z.string().nullable(),
+  canonical_fingerprint: z.string().nullable().optional().default(null),
+  canonical_scope_kind: z.string().nullable().optional().default(null),
+  canonical_scope_subject: z.string().nullable().optional().default(null),
+  canonical_family: z.string().nullable().optional().default(null),
+  superseded_by_issue_id: z.string().nullable().optional().default(null),
+  occurrence_count: z.number().nullable().optional().default(null),
+  occurrences: z
+    .array(AgentConversationIssueOccurrenceResponseSchema)
+    .optional()
+    .default([]),
   followup_title: z.string().nullable(),
   followup_prompt: z.string().nullable(),
   auto_followup_eligible: z.boolean(),
@@ -3090,6 +3323,29 @@ const AgentConversationIssueMutationResponseSchema = z.object({
 type RawAgentConversationIssue = z.infer<
   typeof AgentConversationIssueResponseSchema
 >;
+type RawAgentConversationIssueOccurrence = z.infer<
+  typeof AgentConversationIssueOccurrenceResponseSchema
+>;
+
+export interface AgentConversationIssueOccurrence {
+  id: string;
+  issueId: string;
+  sourceTaskId: string | null;
+  sourceContextType: string | null;
+  sourceContextId: string | null;
+  sourceAgentName: string | null;
+  issueKind: string;
+  severity: string;
+  blockingScope: string;
+  title: string;
+  summary: string;
+  evidence: string | null;
+  recommendation: string | null;
+  rawBlockerFingerprint: string | null;
+  canonicalFingerprint: string | null;
+  dedupeDecision: string | null;
+  createdAt: string;
+}
 
 export interface AgentConversationIssue {
   id: string;
@@ -3108,6 +3364,13 @@ export interface AgentConversationIssue {
   evidence: string | null;
   recommendation: string | null;
   blockerFingerprint: string | null;
+  canonicalFingerprint: string | null;
+  canonicalScopeKind: string | null;
+  canonicalScopeSubject: string | null;
+  canonicalFamily: string | null;
+  supersededByIssueId: string | null;
+  occurrenceCount: number | null;
+  occurrences: AgentConversationIssueOccurrence[];
   followupTitle: string | null;
   followupPrompt: string | null;
   autoFollowupEligible: boolean;
@@ -3115,6 +3378,30 @@ export interface AgentConversationIssue {
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
+}
+
+function transformAgentConversationIssueOccurrence(
+  raw: RawAgentConversationIssueOccurrence,
+): AgentConversationIssueOccurrence {
+  return {
+    id: raw.id,
+    issueId: raw.issue_id,
+    sourceTaskId: raw.source_task_id,
+    sourceContextType: raw.source_context_type,
+    sourceContextId: raw.source_context_id,
+    sourceAgentName: raw.source_agent_name,
+    issueKind: raw.issue_kind,
+    severity: raw.severity,
+    blockingScope: raw.blocking_scope,
+    title: raw.title,
+    summary: raw.summary,
+    evidence: raw.evidence,
+    recommendation: raw.recommendation,
+    rawBlockerFingerprint: raw.raw_blocker_fingerprint,
+    canonicalFingerprint: raw.canonical_fingerprint,
+    dedupeDecision: raw.dedupe_decision,
+    createdAt: raw.created_at,
+  };
 }
 
 function transformAgentConversationIssue(
@@ -3137,6 +3424,13 @@ function transformAgentConversationIssue(
     evidence: raw.evidence,
     recommendation: raw.recommendation,
     blockerFingerprint: raw.blocker_fingerprint,
+    canonicalFingerprint: raw.canonical_fingerprint,
+    canonicalScopeKind: raw.canonical_scope_kind,
+    canonicalScopeSubject: raw.canonical_scope_subject,
+    canonicalFamily: raw.canonical_family,
+    supersededByIssueId: raw.superseded_by_issue_id,
+    occurrenceCount: raw.occurrence_count,
+    occurrences: raw.occurrences.map(transformAgentConversationIssueOccurrence),
     followupTitle: raw.followup_title,
     followupPrompt: raw.followup_prompt,
     autoFollowupEligible: raw.auto_followup_eligible,
@@ -3231,6 +3525,50 @@ export async function skipAgentWorkspacePrReviewAction(
     },
   );
   return transformSkipAgentWorkspacePrReviewActionResponse(raw);
+}
+
+export async function setAgentWorkspacePrReviewAutoApprove(
+  conversationId: string,
+  autoApproveEnabled: boolean,
+): Promise<SetAgentWorkspacePrReviewAutoApproveResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-settings`,
+    SetAgentWorkspacePrReviewAutoApproveResponseSchema,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auto_approve_enabled: autoApproveEnabled }),
+    },
+  );
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspacePrReviewMonitor(raw.monitor),
+  };
+}
+
+export async function setAgentWorkspacePrReviewMonitoring(
+  conversationId: string,
+  monitorEnabled: boolean,
+  activeReviewPolicy?: "finish_current" | "cancel_current",
+): Promise<SetAgentWorkspacePrReviewAutoApproveResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/pr-review-settings`,
+    SetAgentWorkspacePrReviewAutoApproveResponseSchema,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        monitor_enabled: monitorEnabled,
+        ...(activeReviewPolicy
+          ? { active_review_policy: activeReviewPolicy }
+          : {}),
+      }),
+    },
+  );
+  return {
+    success: raw.success,
+    monitor: transformAgentWorkspacePrReviewMonitor(raw.monitor),
+  };
 }
 
 export async function getAgentConversationWorkspaceFreshness(
@@ -3425,6 +3763,57 @@ export async function switchAgentConversationMode(
   return transformSwitchAgentConversationModeResponse(raw);
 }
 
+export async function updateAgentConversationCoordinationMode(
+  input: UpdateAgentConversationCoordinationModeInput,
+): Promise<ChatConversation> {
+  const raw = await typedInvoke(
+    "update_agent_conversation_coordination_mode",
+    {
+      input: {
+        conversationId: input.conversationId,
+        coordinationMode: input.coordinationMode,
+      },
+    },
+    ChatConversationResponseSchema,
+  );
+  return transformConversation(raw);
+}
+
+export async function copyAgentConversationPlan(
+  input: CopyAgentConversationPlanInput,
+): Promise<AgentConversationPlanSeedResult> {
+  const raw = await typedInvoke(
+    "copy_agent_conversation_plan",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sourceSessionId: input.sourceSessionId,
+        sourceArtifactId: input.sourceArtifactId,
+        sourceVersion: input.sourceVersion,
+      },
+    },
+    AgentConversationPlanSeedResponseSchema,
+  );
+  return transformAgentConversationPlanSeedResponse(raw);
+}
+
+export async function importAgentConversationPlan(
+  input: ImportAgentConversationPlanInput,
+): Promise<AgentConversationPlanSeedResult> {
+  const raw = await typedInvoke(
+    "import_agent_conversation_plan",
+    {
+      input: {
+        conversationId: input.conversationId,
+        title: input.title,
+        content: input.content,
+      },
+    },
+    AgentConversationPlanSeedResponseSchema,
+  );
+  return transformAgentConversationPlanSeedResponse(raw);
+}
+
 /**
  * Send a message using the unified agent API
  * Returns immediately with conversation_id and agent_run_id.
@@ -3467,6 +3856,10 @@ export async function sendAgentMessage(
           ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
+        ...(options?.teamIntent ? { teamIntent: options.teamIntent } : {}),
+        ...(options?.teamMessageTarget
+          ? { teamMessageTarget: options.teamMessageTarget }
+          : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
           : {}),
@@ -3598,12 +3991,10 @@ export interface AgentRunningState {
 }
 
 const AgentRunningStateSchema = z.union([
-  z.boolean().transform(
-    (isRunning): AgentRunningState => ({
-      isRunning,
-      agentStatus: isRunning ? "generating" : "idle",
-    }),
-  ),
+  z.boolean().transform((isRunning): AgentRunningState => ({
+    isRunning,
+    agentStatus: isRunning ? "generating" : "idle",
+  })),
   z
     .object({
       is_running: z.boolean().optional(),
@@ -3694,27 +4085,25 @@ const AgentConversationRuntimeItemSchema = z
     childSessionId: z.string().nullable(),
     conversationId: z.string().nullable(),
   })
-  .transform(
-    (item): AgentConversationRuntimeItem => ({
-      source: item.source,
-      contextType: item.contextType,
-      contextId: item.contextId,
-      label: item.label,
-      title: item.title,
-      agentStatus: item.agentStatus,
-      taskId: item.taskId,
-      internalStatus: item.internalStatus,
-      runningProcess: item.runningProcess
-        ? transformRunningProcess(item.runningProcess)
-        : null,
-      ideationSession: item.ideationSession
-        ? transformRunningIdeationSession(item.ideationSession)
-        : null,
-      parentSessionId: item.parentSessionId,
-      childSessionId: item.childSessionId,
-      conversationId: item.conversationId,
-    }),
-  );
+  .transform((item): AgentConversationRuntimeItem => ({
+    source: item.source,
+    contextType: item.contextType,
+    contextId: item.contextId,
+    label: item.label,
+    title: item.title,
+    agentStatus: item.agentStatus,
+    taskId: item.taskId,
+    internalStatus: item.internalStatus,
+    runningProcess: item.runningProcess
+      ? transformRunningProcess(item.runningProcess)
+      : null,
+    ideationSession: item.ideationSession
+      ? transformRunningIdeationSession(item.ideationSession)
+      : null,
+    parentSessionId: item.parentSessionId,
+    childSessionId: item.childSessionId,
+    conversationId: item.conversationId,
+  }));
 
 const AgentConversationRuntimeStatusSchema = z
   .object({
@@ -3725,16 +4114,14 @@ const AgentConversationRuntimeStatusSchema = z
     summaryLabel: z.string().nullable(),
     items: z.array(AgentConversationRuntimeItemSchema),
   })
-  .transform(
-    (status): AgentConversationRuntimeStatus => ({
-      conversationId: status.conversationId,
-      isRunning: status.isRunning,
-      agentStatus: status.agentStatus,
-      primarySource: status.primarySource,
-      summaryLabel: status.summaryLabel,
-      items: status.items,
-    }),
-  );
+  .transform((status): AgentConversationRuntimeStatus => ({
+    conversationId: status.conversationId,
+    isRunning: status.isRunning,
+    agentStatus: status.agentStatus,
+    primarySource: status.primarySource,
+    summaryLabel: status.summaryLabel,
+    items: status.items,
+  }));
 
 export async function getAgentConversationRuntimeStatuses(
   conversationIds: string[],
@@ -3743,6 +4130,124 @@ export async function getAgentConversationRuntimeStatuses(
     "get_agent_conversation_runtime_statuses",
     { conversationIds },
     z.record(z.string(), AgentConversationRuntimeStatusSchema),
+  );
+}
+
+const AgentConversationRuntimeIndexGroupSchema = z.enum([
+  "main",
+  "ideation_verification",
+  "pipeline",
+]);
+
+export type AgentConversationRuntimeIndexGroup = z.infer<
+  typeof AgentConversationRuntimeIndexGroupSchema
+>;
+
+const AgentConversationRuntimeIndexKindSchema = z.enum([
+  "workspace",
+  "workspace_review",
+  "ideation",
+  "verification",
+  "delegation",
+  "task",
+]);
+
+export type AgentConversationRuntimeIndexKind = z.infer<
+  typeof AgentConversationRuntimeIndexKindSchema
+>;
+
+const AgentConversationRuntimeLifecycleSchema = z.enum([
+  "planned",
+  "queued",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "blocked",
+  "dropped",
+]);
+
+export type AgentConversationRuntimeLifecycle = z.infer<
+  typeof AgentConversationRuntimeLifecycleSchema
+>;
+
+const AgentConversationRuntimeIndexModeSchema = z.enum([
+  "chat",
+  "agent",
+  "plan",
+  "pr_review",
+  "ideation",
+  "automation",
+]);
+
+export type AgentConversationRuntimeIndexMode = z.infer<
+  typeof AgentConversationRuntimeIndexModeSchema
+>;
+
+export interface AgentConversationRuntimeIndexRow {
+  id: string;
+  group: AgentConversationRuntimeIndexGroup;
+  kind: AgentConversationRuntimeIndexKind;
+  lifecycle: AgentConversationRuntimeLifecycle;
+  statusLabel: string;
+  title: string;
+  mode: AgentConversationRuntimeIndexMode | null;
+  orderIndex: number;
+  orderStartedAt: string | null;
+  completedAt: string | null;
+  conversationId: string | null;
+  contextType: ContextType | null;
+  contextId: string | null;
+  taskId: string | null;
+  agentRunId: string | null;
+  parentSessionId: string | null;
+  childSessionId: string | null;
+  providerHarness: string | null;
+  providerSessionId: string | null;
+  errorMessage: string | null;
+}
+
+export interface AgentConversationRuntimeIndexResponse {
+  conversationId: string;
+  rows: AgentConversationRuntimeIndexRow[];
+}
+
+const AgentConversationRuntimeIndexRowSchema = z.object({
+  id: z.string(),
+  group: AgentConversationRuntimeIndexGroupSchema,
+  kind: AgentConversationRuntimeIndexKindSchema,
+  lifecycle: AgentConversationRuntimeLifecycleSchema,
+  statusLabel: z.string(),
+  title: z.string(),
+  mode: AgentConversationRuntimeIndexModeSchema.nullable(),
+  orderIndex: z.number(),
+  orderStartedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  conversationId: z.string().nullable(),
+  contextType: ContextTypeSchema.nullable(),
+  contextId: z.string().nullable(),
+  taskId: z.string().nullable(),
+  agentRunId: z.string().nullable(),
+  parentSessionId: z.string().nullable(),
+  childSessionId: z.string().nullable(),
+  providerHarness: z.string().nullable(),
+  providerSessionId: z.string().nullable(),
+  errorMessage: z.string().nullable(),
+}) satisfies z.ZodType<AgentConversationRuntimeIndexRow>;
+
+const AgentConversationRuntimeIndexResponseSchema = z.object({
+  conversationId: z.string(),
+  rows: z.array(AgentConversationRuntimeIndexRowSchema),
+}) satisfies z.ZodType<AgentConversationRuntimeIndexResponse>;
+
+export async function getAgentConversationRuntimeIndex(
+  conversationId: string,
+): Promise<AgentConversationRuntimeIndexResponse> {
+  return typedInvoke(
+    "get_agent_conversation_runtime_index",
+    { conversationId },
+    AgentConversationRuntimeIndexResponseSchema,
   );
 }
 

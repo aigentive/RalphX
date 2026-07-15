@@ -23,9 +23,9 @@ mod plan_update;
 mod source_update;
 
 pub(crate) use deferral::check_main_merge_deferral;
-pub(crate) use plan_update::{
-    update_plan_from_main, update_plan_from_main_isolated, PlanUpdateResult,
-};
+#[cfg(test)]
+pub(crate) use plan_update::update_plan_from_main;
+pub(crate) use plan_update::{update_plan_from_main_isolated, PlanUpdateResult};
 pub(crate) use source_update::{update_source_from_target, SourceUpdateResult};
 
 /// Metadata keys that indicate a prior merge attempt has been made.
@@ -127,9 +127,10 @@ pub(super) async fn ensure_plan_branch_exists(
                 "Lazily created plan branch for merge target"
             );
         }
-        Err(_) if GitService::branch_exists(repo_path, &pb.branch_name)
-            .await
-            .unwrap_or(false) => {}
+        Err(_)
+            if GitService::branch_exists(repo_path, &pb.branch_name)
+                .await
+                .unwrap_or(false) => {}
         Err(e) => {
             tracing::warn!(
                 task_id = task_id_str,

@@ -1,9 +1,8 @@
 /**
  * LeftNavRail — narrow vertical app navigation.
  *
- * Hosts the same primary views as the legacy top-bar Navigation
- * (Agents, Ideation, Graph, Kanban, Insights, plus feature-flagged items)
- * and the Settings entry, in a compact icon-and-label rail.
+ * Hosts the primary app views and the Settings entry in a compact
+ * icon-and-label rail.
  */
 
 import { Bug, Settings } from "lucide-react";
@@ -14,7 +13,6 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import { useProjectStats } from "@/hooks/useProjectStats";
 import { useTicketingProviders } from "@/hooks/useTicketing";
 import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
 import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
@@ -110,7 +108,6 @@ export function LeftNavRail({
   hideViews = false,
 }: LeftNavRailProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
-  const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
   const [skillsEnabled] = useSkillsEnabled();
   const { data: ticketingProviders } = useTicketingProviders(
@@ -120,12 +117,11 @@ export function LeftNavRail({
   const { connected: hasGranolaDashboardProvider } = useGranolaIntegration();
   const hasTicketingDashboardProvider = hasValidTicketingProvider(ticketingProviders);
 
-  const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter(
         (item) =>
-          item.visible(featureFlags, taskCount) &&
+          item.visible(featureFlags) &&
           (item.view !== "skills" || skillsEnabled),
       );
   const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);

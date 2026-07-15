@@ -10,11 +10,12 @@ use tauri::{Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::time::Duration;
 
-use crate::application::{AppState, GitService, TaskTransitionService};
+use crate::application::{AppState, GitService, NotificationService, TaskTransitionService};
 use crate::commands::execution_commands::ActiveProjectState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    GitMode, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranchStatus, Project,
+    GitMode, InternalStatus, MergeStrategy, MergeValidationMode, NewNotification,
+    NotificationCategory, NotificationSeverity, NotificationTarget, PlanBranchStatus, Project,
     ProjectId,
 };
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
@@ -193,7 +194,7 @@ pub async fn get_project(
 fn is_git_initialized(path: &str) -> bool {
     let mut cmd = Command::new(resolve_git_cli_path());
     cmd.args(["rev-parse", "--git-dir"]).current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut cmd);
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
@@ -211,7 +212,7 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
     // Initialize git
     let mut init_cmd = Command::new(resolve_git_cli_path());
     init_cmd.args(["init"]).current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut init_cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut init_cmd);
     let output = init_cmd
         .output()
         .map_err(|e| format!("Failed to run git init: {}", e))?;
@@ -231,7 +232,7 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
             "Initial commit (auto-created by RalphX)",
         ])
         .current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut commit_cmd);
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(&mut commit_cmd);
     let _ = commit_cmd.output();
 
     Ok(())
@@ -263,7 +264,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
         // Run git init
         let mut init_cmd = TokioCommand::new(resolve_git_cli_path());
         init_cmd.args(["init"]).current_dir(path);
-        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(init_cmd.as_std_mut());
+        crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(init_cmd.as_std_mut());
         let output = init_cmd
             .output()
             .await
@@ -278,7 +279,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
     // Check if HEAD has any commits (git log returns success only if commits exist)
     let mut log_cmd = TokioCommand::new(resolve_git_cli_path());
     log_cmd.args(["log", "--oneline", "-1"]).current_dir(path);
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(log_cmd.as_std_mut());
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(log_cmd.as_std_mut());
     let has_commits = log_cmd
         .output()
         .await
@@ -296,7 +297,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
                 "Initial commit (auto-created by RalphX)",
             ])
             .current_dir(path);
-        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
+        crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(
             commit_cmd.as_std_mut(),
         );
         let commit_result = commit_cmd.output().await;
@@ -958,6 +959,7 @@ fn gh_web_login_args() -> [&'static str; 8] {
 async fn run_gh_web_login_command(
     app_handle: tauri::AppHandle,
     deadline: Duration,
+    notification_service: Arc<NotificationService>,
 ) -> Result<(), String> {
     let mut child =
         tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
@@ -972,8 +974,16 @@ async fn run_gh_web_login_command(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_task = tokio::spawn(collect_gh_auth_login_output(stdout, app_handle.clone()));
-    let stderr_task = tokio::spawn(collect_gh_auth_login_output(stderr, app_handle));
+    let stdout_task = tokio::spawn(collect_gh_auth_login_output(
+        stdout,
+        app_handle.clone(),
+        notification_service.clone(),
+    ));
+    let stderr_task = tokio::spawn(collect_gh_auth_login_output(
+        stderr,
+        app_handle,
+        notification_service,
+    ));
 
     let status = match tokio::time::timeout(deadline, child.wait()).await {
         Ok(Ok(status)) => status,
@@ -1006,12 +1016,15 @@ async fn run_gh_web_login_command(
     })
 }
 
-async fn collect_gh_auth_login_output<R>(
-    stream: Option<R>,
-    app_handle: tauri::AppHandle,
+#[doc(hidden)]
+pub async fn collect_gh_auth_login_output<S, R>(
+    stream: Option<S>,
+    app_handle: tauri::AppHandle<R>,
+    notification_service: Arc<NotificationService>,
 ) -> Vec<String>
 where
-    R: AsyncRead + Unpin,
+    S: AsyncRead + Unpin,
+    R: tauri::Runtime,
 {
     let Some(stream) = stream else {
         return Vec::new();
@@ -1020,7 +1033,21 @@ where
     let mut reader = BufReader::new(stream).lines();
     while let Ok(Some(line)) = reader.next_line().await {
         if let Some(prompt) = parse_gh_auth_login_prompt(&line) {
+            let code = prompt.code.clone();
             let _ = app_handle.emit(GH_AUTH_LOGIN_PROMPT_EVENT, prompt);
+            if let Some(code) = code {
+                notification_service
+                    .record(NewNotification {
+                        project_id: None,
+                        category: NotificationCategory::GhAuth,
+                        severity: NotificationSeverity::ActionRequired,
+                        title: "GitHub login needed".to_string(),
+                        body: Some(format!("Enter code {code} to finish gh login")),
+                        target: NotificationTarget::none(),
+                        dedupe_key: Some(format!("gh-auth:{code}")),
+                    })
+                    .await;
+            }
         }
         lines.push(line);
     }
@@ -1134,12 +1161,15 @@ pub async fn setup_gh_git_auth() -> Result<bool, String> {
 
 /// Start GitHub CLI's browser login flow from RalphX's app environment.
 #[tauri::command]
-pub async fn login_gh_with_browser(app: tauri::AppHandle) -> Result<bool, String> {
+pub async fn login_gh_with_browser(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
     if check_gh_auth_status().await {
         return Ok(true);
     }
 
-    run_gh_web_login_command(app, Duration::from_secs(300)).await?;
+    run_gh_web_login_command(app, Duration::from_secs(300), state.notification_service()).await?;
 
     if check_gh_auth_status().await {
         Ok(true)
@@ -1158,10 +1188,21 @@ pub async fn resume_deferred_git_startup(
     execution_state: State<'_, Arc<ExecutionState>>,
     active_project_state: State<'_, Arc<ActiveProjectState>>,
 ) -> Result<bool, String> {
+    let pr_fix_review_publish_resumer = Arc::new(
+        crate::commands::unified_chat_commands::AgentWorkspacePrFixReviewPublishCommandResumer {
+            app_state: state.inner().clone(),
+            execution_state: Arc::clone(&execution_state),
+            team_service: None,
+        },
+    )
+        as Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >;
     crate::application::startup_pipeline_launch::resume_deferred_git_startup_pipeline(
         &state,
         Arc::clone(&execution_state),
         Arc::clone(&active_project_state),
+        Some(pr_fix_review_publish_resumer),
     )
     .await
 }
@@ -1419,10 +1460,9 @@ pub async fn reconcile_pr_mode_switch<R: tauri::Runtime + 'static>(
 fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
-    app_handle: tauri::AppHandle<R>,
-) -> Arc<TaskTransitionService<R>> {
-    let mut svc =
-        state.build_transition_service_for_runtime(Arc::clone(execution_state), Some(app_handle));
+    _app_handle: tauri::AppHandle<R>,
+) -> Arc<TaskTransitionService> {
+    let mut svc = state.build_transition_service_for_runtime(Arc::clone(execution_state), None);
 
     svc = svc.with_pr_poller_registry(Arc::clone(&state.pr_poller_registry));
 

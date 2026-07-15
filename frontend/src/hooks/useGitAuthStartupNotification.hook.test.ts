@@ -10,8 +10,6 @@ import type { Project } from "@/types/project";
 
 const {
   toastFn,
-  toastDismiss,
-  mockOpenModal,
   mockResumeMutate,
   mocks,
 } = vi.hoisted(() => {
@@ -29,20 +27,13 @@ const {
   };
   return {
     toastFn: vi.fn(),
-    toastDismiss: vi.fn(),
-    mockOpenModal: vi.fn(),
     mockResumeMutate: vi.fn(),
     mocks,
   };
 });
 
 vi.mock("sonner", () => ({
-  toast: Object.assign(toastFn, { dismiss: toastDismiss }),
-}));
-
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: (selector: (s: { openModal: typeof mockOpenModal }) => unknown) =>
-    selector({ openModal: mockOpenModal }),
+  toast: toastFn,
 }));
 
 vi.mock("@/stores/projectStore", () => ({
@@ -113,8 +104,6 @@ function diagnosticsSsh() {
 describe("useGitAuthStartupNotification (hook)", () => {
   beforeEach(() => {
     toastFn.mockClear();
-    toastDismiss.mockClear();
-    mockOpenModal.mockClear();
     mockResumeMutate.mockClear();
     mocks.activeProject = null;
     mocks.diagnostics = { data: undefined, isLoading: false, isError: false };
@@ -130,37 +119,16 @@ describe("useGitAuthStartupNotification (hook)", () => {
     expect(toastFn).not.toHaveBeenCalled();
   });
 
-  it("emits the warning toast and Open Settings opens the repository modal", () => {
+  it("leaves the startup Git auth alert to its durable notification-center row", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: diagnosticsHttps(), isLoading: false, isError: false };
     mocks.ghAuth = { data: false, isLoading: false };
 
     renderHook(() => useGitAuthStartupNotification());
-    expect(toastFn).toHaveBeenCalledTimes(1);
-
-    // Render the toast body to invoke the Open Settings click handler.
-    const [body] = toastFn.mock.calls[0]!;
-    // Walk the createElement tree to the action button props.
-    interface Node {
-      type?: unknown;
-      props?: { children?: unknown[]; onClick?: () => void };
-    }
-    const root = body as Node;
-    const buttonsRow = (root.props?.children as Node[] | undefined)?.[2] as Node | undefined;
-    const buttons = (buttonsRow?.props?.children as Node[] | undefined) ?? [];
-    const openBtn = buttons[0];
-    const laterBtn = buttons[1];
-    expect(openBtn?.props?.onClick).toBeDefined();
-    openBtn!.props!.onClick!();
-    expect(mockOpenModal).toHaveBeenCalledWith("settings", { section: "repository" });
-    expect(toastDismiss).toHaveBeenCalledWith("git-auth-startup:project-1");
-
-    laterBtn!.props!.onClick!();
-    expect(toastDismiss).toHaveBeenCalledWith("git-auth-startup:project-1");
-    expect(toastDismiss).toHaveBeenCalledTimes(2);
+    expect(toastFn).not.toHaveBeenCalled();
   });
 
-  it("does not re-emit when the notification key is unchanged on re-render", () => {
+  it("does not add a bespoke toast when the durable startup condition re-renders", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: diagnosticsHttps(), isLoading: false, isError: false };
     mocks.ghAuth = { data: false, isLoading: false };
@@ -168,7 +136,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
     const { rerender } = renderHook(() => useGitAuthStartupNotification());
     rerender();
     rerender();
-    expect(toastFn).toHaveBeenCalledTimes(1);
+    expect(toastFn).not.toHaveBeenCalled();
   });
 
   it("resumes deferred startup when a previously blocked project becomes healthy", () => {
@@ -177,7 +145,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
     mocks.ghAuth = { data: false, isLoading: false };
 
     const { rerender } = renderHook(() => useGitAuthStartupNotification());
-    expect(toastFn).toHaveBeenCalledTimes(1);
+    expect(toastFn).not.toHaveBeenCalled();
 
     // Project recovers — gh now authenticated, fetch/push back on SSH.
     act(() => {
@@ -188,7 +156,7 @@ describe("useGitAuthStartupNotification (hook)", () => {
     expect(mockResumeMutate).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for diagnostics to finish loading before emitting", () => {
+  it("does not toast while diagnostics load", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: undefined, isLoading: true, isError: false };
     mocks.ghAuth = { data: undefined, isLoading: true };
@@ -196,12 +164,12 @@ describe("useGitAuthStartupNotification (hook)", () => {
     expect(toastFn).not.toHaveBeenCalled();
   });
 
-  it("emits when diagnostics fail (isError) so the user is still warned", () => {
+  it("does not add a bespoke toast when diagnostics fail", () => {
     mocks.activeProject = makeProject();
     mocks.diagnostics = { data: undefined, isLoading: false, isError: true };
     mocks.ghAuth = { data: false, isLoading: false };
 
     renderHook(() => useGitAuthStartupNotification());
-    expect(toastFn).toHaveBeenCalledTimes(1);
+    expect(toastFn).not.toHaveBeenCalled();
   });
 });

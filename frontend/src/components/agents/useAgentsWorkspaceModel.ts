@@ -6,7 +6,7 @@ import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
 import {
-  isWorkspaceModeLocked,
+  isConversationModeLocked,
   resolveConversationAgentMode,
 } from "./agentConversationMode";
 import {
@@ -26,7 +26,7 @@ import {
   agentWorkspaceKeys,
   canInspectAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
-import { normalizeRuntimeSelection } from "./agentOptions";
+import { normalizeRuntimeForPersistence } from "./agentOptions";
 import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
@@ -74,7 +74,10 @@ export function useAgentsWorkspaceModel({
         runtimeByConversationId[focusedWorkspaceReviewConversationId] ?? null,
       )
     : workspaceRuntime;
-  const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime, modelRegistry);
+  const normalizedActiveRuntime = normalizeRuntimeForPersistence(
+    activeRuntime,
+    modelRegistry,
+  );
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
   const canInspectActiveWorkspaceFreshness =
@@ -109,7 +112,9 @@ export function useAgentsWorkspaceModel({
         : isPublishShortcutCurrent
           ? "Published"
           : "Commit & Publish";
-  const activeConversationModeLocked = isWorkspaceModeLocked(activeWorkspace);
+  const activeConversationModeLocked = activeConversation
+    ? isConversationModeLocked(activeConversation, activeWorkspace)
+    : false;
   const terminalUnavailableReason = getAgentTerminalUnavailableReason(
     activeConversation,
     activeWorkspace,

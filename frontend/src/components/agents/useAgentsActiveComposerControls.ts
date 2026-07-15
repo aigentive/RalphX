@@ -69,6 +69,7 @@ export function useAgentsActiveComposerControls({
   setRuntimeForConversation,
 }: UseAgentsActiveComposerControlsArgs) {
   const [switchingConversationModeId, setSwitchingConversationModeId] = useState<string | null>(null);
+  const [updatingTeamConversationId, setUpdatingTeamConversationId] = useState<string | null>(null);
   const defaultRuntime =
     (defaultProjectId ? lastRuntimeByProjectId[defaultProjectId] : null) ??
     (runtimeConversationId ? runtimeByConversationId[runtimeConversationId] : null) ??
@@ -93,11 +94,16 @@ export function useAgentsActiveComposerControls({
     (
       provider: AgentProvider,
       providerSupportedEfforts?: readonly string[] | null,
+      providerSupportedModelAliases?: readonly string[] | null,
     ) => {
       if (!runtimeConversationId || !activeProjectId) {
         return;
       }
-      const defaultModelId = defaultModelForProvider(provider, modelRegistry);
+      const defaultModelId = defaultModelForProvider(
+        provider,
+        modelRegistry,
+        providerSupportedModelAliases,
+      );
       const runtime =
         runtimeDefaultPolicy === "workspace_review_utility"
           ? workspaceReviewUtilityRuntimeForProvider(provider)
@@ -116,7 +122,8 @@ export function useAgentsActiveComposerControls({
         normalizeRuntimeSelection(
           runtime,
           modelRegistry,
-          providerSupportedEfforts
+          providerSupportedEfforts,
+          providerSupportedModelAliases,
         )
       );
     },
@@ -255,14 +262,57 @@ export function useAgentsActiveComposerControls({
     });
   }, [queryClient, selectedConversationId]);
 
+  const handleActiveTeamEnabledChange = useCallback(
+    async (enabled: boolean) => {
+      if (
+        !selectedConversationId ||
+        !activeProjectId ||
+        !activeConversation ||
+        activeConversation.contextType !== "project"
+      ) {
+        return;
+      }
+
+      const coordinationMode = enabled ? "rx_native_team" : "solo";
+      if (activeConversation.coordinationMode === coordinationMode) {
+        return;
+      }
+
+      setUpdatingTeamConversationId(selectedConversationId);
+      try {
+        await chatApi.updateAgentConversationCoordinationMode({
+          conversationId: selectedConversationId,
+          coordinationMode,
+        });
+        await Promise.all([
+          invalidateProjectConversations(activeProjectId),
+          invalidateConversationDataQueries(queryClient, selectedConversationId),
+        ]);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to change Team setting");
+      } finally {
+        setUpdatingTeamConversationId(null);
+      }
+    },
+    [
+      activeConversation,
+      activeProjectId,
+      invalidateProjectConversations,
+      queryClient,
+      selectedConversationId,
+    ],
+  );
+
   return {
     activeProjectOptions,
     defaultRuntime,
     handleActiveConversationModeChange,
     handleActiveConversationModeMenuOpen,
+    handleActiveTeamEnabledChange,
     handleActiveEffortChange,
     handleActiveModelChange,
     handleActiveProviderChange,
     switchingConversationModeId,
+    updatingTeamConversationId,
   };
 }

@@ -142,7 +142,7 @@ function resolveHandler(
             const statusMap: Record<string, string> = {
               cancel: "cancelled",
               reopen: "backlog",
-              retry: "backlog",
+              retry: "ready",
               unblock: "ready",
             };
             handlers.onStatusChange!(statusMap[action.id] ?? action.id);

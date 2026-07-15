@@ -3,6 +3,13 @@ use std::sync::Mutex;
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+fn path_index(entries: &[std::path::PathBuf], path: impl AsRef<std::path::Path>) -> usize {
+    entries
+        .iter()
+        .position(|entry| entry == path.as_ref())
+        .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
+}
+
 // ── Unit tests for is_transient_error ─────────────────────────────────────
 
 #[test]
@@ -67,18 +74,67 @@ fn test_empty_stderr_not_transient() {
 }
 
 #[test]
-fn test_build_git_command_prepends_resolved_node_bin_to_existing_path() {
-    assert_build_git_command_prepends_resolved_node_bin_to_existing_path(None);
+fn disk_full_stderr_is_not_transient_even_with_broad_patterns() {
+    let stderr = "fatal: Unable to create '.git/FETCH_HEAD': No space left on device";
+
+    assert!(!is_transient_git_stderr(stderr));
+    assert_eq!(
+        classify_git_failure_text(stderr),
+        crate::domain::entities::MergeFailureSource::DiskFull
+    );
+}
+
+#[test]
+fn auth_stderr_is_not_transient() {
+    let stderr =
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+
+    assert!(!is_transient_git_stderr(stderr));
+    assert_eq!(
+        classify_git_failure_text(stderr),
+        crate::domain::entities::MergeFailureSource::AuthFailure
+    );
+}
+
+#[test]
+fn classify_git_failure_source_maps_app_error_variants() {
+    use crate::domain::entities::MergeFailureSource;
+
+    assert_eq!(
+        classify_git_failure_source(&AppError::Database("foreign key failed".to_string())),
+        MergeFailureSource::DeterministicInfra
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::Infrastructure(
+            "failed to draft plan PR description".to_string()
+        )),
+        MergeFailureSource::DeterministicInfra
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::GitAuth("Git could not authenticate".to_string())),
+        MergeFailureSource::AuthFailure
+    );
+    assert_eq!(
+        classify_git_failure_source(&AppError::GitOperation(
+            "fatal: not a git repository".to_string()
+        )),
+        MergeFailureSource::Unknown
+    );
+}
+
+#[test]
+fn test_build_git_command_preserves_user_shim_before_resolved_node_bin() {
+    assert_build_git_command_preserves_user_shim_before_resolved_node_bin(None);
 }
 
 #[test]
 fn test_build_git_command_restores_existing_node_override() {
-    assert_build_git_command_prepends_resolved_node_bin_to_existing_path(Some(
+    assert_build_git_command_preserves_user_shim_before_resolved_node_bin(Some(
         "/tmp/original-git-node-bin/node",
     ));
 }
 
-fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
+fn assert_build_git_command_preserves_user_shim_before_resolved_node_bin(
     original_override: Option<&str>,
 ) {
     let _lock = ENV_MUTEX.lock().expect("env mutex");
@@ -93,7 +149,10 @@ fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
     let cmd = build_git_command(
         &args,
         std::path::Path::new("/tmp"),
-        &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
+        &[(
+            "PATH".to_string(),
+            "/Users/example/.cargo/bin:/usr/bin:/bin".to_string(),
+        )],
     );
 
     let path_value = cmd
@@ -107,11 +166,17 @@ fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
 
     assert_eq!(
         path_entries.first(),
-        Some(&std::path::PathBuf::from("/tmp/git-node-bin"))
+        Some(&std::path::PathBuf::from("/Users/example/.cargo/bin"))
     );
+    assert!(
+        path_index(&path_entries, "/Users/example/.cargo/bin")
+            < path_index(&path_entries, "/tmp/git-node-bin")
+    );
+    assert!(path_index(&path_entries, "/tmp/git-node-bin") < path_index(&path_entries, "/usr/bin"));
     assert_eq!(
         path_entries,
         vec![
+            std::path::PathBuf::from("/Users/example/.cargo/bin"),
             std::path::PathBuf::from("/tmp/git-node-bin"),
             std::path::PathBuf::from("/usr/bin"),
             std::path::PathBuf::from("/bin"),
@@ -405,4 +470,111 @@ async fn test_timeout_drops_future_cleanly() {
     // Should complete within timeout
     assert!(result.is_ok(), "git --version should complete within 30s");
     assert!(result.unwrap().is_ok());
+}
+
+#[tokio::test]
+async fn authorized_mutation_persists_process_authority_until_git_exits() {
+    use crate::application::GitService;
+    use crate::domain::entities::{
+        BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
+        BranchUpdateOperation, BranchUpdateWorkspaceOwnership, GitMutationKind,
+        GitTargetLeaseOwner, InternalStatus,
+    };
+    use crate::domain::repositories::{
+        BranchUpdateActivation, BranchUpdateActivationOutcome, BranchUpdateRepository,
+    };
+    use crate::infrastructure::sqlite::SqliteBranchUpdateRepository;
+    use crate::testing::SqliteTestDb;
+    use chrono::Utc;
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Arc;
+
+    let repository = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repository.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test User"]);
+    fs::write(repository.path().join("README.md"), "test").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "initial"]);
+
+    let db = SqliteTestDb::new("authorized-git-mutation");
+    let project = db.seed_project("project");
+    let task = db.seed_task(project.id, "task");
+    let repository_impl = Arc::new(SqliteBranchUpdateRepository::from_shared(db.shared_conn()));
+    let identity = GitService::canonical_target_identity(repository.path(), "target")
+        .await
+        .unwrap();
+    let operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::PlanBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "authorized-history",
+        "main",
+        "target",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        identity.clone(),
+        Utc::now(),
+    );
+    let owner = GitTargetLeaseOwner::branch_update(task.id.as_str(), operation.id.as_str());
+    let BranchUpdateActivationOutcome::Applied { fencing_epoch, .. } = repository_impl
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "test".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("activation should apply");
+    };
+
+    let output = run_authorized_mutation(
+        &["update-ref", "refs/heads/target", "HEAD"],
+        repository.path(),
+        AuthorizedGitMutation::from_current_lease(
+            repository_impl.clone(),
+            identity.clone(),
+            owner,
+            fencing_epoch,
+            "authorized-claim".into(),
+            GitMutationKind::Merge,
+        )
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(output.status.success());
+    assert!(
+        GitService::ref_exists(repository.path(), "refs/heads/target")
+            .await
+            .unwrap()
+    );
+    assert!(repository_impl
+        .list_in_flight_mutations()
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repository_impl
+        .get_target_lease(&identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .active_mutation()
+        .is_none());
 }

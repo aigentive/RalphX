@@ -24,11 +24,14 @@ import type {
   RunningIdeationSession,
   RunningWorkspaceSession,
 } from "@/api/running-processes";
-import { useUiStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
 import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import { formatElapsedTime } from "@/lib/formatters";
 import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
+import {
+  runningProcessTaskTarget,
+  type ExecutionBarTaskNavigationTarget,
+} from "./executionTaskNavigation";
 
 type TabType = "running" | "workspaces" | "execution" | "ideation";
 
@@ -62,7 +65,13 @@ interface RunningProcessPopoverProps {
   /** Called when an ideation session is clicked to navigate to it */
   onNavigateToSession?: (sessionId: string) => void;
   /** Called when a workspace session is clicked to navigate to its agent conversation */
-  onNavigateToWorkspace?: (projectId: string, conversationId: string) => void;
+  onNavigateToWorkspace?: (
+    projectId: string,
+    conversationId: string,
+    session?: RunningWorkspaceSession
+  ) => void;
+  /** Called when a task row should open its Agent conversation task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
   /** Children (anchor element — NOT a trigger, controlled externally) */
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
@@ -180,6 +189,7 @@ export function RunningProcessPopover({
   onOpenSettings,
   onNavigateToSession,
   onNavigateToWorkspace,
+  onNavigateToTask,
   children,
   alignOffset = -24,
   initialTab = "execution",
@@ -188,7 +198,6 @@ export function RunningProcessPopover({
   showIdeationTeamUi = true,
 }: RunningProcessPopoverProps) {
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
-  const navigateToTask = useUiStore((s) => s.navigateToTask);
 
   // Sync tab whenever initialTab changes — handles external switching while popover is open
   useEffect(() => {
@@ -205,8 +214,11 @@ export function RunningProcessPopover({
   const effectiveMaxConcurrent = capacity?.globalMaxConcurrent ?? maxConcurrent;
 
   const handleNavigate = (taskId: string) => {
+    const process = processes.find((item) => item.taskId === taskId);
     onOpenChange(false);
-    navigateToTask(taskId);
+    if (process) {
+      onNavigateToTask?.(runningProcessTaskTarget(process));
+    }
   };
 
   const handleNavigateToSession = (sessionId: string) => {
@@ -216,7 +228,7 @@ export function RunningProcessPopover({
 
   const handleNavigateToWorkspace = (session: RunningWorkspaceSession) => {
     onOpenChange(false);
-    onNavigateToWorkspace?.(session.projectId, session.conversationId);
+    onNavigateToWorkspace?.(session.projectId, session.conversationId, session);
   };
 
   // Tab-aware header title

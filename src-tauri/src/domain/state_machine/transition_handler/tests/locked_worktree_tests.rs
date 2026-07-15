@@ -34,13 +34,7 @@ async fn setup_repo(path: &std::path::Path) {
 /// Helper: add a worktree and return true if it was added successfully.
 async fn add_worktree(repo: &std::path::Path, wt: &std::path::Path, branch: &str) -> bool {
     let out = tokio::process::Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            wt.to_str().unwrap(),
-            "-b",
-            branch,
-        ])
+        .args(["worktree", "add", wt.to_str().unwrap(), "-b", branch])
         .current_dir(repo)
         .output()
         .await
@@ -88,12 +82,7 @@ async fn test_single_force_fails_on_locked_worktree() {
 
     // Single --force should FAIL on locked worktree
     let out = tokio::process::Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            wt_path.to_str().unwrap(),
-        ])
+        .args(["worktree", "remove", "--force", wt_path.to_str().unwrap()])
         .current_dir(&repo_path)
         .output()
         .await
@@ -110,7 +99,10 @@ async fn test_single_force_fails_on_locked_worktree() {
         stderr
     );
     // Worktree still exists
-    assert!(wt_path.exists(), "Locked worktree should still exist after failed remove");
+    assert!(
+        wt_path.exists(),
+        "Locked worktree should still exist after failed remove"
+    );
 }
 
 /// Verify that `git worktree remove -f -f` SUCCEEDS on a locked worktree.
@@ -128,13 +120,7 @@ async fn test_double_force_succeeds_on_locked_worktree() {
 
     // Double -f -f should SUCCEED on locked worktree
     let out = tokio::process::Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "-f",
-            "-f",
-            wt_path.to_str().unwrap(),
-        ])
+        .args(["worktree", "remove", "-f", "-f", wt_path.to_str().unwrap()])
         .current_dir(&repo_path)
         .output()
         .await
@@ -278,7 +264,10 @@ async fn test_remove_worktree_fast_locked_worktree_succeeds() {
     assert!(add_worktree(&repo_path, &wt_path, "test-branch").await);
     lock_worktree(&repo_path, &wt_path).await;
 
-    assert!(wt_path.exists(), "Locked worktree should exist before removal");
+    assert!(
+        wt_path.exists(),
+        "Locked worktree should exist before removal"
+    );
 
     let result = remove_worktree_fast(&wt_path, &repo_path).await;
     assert!(
@@ -286,7 +275,10 @@ async fn test_remove_worktree_fast_locked_worktree_succeeds() {
         "remove_worktree_fast should succeed on locked worktree: {:?}",
         result.err()
     );
-    assert!(!wt_path.exists(), "Locked worktree directory should be removed");
+    assert!(
+        !wt_path.exists(),
+        "Locked worktree directory should be removed"
+    );
 
     // Git metadata should be cleaned up
     assert!(

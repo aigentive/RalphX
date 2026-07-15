@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn get_ui_feature_flags_includes_agent_personas() {
+    let response = get_ui_feature_flags();
+    let json = serde_json::to_value(response).expect("feature flags response should serialize");
+
+    assert_eq!(json.get("agentPersonas"), Some(&serde_json::json!(false)));
+    assert!(json.get("agent_personas").is_none());
+}
+
+#[test]
 fn test_ui_feature_flags_response_serializes_to_camel_case() {
     let response = get_ui_feature_flags();
     let json = serde_json::to_string(&response).unwrap();
@@ -16,6 +25,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         json.contains("\"ideationPage\":"),
         "Expected camelCase 'ideationPage' in JSON: {json}"
+    );
+    assert!(
+        json.contains("\"automationsPage\":"),
+        "Expected camelCase 'automationsPage' in JSON: {json}"
     );
     assert!(
         json.contains("\"battleMode\":"),
@@ -45,6 +58,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"ideation_page\":"),
         "Unexpected snake_case 'ideation_page' in JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"automations_page\":"),
+        "Unexpected snake_case 'automations_page' in JSON: {json}"
     );
     assert!(
         !json.contains("\"battle_mode\":"),

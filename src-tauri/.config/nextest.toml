@@ -26,11 +26,11 @@ test-group = 'perf-serial'
 slow-timeout = { period = "120s", terminate-after = 2 }
 
 [[profile.default.overrides]]
-filter = 'binary(merge_system_hardening) or binary(deferred_main_merge_integration) or binary(repository_swapping) or binary(pr_mode_integration) or binary(pr_mode_fallback)'
+filter = 'binary(suite_transition_git) or binary(suite_pr_github) or binary(suite_agent_workspace) or (binary(suite_chat_service) and test(chat_service_merge))'
 test-group = 'git-heavy'
 slow-timeout = { period = "120s", terminate-after = 2 }
 
 [[profile.default.overrides]]
-filter = 'binary(research_integration) or binary(workflow_integration) or binary(artifact_integration) or binary(methodology_integration) or binary(gsd_integration) or binary(metrics_integration) or binary(metrics_schema_validation) or binary(review_flows) or binary(execution_control_flows) or binary(state_machine_flows) or binary(qa_system_flows) or binary(per_project_execution_scoping)'
+filter = 'binary(suite_sqlite_repos) or binary(suite_sqlite_flows) or binary(suite_metrics)'
 test-group = 'sqlite-integration'
 slow-timeout = { period = "90s", terminate-after = 2 }

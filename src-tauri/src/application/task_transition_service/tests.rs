@@ -1,33 +1,99 @@
 use super::*;
+use crate::application::agent_conversation_workspace::resolve_linked_plan_branch_agent_worktree_path;
+use crate::application::notification_service::{NoopNotificationEventEmitter, NotificationService};
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::AppState;
-use crate::domain::entities::plan_branch::PrPushStatus;
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
-    AgentWorkspacePrDescription, ArtifactId, ExecutionFailureSource, ExecutionRecoveryEventKind,
-    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
-    ExecutionRecoveryState, IdeationSessionId, InternalStatus, PlanBranch, Project, ProjectId,
-    Task, TaskCategory,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
+    ArtifactId, ChatConversation, ChatConversationId, ExecutionFailureSource,
+    ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoverySource, ExecutionRecoveryState, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, InternalStatus, Notification, NotificationCategory, NotificationSeverity,
+    NotificationTargetKind, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task,
+    TaskCategory,
 };
+use crate::domain::repositories::{NotificationPage, NotificationRepository};
+use crate::domain::services::github_service::{PrHealth, PrHealthCheck};
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, PlanPrDescriptionDrafter,
     PrReviewState,
 };
+use crate::domain::state_machine::services::{ReviewStartResult, ReviewStarter};
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
+use ralphx_events::{EventSink, RecordingEventSink};
 use serde_json::Value;
+use std::sync::Mutex;
 
 #[test]
 fn test_tauri_event_emitter_creation() {
-    let emitter: TauriEventEmitter<tauri::Wry> = TauriEventEmitter::new(None);
-    assert!(emitter.app_handle.is_none());
+    let emitter = EnrichedEventEmitter::new(None);
+    assert!(emitter.event_sink.is_none());
+}
+
+#[tokio::test]
+async fn enriched_event_emitter_sends_basic_events_to_event_sink() {
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let emitter = EnrichedEventEmitter::new(Some(sink_arc));
+
+    emitter.emit("agent:run_completed", "task-123").await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "agent:run_completed");
+    assert_eq!(events[0].payload["taskId"], "task-123");
+    assert!(events[0].payload["timestamp"].is_string());
+}
+
+#[tokio::test]
+async fn enriched_event_emitter_sends_payload_events_to_event_sink() {
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let emitter = EnrichedEventEmitter::new(Some(sink_arc));
+
+    emitter
+        .emit_with_payload("task:custom", "task-456", "payload-body")
+        .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:custom");
+    assert_eq!(events[0].payload["taskId"], "task-456");
+    assert_eq!(events[0].payload["payload"], "payload-body");
+    assert!(events[0].payload["timestamp"].is_string());
+}
+
+#[tokio::test]
+async fn enriched_event_emitter_routes_batchable_events_through_throttled_emitter() {
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let throttled = crate::application::ThrottledEmitter::new(Arc::clone(&sink_arc));
+    let emitter = EnrichedEventEmitter::new(Some(sink_arc)).with_throttled_emitter(throttled);
+
+    emitter.emit("task:created", "task-789").await;
+    assert!(
+        sink.events().is_empty(),
+        "batchable events should wait for the throttled flush"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:created");
+    assert_eq!(events[0].payload["taskId"], "task-789");
+    assert!(events[0].payload["timestamp"].is_string());
 }
 
 #[test]
 fn test_logging_notifier() {
-    let _notifier = LoggingNotifier;
+    let _notifier = NoopNotifier;
     // Just verify it can be created
 }
 
@@ -37,7 +103,7 @@ fn test_no_op_review_starter() {
     // Just verify it can be created
 }
 
-fn build_dependency_manager(app_state: &AppState) -> RepoBackedDependencyManager<tauri::Wry> {
+fn build_dependency_manager(app_state: &AppState) -> RepoBackedDependencyManager {
     RepoBackedDependencyManager::new(
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.task_repo),
@@ -137,8 +203,15 @@ async fn test_is_blocker_complete_with_merge_incomplete_state() {
 // Wave 3: Metadata Merge Tests
 // ============================================================================
 
-fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
+fn build_test_service(app_state: &AppState) -> TaskTransitionService {
     let execution_state = Arc::new(ExecutionState::new());
+    build_test_service_with_execution_state(app_state, execution_state)
+}
+
+fn build_test_service_with_execution_state(
+    app_state: &AppState,
+    execution_state: Arc<ExecutionState>,
+) -> TaskTransitionService {
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
 
@@ -158,6 +231,765 @@ fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry>
         None,
         Arc::clone(&app_state.memory_event_repo),
     )
+}
+
+fn build_test_service_with_task_notifications(app_state: &AppState) -> TaskTransitionService {
+    build_test_service(app_state).with_notifier(Arc::new(TaskPipelineNotificationProducer::new(
+        app_state.notification_service(),
+    )))
+}
+
+struct FailingReviewStarter;
+
+#[async_trait]
+impl ReviewStarter for FailingReviewStarter {
+    async fn start_ai_review(&self, _task_id: &str, _project_id: &str) -> ReviewStartResult {
+        ReviewStartResult::Error("injected review startup failure".to_string())
+    }
+}
+
+struct RecordingNotifier {
+    contexts: Mutex<Vec<NotificationContext>>,
+    delegate: Arc<dyn Notifier>,
+}
+
+#[async_trait]
+impl Notifier for RecordingNotifier {
+    async fn notify(&self, context: NotificationContext, notification: TaskNotification) {
+        self.contexts.lock().unwrap().push(context.clone());
+        self.delegate.notify(context, notification).await;
+    }
+}
+
+async fn task_notifications(app_state: &AppState) -> Vec<Notification> {
+    app_state
+        .notification_repo
+        .list(None, None, 50)
+        .await
+        .expect("notification read should succeed")
+        .notifications
+}
+
+async fn assert_normal_task_notification(
+    from: InternalStatus,
+    to: InternalStatus,
+    category: NotificationCategory,
+    severity: NotificationSeverity,
+    blocked_reason: Option<&str>,
+) {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), format!("{to:?} notification task"));
+    task.internal_status = from;
+    task.blocked_reason = blocked_reason.map(str::to_owned);
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, to)
+        .await
+        .unwrap_or_else(|error| panic!("{from:?} to {to:?} should succeed: {error}"));
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(rows.len(), 1, "{to:?} should create exactly one row");
+    assert_eq!(rows[0].category, category);
+    assert_eq!(rows[0].severity, severity);
+    assert_eq!(rows[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(
+        rows[0].target.project_id.as_deref(),
+        Some(project.id.as_str())
+    );
+    assert_eq!(rows[0].target.task_id.as_deref(), Some(task_id.as_str()));
+    assert!(
+        rows[0]
+            .dedupe_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with(&format!("task:{}:{}:", task_id, to.as_str()))),
+        "dedupe key must be scoped to the committed transition history entry"
+    );
+}
+
+struct FailingNotificationRepository;
+
+#[async_trait]
+impl NotificationRepository for FailingNotificationRepository {
+    async fn create_with_dedupe(&self, _notification: Notification) -> AppResult<bool> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn list(
+        &self,
+        _project_id: Option<&str>,
+        _cursor: Option<&str>,
+        _limit: u32,
+    ) -> AppResult<NotificationPage> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn unread_count(&self, _project_id: Option<&str>) -> AppResult<u64> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_read(
+        &self,
+        _id: &str,
+        _read_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Option<Notification>> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn mark_all_read(
+        &self,
+        _project_id: Option<&str>,
+        _read_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+
+    async fn prune(
+        &self,
+        _read_before: chrono::DateTime<chrono::Utc>,
+        _max_rows: u32,
+    ) -> AppResult<()> {
+        Err(AppError::Database("injected notification failure".into()))
+    }
+}
+
+#[tokio::test]
+async fn task_pipeline_auto_transition_review_error_uses_auto_history_notification_context() {
+    let app_state = AppState::new_test();
+    let producer: Arc<dyn Notifier> = Arc::new(TaskPipelineNotificationProducer::new(
+        app_state.notification_service(),
+    ));
+    let recorder = Arc::new(RecordingNotifier {
+        contexts: Mutex::new(Vec::new()),
+        delegate: producer,
+    });
+    let service = build_test_service(&app_state)
+        .with_notifier(recorder.clone())
+        .with_review_starter(Arc::new(FailingReviewStarter));
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Auto review notification".to_string());
+    task.internal_status = InternalStatus::QaTesting;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::QaPassed)
+        .await
+        .expect("QA pass should enter the auto review path");
+
+    let contexts = recorder.contexts.lock().unwrap().clone();
+    assert!(
+        !contexts.is_empty(),
+        "the auto-entered pending-review error should notify"
+    );
+    let rows = task_notifications(&app_state).await;
+    let expected_key = format!(
+        "task:{task_id}:review_error:{}",
+        contexts[0].history_entry_id
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.dedupe_key.as_deref() == Some(expected_key.as_str())),
+        "the review-start alert must use the first auto-transition history id"
+    );
+
+    let history = app_state
+        .task_repo
+        .get_status_history(&task_id)
+        .await
+        .unwrap();
+    assert!(
+        history.len() >= 2,
+        "QA pass must be followed by its auto transition"
+    );
+    assert_eq!(history[0].to, InternalStatus::QaPassed);
+    assert_eq!(history[1].to, InternalStatus::PendingReview);
+}
+
+#[tokio::test]
+async fn task_pipeline_review_passed_reentry_records_distinct_history_scoped_notifications() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let worktree = tempfile::tempdir().expect("review worktree should be created");
+    let project = Project::new(
+        "Notification Project".to_string(),
+        worktree.path().to_string_lossy().to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Review loop task".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    task.worktree_path = Some(worktree.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("first reviewing to review-passed transition should succeed");
+    service
+        .transition_task(&task_id, InternalStatus::RevisionNeeded)
+        .await
+        .expect("review-passed to revision-needed transition should succeed");
+    service
+        .transition_task(&task_id, InternalStatus::PendingReview)
+        .await
+        .expect("re-executing to pending-review transition should succeed through the revision auto-transition");
+    service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("second reviewing to review-passed transition should succeed");
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "each review-pass attempt should create one row"
+    );
+    assert!(rows.iter().all(|row| {
+        row.category == NotificationCategory::ReviewNeeded
+            && row.severity == NotificationSeverity::ActionRequired
+            && row.target.kind == NotificationTargetKind::Task
+            && row.target.project_id.as_deref() == Some(project.id.as_str())
+            && row.target.task_id.as_deref() == Some(task_id.as_str())
+    }));
+    assert_ne!(
+        rows[0].dedupe_key, rows[1].dedupe_key,
+        "re-entry must use the freshly committed history row rather than a stale latest row"
+    );
+}
+
+#[tokio::test]
+async fn task_pipeline_duplicate_transition_delivery_keeps_one_notification_row() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Duplicate delivery task".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("initial transition should succeed");
+    let duplicate = service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("duplicate delivery should be an authority-preserving no-op");
+
+    assert_eq!(duplicate.internal_status, InternalStatus::ReviewPassed);
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "duplicate transition delivery must not duplicate the row"
+    );
+    assert_eq!(rows[0].category, NotificationCategory::ReviewNeeded);
+}
+
+#[tokio::test]
+async fn task_pipeline_dependency_blocked_transition_records_no_notification() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Dependency-blocked task".to_string());
+    task.internal_status = InternalStatus::ReExecuting;
+    task.blocked_reason = Some("dependency: upstream task is still running".to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::Blocked)
+        .await
+        .expect("re-executing to blocked transition should succeed");
+
+    assert!(
+        task_notifications(&app_state).await.is_empty(),
+        "dependency blockers are not user-input blockers and must not notify"
+    );
+}
+
+#[tokio::test]
+async fn task_pipeline_merge_incomplete_normal_transition_records_actionable_row() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Merge incomplete task".to_string());
+    task.internal_status = InternalStatus::PendingMerge;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task(&task_id, InternalStatus::MergeIncomplete)
+        .await
+        .expect("pending-merge to merge-incomplete transition should succeed");
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].category, NotificationCategory::MergeIncomplete);
+    assert_eq!(rows[0].severity, NotificationSeverity::ActionRequired);
+    assert_eq!(rows[0].target.kind, NotificationTargetKind::Task);
+    assert_eq!(rows[0].target.task_id.as_deref(), Some(task_id.as_str()));
+}
+
+#[tokio::test]
+async fn task_pipeline_corrective_failed_transition_records_actionable_row() {
+    let app_state = AppState::new_test();
+    let service = build_test_service_with_task_notifications(&app_state);
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Corrective failure task".to_string());
+    task.internal_status = InternalStatus::Blocked;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    service
+        .transition_task_corrective(&task_id, InternalStatus::Failed, None, "recovery")
+        .await
+        .expect("corrective transition should succeed");
+
+    let rows = task_notifications(&app_state).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].category, NotificationCategory::TaskFailed);
+    assert_eq!(rows[0].severity, NotificationSeverity::ActionRequired);
+    assert_eq!(rows[0].target.task_id.as_deref(), Some(task_id.as_str()));
+}
+
+#[tokio::test]
+async fn task_pipeline_notification_repository_failure_does_not_fail_transition() {
+    let app_state = AppState::new_test();
+    let notification_service = Arc::new(NotificationService::new(
+        Arc::new(FailingNotificationRepository),
+        Arc::new(NoopNotificationEventEmitter),
+    ));
+    let service = build_test_service(&app_state).with_notifier(Arc::new(
+        TaskPipelineNotificationProducer::new(notification_service),
+    ));
+    let project = Project::new("Notification Project".to_string(), "/test/path".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Repository failure task".to_string());
+    task.internal_status = InternalStatus::Reviewing;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let transitioned = service
+        .transition_task(&task_id, InternalStatus::ReviewPassed)
+        .await
+        .expect("best-effort notification failure must not fail the committed transition");
+
+    assert_eq!(transitioned.internal_status, InternalStatus::ReviewPassed);
+    assert_eq!(
+        app_state
+            .task_repo
+            .get_by_id(&task_id)
+            .await
+            .unwrap()
+            .expect("transitioned task should remain persisted")
+            .internal_status,
+        InternalStatus::ReviewPassed
+    );
+}
+
+#[tokio::test]
+async fn task_pipeline_qa_failed_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::QaTesting,
+        InternalStatus::QaFailed,
+        NotificationCategory::QaFailed,
+        NotificationSeverity::ActionRequired,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_escalated_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::Reviewing,
+        InternalStatus::Escalated,
+        NotificationCategory::ReviewEscalated,
+        NotificationSeverity::ActionRequired,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_merge_conflict_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::Merging,
+        InternalStatus::MergeConflict,
+        NotificationCategory::MergeConflict,
+        NotificationSeverity::ActionRequired,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_human_input_blocked_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::ReExecuting,
+        InternalStatus::Blocked,
+        NotificationCategory::TaskBlocked,
+        NotificationSeverity::ActionRequired,
+        Some("human: approval is required"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_freshness_blocked_notification_records_warning_row() {
+    assert_normal_task_notification(
+        InternalStatus::ReExecuting,
+        InternalStatus::Blocked,
+        NotificationCategory::TaskBlocked,
+        NotificationSeverity::Warning,
+        Some("FRESHNESS_BLOCKED|3|10|src/lib.rs|Persistent freshness conflicts"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn task_pipeline_failed_normal_transition_records_actionable_row() {
+    assert_normal_task_notification(
+        InternalStatus::Executing,
+        InternalStatus::Failed,
+        NotificationCategory::TaskFailed,
+        NotificationSeverity::ActionRequired,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn route_github_pr_changes_requested_records_auto_merge_disarm_marker() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "PR Review Project".to_string(),
+        "/tmp/pr-review".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut merge_task = Task::new(project.id.clone(), "Merge plan PR".to_string());
+    merge_task.category = TaskCategory::PlanMerge;
+    app_state
+        .task_repo
+        .create(merge_task.clone())
+        .await
+        .unwrap();
+    let service = build_test_service(&app_state);
+    let feedback = crate::domain::services::github_service::PrReviewFeedback {
+        review_id: "review-marker".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-05-17T12:00:00Z".to_string()),
+        body: Some("Please adjust this.".to_string()),
+        comments: Vec::new(),
+    };
+
+    service
+        .route_github_pr_changes_requested_with_auto_merge_marker(
+            &merge_task.id,
+            676,
+            feedback,
+            "test",
+            true,
+            Some("rebase".to_string()),
+        )
+        .await
+        .expect("review correction should route");
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&merge_task.id)
+        .await
+        .unwrap()
+        .expect("merge task should exist");
+    let metadata: Value =
+        serde_json::from_str(updated.metadata.as_deref().expect("metadata should exist"))
+            .expect("metadata should be valid json");
+    assert_eq!(
+        metadata["github_auto_merge_disabled_for_correction"],
+        Value::Bool(true)
+    );
+    assert_eq!(metadata["github_auto_merge_pr_number"], Value::from(676));
+    assert_eq!(
+        metadata["github_auto_merge_disabled_source"],
+        Value::String("github_review_feedback".to_string())
+    );
+    assert_eq!(
+        metadata["github_auto_merge_method"],
+        Value::String("rebase".to_string())
+    );
+}
+
+#[tokio::test]
+async fn terminal_pr_state_consumes_auto_merge_disarm_marker() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Terminal PR Marker Project".to_string(),
+        "/tmp/terminal-pr-marker".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut merge_task = Task::new(project.id.clone(), "Merge plan PR".to_string());
+    merge_task.category = TaskCategory::PlanMerge;
+    merge_task.metadata = Some(
+        serde_json::json!({
+            "github_auto_merge_disabled_for_correction": true,
+            "github_auto_merge_pr_number": 676,
+            "github_auto_merge_method": "rebase",
+            "github_auto_merge_disabled_at": "2026-07-10T12:00:00Z",
+            "github_auto_merge_disabled_source": "github_review_feedback",
+            "github_auto_merge_reenable_failed_at": "2026-07-10T12:05:00Z",
+            "github_auto_merge_reenable_error": "temporary GitHub error",
+        })
+        .to_string(),
+    );
+    app_state
+        .task_repo
+        .create(merge_task.clone())
+        .await
+        .unwrap();
+    let service = build_test_service(&app_state);
+
+    let changed = service
+        .clear_github_auto_merge_correction_marker_for_terminal_pr(&merge_task.id, "merged")
+        .await
+        .expect("terminal marker cleanup should succeed");
+
+    assert!(changed, "terminal cleanup should consume the active marker");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&merge_task.id)
+        .await
+        .unwrap()
+        .expect("merge task should exist");
+    let metadata: Value =
+        serde_json::from_str(updated.metadata.as_deref().expect("metadata should exist"))
+            .expect("metadata should be valid json");
+    assert!(metadata
+        .get("github_auto_merge_disabled_for_correction")
+        .is_none());
+    assert!(metadata.get("github_auto_merge_pr_number").is_none());
+    assert!(metadata.get("github_auto_merge_method").is_none());
+    assert!(metadata.get("github_auto_merge_reenable_error").is_none());
+    assert_eq!(
+        metadata["github_auto_merge_terminal_cleared_source"],
+        Value::String("pr_terminal_state".to_string())
+    );
+    assert_eq!(
+        metadata["github_auto_merge_terminal_cleared_status"],
+        Value::String("merged".to_string())
+    );
+    assert!(metadata["github_auto_merge_terminal_cleared_at"].is_string());
+}
+
+#[tokio::test]
+async fn with_event_sink_rebuilds_status_change_emitter_without_external_events() {
+    let app_state = AppState::new_test();
+    let project = Project::new("Sink Project".to_string(), "/tmp/sink".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let service = build_test_service(&app_state).with_event_sink(sink_arc);
+
+    service
+        .event_emitter
+        .emit_status_change(task.id.as_str(), "ready", "executing")
+        .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:status_changed");
+    assert_eq!(events[0].payload["task_id"], task.id.to_string());
+    assert_eq!(events[0].payload["project_id"], project.id.to_string());
+    assert_eq!(events[0].payload["old_status"], "ready");
+    assert_eq!(events[0].payload["new_status"], "executing");
+    assert_eq!(events[0].payload["project_name"], "Sink Project");
+    assert_eq!(events[0].payload["task_title"], "Sink Task");
+}
+
+#[tokio::test]
+async fn with_external_events_repo_preserves_event_sink_status_change_emits() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Dual Sink Project".to_string(),
+        "/tmp/dual-sink".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Dual Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let ext_repo: Arc<dyn crate::domain::repositories::ExternalEventsRepository> =
+        Arc::new(crate::infrastructure::memory::MemoryExternalEventsRepository::new());
+    let service = build_test_service(&app_state)
+        .with_event_sink(sink_arc)
+        .with_external_events_repo(Arc::clone(&ext_repo));
+
+    service
+        .event_emitter
+        .emit_status_change(task.id.as_str(), "backlog", "ready")
+        .await;
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event, "task:status_changed");
+    assert_eq!(events[0].payload["task_id"], task.id.to_string());
+
+    let db_events = ext_repo
+        .get_events_after_cursor(&[project.id.to_string()], 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(db_events.len(), 1);
+    let db_payload: serde_json::Value = serde_json::from_str(&db_events[0].payload).unwrap();
+    assert_eq!(db_payload["task_id"], task.id.to_string());
+    assert_eq!(db_payload["project_id"], project.id.to_string());
+    assert_eq!(db_payload["old_status"], "backlog");
+    assert_eq!(db_payload["new_status"], "ready");
+}
+
+#[tokio::test]
+async fn corrective_transition_with_exit_emits_task_event_through_event_sink() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Corrective Sink Project".to_string(),
+        "/tmp/corrective".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = Task::new(project.id.clone(), "Corrective Sink Task".to_string());
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let sink = RecordingEventSink::new();
+    let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+    let service = build_test_service(&app_state).with_event_sink(sink_arc);
+
+    let updated = service
+        .transition_task_corrective_with_exit(
+            &task.id,
+            InternalStatus::Failed,
+            Some("corrective failure".to_string()),
+            "system",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(updated.internal_status, InternalStatus::Failed);
+    let events = sink.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event, "task:event");
+    assert_eq!(events[0].payload["type"], "status_changed");
+    assert_eq!(events[0].payload["taskId"], task.id.to_string());
+    assert_eq!(events[0].payload["from"], "backlog");
+    assert_eq!(events[0].payload["to"], "failed");
+    assert_eq!(events[0].payload["changedBy"], "system");
+    assert_eq!(events[1].event, "task:status_changed");
+    assert_eq!(events[1].payload["task_id"], task.id.to_string());
+    assert_eq!(events[1].payload["old_status"], "backlog");
+    assert_eq!(events[1].payload["new_status"], "failed");
+}
+
+#[test]
+fn into_arc_wires_self_arc_for_task_services() {
+    let app_state = AppState::new_test();
+    let service = build_test_service(&app_state).into_arc();
+
+    let stored = service
+        .self_arc
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("into_arc should wire self_arc")
+        .clone();
+    assert!(Arc::ptr_eq(&stored, &service));
+}
+
+#[test]
+fn execution_entry_guard_releases_in_flight_marker_on_drop() {
+    let execution_state = Arc::new(ExecutionState::new());
+    let task_id = "task-entry-guard";
+
+    assert!(execution_state.try_start_execution_entry(task_id));
+    {
+        let _guard = ExecutionEntryGuard {
+            execution_state: Arc::clone(&execution_state),
+            task_id: task_id.to_string(),
+        };
+        assert!(execution_state.is_execution_entry_in_flight(task_id));
+    }
+
+    assert!(!execution_state.is_execution_entry_in_flight(task_id));
 }
 
 struct StaticPlanPrDescriptionDrafter;
@@ -306,13 +1138,81 @@ async fn push_and_refresh_pr_branch_uses_drafted_description() {
     assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
 }
 
+#[tokio::test]
+async fn push_and_refresh_pr_branch_stops_before_pr_refresh_when_push_fails() {
+    let app_state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "remote rejected freshness branch".to_string(),
+    )));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let service = build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_github_service(github_trait)
+        .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter));
+
+    let mut project = Project::new("Test Project".to_string(), "/test/path".to_string());
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    let task = Task::new(project.id.clone(), "Refresh PR branch".to_string());
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-1".to_string()),
+        IdeationSessionId::from_string("session-1".to_string()),
+        project.id.clone(),
+        "plan/feature".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(42);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let plan_branch_id = plan_branch.id.clone();
+    app_state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .unwrap();
+
+    let result = service
+        .push_and_refresh_pr_branch(&task, &project, &plan_branch)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "PR freshness should not report success when branch publication fails"
+    );
+    {
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(
+            state.update_pr_details_calls, 0,
+            "PR details must not refresh after a failed branch push"
+        );
+    }
+
+    let updated_plan_branch = app_state
+        .plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
 fn init_git_repo(path: &std::path::Path) {
     let run = |args: &[&str]| {
-        std::process::Command::new("git")
+        let output = std::process::Command::new("git")
             .args(args)
             .current_dir(path)
             .output()
             .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
     run(&["init", "-b", "main"]);
     run(&["config", "user.email", "test@test.com"]);
@@ -320,6 +1220,319 @@ fn init_git_repo(path: &std::path::Path) {
     std::fs::write(path.join("README.md"), "# test").expect("write README");
     run(&["add", "."]);
     run(&["commit", "-m", "initial"]);
+}
+
+fn init_git_repo_on_branch(path: &std::path::Path, branch: &str) {
+    std::fs::create_dir_all(path).expect("create repo dir");
+    let run = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["init", "-b", branch]);
+    run(&["config", "user.email", "test@test.com"]);
+    run(&["config", "user.name", "Test"]);
+    std::fs::write(path.join("README.md"), "# linked plan").expect("write README");
+    run(&["add", "."]);
+    run(&["commit", "-m", "initial"]);
+}
+
+fn pr_health_with_failing_check(head: &str, check_name: &str) -> PrHealth {
+    PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "ralphx/test/plan-route".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head.to_string()),
+            base_ref_oid: Some("base".to_string()),
+        },
+        review_decision: None,
+        checks: vec![PrHealthCheck {
+            name: check_name.to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/609".to_string()),
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
+#[tokio::test]
+async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_pr() {
+    let app_state = AppState::new_test();
+    let project_root = tempfile::tempdir().expect("project root");
+    init_git_repo(project_root.path());
+    let worktree_parent = tempfile::tempdir().expect("worktree parent");
+
+    let mut project = Project::new(
+        "Plan Autofix Project".to_string(),
+        project_root.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("project-plan-autofix-route".to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let session_id = IdeationSessionId::from_string("session-plan-autofix-route");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-route");
+    let branch_name = "ralphx/test/plan-route";
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-plan-autofix-route"),
+        session_id.clone(),
+        project.id.clone(),
+        branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = plan_branch_id.clone();
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(609);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/609".to_string());
+    plan_branch.pr_status = Some(DbPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    app_state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .unwrap();
+
+    let linked_worktree =
+        resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch).unwrap();
+    init_git_repo_on_branch(&linked_worktree, branch_name);
+
+    let conversation_id = ChatConversationId::from_string("60906090-6090-6090-6090-609060906090");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Ideation);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        branch_name.to_string(),
+        linked_worktree.to_string_lossy().into_owned(),
+    );
+    workspace.linked_ideation_session_id = Some(session_id);
+    workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.publication_push_status = None;
+    workspace.pr_autofix_enabled = true;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(pr_health_with_failing_check(
+        "route-head",
+        "Coverage Gate",
+    )));
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let service = build_test_service_with_execution_state(&app_state, execution_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .with_github_service(github_trait);
+
+    let routed = service
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("linked plan PR autofix routing should succeed");
+
+    assert!(routed);
+    let updated = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failing check"));
+    let events = app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(events.iter().any(|event| {
+        event.step == "pr_autofix"
+            && event.status == "needs_agent"
+            && event
+                .classification
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("github_pr_autofix:609:routehead")
+    }));
+}
+
+#[tokio::test]
+async fn route_plan_pr_autofix_skips_incomplete_or_stale_linked_plan_context() {
+    let app_state = AppState::new_test();
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-skip-current");
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+
+    assert!(!build_test_service(&app_state)
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing plan repo should skip"));
+    assert!(!build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing workspace repo should skip"));
+    assert!(!build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing GitHub service should skip"));
+
+    let service = build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .with_github_service(github_trait);
+    let missing = service
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await;
+    assert!(matches!(
+        missing,
+        Err(AppError::NotFound(message))
+            if message.contains("No plan branch found for PR supervision")
+    ));
+
+    let project_id = ProjectId::from_string("project-plan-autofix-skip".to_string());
+    let make_plan_branch = |suffix: &str, pr_number: Option<i64>| {
+        let session_id = IdeationSessionId::from_string(format!("session-{suffix}"));
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string(format!("artifact-{suffix}")),
+            session_id,
+            project_id.clone(),
+            format!("ralphx/test/{suffix}"),
+            "main".to_string(),
+        );
+        plan_branch.id = PlanBranchId::from_string(format!("plan-branch-{suffix}"));
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = pr_number;
+        plan_branch.pr_url = Some("https://github.com/owner/repo/pull/609".to_string());
+        plan_branch.pr_status = Some(DbPrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+        plan_branch
+    };
+
+    let mut ineligible = make_plan_branch("ineligible", Some(609));
+    ineligible.pr_eligible = false;
+    app_state
+        .plan_branch_repo
+        .create(ineligible.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&ineligible.id, 609)
+        .await
+        .expect("ineligible branch should skip"));
+
+    let mut merged_branch = make_plan_branch("merged", Some(609));
+    merged_branch.status = PlanBranchStatus::Merged;
+    app_state
+        .plan_branch_repo
+        .create(merged_branch.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&merged_branch.id, 609)
+        .await
+        .expect("inactive branch should skip"));
+
+    let wrong_pr = make_plan_branch("wrong-pr", Some(610));
+    app_state
+        .plan_branch_repo
+        .create(wrong_pr.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&wrong_pr.id, 609)
+        .await
+        .expect("PR number mismatch should skip"));
+
+    let no_workspace = make_plan_branch("no-workspace", Some(609));
+    app_state
+        .plan_branch_repo
+        .create(no_workspace.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&no_workspace.id, 609)
+        .await
+        .expect("missing linked workspace should skip"));
+
+    let mismatched_workspace_plan = make_plan_branch("workspace-mismatch", Some(609));
+    app_state
+        .plan_branch_repo
+        .create(mismatched_workspace_plan.clone())
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("60916091-6091-6091-6091-609160916091"),
+        project_id,
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        mismatched_workspace_plan.branch_name.clone(),
+        "/tmp/unused-linked-plan-worktree".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(mismatched_workspace_plan.session_id.clone());
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("other-plan-branch"));
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&mismatched_workspace_plan.id, 609)
+        .await
+        .expect("workspace linked to another plan branch should skip"));
 }
 
 #[tokio::test]
@@ -2144,15 +3357,11 @@ async fn test_freshness_conflict_at_cap_during_review_routes_to_failed() {
     assert_eq!(history[0].trigger, "system");
 }
 
-/// Regression: a review-origin freshness conflict with real merge-conflict evidence must
-/// hand off to the merge pipeline instead of looping back through PendingReview.
-///
-/// Before the fix, transition_task(PendingReview) on a task with conflict markers in the
-/// review worktree would churn Reviewing <-> PendingReview repeatedly until the retry cap
-/// or scheduler interference. The task must now route into Merging so the merger agent can
-/// resolve the conflict.
+/// Regression: marker-only conflict evidence has no trustworthy source/target direction.
+/// It must escalate for operator repair rather than entering the merge pipeline or guessing
+/// a dedicated branch-update operation.
 #[tokio::test]
-async fn test_review_origin_freshness_conflict_routes_to_merging_without_loop() {
+async fn test_review_origin_marker_only_conflict_escalates_without_guessing_direction() {
     let app_state = AppState::new_test();
     let service = build_test_service(&app_state);
 
@@ -2221,8 +3430,8 @@ async fn test_review_origin_freshness_conflict_routes_to_merging_without_loop() 
         .expect("task must exist");
     assert_eq!(
         stored.internal_status,
-        InternalStatus::Merging,
-        "Task must route to Merging after review-origin freshness conflict with merge markers"
+        InternalStatus::Escalated,
+        "Marker-only conflict evidence must escalate instead of guessing a branch-update direction"
     );
 
     let history = app_state
@@ -2233,14 +3442,14 @@ async fn test_review_origin_freshness_conflict_routes_to_merging_without_loop() 
     assert_eq!(
         history.len(),
         3,
-        "Expected exactly QaPassed->PendingReview, PendingReview->Reviewing, Reviewing->Merging"
+        "Expected exactly QaPassed->PendingReview, PendingReview->Reviewing, Reviewing->Escalated"
     );
     assert_eq!(history[0].from, InternalStatus::QaPassed);
     assert_eq!(history[0].to, InternalStatus::PendingReview);
     assert_eq!(history[1].from, InternalStatus::PendingReview);
     assert_eq!(history[1].to, InternalStatus::Reviewing);
     assert_eq!(history[2].from, InternalStatus::Reviewing);
-    assert_eq!(history[2].to, InternalStatus::Merging);
+    assert_eq!(history[2].to, InternalStatus::Escalated);
     assert!(
         history
             .iter()
@@ -2354,13 +3563,13 @@ mod enrichment_tests {
         }
     }
 
-    /// Build a TauriEventEmitter wired to recording sinks and repos from AppState.
+    /// Build a EnrichedEventEmitter wired to recording sinks and repos from AppState.
     fn build_recording_emitter(
         app_state: &AppState,
         ext_repo: Arc<MemoryExternalEventsRepository>,
         webhook: Arc<RecordingWebhookPublisher>,
-    ) -> TauriEventEmitter<tauri::Wry> {
-        TauriEventEmitter::new(None)
+    ) -> EnrichedEventEmitter {
+        EnrichedEventEmitter::new(None)
             .with_external_events(
                 Arc::clone(&ext_repo) as Arc<dyn ExternalEventsRepository>,
                 Arc::clone(&app_state.task_repo),
@@ -2368,6 +3577,48 @@ mod enrichment_tests {
                 Arc::clone(&app_state.ideation_session_repo),
             )
             .with_webhook_publisher(Arc::clone(&webhook) as Arc<dyn WebhookPublisher>)
+    }
+
+    #[tokio::test]
+    async fn with_event_sink_preserves_webhook_publisher_status_change_emits() {
+        let app_state = AppState::new_test();
+
+        let project = Project::new(
+            "Webhook Sink Project".to_string(),
+            "/tmp/webhook-sink".to_string(),
+        );
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
+        let task = Task::new(project.id.clone(), "Webhook Sink Task".to_string());
+        app_state.task_repo.create(task.clone()).await.unwrap();
+
+        let sink = RecordingEventSink::new();
+        let sink_arc: Arc<dyn EventSink> = Arc::new(sink.clone());
+        let webhook = Arc::new(RecordingWebhookPublisher::new());
+        let service = build_test_service(&app_state)
+            .with_webhook_publisher_for_emitter(Arc::clone(&webhook) as Arc<dyn WebhookPublisher>)
+            .with_event_sink(sink_arc);
+
+        service
+            .event_emitter
+            .emit_status_change(task.id.as_str(), "ready", "reviewing")
+            .await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "task:status_changed");
+        assert_eq!(events[0].payload["task_id"], task.id.to_string());
+
+        let webhook_payloads = webhook.payloads().await;
+        assert_eq!(webhook_payloads.len(), 1);
+        assert_eq!(webhook_payloads[0]["task_id"], task.id.to_string());
+        assert_eq!(webhook_payloads[0]["project_id"], project.id.to_string());
+        assert_eq!(webhook_payloads[0]["old_status"], "ready");
+        assert_eq!(webhook_payloads[0]["new_status"], "reviewing");
+        assert_eq!(webhook_payloads[0]["task_title"], "Webhook Sink Task");
     }
 
     // ── Test 1: task with project + ideation session ──────────────────────────

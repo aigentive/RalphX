@@ -281,6 +281,14 @@ export const ApplyProposalsResultResponseSchema = z.object({
   message: z.string().nullable().optional(),
 });
 
+export const RestartImplementationResultResponseSchema = z.object({
+  session_id: z.string(),
+  old_execution_plan_id: z.string(),
+  execution_plan_id: z.string(),
+  archived_task_count: z.number(),
+  created_task_ids: z.array(z.string()),
+});
+
 /**
  * Parent session context response (snake_case from Rust)
  */

@@ -15,7 +15,12 @@ use tokio::task::JoinHandle;
 
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
 use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::git_artifact_cleanup::terminal_agent_workspace_cleanup_marker_for_report;
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
+    AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
@@ -25,7 +30,7 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus, ChatContextType,
     ChatConversationId,
 };
-use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
+use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
     TaskOutcomeRepository,
@@ -43,6 +48,11 @@ use crate::infrastructure::agents::claude::agent_names::{
 const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
 const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY_CLASSIFICATION: &str = "agent_fixable:update_only";
+const AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX: &str =
+    "Agent stopped because the workspace pull request was";
+const AGENT_WORKSPACE_AUTO_MERGE_DISARM_STEP: &str = "auto_merge_disabled_for_repair";
+const AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY: &str =
+    "Temporarily disabled GitHub auto-merge before starting PR repair.";
 
 // ────────────────────────────────────────────────────────────────────
 // Rate limit state shared across all pollers in the registry
@@ -234,7 +244,7 @@ impl PrPollerRegistry {
         pr_number: i64,
         working_dir: PathBuf,
         base_branch: String,
-        transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+        transition_service: Arc<TaskTransitionService>,
     ) {
         use dashmap::mapref::entry::Entry;
 
@@ -359,7 +369,7 @@ impl PrPollerRegistry {
         task_id: &TaskId,
         pr_number: i64,
         working_dir: &Path,
-        transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+        transition_service: Arc<TaskTransitionService>,
         history_actor: &str,
     ) -> crate::AppResult<bool> {
         let Some(github) = self.github_service.as_ref() else {
@@ -428,7 +438,7 @@ async fn poll_loop(
     semaphore: Arc<tokio::sync::Semaphore>,
     rate_limit: Arc<std::sync::Mutex<RateLimitState>>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
 ) {
     let start_time = Instant::now();
     let max_backoff = Duration::from_secs(600); // 10 min cap
@@ -523,9 +533,17 @@ async fn poll_loop(
         }
 
         match github.check_pr_status(&working_dir, pr_number).await {
-            Ok(PrStatus::Merged { merge_commit_sha }) => {
+            Ok(PrStatus::Merged {
+                merge_commit_sha, ..
+            }) => {
                 // Release semaphore before potentially-long fetch operation
                 drop(_permit);
+                clear_task_auto_merge_correction_marker_for_terminal_pr(
+                    Arc::clone(&transition_service),
+                    &task_id,
+                    "merged",
+                )
+                .await;
 
                 // Check stopping guard BEFORE transition (AD11 critical section)
                 if stopping.contains_key(&task_id) {
@@ -622,6 +640,12 @@ async fn poll_loop(
                     task_id = task_id.as_str(),
                     "PR closed without merging — transitioning to MergeIncomplete"
                 );
+                clear_task_auto_merge_correction_marker_for_terminal_pr(
+                    Arc::clone(&transition_service),
+                    &task_id,
+                    "closed",
+                )
+                .await;
                 let _ = plan_branch_repo
                     .update_pr_status(&plan_branch_id, DbPrStatus::Closed)
                     .await;
@@ -691,6 +715,31 @@ async fn poll_loop(
                             pr_number,
                             error = %error,
                             "PR poller: failed to inspect GitHub review feedback"
+                        );
+                    }
+                }
+
+                match transition_service
+                    .route_plan_pr_autofix_if_needed(&plan_branch_id, pr_number)
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            task_id = task_id.as_str(),
+                            pr_number,
+                            "PR poller: supervised plan PR issue routed to fixer agent"
+                        );
+                        active.remove(&task_id);
+                        stopping.remove(&task_id);
+                        return;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task_id.as_str(),
+                            pr_number,
+                            error = %error,
+                            "PR poller: failed to inspect supervised plan PR health"
                         );
                     }
                 }
@@ -859,12 +908,16 @@ async fn agent_workspace_poll_loop(
                     "Pull request merged",
                 )
                 .await;
-                cleanup_terminal_agent_workspace_after_pr(
+                terminalize_agent_workspace_after_pr(
                     Arc::clone(&workspace_repo),
+                    Arc::clone(&agent_run_repo),
+                    Some(Arc::clone(&chat_service)),
                     &conversation_id,
                     &project,
                     Some(Arc::clone(&github)),
                     true,
+                    true,
+                    "merged",
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -881,12 +934,16 @@ async fn agent_workspace_poll_loop(
                     "Pull request closed without merging",
                 )
                 .await;
-                cleanup_terminal_agent_workspace_after_pr(
+                terminalize_agent_workspace_after_pr(
                     Arc::clone(&workspace_repo),
+                    Arc::clone(&agent_run_repo),
+                    Some(Arc::clone(&chat_service)),
                     &conversation_id,
                     &project,
                     None,
                     false,
+                    true,
+                    "closed",
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -942,6 +999,8 @@ async fn agent_workspace_poll_loop(
                         }
 
                         match route_agent_workspace_pr_conflict_repair_if_needed(
+                            Arc::clone(&github),
+                            &working_dir,
                             pr_number,
                             &health,
                             &conversation_id,
@@ -1392,6 +1451,8 @@ async fn mark_agent_workspace_pr_merge_conflict_if_needed(
 }
 
 async fn route_agent_workspace_pr_conflict_repair_if_needed(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
     pr_number: i64,
     health: &PrHealth,
     conversation_id: &ChatConversationId,
@@ -1439,6 +1500,19 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
         return Ok(false);
     }
 
+    let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
+        Arc::clone(&github),
+        working_dir,
+        pr_number,
+        conversation_id,
+        health,
+        Arc::clone(&workspace_repo),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+
     let repair_summary =
         format!("Auto Publish routed PR #{pr_number} merge conflicts to workspace repair.");
     workspace_repo
@@ -1453,7 +1527,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
-            workspace.pr_auto_merge_current,
+            Some(auto_merge_current),
             Some("fixing"),
             Some(&repair_summary),
         )
@@ -1539,6 +1613,128 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
     Ok(true)
 }
 
+pub(crate) async fn terminalize_agent_workspace_after_pr(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    chat_service: Option<Arc<dyn ChatService>>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    github: Option<Arc<dyn GithubServiceTrait>>,
+    delete_branch_if_merged: bool,
+    cleanup_local_artifacts: bool,
+    pr_status: &str,
+) -> bool {
+    let active_run = match agent_run_repo
+        .get_active_for_conversation(conversation_id)
+        .await
+    {
+        Ok(run) => run,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace terminal PR cleanup: failed to inspect active run; leaving cleanup pending"
+            );
+            return false;
+        }
+    };
+
+    if active_run.is_some() || chat_service.is_some() {
+        let Some(chat_service) = chat_service.as_ref() else {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                pr_status,
+                "Agent workspace terminal PR cleanup: active run exists but no chat service is available; leaving cleanup pending"
+            );
+            return false;
+        };
+
+        let context_id = conversation_id.as_str();
+        match chat_service
+            .stop_agent(ChatContextType::Project, &context_id)
+            .await
+        {
+            Ok(stopped) => {
+                tracing::info!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_status,
+                    stopped,
+                    "Agent workspace terminal PR cleanup: stopped project runtime before local cleanup"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_status,
+                    error = %error,
+                    "Agent workspace terminal PR cleanup: failed to stop project runtime; leaving cleanup pending"
+                );
+                return false;
+            }
+        }
+    }
+
+    if let Some(run) = active_run {
+        let reason = terminal_pr_agent_stop_reason(pr_status);
+        if let Err(error) = agent_run_repo.fail(&run.id, &reason).await {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                run_id = run.id.as_str(),
+                pr_status,
+                error = %error,
+                "Agent workspace terminal PR cleanup: failed to persist terminal PR stop reason"
+            );
+            return false;
+        }
+    }
+
+    match agent_run_repo
+        .get_active_for_conversation(conversation_id)
+        .await
+    {
+        Ok(Some(run)) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                run_id = run.id.as_str(),
+                pr_status,
+                "Agent workspace terminal PR cleanup: active run remains after stop; leaving cleanup pending"
+            );
+            return false;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace terminal PR cleanup: failed to verify stopped runtime; leaving cleanup pending"
+            );
+            return false;
+        }
+    }
+
+    if !cleanup_local_artifacts {
+        return true;
+    }
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        conversation_id,
+        project,
+        github,
+        delete_branch_if_merged,
+    )
+    .await;
+    true
+}
+
+fn terminal_pr_agent_stop_reason(pr_status: &str) -> String {
+    match pr_status {
+        "merged" => format!("{AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX} merged"),
+        "closed" => format!("{AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX} closed"),
+        _ => format!("{AGENT_WORKSPACE_TERMINAL_PR_STOP_PREFIX} terminal"),
+    }
+}
+
 pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &ChatConversationId,
@@ -1579,6 +1775,25 @@ pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
 
     match cleanup_result {
         Ok(report) => {
+            if let Some(status) =
+                terminal_agent_workspace_cleanup_marker_for_report(&report, delete_branch_if_merged)
+            {
+                if let Err(error) = workspace_repo
+                    .mark_local_cleanup_status(
+                        &workspace.conversation_id,
+                        status,
+                        chrono::Utc::now(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        status,
+                        error = %error,
+                        "Agent workspace PR cleanup: failed to persist local cleanup marker"
+                    );
+                }
+            }
             tracing::info!(
                 conversation_id = conversation_id.as_str(),
                 worktree_removed = report.worktree_removed,
@@ -1599,7 +1814,7 @@ async fn route_review_feedback_if_present(
     working_dir: &Path,
     pr_number: i64,
     task_id: &TaskId,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
     history_actor: &str,
 ) -> crate::AppResult<bool> {
     let Some(feedback) = github
@@ -1609,10 +1824,140 @@ async fn route_review_feedback_if_present(
         return Ok(false);
     };
 
+    let Some(auto_merge_disabled_for_correction) =
+        prepare_task_pr_correction_auto_merge_state(Arc::clone(&github), working_dir, pr_number)
+            .await?
+    else {
+        return Ok(false);
+    };
+
     transition_service
-        .route_github_pr_changes_requested(task_id, pr_number, feedback, history_actor)
+        .route_github_pr_changes_requested_with_auto_merge_marker(
+            task_id,
+            pr_number,
+            feedback,
+            history_actor,
+            auto_merge_disabled_for_correction.disabled_for_correction,
+            auto_merge_disabled_for_correction.method,
+        )
         .await?;
     Ok(true)
+}
+
+async fn clear_task_auto_merge_correction_marker_for_terminal_pr(
+    transition_service: Arc<TaskTransitionService>,
+    task_id: &TaskId,
+    pr_status: &str,
+) {
+    match transition_service
+        .clear_github_auto_merge_correction_marker_for_terminal_pr(task_id, pr_status)
+        .await
+    {
+        Ok(true) => tracing::info!(
+            task_id = task_id.as_str(),
+            pr_status,
+            "PR poller: cleared disabled auto-merge correction marker after terminal PR state"
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            task_id = task_id.as_str(),
+            pr_status,
+            error = %error,
+            "PR poller: failed to clear disabled auto-merge correction marker after terminal PR state"
+        ),
+    }
+}
+
+struct TaskPrCorrectionAutoMergeState {
+    disabled_for_correction: bool,
+    method: Option<String>,
+}
+
+async fn prepare_task_pr_correction_auto_merge_state(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+) -> crate::AppResult<Option<TaskPrCorrectionAutoMergeState>> {
+    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let Some(auto_merge_request) = health.auto_merge_request else {
+        return Ok(Some(TaskPrCorrectionAutoMergeState {
+            disabled_for_correction: false,
+            method: None,
+        }));
+    };
+    let method = auto_merge_request.merge_method;
+
+    match github.disable_pr_auto_merge(working_dir, pr_number).await {
+        Ok(()) => Ok(Some(TaskPrCorrectionAutoMergeState {
+            disabled_for_correction: true,
+            method,
+        })),
+        Err(error) => {
+            tracing::warn!(
+                pr_number,
+                error = %auto_merge_disable_failure_summary(error),
+                "PR monitor skipped GitHub review correction because auto-merge could not be disabled"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn prepare_agent_workspace_pr_repair_auto_merge_state(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    conversation_id: &ChatConversationId,
+    health: &PrHealth,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+) -> crate::AppResult<Option<bool>> {
+    if health.auto_merge_request.is_none() {
+        return Ok(Some(false));
+    }
+
+    match github.disable_pr_auto_merge(working_dir, pr_number).await {
+        Ok(()) => {
+            workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    Some(false),
+                    None,
+                    Some(AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY),
+                )
+                .await?;
+            workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    AGENT_WORKSPACE_AUTO_MERGE_DISARM_STEP,
+                    "succeeded",
+                    AGENT_WORKSPACE_AUTO_MERGE_DISARM_SUMMARY,
+                    Some(format!("github_auto_merge_disabled_for_repair:{pr_number}")),
+                ))
+                .await?;
+            Ok(Some(false))
+        }
+        Err(error) => {
+            let summary = auto_merge_disable_failure_summary(error);
+            workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    Some(true),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&summary),
+                )
+                .await?;
+            workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    AGENT_WORKSPACE_AUTO_MERGE_DISARM_STEP,
+                    "waiting",
+                    &summary,
+                    Some(format!("github_auto_merge_disable_failed:{pr_number}")),
+                ))
+                .await?;
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1628,6 +1973,48 @@ struct AgentWorkspacePrAutofixIssue {
     summary: String,
     details: Vec<String>,
     classification: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentWorkspacePrAutofixTargetKind {
+    DirectWorkspace,
+    IdeationPlan,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkspacePrAutofixTarget {
+    kind: AgentWorkspacePrAutofixTargetKind,
+    pr_number: i64,
+    pr_url: Option<String>,
+}
+
+impl AgentWorkspacePrAutofixTarget {
+    fn direct(workspace: &AgentConversationWorkspace, pr_number: i64) -> Self {
+        Self {
+            kind: AgentWorkspacePrAutofixTargetKind::DirectWorkspace,
+            pr_number,
+            pr_url: workspace.publication_pr_url.clone(),
+        }
+    }
+
+    fn ideation_plan(plan_branch: &PlanBranch, pr_number: i64) -> Self {
+        Self {
+            kind: AgentWorkspacePrAutofixTargetKind::IdeationPlan,
+            pr_number,
+            pr_url: plan_branch.pr_url.clone(),
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self.kind {
+            AgentWorkspacePrAutofixTargetKind::DirectWorkspace => "agent workspace",
+            AgentWorkspacePrAutofixTargetKind::IdeationPlan => "linked ideation plan",
+        }
+    }
+
+    fn updates_workspace_publication(&self) -> bool {
+        self.kind == AgentWorkspacePrAutofixTargetKind::DirectWorkspace
+    }
 }
 
 async fn route_agent_workspace_pr_autofix_if_needed(
@@ -1649,6 +2036,80 @@ async fn route_agent_workspace_pr_autofix_if_needed(
             ))
         })?;
 
+    let target = AgentWorkspacePrAutofixTarget::direct(&workspace, pr_number);
+    route_agent_workspace_pr_autofix_for_target(
+        github,
+        working_dir,
+        target,
+        workspace,
+        conversation_id,
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+    )
+    .await
+}
+
+pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    plan_branch: &PlanBranch,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    let Some(pr_number) = plan_branch.pr_number else {
+        return Ok(false);
+    };
+
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+
+    if workspace.status != AgentConversationWorkspaceStatus::Active
+        || workspace.mode != AgentConversationWorkspaceMode::Ideation
+        || workspace.linked_plan_branch_id.as_ref() != Some(&plan_branch.id)
+        || workspace.linked_ideation_session_id.as_ref() != Some(&plan_branch.session_id)
+        || workspace.branch_name != plan_branch.branch_name
+        || matches!(
+            plan_branch.pr_status,
+            Some(DbPrStatus::Closed | DbPrStatus::Merged)
+        )
+    {
+        return Ok(false);
+    }
+
+    let target = AgentWorkspacePrAutofixTarget::ideation_plan(plan_branch, pr_number);
+    route_agent_workspace_pr_autofix_for_target(
+        github,
+        working_dir,
+        target,
+        workspace,
+        conversation_id,
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+    )
+    .await
+}
+
+async fn route_agent_workspace_pr_autofix_for_target(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    target: AgentWorkspacePrAutofixTarget,
+    workspace: AgentConversationWorkspace,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
     if !workspace.auto_publish_enabled {
         return Ok(false);
     }
@@ -1663,7 +2124,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     if agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await? {
         tracing::info!(
             conversation_id = conversation_id.as_str(),
-            pr_number,
+            pr_number = target.pr_number,
             publication_push_status = workspace.publication_push_status.as_deref(),
             pr_supervision_status = workspace.pr_supervision_status.as_deref(),
             "Agent workspace PR poller: skipping autofix route because repair is already active"
@@ -1671,52 +2132,58 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         return Ok(false);
     }
 
-    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let health = github
+        .fetch_pr_health(working_dir, target.pr_number)
+        .await?;
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
         conversation_id,
-        pr_number,
+        target.pr_number,
         &health,
     )
     .await?;
     if let Some((terminal_status, summary)) =
         agent_workspace_terminal_status_from_pr_health(&health)
     {
-        workspace_repo
-            .update_publication(
-                conversation_id,
-                workspace.publication_pr_number,
-                workspace.publication_pr_url.as_deref(),
-                Some(terminal_status),
-                workspace.publication_push_status.as_deref(),
-            )
-            .await?;
+        if target.updates_workspace_publication() {
+            workspace_repo
+                .update_publication(
+                    conversation_id,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url.as_deref(),
+                    Some(terminal_status),
+                    workspace.publication_push_status.as_deref(),
+                )
+                .await?;
+        }
         workspace_repo
             .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                 conversation_id.clone(),
                 "pr_terminal",
                 terminal_status,
                 summary,
-                Some(format!("github_pr_terminal:{pr_number}:{terminal_status}")),
+                Some(format!(
+                    "github_pr_terminal:{}:{terminal_status}",
+                    target.pr_number
+                )),
             ))
             .await?;
         return Ok(false);
     }
-    let auto_merge_current = sync_agent_workspace_auto_merge_preference(
-        Arc::clone(&github),
-        working_dir,
-        pr_number,
-        &workspace,
-        &health,
-        Arc::clone(&workspace_repo),
-    )
-    .await?;
-
     if !workspace.pr_autofix_enabled {
         return Ok(false);
     }
 
-    let Some(issue) = classify_agent_workspace_pr_autofix_issue(pr_number, &health) else {
+    let Some(issue) = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health) else {
+        let auto_merge_current = sync_agent_workspace_auto_merge_preference(
+            Arc::clone(&github),
+            working_dir,
+            target.pr_number,
+            &workspace,
+            &health,
+            Arc::clone(&workspace_repo),
+        )
+        .await?;
         let auto_merge_pending = workspace.pr_auto_merge_desired && !auto_merge_current;
         if !auto_merge_pending
             && (workspace.pr_supervision_status.as_deref() != Some("monitoring")
@@ -1743,7 +2210,26 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         return Ok(false);
     }
 
-    let message = build_agent_workspace_pr_autofix_message(pr_number, &workspace, &issue);
+    let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
+        Arc::clone(&github),
+        working_dir,
+        target.pr_number,
+        conversation_id,
+        &health,
+        Arc::clone(&workspace_repo),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+
+    let message = build_agent_workspace_pr_autofix_message(
+        target.pr_number,
+        target.pr_url.as_deref(),
+        target.label(),
+        &workspace,
+        &issue,
+    );
     chat_service
         .send_message(
             ChatContextType::Project,
@@ -1764,15 +2250,17 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     } else {
         Some("open")
     };
-    workspace_repo
-        .update_publication(
-            conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            pr_status,
-            Some("needs_agent"),
-        )
-        .await?;
+    if target.updates_workspace_publication() {
+        workspace_repo
+            .update_publication(
+                conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                pr_status,
+                Some("needs_agent"),
+            )
+            .await?;
+    }
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
@@ -1863,15 +2351,13 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
     };
     if monitor.pr_number != pr_number
         || !monitor.monitor_enabled
-        || monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
+        || matches!(
+            monitor.status,
+            AgentWorkspacePrReviewMonitorStatus::Paused
+                | AgentWorkspacePrReviewMonitorStatus::Terminal
+                | AgentWorkspacePrReviewMonitorStatus::Submitting
+        )
     {
-        return Ok(false);
-    }
-    if matches!(
-        monitor.status,
-        AgentWorkspacePrReviewMonitorStatus::AwaitingUser
-            | AgentWorkspacePrReviewMonitorStatus::Submitting
-    ) {
         return Ok(false);
     }
     if agent_run_repo
@@ -1920,8 +2406,17 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
         return Ok(false);
     }
 
+    workspace_repo
+        .supersede_pending_pr_review_actions_except_head(conversation_id, pr_number, &head_sha)
+        .await?;
+
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
+    monitor.last_seen_head_sha = Some(head_sha.clone());
+    monitor.last_error = None;
+    workspace_repo.upsert_pr_review_monitor(monitor).await?;
+
     let message = build_agent_workspace_pr_monitor_review_message(pr_number, &workspace, &health);
-    let send_result = chat_service
+    let send_result = match chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
@@ -1936,14 +2431,33 @@ async fn route_agent_workspace_pr_review_monitor_if_needed(
             },
         )
         .await
-        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
-
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::Reviewing;
-    monitor.last_seen_head_sha = Some(head_sha.clone());
-    monitor.last_review_run_id =
-        (!send_result.agent_run_id.trim().is_empty()).then_some(send_result.agent_run_id);
-    monitor.last_error = None;
-    workspace_repo.upsert_pr_review_monitor(monitor).await?;
+    {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(mut current) = workspace_repo
+                .get_pr_review_monitor(conversation_id)
+                .await?
+            {
+                current.last_error = Some(error.to_string());
+                current.status = current.settlement_status();
+                workspace_repo.upsert_pr_review_monitor(current).await?;
+            }
+            return Err(AppError::Infrastructure(error.to_string()));
+        }
+    };
+    if let Some(mut current) = workspace_repo
+        .get_pr_review_monitor(conversation_id)
+        .await?
+    {
+        if current.monitor_enabled
+            && current.status == AgentWorkspacePrReviewMonitorStatus::Reviewing
+            && current.last_seen_head_sha.as_deref() == Some(head_sha.as_str())
+        {
+            current.last_review_run_id =
+                (!send_result.agent_run_id.trim().is_empty()).then_some(send_result.agent_run_id);
+            workspace_repo.upsert_pr_review_monitor(current).await?;
+        }
+    }
     workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
@@ -1996,10 +2510,8 @@ async fn sync_agent_workspace_auto_merge_preference(
                     .update_pr_auto_merge_state(
                         &workspace.conversation_id,
                         Some(false),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be enabled yet: {error}"
-                        )),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_enable_failure_summary(&error)),
                     )
                     .await?;
             }
@@ -2022,10 +2534,8 @@ async fn sync_agent_workspace_auto_merge_preference(
                     .update_pr_auto_merge_state(
                         &workspace.conversation_id,
                         Some(true),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be disabled yet: {error}"
-                        )),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_disable_failure_summary(&error)),
                     )
                     .await?;
             }
@@ -2405,12 +2915,14 @@ fn build_agent_workspace_pr_conflict_repair_message(
 
 fn build_agent_workspace_pr_autofix_message(
     pr_number: i64,
+    pr_url: Option<&str>,
+    target_label: &str,
     workspace: &AgentConversationWorkspace,
     issue: &AgentWorkspacePrAutofixIssue,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "RalphX PR supervision detected a merge-blocking issue on GitHub PR #{pr_number} for this agent workspace.\n\n"
+        "RalphX PR supervision detected a merge-blocking issue on GitHub PR #{pr_number} for this {target_label}.\n\n"
     ));
     out.push_str(
         "Please fix the PR in the current workspace branch, commit any focused changes, then call `complete_agent_workspace_pr_fix`.\n\n",
@@ -2420,7 +2932,7 @@ fn build_agent_workspace_pr_autofix_message(
         workspace.conversation_id.as_str()
     ));
     out.push_str(&format!("Workspace branch: {}\n", workspace.branch_name));
-    if let Some(pr_url) = workspace.publication_pr_url.as_deref() {
+    if let Some(pr_url) = pr_url {
         out.push_str(&format!("Pull request: {pr_url}\n"));
     }
     out.push_str(&format!("Detected issue: {}\n", issue.summary));
@@ -2515,6 +3027,25 @@ async fn route_agent_workspace_review_feedback_if_present(
         return Ok(false);
     }
 
+    let auto_merge_current = if workspace.pr_autofix_enabled {
+        let health = github.fetch_pr_health(working_dir, pr_number).await?;
+        let Some(auto_merge_current) = prepare_agent_workspace_pr_repair_auto_merge_state(
+            Arc::clone(&github),
+            working_dir,
+            pr_number,
+            conversation_id,
+            &health,
+            Arc::clone(&workspace_repo),
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        Some(auto_merge_current)
+    } else {
+        workspace.pr_auto_merge_current
+    };
+
     let message = build_agent_workspace_pr_review_message(pr_number, &workspace, &feedback);
     let agent_name = if workspace.pr_autofix_enabled {
         AGENT_WORKSPACE_PR_FIXER
@@ -2551,7 +3082,7 @@ async fn route_agent_workspace_review_feedback_if_present(
         workspace_repo
             .update_pr_auto_merge_state(
                 conversation_id,
-                workspace.pr_auto_merge_current,
+                auto_merge_current,
                 Some("fixing"),
                 Some("GitHub requested changes routed to the PR fixer."),
             )

@@ -9,6 +9,8 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MergeIncompleteTaskDetail } from "./MergeIncompleteTaskDetail";
 import type { Task, MergeRecoveryEvent } from "@/types/task";
+import type { PlanBranch } from "@/api/plan-branch.types";
+import { usePlanBranchForTask } from "@/hooks/usePlanBranchForTask";
 
 // Create stable mock functions using vi.hoisted
 const { mockInvoke, mockSetTaskHistoryState } = vi.hoisted(() => ({
@@ -78,6 +80,31 @@ function createRecoveryEvent(overrides?: Partial<MergeRecoveryEvent>): MergeReco
   };
 }
 
+function createPlanBranch(overrides?: Partial<PlanBranch>): PlanBranch {
+  return {
+    id: "plan-branch-123",
+    planArtifactId: "artifact-123",
+    sessionId: "session-123",
+    projectId: "project-456",
+    branchName: "ralphx/ralphx/agent-plan",
+    sourceBranch: "main",
+    status: "active",
+    mergeTaskId: "task-123",
+    createdAt: "2026-01-28T12:00:00+00:00",
+    mergedAt: null,
+    prNumber: null,
+    prUrl: null,
+    prDraft: null,
+    prPushStatus: "pending",
+    prStatus: null,
+    prPollingActive: false,
+    prEligible: false,
+    mergeCommitSha: null,
+    baseBranchOverride: null,
+    ...overrides,
+  };
+}
+
 function TestWrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -93,6 +120,9 @@ describe("MergeIncompleteTaskDetail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockInvoke.mockResolvedValue(undefined);
+    vi.mocked(usePlanBranchForTask).mockReturnValue({
+      data: undefined,
+    } as ReturnType<typeof usePlanBranchForTask>);
   });
 
   it("renders container with status banner", () => {
@@ -101,6 +131,24 @@ describe("MergeIncompleteTaskDetail", () => {
 
     expect(screen.getByTestId("merge-incomplete-task-detail")).toBeInTheDocument();
     expect(screen.getByText("Merge Incomplete")).toBeInTheDocument();
+  });
+
+  it("shows PR branch publication recovery copy and hides manual resolve", () => {
+    const task = createTestTask({
+      metadata: JSON.stringify({
+        error_code: "pr_branch_publication_failed",
+        error: "PR branch publication failed: non-fast-forward",
+        source_branch: "ralphx/ralphx/task-123",
+        target_branch: "ralphx/ralphx/plan-main",
+      }),
+    });
+
+    render(<MergeIncompleteTaskDetail task={task} />, { wrapper: TestWrapper });
+
+    expect(screen.getByText("PR Branch Publication Incomplete")).toBeInTheDocument();
+    expect(screen.getByText("Merge verified — PR branch publication needs retry")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry PR Publish" })).toBeInTheDocument();
+    expect(screen.queryByText("Mark Resolved")).not.toBeInTheDocument();
   });
 
   it("shows fallback message when no recovery events exist", () => {
@@ -458,6 +506,26 @@ describe("MergeIncompleteTaskDetail", () => {
     expect(screen.getByTestId("action-buttons")).toBeInTheDocument();
     expect(screen.getByTestId("retry-merge-button")).toBeInTheDocument();
     expect(screen.getByTestId("resolve-merge-button")).toBeInTheDocument();
+  });
+
+  it("hides Mark Resolved for open PR-backed plan merges", () => {
+    vi.mocked(usePlanBranchForTask).mockReturnValue({
+      data: createPlanBranch({
+        prEligible: true,
+        prNumber: 600,
+        prStatus: "Open",
+      }),
+    } as ReturnType<typeof usePlanBranchForTask>);
+
+    const task = createTestTask({ category: "plan_merge" });
+    render(<MergeIncompleteTaskDetail task={task} />, { wrapper: TestWrapper });
+
+    expect(screen.getByTestId("action-buttons")).toBeInTheDocument();
+    expect(screen.getByTestId("retry-merge-button")).toBeInTheDocument();
+    expect(screen.queryByTestId("resolve-merge-button")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pr-backed-resolution-guard")).toHaveTextContent(
+      "PR #600",
+    );
   });
 
   it("hides action buttons in historical mode", () => {

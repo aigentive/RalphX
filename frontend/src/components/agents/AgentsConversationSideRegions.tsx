@@ -14,6 +14,11 @@ import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
+import type {
+  AgentsChatFocus,
+  AutomationRunFocusOptions,
+} from "./agentChatFocus";
 
 interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
@@ -26,6 +31,10 @@ interface AgentsConversationSideRegionsProps {
   hasAutoOpenArtifacts: boolean;
   isArtifactResizing: boolean;
   openArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
+  automationRunFocusTarget: Extract<
+    AgentsChatFocus,
+    { type: "automation_run" }
+  > | null;
   panelDockElement: HTMLDivElement | null;
   publishFocusRequest: AgentPublishFocusRequest | null;
   publishingConversationId: string | null;
@@ -36,8 +45,31 @@ interface AgentsConversationSideRegionsProps {
   taskArtifactFocusRequest: AgentTaskArtifactFocusRequest | null;
   terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
-  onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
+  onConversationModeSwitched: (
+    conversationId: string,
+    mode: AgentConversationWorkspace["mode"],
+    workspace: AgentConversationWorkspace | null
+  ) => void;
+  onFocusIdeationSessionForConversation: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
+  onFocusVerificationSession: (
+    parentSessionId: string,
+    childSessionId: string
+  ) => void;
+  onFocusAutomationRun: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+    options?: AutomationRunFocusOptions,
+  ) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
+  onOpenAutomation?: (automationId: string) => void;
   onOpenPublish: () => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onResizeReset: (event: ReactMouseEvent) => void;
@@ -57,6 +89,7 @@ export function AgentsConversationSideRegions({
   hasAutoOpenArtifacts,
   isArtifactResizing,
   openArtifactTab,
+  automationRunFocusTarget,
   panelDockElement,
   publishFocusRequest,
   publishingConversationId,
@@ -67,8 +100,13 @@ export function AgentsConversationSideRegions({
   taskArtifactFocusRequest,
   terminalArchivedReason,
   terminalUnavailableReason,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
+  onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
+  onFocusTaskRuntime,
+  onOpenAutomation,
   onOpenPublish,
   onPublishWorkspace,
   onResizeReset,
@@ -76,6 +114,9 @@ export function AgentsConversationSideRegions({
   onSelectArtifact,
   onTaskArtifactSelectionChange,
 }: AgentsConversationSideRegionsProps) {
+  const workspaceConversationId =
+    activeWorkspace?.conversationId ?? selectedConversationId;
+
   return (
     <>
       {selectedConversationId && activeConversation ? (
@@ -86,6 +127,7 @@ export function AgentsConversationSideRegions({
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           projectBaseBranch={activeProjectBaseBranch}
           focusedIdeationSessionId={focusedIdeationSessionId}
+          automationRunFocusTarget={automationRunFocusTarget}
           hasAutoOpenArtifacts={hasAutoOpenArtifacts}
           artifactWidthCss={artifactWidthCss}
           isArtifactResizing={isArtifactResizing}
@@ -100,8 +142,15 @@ export function AgentsConversationSideRegions({
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
           publishFocusRequest={publishFocusRequest}
           taskFocusRequest={taskArtifactFocusRequest}
+          onConversationModeSwitched={onConversationModeSwitched}
+          onFocusIdeationSessionForConversation={
+            onFocusIdeationSessionForConversation
+          }
           onFocusVerificationSession={onFocusVerificationSession}
           onFocusWorkspaceReview={onFocusWorkspaceReview}
+          onFocusTaskRuntime={onFocusTaskRuntime}
+          onFocusAutomationRun={onFocusAutomationRun}
+          {...(onOpenAutomation ? { onOpenAutomation } : {})}
           onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}
           terminalArchivedReason={terminalArchivedReason}
@@ -110,7 +159,7 @@ export function AgentsConversationSideRegions({
         />
       ) : null}
       <AgentsTerminalRegion
-        conversationId={selectedConversationId}
+        conversationId={workspaceConversationId}
         workspace={activeWorkspace}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}

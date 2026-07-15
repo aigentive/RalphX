@@ -12,12 +12,16 @@ import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
-import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlags";
+import { applyFeatureFlagOverrides, isViewEnabled } from "@/lib/featureFlags";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
-import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
-import type { InternalStatus } from "@/types/status";
+import {
+  DEFAULT_PROJECT_VIEW,
+  normalizeMainView,
+  type ViewType,
+} from "@/types/chat";
+import type { TaskHistoryState } from "@/types/task-history";
 import {
   loadCollapsedColumns,
   saveCollapsedColumns,
@@ -111,7 +115,18 @@ const SELECTED_TASK_BY_PROJECT_KEY = "ralphx-selected-task-by-project";
 function loadViewByProject(): Record<string, ViewType> {
   try {
     const stored = localStorage.getItem(VIEW_BY_PROJECT_KEY);
-    return stored ? (JSON.parse(stored) as Record<string, ViewType>) : {};
+    if (!stored) return {};
+    const parsed = JSON.parse(stored) as Record<string, ViewType>;
+    const normalized = Object.fromEntries(
+      Object.entries(parsed).map(([projectId, view]) => [
+        projectId,
+        normalizeMainView(view),
+      ]),
+    ) as Record<string, ViewType>;
+    if (JSON.stringify(normalized) !== stored) {
+      saveViewByProject(normalized);
+    }
+    return normalized;
   } catch {
     return {};
   }
@@ -167,6 +182,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: false,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -229,8 +245,8 @@ export interface ConfirmationConfig {
 interface UiState {
   /** Whether the sidebar is open */
   sidebarOpen: boolean;
-  /** Whether the reviews panel is open */
-  reviewsPanelOpen: boolean;
+  /** Whether the notification center is open */
+  notificationsPanelOpen: boolean;
   /** Current main view (kanban, ideation, etc.) */
   currentView: ViewType;
   /** Currently active modal type, or null if none */
@@ -280,14 +296,7 @@ interface UiState {
   /** Snapshot of graph panel visibility before entering battle mode */
   battleModePanelRestoreState: { userOpen: boolean; compactOpen: boolean } | null;
   /** History state for time-travel feature - shared between TaskDetailOverlay and IntegratedChatPanel */
-  taskHistoryState: {
-    status: InternalStatus;
-    timestamp: string;
-    /** Conversation ID from the state transition metadata (for states that spawn conversations) */
-    conversationId?: string | undefined;
-    /** Agent run ID from the state transition metadata */
-    agentRunId?: string | undefined;
-  } | null;
+  taskHistoryState: TaskHistoryState | null;
   /** Task creation overlay context, or null if closed */
   taskCreationContext: TaskCreationContext | null;
   /** Whether the welcome screen is manually shown (vs. empty state) */
@@ -331,10 +340,10 @@ interface UiActions {
   toggleSidebar: () => void;
   /** Set sidebar visibility directly */
   setSidebarOpen: (open: boolean) => void;
-  /** Toggle reviews panel visibility */
-  toggleReviewsPanel: () => void;
-  /** Set reviews panel visibility directly */
-  setReviewsPanelOpen: (open: boolean) => void;
+  /** Toggle notification center visibility */
+  toggleNotificationsPanel: () => void;
+  /** Set notification center visibility directly */
+  setNotificationsPanelOpen: (open: boolean) => void;
   /** Set the current main view */
   setCurrentView: (view: ViewType) => void;
   /** Open a modal with optional context */
@@ -410,12 +419,7 @@ interface UiActions {
   /** Exit battle mode and restore graph panel visibility state */
   exitBattleMode: () => void;
   /** Set task history state for time-travel feature */
-  setTaskHistoryState: (state: {
-    status: InternalStatus;
-    timestamp: string;
-    conversationId?: string | undefined;
-    agentRunId?: string | undefined;
-  } | null) => void;
+  setTaskHistoryState: (state: TaskHistoryState | null) => void;
   /** Open task creation overlay */
   openTaskCreation: (
     projectId: string,
@@ -486,7 +490,7 @@ export const useUiStore = create<UiState & UiActions>()(
   immer((set, get) => ({
     // Initial state
     sidebarOpen: true,
-    reviewsPanelOpen: false,
+    notificationsPanelOpen: false,
     currentView: DEFAULT_PROJECT_VIEW,
     activeModal: null,
     modalContext: undefined,
@@ -554,21 +558,22 @@ export const useUiStore = create<UiState & UiActions>()(
         state.sidebarOpen = open;
       }),
 
-    toggleReviewsPanel: () =>
+    toggleNotificationsPanel: () =>
       set((state) => {
-        state.reviewsPanelOpen = !state.reviewsPanelOpen;
+        state.notificationsPanelOpen = !state.notificationsPanelOpen;
       }),
 
-    setReviewsPanelOpen: (open) =>
+    setNotificationsPanelOpen: (open) =>
       set((state) => {
-        state.reviewsPanelOpen = open;
+        state.notificationsPanelOpen = open;
       }),
 
     setCurrentView: (view) =>
       set((state) => {
+        const normalizedView = normalizeMainView(view);
         const safeView =
-          view === "ticketing" || isViewEnabled(view, state.featureFlags)
-            ? view
+          normalizedView === "ticketing" || isViewEnabled(normalizedView, state.featureFlags)
+            ? normalizedView
             : DEFAULT_PROJECT_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
@@ -884,7 +889,7 @@ export const useUiStore = create<UiState & UiActions>()(
       set((state) => {
         // SAVE phase — skip if oldProjectId is null (first load)
         if (oldProjectId) {
-          state.viewByProject[oldProjectId] = state.currentView;
+          state.viewByProject[oldProjectId] = normalizeMainView(state.currentView);
           state.sessionByProject[oldProjectId] = useIdeationStore.getState().activeSessionId;
           state.selectedTaskByProject[oldProjectId] = state.selectedTaskId;
         }
@@ -894,22 +899,20 @@ export const useUiStore = create<UiState & UiActions>()(
 
         // RESTORE phase — resolve view, fallback ephemeral views to the default project view
         let restoredView: ViewType = preserveCurrentView
-          ? state.currentView
+          ? normalizeMainView(state.currentView)
           : state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
-        let restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
+        restoredView = normalizeMainView(restoredView);
+        const restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
         // Guard against stale localStorage values ("settings" was removed from ViewType)
         if ((restoredView as string) === "settings" || restoredView === "team") {
           restoredView = DEFAULT_PROJECT_VIEW;
         }
         if (restoredView === "task_detail") {
-          restoredView = restoredSelectedTaskId ? "kanban" : DEFAULT_PROJECT_VIEW;
+          restoredView = DEFAULT_PROJECT_VIEW;
         }
         // Feature flag guard: redirect disabled views to the default project view
         if (!isViewEnabled(restoredView, state.featureFlags)) {
           restoredView = DEFAULT_PROJECT_VIEW;
-        }
-        if (restoredView !== "kanban" && restoredView !== "graph") {
-          restoredSelectedTaskId = null;
         }
         if (preserveCurrentView) {
           state.viewByProject[newProjectId] = restoredView;
@@ -961,7 +964,7 @@ export const useUiStore = create<UiState & UiActions>()(
       }),
 
     navigateToTask: (taskId) => {
-      get().setCurrentView("kanban");
+      get().setCurrentView("agents");
       set((state) => {
         applyTaskSelection(state, taskId);
         state.graphSelection = { kind: "task", id: taskId };

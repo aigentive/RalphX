@@ -8,6 +8,8 @@ pub mod agent_conversation_issue_repository;
 pub mod agent_conversation_jira_issue_repository;
 pub mod agent_conversation_linear_issue_repository;
 pub mod agent_conversation_workspace_repository;
+#[cfg(test)]
+mod agent_conversation_workspace_repository_tests;
 pub mod agent_lane_settings_repository;
 pub mod agent_model_registry_repository;
 pub mod agent_profile_repository;
@@ -19,6 +21,9 @@ pub mod app_state_repository;
 pub mod artifact_bucket_repository;
 pub mod artifact_flow_repository;
 pub mod artifact_repository;
+pub mod automation_repository;
+pub mod branch_update_repository;
+pub mod automation_run_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
 pub mod chat_message_repository;
@@ -36,8 +41,12 @@ pub mod memory_archive_repository;
 pub mod memory_entry_repository;
 pub mod memory_event_repository;
 pub mod methodology_repo;
+pub mod notification_repository;
+pub mod notification_settings_repository;
+pub mod plan_artifact_approval_repository;
 pub mod plan_branch_repository;
 pub mod plan_selection_stats_repository;
+pub mod persona_repository;
 pub mod process_repo;
 pub mod project_memory_settings_repository;
 pub mod project_skill_settings_repository;
@@ -58,6 +67,7 @@ pub mod task_step_repository;
 pub mod team_message_repository;
 pub mod team_session_repository;
 pub mod ticket_canonical_branch_repository;
+pub mod validation_run_repository;
 pub mod webhook_registration_repository;
 pub mod workflow_repository;
 pub mod workspace_review_runtime_settings_repository;
@@ -84,6 +94,20 @@ pub use app_state_repository::AppStateRepository;
 pub use artifact_bucket_repository::ArtifactBucketRepository;
 pub use artifact_flow_repository::ArtifactFlowRepository;
 pub use artifact_repository::{ArtifactRepository, ArtifactVersionSummary};
+pub use automation_repository::{
+    AutomationConfigPatch, AutomationRepository, AutomationSettingsPatch,
+};
+pub use branch_update_repository::{
+    AcquireGitTargetLease, AcquireGitTargetLeaseOutcome, BeginGitMutation, BindBranchUpdateRun,
+    BlockBranchUpdate, BranchUpdateActivation, BranchUpdateActivationOutcome,
+    BranchUpdateCasOutcome, BranchUpdateRepository, ClaimBranchUpdateContinuation,
+    CompleteBranchUpdateContinuation, CompleteGitMutation, GitAuthorityCasOutcome,
+    MarkBranchUpdateResolving, PauseBranchUpdate, ResumeBranchUpdate, RetryBranchUpdate,
+    CheckpointBranchUpdateResult, SettleBranchUpdateProgrammatic, StopBranchUpdate,
+    TransferBranchUpdateTargetLease,
+    UnbindBranchUpdateRun,
+};
+pub use automation_run_repository::{AutomationRunPublicationMetadata, AutomationRunRepository};
 pub use chat_attachment_repository::ChatAttachmentRepository;
 pub use chat_conversation_repository::{ChatConversationPage, ChatConversationRepository};
 pub use chat_message_repository::ChatMessageRepository;
@@ -105,8 +129,14 @@ pub use memory_archive_repository::MemoryArchiveRepository;
 pub use memory_entry_repository::MemoryEntryRepository;
 pub use memory_event_repository::MemoryEventRepository;
 pub use methodology_repo::MethodologyRepository;
+pub use notification_repository::{NotificationPage, NotificationRepository};
+pub use notification_settings_repository::NotificationSettingsRepository;
+pub use plan_artifact_approval_repository::{
+    PlanApprovalActor, PlanArtifactApproval, PlanArtifactApprovalRepository,
+};
 pub use plan_branch_repository::PlanBranchRepository;
 pub use plan_selection_stats_repository::PlanSelectionStatsRepository;
+pub use persona_repository::PersonaRepository;
 pub use process_repo::ProcessRepository;
 pub use project_memory_settings_repository::ProjectMemorySettingsRepository;
 pub use project_skill_settings_repository::ProjectSkillSettingsRepository;
@@ -129,6 +159,7 @@ pub use task_step_repository::TaskStepRepository;
 pub use team_message_repository::TeamMessageRepository;
 pub use team_session_repository::TeamSessionRepository;
 pub use ticket_canonical_branch_repository::TicketCanonicalBranchRepository;
+pub use validation_run_repository::ValidationRunRepository;
 pub use webhook_registration_repository::{WebhookRegistration, WebhookRegistrationRepository};
 pub use workflow_repository::WorkflowRepository;
 pub use workspace_review_runtime_settings_repository::WorkspaceReviewRuntimeSettingsRepository;

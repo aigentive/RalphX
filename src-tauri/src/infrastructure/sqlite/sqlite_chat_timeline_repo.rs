@@ -177,6 +177,35 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
             .await
     }
 
+    async fn delete_message_items_except_block_indices(
+        &self,
+        message_id: &ChatMessageId,
+        retained_block_indices: Vec<i64>,
+    ) -> AppResult<()> {
+        let message_id = message_id.as_str().to_string();
+        let retained_block_indices: std::collections::HashSet<i64> =
+            retained_block_indices.into_iter().collect();
+        self.db
+            .run(move |conn| {
+                let mut stmt =
+                    conn.prepare("SELECT block_index FROM chat_message_blocks WHERE message_id = ?1")?;
+                let existing_indices = stmt
+                    .query_map(params![message_id.as_str()], |row| row.get::<_, i64>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                for block_index in existing_indices {
+                    if !retained_block_indices.contains(&block_index) {
+                        conn.execute(
+                            "DELETE FROM chat_message_blocks WHERE message_id = ?1 AND block_index = ?2",
+                            params![message_id.as_str(), block_index],
+                        )?;
+                    }
+                }
+                Ok(())
+            })
+            .await
+    }
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()> {
         let message_id = message_id.as_str().to_string();
         let finalized_at = Utc::now().to_rfc3339();

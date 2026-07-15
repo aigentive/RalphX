@@ -15,11 +15,11 @@ mod merge_helpers_workflow;
 mod merge_validation_tests;
 
 // Tests extracted from tests.rs (integration tests with mock services)
+mod execution_recovery_fallback_tests;
 mod execution_state;
 mod integration_branch_discovery;
 mod merge_retry;
 mod merge_workflow;
-mod execution_recovery_fallback_tests;
 mod metadata_skip_guard;
 mod structural_git_error_tests;
 mod transitions_agents;
@@ -180,8 +180,8 @@ mod fast_cleanup_tests;
 // is_transient_merge_error classification, deferred vs MergeIncomplete, branch re-check
 mod merge_outcome_transient_retry_tests;
 
-// BranchFreshnessConflict transition tests: all 3 paths (Executing/ReExecuting/Reviewing → Merging)
-// and event classification validation
+// BranchFreshnessConflict transition tests: execution/review states must not bypass the
+// dedicated branch-update workflow, plus event classification validation.
 mod transitions_freshness;
 
 // FreshnessMetadata unit tests: from_task_metadata, merge_into, clear_from, serde round-trips
@@ -215,10 +215,9 @@ mod locked_worktree_tests;
 // BranchFreshnessConflict metadata persistence during on_enter(Reviewing)
 mod reviewing_conflict_marker_tests;
 
-// Integration tests for freshness-conflict merge worktree fix:
-//   on_enter(Merging) via BranchFreshnessConflict path creates merge-{id} worktree
-//   Tests: source_update_conflict, plan_update_conflict, normal pipeline no-op,
-//          no-flags skip, and clear_routing_flags() unit test
+// Compatibility tests for recovering persisted pre-dedicated-workflow merge worktrees.
+// New freshness conflicts never enter Merging; these cases retain safe recovery for
+// legacy rows with freshness-conflict metadata.
 mod freshness_merge_worktree_tests;
 
 // Cascade stop poller cleanup + post_merge_cleanup PR fork (AD11, AD17):

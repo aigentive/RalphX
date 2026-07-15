@@ -17,6 +17,8 @@ export interface ReviewSettings {
   /** Stored-only; follow-up decision pending */
   require_fix_approval: boolean;
   auto_create_followup_agent_conversation: boolean;
+  autofix_workspace_review_blocking_findings: boolean;
+  run_task_validations: boolean;
 }
 
 /** Only the primary policy fields are accepted for update. */
@@ -26,6 +28,8 @@ export interface UpdateReviewSettingsInput {
   maxFixAttempts?: number;
   maxRevisionCycles?: number;
   autoCreateFollowupAgentConversation?: boolean;
+  autofixWorkspaceReviewBlockingFindings?: boolean;
+  runTaskValidations?: boolean;
 }
 
 // ============================================================================

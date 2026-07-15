@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::application::{PendingPermissionInfo, PermissionDecision};
+use crate::application::{PendingPermissionInfo, PermissionDecision, PERMISSION_RESOLVED_EVENT};
 use crate::AppState;
 
 /// Arguments for resolving a permission request
@@ -50,6 +50,10 @@ pub async fn resolve_permission_request(
         .await;
 
     if resolved {
+        state.events.emit(
+            PERMISSION_RESOLVED_EVENT,
+            serde_json::json!({ "request_id": &args.request_id }),
+        );
         Ok(ResolvePermissionResponse {
             success: true,
             message: Some(format!("Permission request {} resolved", args.request_id)),

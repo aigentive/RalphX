@@ -1,6 +1,6 @@
 use super::*;
 
-impl<R: Runtime> TaskSchedulerService<R> {
+impl TaskSchedulerService {
     pub(super) async fn find_oldest_retryable_pending_review_task(&self) -> Option<Task> {
         let active_project = self.active_project_id.read().await.clone();
         let projects = if let Some(project_id) = active_project {
@@ -53,7 +53,8 @@ impl<R: Runtime> TaskSchedulerService<R> {
                 let Some(metadata_str) = task.metadata.as_deref() else {
                     continue;
                 };
-                let Ok(metadata_val) = serde_json::from_str::<serde_json::Value>(metadata_str) else {
+                let Ok(metadata_val) = serde_json::from_str::<serde_json::Value>(metadata_str)
+                else {
                     continue;
                 };
                 let freshness = FreshnessMetadata::from_task_metadata(&metadata_val);
@@ -224,7 +225,10 @@ impl<R: Runtime> TaskSchedulerService<R> {
             Some(repo) => repo,
             None => return false, // No repo available, fail-open
         };
-        match plan_branch_repo.get_by_execution_plan_id(exec_plan_id).await {
+        match plan_branch_repo
+            .get_by_execution_plan_id(exec_plan_id)
+            .await
+        {
             Ok(Some(branch)) => {
                 use crate::domain::entities::PlanBranchStatus;
                 !matches!(branch.status, PlanBranchStatus::Active)
@@ -253,6 +257,41 @@ impl<R: Runtime> TaskSchedulerService<R> {
             ),
             Ok(None) => false,
             Err(_) => false,
+        }
+    }
+
+    /// Check if a task's execution plan is paused/stopped or unreadable.
+    /// Returns true if the task should NOT be scheduled. Fail-closed for tasks
+    /// already linked to an execution plan so scoped pause/stop cannot leak work.
+    pub(super) async fn is_execution_plan_halted(&self, task: &Task) -> bool {
+        let exec_plan_id = match &task.execution_plan_id {
+            Some(id) => id,
+            None => return false,
+        };
+        let execution_plan_repo = match &self.execution_plan_repo {
+            Some(repo) => repo,
+            None => return false,
+        };
+
+        match execution_plan_repo.get_by_id(exec_plan_id).await {
+            Ok(Some(plan)) => !plan.halt_mode.permits_scheduling(),
+            Ok(None) => {
+                tracing::warn!(
+                    task_id = task.id.as_str(),
+                    execution_plan_id = exec_plan_id.as_str(),
+                    "Skipping task: execution plan missing while checking halt mode"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    task_id = task.id.as_str(),
+                    execution_plan_id = exec_plan_id.as_str(),
+                    error = %error,
+                    "Skipping task: failed to load execution plan halt mode"
+                );
+                true
+            }
         }
     }
 

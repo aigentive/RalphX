@@ -3,6 +3,95 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
+
+/// Conversation coordination mode projected to clients.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinationMode {
+    #[default]
+    Solo,
+    LegacyClaudeTeam,
+    RxNativeTeam,
+}
+
+impl fmt::Display for CoordinationMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Solo => write!(f, "solo"),
+            Self::LegacyClaudeTeam => write!(f, "legacy_claude_team"),
+            Self::RxNativeTeam => write!(f, "rx_native_team"),
+        }
+    }
+}
+
+impl FromStr for CoordinationMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "solo" => Ok(Self::Solo),
+            "legacy_claude_team" => Ok(Self::LegacyClaudeTeam),
+            "rx_native_team" => Ok(Self::RxNativeTeam),
+            other => Err(format!(
+                "Invalid coordination mode '{}'. Valid values: solo, legacy_claude_team, rx_native_team",
+                other
+            )),
+        }
+    }
+}
+
+/// Optional strategy hint for a native team request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamIntentStrategy {
+    Research,
+    Debate,
+    Execution,
+}
+
+/// Explicit native team-mode request supplied by the UI or compatibility bridge.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamIntent {
+    pub coordination_mode: CoordinationMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<TeamIntentStrategy>,
+}
+
+impl TeamIntent {
+    pub fn rx_native(strategy: Option<TeamIntentStrategy>) -> Self {
+        Self {
+            coordination_mode: CoordinationMode::RxNativeTeam,
+            strategy,
+        }
+    }
+
+    pub fn is_solo(&self) -> bool {
+        self.coordination_mode == CoordinationMode::Solo
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageTargetKind {
+    Coordinator,
+    Member,
+    Broadcast,
+}
+
+/// Native mailbox target for team messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMessageTarget {
+    pub kind: TeamMessageTargetKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_member_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+}
 
 /// Unique identifier for a TeamSession
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -58,8 +58,6 @@ pub use learned_skill_substrate::{
 };
 pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,
-    emit_verification_pending_confirmation, emit_verification_started,
-    emit_verification_status_changed,
 };
 pub use verification_gate::{
     check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,

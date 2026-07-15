@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
+use crate::application::merge_pipeline_visibility::ArchivedParentMergeVisibility;
 use crate::application::AppState;
 use crate::commands::execution_commands::ActiveProjectState;
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_task;
 use crate::domain::entities::ProjectId;
 use crate::domain::entities::{InternalStatus, PlanBranch, Project, Task, TaskCategory};
+use crate::domain::execution::ExecutionTaskAgentWorkspace;
 use crate::domain::state_machine::transition_handler::{
     has_main_merge_deferred_metadata, has_merge_deferred_metadata,
 };
@@ -37,6 +40,10 @@ pub struct MergePipelineTask {
     pub task_id: String,
     /// Task title
     pub title: String,
+    /// Display title for execution-bar rows
+    pub display_title: String,
+    /// Owning Agent conversation workspace, when this task can deep-link there
+    pub agent_workspace: Option<ExecutionTaskAgentWorkspace>,
     /// Current internal status
     pub internal_status: String,
     /// Source branch (task branch)
@@ -176,11 +183,20 @@ pub async fn get_merge_pipeline(
             .plan_branch_repo
             .get_by_project_id(&project.id)
             .await
-            .unwrap_or_default();
+            .map_err(|e| e.to_string())?;
+        let agent_workspaces = state
+            .agent_conversation_workspace_repo
+            .get_by_project_id(&project.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let archived_parent_visibility =
+            ArchivedParentMergeVisibility::from_workspaces(&agent_workspaces);
 
         for task in tasks {
             // Merge pipeline should only show live merge work, never archived stale rows.
-            if !is_visible_merge_pipeline_task(&task) {
+            if !is_visible_merge_pipeline_task(&task)
+                || archived_parent_visibility.hides_task(&task, &plan_branches)
+            {
                 continue;
             }
 
@@ -194,6 +210,17 @@ pub async fn get_merge_pipeline(
 
             // Extract merge metadata
             let (conflict_files, error_context) = extract_merge_metadata(&task);
+            let agent_workspace = resolve_agent_workspace_target_for_task(
+                &state,
+                &task,
+                &plan_branches,
+                &agent_workspaces,
+            )
+            .await?;
+            let display_title = agent_workspace
+                .as_ref()
+                .map(|workspace| workspace.title.clone())
+                .unwrap_or_else(|| task.title.clone());
 
             // Determine blocking branch for deferred tasks
             let blocking_branch = if is_deferred {
@@ -212,6 +239,8 @@ pub async fn get_merge_pipeline(
             let pipeline_task = MergePipelineTask {
                 task_id: task.id.as_str().to_string(),
                 title: task.title.clone(),
+                display_title,
+                agent_workspace,
                 internal_status: task.internal_status.as_str().to_string(),
                 source_branch,
                 target_branch,
@@ -279,10 +308,15 @@ pub async fn get_merge_phase_list(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        artifact::ArtifactId, types::IdeationSessionId, PlanBranchId, PlanBranchStatus, ProjectId,
-        TaskId,
+        artifact::ArtifactId, types::IdeationSessionId, AgentConversationWorkspace,
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, ChatConversation,
+        ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, PlanBranchId,
+        PlanBranchStatus, ProjectId, TaskId,
     };
     use chrono::Utc;
+    use std::sync::Arc;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
 
     fn make_project() -> Project {
         Project::new("test-project".into(), "/tmp/test".into())
@@ -327,6 +361,28 @@ mod tests {
             pr_draft: None,
             base_branch_override: None,
         }
+    }
+
+    fn make_agent_workspace(
+        status: AgentConversationWorkspaceStatus,
+        linked_plan_branch_id: Option<PlanBranchId>,
+        linked_session_id: Option<IdeationSessionId>,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1".to_string()),
+            ProjectId::from_string("proj-1".to_string()),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/agent-conversation-1".to_string(),
+            "/tmp/ralphx-agent-conversation-1".to_string(),
+        );
+        workspace.status = status;
+        workspace.linked_plan_branch_id = linked_plan_branch_id;
+        workspace.linked_ideation_session_id = linked_session_id;
+        workspace
     }
 
     #[test]
@@ -421,5 +477,335 @@ mod tests {
             is_visible_merge_pipeline_task(&task),
             "active pending-merge tasks should remain visible in the merge pipeline"
         );
+    }
+
+    #[test]
+    fn archived_agent_workspace_hides_linked_plan_merge_task() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            visibility.hides_task(&task, &[branch]),
+            "merge tasks owned by archived Agent workspace parents should be hidden"
+        );
+    }
+
+    #[test]
+    fn active_agent_workspace_does_not_hide_linked_plan_merge_task() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Active,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            !visibility.hides_task(&task, &[branch]),
+            "active Agent workspace parents should not hide live merge tasks"
+        );
+    }
+
+    #[test]
+    fn active_agent_workspace_link_overrides_archived_link_for_same_plan_branch() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let archived_workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let active_workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Active,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility =
+            ArchivedParentMergeVisibility::from_workspaces(&[archived_workspace, active_workspace]);
+
+        assert!(
+            !visibility.hides_task(&task, &[branch]),
+            "active Agent workspace links should win over stale archived links for the same plan"
+        );
+    }
+
+    #[test]
+    fn archived_agent_workspace_hides_linked_session_task() {
+        let mut task = make_task("task-1", TaskCategory::Regular);
+        task.internal_status = InternalStatus::PendingMerge;
+        task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1"));
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            None,
+            task.ideation_session_id.clone(),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            visibility.hides_task(&task, &[]),
+            "session-owned tasks should be hidden when their linked Agent workspace parent is archived"
+        );
+    }
+
+    #[test]
+    fn archived_agent_workspace_hides_linked_execution_plan_task() {
+        let execution_plan_id = ExecutionPlanId::from_string("execution-plan-1");
+        let mut task = make_task("task-1", TaskCategory::Regular);
+        task.internal_status = InternalStatus::PendingMerge;
+        task.execution_plan_id = Some(execution_plan_id.clone());
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.execution_plan_id = Some(execution_plan_id);
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            visibility.hides_task(&task, &[branch]),
+            "execution-plan tasks should be hidden when their linked Agent workspace parent is archived"
+        );
+    }
+
+    #[test]
+    fn missing_agent_workspace_does_not_hide_linked_plan_task() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Missing,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            !visibility.hides_task(&task, &[branch]),
+            "missing Agent workspace rows are not archived parents and should not hide merge tasks"
+        );
+    }
+
+    #[test]
+    fn archived_agent_workspace_does_not_hide_unrelated_merge_task() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(TaskId::from_string("other-task".to_string()));
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            !visibility.hides_task(&task, &[branch]),
+            "archived parent links should only hide tasks actually owned by that plan branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_merge_pipeline_filters_archived_agent_workspace_parent() {
+        let active_project_state = Arc::new(ActiveProjectState::new());
+        let app_state = AppState::new_test();
+        let project = app_state
+            .project_repo
+            .create(Project::new(
+                "Merge Pipeline Project".into(),
+                "/tmp/merge-pipeline-project".into(),
+            ))
+            .await
+            .unwrap();
+        active_project_state.set(Some(project.id.clone())).await;
+
+        let mut visible_task = Task::new(project.id.clone(), "Visible merge".into());
+        visible_task.id = TaskId::from_string("visible-merge".to_string());
+        visible_task.internal_status = InternalStatus::PendingMerge;
+        visible_task.task_branch = Some("ralphx/visible-merge".into());
+        app_state
+            .task_repo
+            .create(visible_task.clone())
+            .await
+            .unwrap();
+
+        let mut hidden_task = Task::new(project.id.clone(), "Hidden merge".into());
+        hidden_task.id = TaskId::from_string("hidden-merge".to_string());
+        hidden_task.category = TaskCategory::PlanMerge;
+        hidden_task.internal_status = InternalStatus::PendingMerge;
+        hidden_task.task_branch = Some("ralphx/hidden-merge".into());
+        app_state
+            .task_repo
+            .create(hidden_task.clone())
+            .await
+            .unwrap();
+
+        let mut branch = make_plan_branch(
+            "archived-parent-session",
+            "feature/archived-parent",
+            PlanBranchStatus::Active,
+        );
+        branch.project_id = project.id.clone();
+        branch.id = PlanBranchId::from_string("archived-parent-branch");
+        branch.merge_task_id = Some(hidden_task.id.clone());
+        app_state
+            .plan_branch_repo
+            .create(branch.clone())
+            .await
+            .unwrap();
+
+        let mut workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        workspace.project_id = project.id.clone();
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let app = mock_builder()
+            .manage(Arc::clone(&active_project_state))
+            .manage(app_state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_merge_pipeline(
+            None,
+            app.state::<Arc<ActiveProjectState>>(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("merge pipeline query should succeed");
+
+        assert!(response.active.is_empty());
+        assert!(response.needs_attention.is_empty());
+        assert_eq!(response.waiting.len(), 1);
+        assert_eq!(response.waiting[0].task_id, visible_task.id.as_str());
+    }
+
+    #[tokio::test]
+    async fn get_merge_pipeline_uses_agent_workspace_title_for_plan_merge_task() {
+        let active_project_state = Arc::new(ActiveProjectState::new());
+        let app_state = AppState::new_test();
+        let project = app_state
+            .project_repo
+            .create(Project::new(
+                "Merge Pipeline Project".into(),
+                "/tmp/merge-pipeline-project".into(),
+            ))
+            .await
+            .unwrap();
+        active_project_state.set(Some(project.id.clone())).await;
+
+        let mut merge_task = Task::new(project.id.clone(), "Merge plan into main".into());
+        merge_task.id = TaskId::from_string("workspace-title-merge".to_string());
+        merge_task.category = TaskCategory::PlanMerge;
+        merge_task.internal_status = InternalStatus::PendingMerge;
+        merge_task.task_branch = Some("ralphx/workspace-title-merge".into());
+        app_state
+            .task_repo
+            .create(merge_task.clone())
+            .await
+            .unwrap();
+
+        let mut branch = make_plan_branch(
+            "workspace-title-session",
+            "feature/workspace-title-plan",
+            PlanBranchStatus::Active,
+        );
+        branch.project_id = project.id.clone();
+        branch.id = PlanBranchId::from_string("workspace-title-branch");
+        branch.merge_task_id = Some(merge_task.id.clone());
+        app_state
+            .plan_branch_repo
+            .create(branch.clone())
+            .await
+            .unwrap();
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.title = Some("Agent Conversation Workspace".to_string());
+        let conversation = app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap();
+
+        let mut workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Active,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        workspace.project_id = project.id.clone();
+        workspace.conversation_id = conversation.id;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let app = mock_builder()
+            .manage(Arc::clone(&active_project_state))
+            .manage(app_state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_merge_pipeline(
+            None,
+            app.state::<Arc<ActiveProjectState>>(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("merge pipeline query should succeed");
+
+        assert!(response.active.is_empty());
+        assert!(response.needs_attention.is_empty());
+        assert_eq!(response.waiting.len(), 1);
+        let row = &response.waiting[0];
+        assert_eq!(row.task_id, merge_task.id.as_str());
+        assert_eq!(row.title, "Merge plan into main");
+        assert_eq!(row.display_title, "Agent Conversation Workspace");
+        let agent_workspace = row
+            .agent_workspace
+            .as_ref()
+            .expect("agent workspace target should be present");
+        assert_eq!(agent_workspace.conversation_id, conversation.id.as_str());
+        assert_eq!(agent_workspace.project_id, project.id.as_str());
+        assert_eq!(agent_workspace.title, "Agent Conversation Workspace");
     }
 }

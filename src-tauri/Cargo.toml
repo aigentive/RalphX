@@ -1,13 +1,29 @@
 [package]
 name = "ralphx"
-version = "0.55.0"
+version = "0.68.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
 
 [workspace]
-members = ["crates/ralphx-domain"]
+members = ["crates/ralphx-domain", "crates/ralphx-events"]
 resolver = "2"
+
+[workspace.dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+futures = "0.3"
+lazy_static = "1.5"
+rusqlite = "0.32"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "1"
+tokio = "1"
+uuid = "1"
+which = "7"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,13 +32,15 @@ resolver = "2"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "ralphx_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop builds link the app binary through the rlib. Mobile targets would need
+# restoring ["staticlib", "cdylib", "rlib"].
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.11.0", features = ["protocol-asset", "devtools", "test", "macos-private-api"] }
+tauri = { version = "2.11.0", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2.5.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -48,6 +66,7 @@ tauri-plugin-window-state = "2.4.1"
 axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.5", features = ["cors"] }
 tauri-plugin-fs = "2.5.0"
+tauri-plugin-notification = "2.3.3"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
 sha2 = "0.10"
@@ -63,6 +82,7 @@ nix = { version = "0.29", features = ["signal", "process"] }
 tempfile = "3"
 regex = { version = "1", default-features = false, features = ["std", "perf"] }
 ralphx-domain = { path = "crates/ralphx-domain" }
+ralphx-events = { path = "crates/ralphx-events" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 hyper-rustls = "0.27"
@@ -71,15 +91,73 @@ hmac = "0.12"
 http-body-util = "0.1"
 portable-pty = "0.8"
 
+[features]
+default = ["devtools"]
+devtools = ["tauri/devtools"]
+test-utils = ["tauri/test"]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSResponder", "NSDockTile"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 security-framework = "3.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
+
+[[test]]
+name = "suite_agent_workspace"
+path = "tests/suite_agent_workspace/main.rs"
+
+[[test]]
+name = "suite_chat_service"
+path = "tests/suite_chat_service/main.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "suite_commands"
+path = "tests/suite_commands/main.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "suite_http_handlers"
+path = "tests/suite_http_handlers/main.rs"
+
+[[test]]
+name = "suite_ideation"
+path = "tests/suite_ideation/main.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "suite_interactive_process"
+path = "tests/suite_interactive_process/main.rs"
+
+[[test]]
+name = "suite_ipc_commands"
+path = "tests/suite_ipc_commands/main.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "suite_metrics"
+path = "tests/suite_metrics/main.rs"
+
+[[test]]
+name = "suite_pr_github"
+path = "tests/suite_pr_github/main.rs"
+
+[[test]]
+name = "suite_sqlite_flows"
+path = "tests/suite_sqlite_flows/main.rs"
+
+[[test]]
+name = "suite_sqlite_repos"
+path = "tests/suite_sqlite_repos/main.rs"
+
+[[test]]
+name = "suite_transition_git"
+path = "tests/suite_transition_git/main.rs"
+required-features = ["test-utils"]
 
 [lints.clippy]
 # Elevated to deny — catches real null-dereference bugs
@@ -89,6 +167,17 @@ manual_is_multiple_of = "warn"
 cloned_ref_to_slice_refs = "warn"
 manual_contains = "warn"
 io_other_error = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev-debug]
+inherits = "dev"
+debug = 2
 
 [profile.release]
 lto = true

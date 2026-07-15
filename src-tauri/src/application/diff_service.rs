@@ -258,6 +258,38 @@ impl DiffService {
         Ok(changes)
     }
 
+    /// Get the diff for a specific file between a base ref and the current worktree.
+    /// Includes unstaged working-tree content and untracked files.
+    pub fn get_worktree_file_diff_from_ref(
+        &self,
+        file_path: &str,
+        project_path: &str,
+        base_ref: &str,
+    ) -> AppResult<FileDiff> {
+        validate_diff_file_path(file_path)?;
+        let raw_diff =
+            run_git_text(project_path, &["diff", base_ref, "--", file_path]).unwrap_or_default();
+        if raw_diff.trim().is_empty() && self.is_untracked_file(project_path, file_path)? {
+            return self.get_untracked_file_diff(file_path, project_path);
+        }
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_ref(project_path, base_ref, file_path);
+        let new_total_lines = Self::count_lines_on_disk(project_path, file_path);
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
+        })
+    }
+
     /// Get files staged in the index (git diff --cached).
     /// Only shows changes between HEAD and the index — excludes unstaged working-tree edits.
     pub fn get_staged_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {

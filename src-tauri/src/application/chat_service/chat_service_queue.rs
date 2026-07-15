@@ -17,22 +17,27 @@ use super::chat_service_types::{
     AgentErrorPayload, AgentMessageCreatedPayload, AgentQueueSentPayload, AgentRunStartedPayload,
 };
 use super::has_meaningful_output;
-use super::{ChatService, SendMessageOptions};
+use super::{
+    coordination_mode_enables_team, persona_resolve_flags_for_conversation,
+    team_intent_for_persisted_coordination_mode, ChatService, SendMessageOptions,
+};
 use crate::application::integration_reference_expansion::{
     expand_integration_references_for_prompt, log_skipped_integration_references,
 };
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    ChatContextType, ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus,
-    MessageRole, ProjectId, SessionPurpose, TaskId,
+    ChatContextType, ChatConversationId, ChatMessageId, CoordinationMode, IdeationSessionId,
+    InternalStatus, MessageRole, PersonaDirective, ProjectId, SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
-    ChatTimelineRepository, IdeationSessionRepository, QueuedMessageRepository, TaskRepository,
+    ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
+    ArtifactRepository, ChatMessageRepository, ChatTimelineRepository, IdeationSessionRepository,
+    QueuedMessageRepository, TaskRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -78,17 +83,86 @@ async fn durable_queue_len(
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: Option<&AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, String> {
-    let Some(handle) = app_handle else {
-        return Ok(HashMap::new());
-    };
-    let app_state = handle.state::<AppState>();
+    let app_state_provider_repo = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        Some(&app_state.agent_provider_settings_repo),
+        provider_repo.as_ref(),
         harness,
     )
     .await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum QueueProviderDecision {
+    ApplyEnv(HashMap<String, String>),
+    AllowWithoutProviderSettings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum QueueProviderBlock {
+    Disabled(String),
+    Env(String),
+    MissingProviderSettings,
+}
+
+fn queue_missing_provider_settings_message(context_type: ChatContextType) -> String {
+    format!(
+        "Provider settings were unavailable for {} runtime; spawn blocked to avoid bypassing disabled-provider policy.",
+        context_type
+    )
+}
+
+fn queue_provider_block_message(
+    block: &QueueProviderBlock,
+    context_type: ChatContextType,
+) -> String {
+    match block {
+        QueueProviderBlock::Disabled(error) | QueueProviderBlock::Env(error) => error.clone(),
+        QueueProviderBlock::MissingProviderSettings => {
+            queue_missing_provider_settings_message(context_type)
+        }
+    }
+}
+
+pub(super) async fn queue_provider_decision<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    harness: AgentHarnessKind,
+    context_type: ChatContextType,
+) -> Result<QueueProviderDecision, QueueProviderBlock> {
+    let app_state_provider_repo = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
+    let Some(provider_repo) = provider_repo else {
+        return if super::uses_execution_slot(context_type) {
+            Err(QueueProviderBlock::MissingProviderSettings)
+        } else {
+            Ok(QueueProviderDecision::AllowWithoutProviderSettings)
+        };
+    };
+
+    crate::application::ensure_provider_spawn_enabled(&provider_repo, harness, "queue_resume")
+        .await
+        .map_err(QueueProviderBlock::Disabled)?;
+
+    let provider_env =
+        provider_env_for_harness(app_handle, &Some(Arc::clone(&provider_repo)), harness)
+            .await
+            .map_err(QueueProviderBlock::Env)?;
+
+    Ok(QueueProviderDecision::ApplyEnv(provider_env))
 }
 
 async fn queue_count(
@@ -315,11 +389,14 @@ fn provider_switch_send_options_for_queued_message(
     queued_msg: &QueuedMessage,
     conversation_id: ChatConversationId,
     force_new_provider_session: bool,
+    team_intent: Option<TeamIntent>,
 ) -> SendMessageOptions {
     SendMessageOptions {
         metadata: queued_msg.metadata_override.clone(),
         created_at: queued_persisted_created_at(queued_msg),
         harness_override: queued_msg.harness_override,
+        agent_name_override: queued_msg.agent_name_override.clone(),
+        persona_directive: queued_msg.persona_directive.clone(),
         model_override: queued_msg.model_override.clone(),
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
@@ -328,9 +405,17 @@ fn provider_switch_send_options_for_queued_message(
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
         attachment_ids: queued_msg.attachment_ids.clone(),
+        team_intent,
         force_new_provider_session,
         ..Default::default()
     }
+}
+
+fn effective_queue_team_mode(
+    team_mode: bool,
+    conversation_coordination_mode: Option<CoordinationMode>,
+) -> bool {
+    team_mode || conversation_coordination_mode.is_some_and(coordination_mode_enables_team)
 }
 
 fn queued_target_harness(
@@ -406,6 +491,7 @@ struct QueuedAgentIdentity {
 struct QueuedProjectAgentContext {
     identity: QueuedAgentIdentity,
     workspace: Option<AgentConversationWorkspace>,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -467,9 +553,63 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     let mode = conversation_mode.or_else(|| workspace.as_ref().map(|workspace| workspace.mode));
 
     QueuedProjectAgentContext {
-        identity: queued_agent_identity_for_mode(mode),
+        identity: queued_agent_identity_for_mode(mode.clone()),
         workspace,
+        effective_mode: mode,
     }
+}
+
+async fn resolve_queue_resume_persona<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    feature_enabled: bool,
+    context_type: ChatContextType,
+    conversation_id: &ChatConversationId,
+    directive: &PersonaDirective,
+    agent_name_override_set: bool,
+) -> Result<Option<crate::application::persona_prompt::ResolvedPersona>, String> {
+    if !feature_enabled {
+        return Ok(None);
+    }
+
+    let Some(handle) = app_handle else {
+        return Ok(None);
+    };
+    let Some(app_state) = handle.try_state::<AppState>() else {
+        return Ok(None);
+    };
+    let conversation = app_state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| format!("Persona conversation lookup failed: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "Persona conversation {} was not found",
+                conversation_id.as_str()
+            )
+        })?;
+    let workspace_mode = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
+        .map(|workspace| workspace.mode);
+
+    resolve_persona_for_send(
+        &conversation,
+        directive,
+        persona_resolve_flags_for_conversation(
+            feature_enabled,
+            false,
+            agent_name_override_set,
+            context_type,
+            &conversation,
+            workspace_mode,
+        ),
+        Arc::clone(&app_state.persona_repo),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn fail_queued_agent_run(
@@ -569,8 +709,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     queue_context_id: &str,
     conversation_id: ChatConversationId,
     session_id: &str,
+    persona_feature_enabled: bool,
     message_queue: &Arc<MessageQueue>,
     queued_message_repo: Option<Arc<dyn QueuedMessageRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
@@ -587,6 +729,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     execution_state: Option<Arc<ExecutionState>>,
     app_handle: Option<AppHandle<R>>,
     project_id: Option<&str>,
+    conversation_coordination_mode: Option<CoordinationMode>,
     team_mode: bool,
     cancellation_token: CancellationToken,
     run_chain_id: Option<&str>,
@@ -597,6 +740,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     let mut last_run_id: Option<String> = None;
     let mut fresh_provider_harness: Option<AgentHarnessKind> = None;
     let queue_key = QueueKey::new(context_type, queue_context_id);
+    let queue_team_mode = effective_queue_team_mode(team_mode, conversation_coordination_mode);
+    let queue_team_intent =
+        conversation_coordination_mode.and_then(team_intent_for_persisted_coordination_mode);
 
     // Outer loop: keep processing until queue is stable-empty
     loop {
@@ -774,6 +920,42 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_msg.content.len()
             );
 
+            let resolved_persona = match resolve_queue_resume_persona(
+                app_handle.as_ref(),
+                persona_feature_enabled,
+                context_type,
+                &conversation_id,
+                &queued_msg.persona_directive,
+                queued_msg.agent_name_override.is_some(),
+            )
+            .await
+            {
+                Ok(persona) => persona,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        %context_type,
+                        context_id,
+                        "queue resume persona resolution blocked spawn"
+                    );
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:error",
+                            AgentErrorPayload {
+                                conversation_id: Some(conversation_id.as_str().to_string()),
+                                context_type: context_type.to_string(),
+                                context_id: context_id.to_string(),
+                                agent_run_id: None,
+                                error,
+                                stderr: None,
+                            },
+                        );
+                    }
+                    total_processed += 1;
+                    continue;
+                }
+            };
+
             // Emit queue sent event (removes from frontend optimistic UI)
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
@@ -831,6 +1013,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             &queued_msg,
                             conversation_id.clone(),
                             force_new_provider_session,
+                            queue_team_intent.clone(),
                         ),
                     )
                     .await;
@@ -1190,6 +1373,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.project_repo)
             });
+            let persona_ingest_app_data_dir = app_handle.as_ref().and_then(|handle| {
+                handle
+                    .try_state::<AppState>()
+                    .map(|app_state| app_state.app_paths.app_data_dir().to_path_buf())
+            });
             let atlassian_integration_service = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.atlassian_integration_service)
@@ -1307,15 +1495,20 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_agent_context.workspace.as_ref(),
             );
             let filesystem_read_roots = if let Some(project_repo) = project_repo {
+                let conversation_id_for_roots = conversation_id.as_str();
                 chat_service_context::resolve_mcp_filesystem_read_roots(
                     project_id,
                     project_repo,
                     working_directory,
+                    queued_agent_context.effective_mode,
+                    Some(&conversation_id_for_roots),
+                    persona_ingest_app_data_dir.as_deref(),
                 )
                 .await
             } else {
                 Vec::new()
             };
+            let persona_for_attribution = resolved_persona.clone();
 
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
@@ -1325,6 +1518,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 context_type,
                 context_id,
                 &runtime_content,
+                resolved_persona,
                 queued_agent_context.identity.agent_name,
                 queued_agent_context.identity.agent_profile,
                 working_directory,
@@ -1382,22 +1576,35 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     };
                 }
             };
-            let provider_env = match provider_env_for_harness(app_handle.as_ref(), harness).await {
-                Ok(provider_env) => provider_env,
-                Err(err) => {
+            let persona_injected = provider_spawnable.spawnable.persona_injected();
+            let persona_injection_skipped_reason = provider_spawnable
+                .spawnable
+                .persona_injection_skipped_reason();
+            let provider_env = match queue_provider_decision(
+                app_handle.as_ref(),
+                &agent_provider_settings_repo,
+                harness,
+                context_type,
+            )
+            .await
+            {
+                Ok(QueueProviderDecision::ApplyEnv(provider_env)) => provider_env,
+                Ok(QueueProviderDecision::AllowWithoutProviderSettings) => HashMap::new(),
+                Err(block) => {
+                    let error_string = queue_provider_block_message(&block, context_type);
                     tracing::warn!(
-                        error = %err,
+                        error = %error_string,
                         %context_type,
                         context_id,
                         harness = %harness,
-                        "queue spawn blocked by provider env file"
+                        "queue spawn blocked by provider settings"
                     );
                     fail_queued_agent_run(
                         agent_run_repo,
                         running_agent_registry,
                         &queue_registry_key,
                         &queued_run_id,
-                        &err,
+                        &error_string,
                     )
                     .await;
                     return QueueProcessingOutcome {
@@ -1413,6 +1620,17 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
             match spawnable.spawn().await {
                 Ok(child) => {
+                    super::record_persona_run_attribution(
+                        agent_run_repo,
+                        app_handle.as_ref(),
+                        &conversation_id,
+                        &queued_run_id,
+                        harness,
+                        persona_for_attribution.as_ref(),
+                        persona_injected,
+                        persona_injection_skipped_reason,
+                    )
+                    .await;
                     if let Some(pid) = child.id() {
                         if let Err(error) = running_agent_registry
                             .update_agent_process(
@@ -1482,7 +1700,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         question_state.clone(),
                         cancellation_token.clone(),
                         None, // Queue processing doesn't need team events
-                        effective_team_mode_for_harness(team_mode, harness),
+                        effective_team_mode_for_harness(queue_team_mode, harness),
                         streaming_state_cache.clone(),
                         None, // Queue processing doesn't have registry in scope
                         Some(Arc::clone(agent_run_repo)),
@@ -1854,6 +2072,8 @@ mod tests {
         message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
         message.created_at_override = Some("2026-06-12T12:00:00Z".to_string());
         message.harness_override = Some(AgentHarnessKind::Codex);
+        message.agent_name_override = Some("ralphx-queued-agent".to_string());
+        message.persona_directive = crate::domain::entities::PersonaDirective::Suppress;
         message.model_override = Some("gpt-5.5".to_string());
         message.logical_effort_override = Some(LogicalEffort::High);
         message.composer_project_references = vec![ComposerProjectReference {
@@ -1884,6 +2104,7 @@ mod tests {
             &message,
             conversation_id.clone(),
             true,
+            Some(TeamIntent::rx_native(None)),
         );
 
         assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"queue"}"#));
@@ -1895,6 +2116,14 @@ mod tests {
             Some("2026-06-12T12:00:00+00:00")
         );
         assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(
+            options.agent_name_override.as_deref(),
+            Some("ralphx-queued-agent")
+        );
+        assert_eq!(
+            options.persona_directive,
+            crate::domain::entities::PersonaDirective::Suppress
+        );
         assert_eq!(options.model_override.as_deref(), Some("gpt-5.5"));
         assert_eq!(options.conversation_id_override, Some(conversation_id));
         assert_eq!(options.logical_effort_override, Some(LogicalEffort::High));
@@ -1911,6 +2140,7 @@ mod tests {
             message.composer_artifact_references
         );
         assert_eq!(options.attachment_ids, message.attachment_ids);
+        assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
         assert!(options.force_new_provider_session);
     }
 
@@ -1921,14 +2151,39 @@ mod tests {
         message.harness_override = Some(AgentHarnessKind::Codex);
         message.force_new_provider_session = true;
 
-        let options =
-            provider_switch_send_options_for_queued_message(&message, conversation_id, false);
+        let options = provider_switch_send_options_for_queued_message(
+            &message,
+            conversation_id,
+            false,
+            Some(TeamIntent::rx_native(None)),
+        );
 
         assert_eq!(options.harness_override, Some(AgentHarnessKind::Codex));
+        assert_eq!(options.team_intent, Some(TeamIntent::rx_native(None)));
         assert!(
             !options.force_new_provider_session,
             "same-harness queued follow-ups should reuse the freshly started provider run"
         );
+    }
+
+    #[test]
+    fn effective_queue_team_mode_uses_persisted_coordination_mode() {
+        assert!(effective_queue_team_mode(
+            false,
+            Some(CoordinationMode::RxNativeTeam)
+        ));
+        assert!(effective_queue_team_mode(
+            false,
+            Some(CoordinationMode::LegacyClaudeTeam)
+        ));
+        assert!(!effective_queue_team_mode(
+            false,
+            Some(CoordinationMode::Solo)
+        ));
+        assert!(effective_queue_team_mode(
+            true,
+            Some(CoordinationMode::Solo)
+        ));
     }
 
     #[test]
@@ -1978,6 +2233,8 @@ mod tests {
             None,
             None,
             Some(AgentHarnessKind::Codex),
+            None,
+            crate::domain::entities::PersonaDirective::Inherit,
             Some("gpt-5.5".to_string()),
             Some(crate::domain::agents::LogicalEffort::High),
             Some("fast".to_string()),
@@ -1995,7 +2252,9 @@ mod tests {
             "session-queued-switch",
             ChatConversationId::new(),
             "claude-session-old",
+            false,
             &message_queue,
+            None,
             None,
             &running_agent_registry,
             &agent_run_repo,
@@ -2009,6 +2268,7 @@ mod tests {
             std::path::Path::new("/definitely/missing/ralphx-test-cli"),
             std::path::Path::new("."),
             std::path::Path::new("."),
+            None,
             None,
             None,
             None,

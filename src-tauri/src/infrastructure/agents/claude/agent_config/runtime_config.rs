@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+
+use crate::domain::agents::{
+    plan_judge_model_for_provider, standard_harness_map, AgentHarnessKind,
+};
 use serde::Deserialize;
 use tracing::warn;
 
@@ -20,6 +25,10 @@ pub struct AllRuntimeConfig {
     /// UI feature flags (page visibility). Defaults to all enabled.
     pub ui_feature_flags: super::ui_config::UiFeatureFlagsConfig,
 }
+
+pub const DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS: u64 = 5;
+pub const DEFAULT_NOTIFICATION_RETENTION_READ_DAYS: u64 = 30;
+pub const DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS: u64 = 1000;
 
 /// A specialist agent entry in the verification pipeline.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -201,7 +210,7 @@ pub(crate) struct TimeoutsWrapper {
 // ── Individual config structs ────────────────────────────────────────────
 
 /// All fields required in config/ralphx.yaml except backward-compatible timeout fields
-/// with serde defaults (`max_wall_clock_secs`, `completion_grace_secs`).
+/// with serde defaults (`max_wall_clock_secs`, `completion_grace_secs`, and desktop coalescing).
 /// `Default` impl retained only for fallback/test use.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamTimeoutsConfig {
@@ -219,6 +228,12 @@ pub struct StreamTimeoutsConfig {
     pub completion_grace_secs: u64,
     #[serde(default = "default_execution_attempt_start_tolerance_secs")]
     pub execution_attempt_start_tolerance_secs: u64,
+    #[serde(default = "default_desktop_notification_coalesce_window_secs")]
+    pub desktop_notification_coalesce_window_secs: u64,
+    #[serde(default = "default_notification_retention_read_days")]
+    pub notification_retention_read_days: u64,
+    #[serde(default = "default_notification_retention_max_rows")]
+    pub notification_retention_max_rows: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
@@ -231,6 +246,18 @@ fn default_completion_grace_secs() -> u64 {
 
 fn default_execution_attempt_start_tolerance_secs() -> u64 {
     1
+}
+
+fn default_desktop_notification_coalesce_window_secs() -> u64 {
+    DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+}
+
+fn default_notification_retention_read_days() -> u64 {
+    DEFAULT_NOTIFICATION_RETENTION_READ_DAYS
+}
+
+fn default_notification_retention_max_rows() -> u64 {
+    DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS
 }
 
 impl Default for StreamTimeoutsConfig {
@@ -247,6 +274,10 @@ impl Default for StreamTimeoutsConfig {
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
             execution_attempt_start_tolerance_secs: 1,
+            desktop_notification_coalesce_window_secs:
+                DEFAULT_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS,
+            notification_retention_read_days: DEFAULT_NOTIFICATION_RETENTION_READ_DAYS,
+            notification_retention_max_rows: DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS,
         }
     }
 }
@@ -452,6 +483,12 @@ pub struct GitRuntimeConfig {
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
+    /// Seconds between background terminal PR local artifact cleanup passes.
+    #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
+    pub terminal_pr_local_cleanup_interval_secs: u64,
+    /// Seconds before retryable terminal PR cleanup markers are retried.
+    #[serde(default = "default_terminal_pr_local_cleanup_retry_secs")]
+    pub terminal_pr_local_cleanup_retry_secs: u64,
     /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
     pub orphan_worktree_cleanup_marker_retry_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
@@ -484,6 +521,8 @@ impl Default for GitRuntimeConfig {
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
+            terminal_pr_local_cleanup_interval_secs: 900,
+            terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
@@ -497,6 +536,14 @@ impl Default for GitRuntimeConfig {
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
     30_000
+}
+
+fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
+    900
+}
+
+fn default_terminal_pr_local_cleanup_retry_secs() -> u64 {
+    3_600
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -522,6 +569,40 @@ impl Default for SchedulerConfig {
             merge_settle_ms: 100,
         }
     }
+}
+
+/// Runtime knobs for automation scheduling and completion-signal checks.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AutomationsRuntimeConfig {
+    pub scheduler_poll_secs: u64,
+    pub signal_failure_pause_threshold: u64,
+    pub judge_timeout_secs: u64,
+    pub publish_grace_secs: u64,
+    pub max_run_duration_secs: u64,
+    pub plan_judge_model: HashMap<AgentHarnessKind, String>,
+    pub plan_max_revision_rounds: u64,
+}
+
+impl Default for AutomationsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            scheduler_poll_secs: 30,
+            signal_failure_pause_threshold: 5,
+            judge_timeout_secs: 180,
+            publish_grace_secs: 120,
+            max_run_duration_secs: 14_400,
+            plan_judge_model: default_plan_judge_models(),
+            plan_max_revision_rounds: 3,
+        }
+    }
+}
+
+fn default_plan_judge_models() -> HashMap<AgentHarnessKind, String> {
+    standard_harness_map(
+        plan_judge_model_for_provider(AgentHarnessKind::Claude).to_string(),
+        plan_judge_model_for_provider(AgentHarnessKind::Codex).to_string(),
+    )
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -568,6 +649,58 @@ impl Default for LimitsConfig {
 
 pub fn apply_env_overrides(cfg: &mut AllRuntimeConfig) {
     apply_env_overrides_with(cfg, &|name| std::env::var(name).ok());
+}
+
+pub(crate) fn apply_automations_env_overrides_with_lookup(
+    cfg: &mut AutomationsRuntimeConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) {
+    macro_rules! env_u64 {
+        ($field:expr, $key:expr) => {
+            if let Some(v) = lookup($key) {
+                if let Ok(n) = v.parse::<u64>() {
+                    $field = n;
+                }
+            }
+        };
+    }
+
+    env_u64!(
+        cfg.scheduler_poll_secs,
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS"
+    );
+    env_u64!(
+        cfg.signal_failure_pause_threshold,
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD"
+    );
+    env_u64!(
+        cfg.judge_timeout_secs,
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.publish_grace_secs,
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.max_run_duration_secs,
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS"
+    );
+    env_u64!(
+        cfg.plan_max_revision_rounds,
+        "RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS"
+    );
+    if let Some(model) = lookup("RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.plan_judge_model.insert(AgentHarnessKind::Claude, model);
+    }
+    if let Some(model) = lookup("RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cfg.plan_judge_model.insert(AgentHarnessKind::Codex, model);
+    }
 }
 
 pub(crate) fn apply_env_overrides_with_lookup(
@@ -632,6 +765,18 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.execution_attempt_start_tolerance_secs,
         "RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS"
+    );
+    env_u64!(
+        cfg.stream.desktop_notification_coalesce_window_secs,
+        "RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS"
+    );
+    env_u64!(
+        cfg.stream.notification_retention_read_days,
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS"
+    );
+    env_u64!(
+        cfg.stream.notification_retention_max_rows,
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS"
     );
 
     // Reconciliation
@@ -834,6 +979,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS"
     );
     env_u64!(
+        cfg.git.terminal_pr_local_cleanup_interval_secs,
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.terminal_pr_local_cleanup_retry_secs,
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS"
+    );
+    env_u64!(
         cfg.git.orphan_worktree_cleanup_marker_retry_secs,
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS"
     );
@@ -1000,6 +1153,9 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     if let Some(v) = lookup("RALPHX_UI_IDEATION_PAGE") {
         cfg.ui_feature_flags.ideation_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
+    if let Some(v) = lookup("RALPHX_UI_AUTOMATIONS_PAGE") {
+        cfg.ui_feature_flags.automations_page = matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
     if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
         cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
@@ -1011,6 +1167,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     }
     if let Some(v) = lookup("RALPHX_UI_TICKETING_DASHBOARD") {
         cfg.ui_feature_flags.ticketing_dashboard =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_AGENT_PERSONAS") {
+        cfg.ui_feature_flags.agent_personas = matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION") {
+        cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session =
             matches!(v.to_lowercase().as_str(), "true" | "1");
     }
 }

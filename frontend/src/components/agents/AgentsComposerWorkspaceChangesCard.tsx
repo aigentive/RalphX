@@ -1,6 +1,17 @@
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  GitPullRequestArrow,
+  Lightbulb,
+  Loader2,
+  MessageSquare,
+  Play,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 
 import { agentTaskApi } from "@/api/agent-tasks";
 import type {
@@ -10,14 +21,24 @@ import type {
 } from "@/api/agent-tasks";
 import { diffApi } from "@/api/diff";
 import type { FileChange } from "@/api/diff";
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationRuntimeIndexRow,
+  AgentConversationWorkspace,
+} from "@/api/chat";
 import { cn } from "@/lib/utils";
 
+import type { AgentsChatFocus } from "./agentChatFocus";
+import {
+  isTaskRuntimeContextType,
+  type AgentTaskRuntimeContextType,
+} from "./agentTaskRuntimeContext";
+import { canInspectAgentWorkspacePublishDiffs } from "./agentWorkspacePublishState";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
+import { useAgentConversationRuntimeIndex } from "./useAgentConversationRuntimeIndex";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
@@ -25,10 +46,11 @@ const ACTIVE_AGENT_CHANGE_SUMMARY_REFRESH_MS = 2_500;
 const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
 const EMPTY_AGENT_TASKS: AgentTaskSummary[] = [];
 const EMPTY_AGENT_TASK_LISTS: AgentTaskListSummary[] = [];
+const EMPTY_RUNTIME_ROWS: AgentConversationRuntimeIndexRow[] = [];
 const VISIBLE_TASK_COUNT = 3;
 const TASK_ROW_HEIGHT_PX = 36;
 
-type ComposerContextPanel = "tasks" | "changes";
+type ComposerContextPanel = "runtimes" | "tasks" | "changes";
 
 interface VisibleTaskWindow {
   tasks: AgentTaskSummary[];
@@ -36,13 +58,28 @@ interface VisibleTaskWindow {
   hiddenAfter: number;
 }
 
+interface AgentTaskLedgerContext {
+  contextType: string;
+  contextId: string;
+}
+
 interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
   projectId?: string | null | undefined;
   workspace: AgentConversationWorkspace | null;
   isFocusedChildChat: boolean;
+  currentFocus: AgentsChatFocus;
+  taskLedgerContext: AgentTaskLedgerContext | null;
   isAgentGenerating?: boolean;
   pauseHydration?: boolean;
+  onViewWorkspace: () => void;
+  onViewIdeation: (sessionId: string) => void;
+  onViewWorkspaceReview: (conversationId: string) => void;
+  onViewVerification: (parentSessionId: string, childSessionId: string) => void;
+  onViewTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType,
+  ) => void;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }
@@ -121,6 +158,118 @@ function statusColor(status: FileChange["status"]): string {
 function formatTaskRef(taskId: string, taskNumberById: Map<string, number>): string {
   const taskNumber = taskNumberById.get(taskId);
   return taskNumber ? `#${taskNumber}` : `#${taskId}`;
+}
+
+function runtimeModeLabel(mode: AgentConversationRuntimeIndexRow["mode"]): string | null {
+  switch (mode) {
+    case "agent":
+      return "Agent mode";
+    case "chat":
+      return "Chat mode";
+    case "plan":
+      return "Plan mode";
+    case "pr_review":
+      return "PR Review";
+    case "ideation":
+      return "Ideation mode";
+    default:
+      return null;
+  }
+}
+
+function runtimeIconForRow(row: AgentConversationRuntimeIndexRow): LucideIcon {
+  if (row.kind === "ideation") return Lightbulb;
+  if (row.kind === "verification" || row.kind === "workspace_review") {
+    return ShieldCheck;
+  }
+  if (row.kind === "task") {
+    if (row.contextType === "merge") return GitPullRequestArrow;
+    return Play;
+  }
+  return MessageSquare;
+}
+
+function runtimeLifecycleColor(row: AgentConversationRuntimeIndexRow): string {
+  switch (row.lifecycle) {
+    case "running":
+      return "var(--accent-primary)";
+    case "waiting":
+    case "queued":
+      return "var(--status-warning)";
+    case "completed":
+      return "var(--status-success)";
+    case "failed":
+      return "var(--status-error)";
+    case "blocked":
+    case "cancelled":
+    case "dropped":
+      return "var(--text-muted)";
+    default:
+      return "var(--text-secondary)";
+  }
+}
+
+function runtimeGroupTitle(group: AgentConversationRuntimeIndexRow["group"]): string {
+  if (group === "main") return "Main";
+  if (group === "pipeline") return "Pipeline";
+  return "Ideation / Verification";
+}
+
+function runtimeRowTargetLabel(row: AgentConversationRuntimeIndexRow): string {
+  const modeLabel = runtimeModeLabel(row.mode);
+  if (modeLabel) return modeLabel;
+  if (row.providerHarness) return row.providerHarness;
+  return row.contextType ?? row.kind;
+}
+
+function isCurrentRuntimeIndexRow(
+  row: AgentConversationRuntimeIndexRow,
+  currentFocus: AgentsChatFocus,
+): boolean {
+  if (currentFocus.type === "workspace") {
+    return row.kind === "workspace";
+  }
+  if (currentFocus.type === "workspace_review") {
+    return (
+      row.kind === "workspace_review" &&
+      (row.conversationId ?? row.contextId) === currentFocus.conversationId
+    );
+  }
+  if (currentFocus.type === "ideation") {
+    return row.kind === "ideation" && row.contextId === currentFocus.sessionId;
+  }
+  if (currentFocus.type === "verification") {
+    return (
+      row.kind === "verification" &&
+      row.parentSessionId === currentFocus.parentSessionId &&
+      (row.childSessionId ?? row.contextId) === currentFocus.childSessionId
+    );
+  }
+  if (currentFocus.type !== "task_runtime") {
+    return false;
+  }
+  return (
+    row.kind === "task" &&
+    row.taskId === currentFocus.taskId &&
+    row.contextType === currentFocus.contextType
+  );
+}
+
+function runtimeRowIsClickable(row: AgentConversationRuntimeIndexRow): boolean {
+  if (row.kind === "workspace") return true;
+  if (row.kind === "ideation") return Boolean(row.contextId);
+  if (row.kind === "verification") {
+    return Boolean(row.parentSessionId && row.childSessionId);
+  }
+  if (row.kind === "workspace_review") {
+    return Boolean(row.conversationId ?? row.contextId);
+  }
+  if (row.kind === "task") {
+    return Boolean(
+      row.taskId && row.contextType && isTaskRuntimeContextType(row.contextType),
+    );
+  }
+  return false;
 }
 
 function taskListStatusLabel(list: AgentTaskListSummary): string {
@@ -233,49 +382,178 @@ export function AgentsComposerWorkspaceChangesCard({
   projectId,
   workspace,
   isFocusedChildChat,
+  currentFocus,
+  taskLedgerContext,
   isAgentGenerating = false,
   pauseHydration = false,
+  onViewWorkspace,
+  onViewIdeation,
+  onViewWorkspaceReview,
+  onViewVerification,
+  onViewTaskRuntime,
   onOpenFile,
   onPreloadPublishPane,
 }: AgentsComposerWorkspaceChangesCardProps) {
-  const canRender = !isFocusedChildChat;
-  if (!canRender) {
-    return null;
-  }
-
   return (
     <AgentsComposerWorkspaceChangesCardContent
       conversationId={conversationId}
       projectId={projectId}
       workspace={workspace}
+      isFocusedChildChat={isFocusedChildChat}
+      currentFocus={currentFocus}
+      taskLedgerContext={taskLedgerContext}
       isAgentGenerating={isAgentGenerating}
       pauseHydration={pauseHydration}
+      onViewWorkspace={onViewWorkspace}
+      onViewIdeation={onViewIdeation}
+      onViewWorkspaceReview={onViewWorkspaceReview}
+      onViewVerification={onViewVerification}
+      onViewTaskRuntime={onViewTaskRuntime}
       onOpenFile={onOpenFile}
       onPreloadPublishPane={onPreloadPublishPane}
     />
   );
 }
 
+function RuntimeIndexGroupRows({
+  title,
+  rows,
+  currentFocus,
+  onRowClick,
+}: {
+  title: string;
+  rows: readonly AgentConversationRuntimeIndexRow[];
+  currentFocus: AgentsChatFocus;
+  onRowClick: (row: AgentConversationRuntimeIndexRow) => void;
+}) {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      data-testid={`agents-composer-runtimes-group-${title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")}`}
+      style={{
+        borderTopColor: title === "Main" ? "transparent" : "var(--border-subtle)",
+        borderTopStyle: "solid",
+        borderTopWidth: title === "Main" ? "0" : "1px",
+      }}
+    >
+      <div
+        className="px-2 pb-1 pt-1.5 text-[0.625rem] font-semibold uppercase tracking-normal"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {title}
+      </div>
+      <div>
+        {rows.map((row) => {
+          const Icon = runtimeIconForRow(row);
+          const clickable = runtimeRowIsClickable(row);
+          const isCurrent = isCurrentRuntimeIndexRow(row, currentFocus);
+          const rowContent = (
+            <>
+              <Icon
+                className="h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--text-muted)" }}
+                aria-hidden="true"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="truncate text-[0.7188rem] font-medium"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    {row.title}
+                  </span>
+                  {isCurrent && (
+                    <span
+                      className="shrink-0 rounded px-1 py-0.5 text-[0.625rem] font-medium"
+                      style={{
+                        backgroundColor: "var(--bg-elevated)",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      Viewing
+                    </span>
+                  )}
+                </div>
+                <div
+                  className="truncate text-[0.6563rem]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {runtimeRowTargetLabel(row)}
+                </div>
+              </div>
+              <span
+                className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-medium"
+                style={{
+                  backgroundColor: "var(--bg-elevated)",
+                  color: runtimeLifecycleColor(row),
+                }}
+              >
+                {row.statusLabel}
+              </span>
+            </>
+          );
+
+          if (!clickable) {
+            return (
+              <div
+                key={row.id}
+                data-testid={`agents-composer-runtime-row-${row.kind}`}
+                className="flex min-h-9 w-full min-w-0 items-center gap-2 px-2 py-1.5 opacity-70"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {rowContent}
+              </div>
+            );
+          }
+
+          return (
+            <button
+              key={row.id}
+              type="button"
+              data-testid={`agents-composer-runtime-row-${row.kind}`}
+              onClick={() => onRowClick(row)}
+              className="flex min-h-9 w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:-1px]"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {rowContent}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PreviousTaskListDisclosure({
-  conversationId,
+  taskLedgerContext,
   projectId,
   list,
   expanded,
   onToggle,
 }: {
-  conversationId: string;
+  taskLedgerContext: AgentTaskLedgerContext;
   projectId?: string | null | undefined;
   list: AgentTaskListSummary;
   expanded: boolean;
   onToggle: () => void;
 }) {
   const tasksQuery = useQuery({
-    queryKey: agentWorkspaceKeys.agentTaskListTasks(conversationId, list.listId),
+    queryKey: agentWorkspaceKeys.agentTaskListTasksForScope(
+      taskLedgerContext.contextType,
+      taskLedgerContext.contextId,
+      list.listId,
+    ),
     queryFn: () =>
-      agentTaskApi.listConversationTaskListTasks({
-        conversationId,
+      agentTaskApi.listAgentTasksForList({
+        contextType: taskLedgerContext.contextType,
+        contextId: taskLedgerContext.contextId,
         projectId,
-        taskListId: list.listId,
+        listId: list.listId,
         includeDone: true,
       }),
     enabled: expanded,
@@ -356,16 +634,35 @@ function AgentsComposerWorkspaceChangesCardContent({
   conversationId,
   projectId,
   workspace,
+  isFocusedChildChat,
+  currentFocus,
+  taskLedgerContext,
   isAgentGenerating,
   pauseHydration,
+  onViewWorkspace,
+  onViewIdeation,
+  onViewWorkspaceReview,
+  onViewVerification,
+  onViewTaskRuntime,
   onOpenFile,
   onPreloadPublishPane,
 }: {
   conversationId: string;
   projectId?: string | null | undefined;
   workspace: AgentConversationWorkspace | null;
+  isFocusedChildChat: boolean;
+  currentFocus: AgentsChatFocus;
+  taskLedgerContext: AgentTaskLedgerContext | null;
   isAgentGenerating: boolean;
   pauseHydration: boolean;
+  onViewWorkspace: () => void;
+  onViewIdeation: (sessionId: string) => void;
+  onViewWorkspaceReview: (conversationId: string) => void;
+  onViewVerification: (parentSessionId: string, childSessionId: string) => void;
+  onViewTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType,
+  ) => void;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }) {
@@ -378,8 +675,13 @@ function AgentsComposerWorkspaceChangesCardContent({
   const previousTaskSignatures = useRef<Map<string, string>>(new Map());
   const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const canInspectChanges =
-    workspace?.mode === "edit" && workspace.status !== "missing";
-  const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
+    !isFocusedChildChat && canInspectAgentWorkspacePublishDiffs(workspace);
+  const taskLedgerScopeKey = taskLedgerContext
+    ? `${taskLedgerContext.contextType}:${taskLedgerContext.contextId}`
+    : "runtime-only";
+  const canScheduleReviewHydration = useDeferredAgentHydration(
+    `${conversationId}:${taskLedgerScopeKey}`,
+  );
   const [canHydrateReview, setCanHydrateReview] = useState(false);
   useEffect(() => {
     setCanHydrateReview(false);
@@ -404,34 +706,72 @@ function AgentsComposerWorkspaceChangesCardContent({
         : false,
   });
   const tasksQuery = useQuery({
-    queryKey: agentWorkspaceKeys.agentTasks(conversationId),
-    queryFn: () =>
-      agentTaskApi.listConversationTasks({
-        conversationId,
+    queryKey: agentWorkspaceKeys.agentTasksForScope(
+      taskLedgerContext?.contextType ?? "runtime-only",
+      taskLedgerContext?.contextId ?? conversationId,
+    ),
+    queryFn: () => {
+      if (!taskLedgerContext) {
+        return Promise.resolve(EMPTY_AGENT_TASKS);
+      }
+      return agentTaskApi.listAgentTasks({
+        contextType: taskLedgerContext.contextType,
+        contextId: taskLedgerContext.contextId,
         projectId,
         includeDone: true,
-      }),
-    enabled: canHydrateReview,
+      });
+    },
+    enabled: canHydrateReview && Boolean(taskLedgerContext),
     staleTime: AGENT_WORKSPACE_STALE_MS,
     refetchInterval:
-      canHydrateReview && isAgentGenerating ? ACTIVE_AGENT_TASK_REFRESH_MS : false,
-  });
-  const taskListsQuery = useQuery({
-    queryKey: agentWorkspaceKeys.agentTaskLists(conversationId),
-    queryFn: () =>
-      agentTaskApi.listConversationTaskLists({
-        conversationId,
-        projectId,
-      }),
-    enabled: canHydrateReview && activePanel === "tasks",
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-    refetchInterval:
-      canHydrateReview && activePanel === "tasks" && isAgentGenerating
+      canHydrateReview && Boolean(taskLedgerContext) && isAgentGenerating
         ? ACTIVE_AGENT_TASK_REFRESH_MS
         : false,
   });
+  const taskListsQuery = useQuery({
+    queryKey: agentWorkspaceKeys.agentTaskListsForScope(
+      taskLedgerContext?.contextType ?? "runtime-only",
+      taskLedgerContext?.contextId ?? conversationId,
+    ),
+    queryFn: () => {
+      if (!taskLedgerContext) {
+        return Promise.resolve(EMPTY_AGENT_TASK_LISTS);
+      }
+      return agentTaskApi.listAgentTaskLists({
+        contextType: taskLedgerContext.contextType,
+        contextId: taskLedgerContext.contextId,
+        projectId,
+      });
+    },
+    enabled: canHydrateReview && Boolean(taskLedgerContext) && activePanel === "tasks",
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+    refetchInterval:
+      canHydrateReview &&
+      Boolean(taskLedgerContext) &&
+      activePanel === "tasks" &&
+      isAgentGenerating
+        ? ACTIVE_AGENT_TASK_REFRESH_MS
+        : false,
+  });
+  const runtimeIndexQuery = useAgentConversationRuntimeIndex(conversationId, {
+    enabled: canHydrateReview,
+  });
+  const runtimeRows = runtimeIndexQuery.data?.rows ?? EMPTY_RUNTIME_ROWS;
+  const runtimeMainRows = useMemo(
+    () => runtimeRows.filter((row) => row.group === "main"),
+    [runtimeRows],
+  );
+  const runtimeIdeationRows = useMemo(
+    () => runtimeRows.filter((row) => row.group === "ideation_verification"),
+    [runtimeRows],
+  );
+  const runtimePipelineRows = useMemo(
+    () => runtimeRows.filter((row) => row.group === "pipeline"),
+    [runtimeRows],
+  );
   const refetchTasks = tasksQuery.refetch;
   const refetchTaskLists = taskListsQuery.refetch;
+  const refetchRuntimeIndex = runtimeIndexQuery.refetch;
   useEffect(() => {
     if (isAgentGenerating) {
       wasAgentGenerating.current = true;
@@ -441,11 +781,22 @@ function AgentsComposerWorkspaceChangesCardContent({
       return;
     }
     wasAgentGenerating.current = false;
-    void refetchTasks();
-    if (activePanel === "tasks") {
+    void refetchRuntimeIndex();
+    if (taskLedgerContext) {
+      void refetchTasks();
+    }
+    if (taskLedgerContext && activePanel === "tasks") {
       void refetchTaskLists();
     }
-  }, [activePanel, canHydrateReview, isAgentGenerating, refetchTaskLists, refetchTasks]);
+  }, [
+    activePanel,
+    canHydrateReview,
+    isAgentGenerating,
+    refetchRuntimeIndex,
+    refetchTaskLists,
+    refetchTasks,
+    taskLedgerContext,
+  ]);
   const liveSummary = changeSummaryQuery.data ?? null;
   const summary = useAgentWorkspaceChangeSummary({
     conversationId,
@@ -472,13 +823,15 @@ function AgentsComposerWorkspaceChangesCardContent({
     const active = actionable.filter((t) => t.state === "active").length;
     return { actionable: actionable.length, done, active, total: tasks.length };
   }, [tasks]);
-  const shouldShowTasks = tasksQuery.isSuccess && tasks.length > 0;
+  const shouldShowTasks =
+    Boolean(taskLedgerContext) && tasksQuery.isSuccess && tasks.length > 0;
   const shouldShowChanges =
     canInspectChanges &&
     changeSummaryQuery.isSuccess &&
     (summary.workspaceChangeCount > 0 ||
       summary.currentFiles.length > 0);
-  const shouldShow = shouldShowTasks || shouldShowChanges;
+  const shouldShowRuntime = Boolean(conversationId);
+  const shouldShow = shouldShowRuntime || shouldShowTasks || shouldShowChanges;
 
   useEffect(() => {
     setActivePanel(null);
@@ -490,7 +843,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     hasObservedTaskSnapshot.current = false;
     previousTaskSignatures.current = new Map();
     taskRowRefs.current.clear();
-  }, [conversationId]);
+  }, [conversationId, taskLedgerScopeKey]);
 
   useEffect(() => {
     if (isAgentGenerating && !previousIsAgentGenerating.current) {
@@ -633,7 +986,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     });
   const handleHeaderClick = (event: MouseEvent<HTMLDivElement>) => {
     if (event.target === event.currentTarget) {
-      togglePanel(shouldShowChanges ? "changes" : "tasks");
+      togglePanel("runtimes");
     }
   };
   const togglePreviousTaskList = (listId: string) => {
@@ -652,8 +1005,39 @@ function AgentsComposerWorkspaceChangesCardContent({
       onPreloadPublishPane();
     }
   };
+  const handleRuntimeRowClick = (row: AgentConversationRuntimeIndexRow) => {
+    if (row.kind === "workspace") {
+      onViewWorkspace();
+      return;
+    }
+    if (row.kind === "ideation" && row.contextId) {
+      onViewIdeation(row.contextId);
+      return;
+    }
+    if (row.kind === "verification" && row.parentSessionId && row.childSessionId) {
+      onViewVerification(row.parentSessionId, row.childSessionId);
+      return;
+    }
+    if (row.kind === "workspace_review") {
+      const conversationId = row.conversationId ?? row.contextId;
+      if (conversationId) {
+        onViewWorkspaceReview(conversationId);
+      }
+      return;
+    }
+    if (
+      row.kind === "task" &&
+      row.taskId &&
+      row.contextType &&
+      isTaskRuntimeContextType(row.contextType)
+    ) {
+      onViewTaskRuntime(row.taskId, row.contextType);
+    }
+  };
 
   const TasksChevron = activePanel === "tasks" ? ChevronDown : ChevronRight;
+  const RuntimesChevron =
+    activePanel === "runtimes" ? ChevronDown : ChevronRight;
   const ChangesChevron = activePanel === "changes" ? ChevronDown : ChevronRight;
 
   return (
@@ -672,6 +1056,46 @@ function AgentsComposerWorkspaceChangesCardContent({
           )}
           onClick={handleHeaderClick}
         >
+          {shouldShowRuntime && (
+            <button
+              type="button"
+              data-testid="agents-composer-runtimes-toggle"
+              aria-expanded={activePanel === "runtimes"}
+              onClick={() => togglePanel("runtimes")}
+              className={cn(
+                "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
+                activePanel === "runtimes"
+                  ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
+                  : "rounded hover:bg-[var(--bg-hover)]",
+              )}
+              style={{
+                borderColor:
+                  activePanel === "runtimes"
+                    ? "var(--border-subtle)"
+                    : "transparent",
+                color: "var(--text-secondary)",
+              }}
+            >
+              <RuntimesChevron
+                className="h-3 w-3 shrink-0"
+                style={{ color: "var(--text-muted)" }}
+              />
+              <span>Runtimes</span>
+              <span
+                data-testid="agents-composer-runtimes-count"
+                className="font-mono"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {runtimeRows.length > 0 ? runtimeRows.length : "..."}
+              </span>
+              {runtimeRows.some((row) => row.lifecycle === "running") && (
+                <Loader2
+                  className="h-3 w-3 shrink-0 animate-spin"
+                  style={{ color: "var(--accent-primary)" }}
+                />
+              )}
+            </button>
+          )}
           {shouldShowTasks && (
             <button
               type="button"
@@ -775,7 +1199,50 @@ function AgentsComposerWorkspaceChangesCardContent({
                 : "11rem",
             }}
           >
-            {activePanel === "tasks" ? (
+            {activePanel === "runtimes" ? (
+              <div data-testid="agents-composer-runtimes-list">
+                {runtimeIndexQuery.isLoading || !canHydrateReview ? (
+                  <div
+                    className="px-2 py-2 text-xs"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Loading runtimes...
+                  </div>
+                ) : runtimeIndexQuery.isError ? (
+                  <div
+                    className="px-2 py-2 text-xs"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Could not load runtimes
+                  </div>
+                ) : (
+                  <>
+                    <RuntimeIndexGroupRows
+                      title={runtimeGroupTitle("main")}
+                      rows={runtimeMainRows}
+                      currentFocus={currentFocus}
+                      onRowClick={handleRuntimeRowClick}
+                    />
+                    {runtimeIdeationRows.length > 0 && (
+                      <RuntimeIndexGroupRows
+                        title={runtimeGroupTitle("ideation_verification")}
+                        rows={runtimeIdeationRows}
+                        currentFocus={currentFocus}
+                        onRowClick={handleRuntimeRowClick}
+                      />
+                    )}
+                    {runtimePipelineRows.length > 0 && (
+                      <RuntimeIndexGroupRows
+                        title={runtimeGroupTitle("pipeline")}
+                        rows={runtimePipelineRows}
+                        currentFocus={currentFocus}
+                        onRowClick={handleRuntimeRowClick}
+                      />
+                    )}
+                  </>
+                )}
+              </div>
+            ) : activePanel === "tasks" ? (
               <div data-testid="agents-composer-task-list">
                 {taskWindow.hiddenBefore > 0 && (
                   <button
@@ -841,7 +1308,9 @@ function AgentsComposerWorkspaceChangesCardContent({
                     Could not load previous task lists
                   </div>
                 )}
-                {!taskListsQuery.isError && previousTaskLists.length > 0 && (
+                {taskLedgerContext &&
+                  !taskListsQuery.isError &&
+                  previousTaskLists.length > 0 && (
                   <div
                     style={{
                       borderTopColor: "var(--border-subtle)",
@@ -873,7 +1342,7 @@ function AgentsComposerWorkspaceChangesCardContent({
                       previousTaskLists.map((list) => (
                         <PreviousTaskListDisclosure
                           key={list.listId}
-                          conversationId={conversationId}
+                          taskLedgerContext={taskLedgerContext}
                           projectId={projectId}
                           list={list}
                           expanded={expandedTaskListIds.has(list.listId)}

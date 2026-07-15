@@ -1,9 +1,13 @@
 use crate::domain::entities::{
-    ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+    BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
+    BranchUpdateOperation, BranchUpdateWorkspaceOwnership, ExecutionPlanId, GitTargetIdentity,
+    IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
 };
-use crate::domain::repositories::TaskRepository;
-use crate::infrastructure::sqlite::SqliteTaskRepository;
+use crate::domain::repositories::{BranchUpdateActivation, BranchUpdateRepository, TaskRepository};
+use crate::infrastructure::sqlite::{SqliteBranchUpdateRepository, SqliteTaskRepository};
 use crate::testing::SqliteTestDb;
+use chrono::Utc;
+use std::path::PathBuf;
 
 fn setup_test_db() -> SqliteTestDb {
     let db = SqliteTestDb::new("sqlite-task-repo");
@@ -151,6 +155,9 @@ async fn test_create_and_retrieve_preserves_all_fields() {
     task.description = Some("A description".to_string());
     task.priority = 42;
     task.internal_status = InternalStatus::Ready;
+    task.task_branch = Some("ralphx/test/task-1".to_string());
+    task.task_branch_base_ref = Some("ralphx/test/agent-plan".to_string());
+    task.task_branch_base_sha = Some("abc123base".to_string());
 
     repo.create(task.clone()).await.unwrap();
     let found = repo.get_by_id(&task.id).await.unwrap().unwrap();
@@ -158,6 +165,9 @@ async fn test_create_and_retrieve_preserves_all_fields() {
     assert_eq!(found.id, task.id);
     assert_eq!(found.project_id, task.project_id);
     assert_eq!(found.category, task.category);
+    assert_eq!(found.task_branch, task.task_branch);
+    assert_eq!(found.task_branch_base_ref, task.task_branch_base_ref);
+    assert_eq!(found.task_branch_base_sha, task.task_branch_base_sha);
     assert_eq!(found.title, task.title);
     assert_eq!(found.description, task.description);
     assert_eq!(found.priority, task.priority);
@@ -1249,6 +1259,57 @@ async fn test_update_with_expected_status_returns_false_on_status_mismatch() {
     assert!(!result.unwrap()); // returns false when status mismatch
     let found = repo.get_by_id(&task.id).await.unwrap().unwrap();
     assert_eq!(found.title, "CAS Task"); // unchanged
+}
+
+#[tokio::test]
+async fn active_branch_update_fences_generic_status_writers_but_allows_same_status_metadata() {
+    let db = setup_test_db();
+    let shared = db.shared_conn();
+    let repo = SqliteTaskRepository::from_shared(shared.clone());
+    let branch_repo = SqliteBranchUpdateRepository::from_shared(shared);
+    let task = repo.create(create_test_task("Fenced Task")).await.unwrap();
+    let operation = BranchUpdateOperation::new(
+        task.id.clone(),
+        BranchUpdateDirection::PlanBranch,
+        BranchUpdateContinuation::ResumeExecution,
+        "fenced-history",
+        "main",
+        "ralphx/project/plan",
+        BranchUpdateWorkspaceOwnership::OperationWorktree,
+        BranchUpdateCapacityOwnership::Inherited,
+        GitTargetIdentity::new(
+            PathBuf::from("/repo/.git"),
+            "refs/heads/ralphx/project/plan",
+        )
+        .unwrap(),
+        Utc::now(),
+    );
+    branch_repo
+        .activate(BranchUpdateActivation {
+            operation,
+            expected_status: InternalStatus::Backlog,
+            update_status: InternalStatus::UpdatingPlanBranch,
+            trigger: "freshness".into(),
+        })
+        .await
+        .unwrap();
+
+    let mut stale = repo.get_by_id(&task.id).await.unwrap().unwrap();
+    stale.internal_status = InternalStatus::Executing;
+    assert!(!repo
+        .update_with_expected_status(&stale, InternalStatus::UpdatingPlanBranch)
+        .await
+        .unwrap());
+
+    let mut metadata_only = repo.get_by_id(&task.id).await.unwrap().unwrap();
+    metadata_only.title = "Metadata still allowed".into();
+    assert!(repo
+        .update_with_expected_status(&metadata_only, InternalStatus::UpdatingPlanBranch)
+        .await
+        .unwrap());
+    let stored = repo.get_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(stored.internal_status, InternalStatus::UpdatingPlanBranch);
+    assert_eq!(stored.title, "Metadata still allowed");
 }
 
 // ==================== LIST_PAGINATED TESTS ====================

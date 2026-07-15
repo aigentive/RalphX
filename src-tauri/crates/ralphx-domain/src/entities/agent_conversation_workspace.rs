@@ -18,6 +18,8 @@ pub enum AgentConversationWorkspaceMode {
     Plan,
     Ideation,
     ReviewPr,
+    Automation,
+    PersonaBuilder,
 }
 
 impl std::fmt::Display for AgentConversationWorkspaceMode {
@@ -28,6 +30,8 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
             AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
+            AgentConversationWorkspaceMode::Automation => write!(f, "automation"),
+            AgentConversationWorkspaceMode::PersonaBuilder => write!(f, "persona_builder"),
         }
     }
 }
@@ -42,6 +46,8 @@ impl FromStr for AgentConversationWorkspaceMode {
             "plan" => Ok(Self::Plan),
             "ideation" => Ok(Self::Ideation),
             "review_pr" => Ok(Self::ReviewPr),
+            "automation" => Ok(Self::Automation),
+            "persona_builder" => Ok(Self::PersonaBuilder),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"
             )),
@@ -91,6 +97,7 @@ pub enum AgentWorkspacePrReviewMonitorStatus {
     Watching,
     Submitting,
     Blocked,
+    Paused,
     Terminal,
 }
 
@@ -268,6 +275,7 @@ impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
             Self::Watching => write!(f, "watching"),
             Self::Submitting => write!(f, "submitting"),
             Self::Blocked => write!(f, "blocked"),
+            Self::Paused => write!(f, "paused"),
             Self::Terminal => write!(f, "terminal"),
         }
     }
@@ -284,6 +292,7 @@ impl FromStr for AgentWorkspacePrReviewMonitorStatus {
             "watching" => Ok(Self::Watching),
             "submitting" => Ok(Self::Submitting),
             "blocked" => Ok(Self::Blocked),
+            "paused" => Ok(Self::Paused),
             "terminal" => Ok(Self::Terminal),
             _ => Err(format!("unknown PR review monitor status: '{value}'")),
         }
@@ -330,6 +339,7 @@ pub enum AgentWorkspacePrReviewActionStatus {
     Submitting,
     Submitted,
     Failed,
+    Superseded,
 }
 
 impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
@@ -341,6 +351,7 @@ impl std::fmt::Display for AgentWorkspacePrReviewActionStatus {
             Self::Submitting => write!(f, "submitting"),
             Self::Submitted => write!(f, "submitted"),
             Self::Failed => write!(f, "failed"),
+            Self::Superseded => write!(f, "superseded"),
         }
     }
 }
@@ -356,6 +367,7 @@ impl FromStr for AgentWorkspacePrReviewActionStatus {
             "submitting" => Ok(Self::Submitting),
             "submitted" => Ok(Self::Submitted),
             "failed" => Ok(Self::Failed),
+            "superseded" => Ok(Self::Superseded),
             _ => Err(format!("unknown PR review action status: '{value}'")),
         }
     }
@@ -423,7 +435,9 @@ pub struct AgentWorkspacePrReviewMonitor {
     pub pr_number: i64,
     pub status: AgentWorkspacePrReviewMonitorStatus,
     pub monitor_enabled: bool,
+    pub auto_approve_enabled: bool,
     pub first_review_completed: bool,
+    pub first_action_resolved: bool,
     pub last_seen_head_sha: Option<String>,
     pub last_reviewed_head_sha: Option<String>,
     pub last_review_run_id: Option<String>,
@@ -563,7 +577,9 @@ impl AgentWorkspacePrReviewMonitor {
             pr_number,
             status: AgentWorkspacePrReviewMonitorStatus::Idle,
             monitor_enabled: false,
+            auto_approve_enabled: true,
             first_review_completed: false,
+            first_action_resolved: false,
             last_seen_head_sha: head_sha,
             last_reviewed_head_sha: None,
             last_review_run_id: None,
@@ -576,6 +592,32 @@ impl AgentWorkspacePrReviewMonitor {
             last_error: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    pub fn can_auto_approve(&self, action: &AgentWorkspacePrReviewAction) -> bool {
+        self.auto_approve_enabled
+            && self.first_action_resolved
+            && action.proposed_action == AgentWorkspacePrReviewActionKind::Approve
+            && action.status == AgentWorkspacePrReviewActionStatus::Pending
+            && action.created_by_run_id.is_some()
+            && self.last_review_run_id == action.created_by_run_id
+            && self.review_artifact_id.is_some()
+            && self.review_artifact_head_sha.as_deref() == Some(action.head_sha.as_str())
+    }
+
+    pub fn settlement_status(&self) -> AgentWorkspacePrReviewMonitorStatus {
+        if self.status == AgentWorkspacePrReviewMonitorStatus::Terminal {
+            return AgentWorkspacePrReviewMonitorStatus::Terminal;
+        }
+        if self.monitor_enabled {
+            if self.last_error.is_some() {
+                AgentWorkspacePrReviewMonitorStatus::Blocked
+            } else {
+                AgentWorkspacePrReviewMonitorStatus::Watching
+            }
+        } else {
+            AgentWorkspacePrReviewMonitorStatus::Paused
         }
     }
 }
@@ -1030,6 +1072,36 @@ mod monitor_and_action_constructor_tests {
     }
 
     #[test]
+    fn monitor_settlement_status_preserves_terminal_and_reports_live_state() {
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            ChatConversationId::new(),
+            ProjectId("p".to_string()),
+            42,
+            Some("abc".to_string()),
+        );
+
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Paused
+        );
+        monitor.monitor_enabled = true;
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Watching
+        );
+        monitor.last_error = Some("review failed".to_string());
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Blocked
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::Terminal;
+        assert_eq!(
+            monitor.settlement_status(),
+            AgentWorkspacePrReviewMonitorStatus::Terminal
+        );
+    }
+
+    #[test]
     fn action_new_starts_pending_with_generated_id() {
         let action = AgentWorkspacePrReviewAction::new(
             ChatConversationId::new(),
@@ -1073,6 +1145,11 @@ mod enum_roundtrip_tests {
             (AgentConversationWorkspaceMode::Plan, "plan"),
             (AgentConversationWorkspaceMode::Ideation, "ideation"),
             (AgentConversationWorkspaceMode::ReviewPr, "review_pr"),
+            (AgentConversationWorkspaceMode::Automation, "automation"),
+            (
+                AgentConversationWorkspaceMode::PersonaBuilder,
+                "persona_builder",
+            ),
         ] {
             assert_eq!(variant.to_string(), text);
             assert_eq!(
@@ -1081,6 +1158,18 @@ mod enum_roundtrip_tests {
             );
         }
         assert!(AgentConversationWorkspaceMode::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn persona_builder_mode_display_fromstr_round_trip() {
+        assert_eq!(
+            AgentConversationWorkspaceMode::PersonaBuilder.to_string(),
+            "persona_builder"
+        );
+        assert_eq!(
+            AgentConversationWorkspaceMode::from_str("persona_builder").unwrap(),
+            AgentConversationWorkspaceMode::PersonaBuilder
+        );
     }
 
     #[test]
@@ -1133,6 +1222,7 @@ mod enum_roundtrip_tests {
                 "submitting",
             ),
             (AgentWorkspacePrReviewMonitorStatus::Blocked, "blocked"),
+            (AgentWorkspacePrReviewMonitorStatus::Paused, "paused"),
             (AgentWorkspacePrReviewMonitorStatus::Terminal, "terminal"),
         ] {
             assert_eq!(variant.to_string(), text);
@@ -1255,6 +1345,7 @@ mod enum_roundtrip_tests {
             (AgentWorkspacePrReviewActionStatus::Submitting, "submitting"),
             (AgentWorkspacePrReviewActionStatus::Submitted, "submitted"),
             (AgentWorkspacePrReviewActionStatus::Failed, "failed"),
+            (AgentWorkspacePrReviewActionStatus::Superseded, "superseded"),
         ] {
             assert_eq!(variant.to_string(), text);
             assert_eq!(
@@ -1278,7 +1369,7 @@ mod workspace_review_monitor_tests {
     fn workspace_review_monitor_defaults_and_currentness_are_explicit() {
         let conversation_id = ChatConversationId::from_string("review-monitor-conversation");
         let project_id = ProjectId::from_string("project-1".to_string());
-        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project_id);
 
         assert_eq!(monitor.conversation_id, conversation_id);
         assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);

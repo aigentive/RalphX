@@ -1,13 +1,17 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::domain::entities::{
+    AgentConversationWorkspace, ChatConversation, IdeationAnalysisBaseRefKind,
+};
 use crate::domain::services::GithubServiceTrait;
 use crate::domain::state_machine::transition_handler::{
     classify_commit_hook_failure_text, update_plan_from_main_isolated, update_source_from_target,
     CommitHookFailureKind, PlanUpdateResult, SourceUpdateResult,
 };
 use crate::error::AppResult;
-use crate::{application::GitService, domain::entities::Project};
+use crate::{application::AppState, application::GitService, domain::entities::Project};
+use tauri::Manager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishFailureClass {
@@ -148,6 +152,49 @@ pub async fn push_publish_branch(
     github.push_branch(repo_path, branch).await
 }
 
+/// Lazily publish an automation run's local-only base branch to origin before the
+/// run's PR references it as `--base` (integration-branch model, B1/B2/B5).
+///
+/// Two load-bearing belts gate the push:
+/// - **Scope**: the workspace must belong to an automation run
+///   (`conversation.automation_id.is_some()`). A non-automation workspace on a
+///   local-only branch is never pushed as a "base branch".
+/// - **Safety**: `origin/<base_ref>` must be absent. When it already exists the
+///   push is skipped (idempotent). This also correctly skips `pr_head_stacked` /
+///   source-PR successors whose base is an already-pushed head branch.
+///
+/// `base_ref_kind == LocalBranch` is only a cheap pre-filter, never the authority.
+///
+/// On push failure the error is returned unchanged so the caller fails the
+/// publish closed — it MUST NOT fall back to `base=main`, which would reintroduce
+/// the wrong-base bug.
+pub async fn ensure_publish_base_pushed(
+    github: &Arc<dyn GithubServiceTrait>,
+    repo_path: &Path,
+    conversation: &ChatConversation,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<()> {
+    // Scope belt (authority): only automation-owned runs lazily publish their base.
+    if conversation.automation_id.is_none() {
+        return Ok(());
+    }
+    // Cheap pre-filter: project-default / current-branch bases already live on origin.
+    if workspace.base_ref_kind != IdeationAnalysisBaseRefKind::LocalBranch {
+        return Ok(());
+    }
+    let base_ref = workspace.base_ref.trim();
+    if base_ref.is_empty() {
+        return Ok(());
+    }
+    // Safety belt: skip when the base is already on origin (idempotent; also covers
+    // pr_head_stacked / source-PR successors whose base is a pushed head branch).
+    let remote_ref = remote_tracking_ref_for_publish(base_ref);
+    if GitService::ref_exists(repo_path, &remote_ref).await? {
+        return Ok(());
+    }
+    github.push_branch(repo_path, base_ref).await
+}
+
 pub async fn ensure_publish_branch_fresh(
     repo_path: &Path,
     project: &Project,
@@ -175,13 +222,17 @@ pub async fn ensure_publish_branch_fresh(
         }
     };
 
+    let event_sink = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.events));
+
     let result = update_source_from_target(
         repo_path,
         source_branch,
         &target_ref,
         project,
         conversation_id,
-        app_handle,
+        event_sink.as_deref(),
     )
     .await;
 
@@ -215,13 +266,17 @@ pub async fn ensure_plan_publish_branch_fresh(
         }
     };
 
+    let event_sink = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.events));
+
     let result = update_plan_from_main_isolated(
         repo_path,
         plan_branch,
         &target_ref,
         project,
         conversation_id,
-        app_handle,
+        event_sink.as_deref(),
     )
     .await;
 
@@ -439,6 +494,11 @@ pub(crate) fn publish_branch_freshness_outcome_from_source_update(
                 conflict_files,
                 base_commit: target_sha.to_string(),
                 target_ref: target_ref.to_string(),
+            }
+        }
+        SourceUpdateResult::BranchMissing { branch } => {
+            PublishBranchFreshnessOutcome::OperationalError {
+                message: format!("branch missing before freshness update: {}", branch),
             }
         }
         SourceUpdateResult::Error(message) => {
@@ -744,6 +804,176 @@ mod tests {
             }
             other => panic!("expected operational error, got {other:?}"),
         }
+    }
+
+    fn automation_publish_fixture(
+        base_ref: &str,
+        kind: IdeationAnalysisBaseRefKind,
+        automation: bool,
+    ) -> (ChatConversation, AgentConversationWorkspace) {
+        use crate::domain::entities::{
+            AgentConversationWorkspaceMode, AutomationId, ProjectId,
+        };
+        let project_id = ProjectId::from_string("project-b1".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        if automation {
+            conversation.automation_id = Some(AutomationId::from_string("automation-b1"));
+        }
+        let workspace = AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            kind,
+            base_ref.to_string(),
+            Some(base_ref.to_string()),
+            Some("0".repeat(40)),
+            "ralphx/ralphx/head-branch".to_string(),
+            "/tmp/b1-worktree".to_string(),
+        );
+        (conversation, workspace)
+    }
+
+    #[tokio::test]
+    async fn ensure_publish_base_pushed_pushes_local_automation_base_when_origin_absent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        setup_repo(&repo);
+        let base = "ralphx/ralphx/automation-abc";
+        git(&repo, &["branch", base]);
+        let (conversation, workspace) = automation_publish_fixture(
+            base,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            true,
+        );
+        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+
+        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
+            .await
+            .expect("base push succeeds");
+
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1, "automation base should be pushed once");
+        assert_eq!(state.last_push_branch_name.as_deref(), Some(base));
+    }
+
+    #[tokio::test]
+    async fn ensure_publish_base_pushed_is_idempotent_when_origin_present() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        setup_repo(&repo);
+        let base = "ralphx/ralphx/automation-present";
+        git(&repo, &["branch", base]);
+        // Seed the remote-tracking ref so origin/<base> already exists.
+        git(&repo, &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"]);
+        let (conversation, workspace) = automation_publish_fixture(
+            base,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            true,
+        );
+        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+
+        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
+            .await
+            .expect("idempotent skip succeeds");
+
+        assert_eq!(github.state().push_branch_calls, 0, "present origin base must not be re-pushed");
+    }
+
+    #[tokio::test]
+    async fn ensure_publish_base_pushed_skips_non_automation_local_branch() {
+        // Scope belt: a non-automation Edit workspace on a local-only branch must
+        // NOT be pushed as a base branch even when origin/<base> is absent.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        setup_repo(&repo);
+        let base = "feature/local-only";
+        git(&repo, &["branch", base]);
+        let (conversation, workspace) = automation_publish_fixture(
+            base,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            false,
+        );
+        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+
+        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
+            .await
+            .expect("no-op succeeds");
+
+        assert_eq!(github.state().push_branch_calls, 0, "non-automation base must not be pushed");
+    }
+
+    #[tokio::test]
+    async fn ensure_publish_base_pushed_skips_project_default_base() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        setup_repo(&repo);
+        let (conversation, workspace) = automation_publish_fixture(
+            "main",
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            true,
+        );
+        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+
+        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
+            .await
+            .expect("no-op succeeds");
+
+        assert_eq!(github.state().push_branch_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn ensure_publish_base_pushed_fails_closed_on_push_error() {
+        // B5: a base-push failure surfaces as an error so the caller aborts the
+        // publish — it must never silently retarget to main.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        setup_repo(&repo);
+        let base = "ralphx/ralphx/automation-fail";
+        git(&repo, &["branch", base]);
+        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+        github.state().push_branch_result =
+            Some(Err(crate::error::AppError::Infrastructure("push denied".to_string())));
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let (conversation, workspace) = automation_publish_fixture(
+            base,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            true,
+        );
+
+        let result =
+            ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace).await;
+
+        assert!(result.is_err(), "push failure must surface as an error");
+        assert_eq!(github.state().push_branch_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn ensure_publish_base_pushed_skips_already_remote_pr_head_stacked_base() {
+        // B6: a pr_head_stacked successor bases on the previous run's pushed pr_head
+        // branch, which already lives on origin — no extra push.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        setup_repo(&repo);
+        let head_base = "ralphx/ralphx/task-run1-head";
+        git(&repo, &["branch", head_base]);
+        git(&repo, &["update-ref", &format!("refs/remotes/origin/{head_base}"), "HEAD"]);
+        let (conversation, workspace) = automation_publish_fixture(
+            head_base,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            true,
+        );
+        let github = Arc::new(crate::tests::mock_github_service::MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+
+        ensure_publish_base_pushed(&github_trait, &repo, &conversation, &workspace)
+            .await
+            .expect("idempotent skip succeeds");
+
+        assert_eq!(github.state().push_branch_calls, 0);
     }
 
     #[tokio::test]

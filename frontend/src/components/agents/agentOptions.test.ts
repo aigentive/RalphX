@@ -4,6 +4,8 @@ import {
   DEFAULT_AGENT_RUNTIME,
   agentEffortOptionsForModel,
   agentModelOptions,
+  defaultModelForProvider,
+  normalizeRuntimeForPersistence,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 
@@ -48,6 +50,15 @@ describe("agentOptions", () => {
 
   it("only exposes xhigh for Codex models that support it", () => {
     expect(
+      agentEffortOptionsForModel("codex", "gpt-5.6-sol").map((option) => option.id),
+    ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(
+      agentEffortOptionsForModel("codex", "gpt-5.6-terra").map((option) => option.id),
+    ).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(
+      agentEffortOptionsForModel("codex", "gpt-5.6-luna").map((option) => option.id),
+    ).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(
       agentEffortOptionsForModel("codex", "gpt-5.5").map((option) => option.id),
     ).toEqual(["low", "medium", "high", "xhigh"]);
     expect(
@@ -91,6 +102,198 @@ describe("agentOptions", () => {
       provider: "codex",
       modelId: "gpt-5.5",
       effort: "xhigh",
+    });
+  });
+
+  it("uses Terra as the Codex default only when the CLI reports support", () => {
+    expect(defaultModelForProvider("codex")).toBe("gpt-5.5");
+    expect(defaultModelForProvider("codex", undefined, ["gpt-5.6-sol"])).toBe(
+      "gpt-5.5",
+    );
+    expect(defaultModelForProvider("codex", undefined, ["gpt-5.6-terra"])).toBe(
+      "gpt-5.6-terra",
+    );
+    expect(DEFAULT_AGENT_RUNTIME).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    });
+    expect(
+      normalizeRuntimeSelection(
+        null,
+        undefined,
+        ["low", "medium", "high", "xhigh", "max", "ultra"],
+        ["gpt-5.6-terra"],
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "medium",
+    });
+  });
+
+  it("uses provider-specific effort descriptions", () => {
+    expect(
+      agentEffortOptionsForModel("codex", "gpt-5.6-sol").find(
+        (option) => option.id === "max",
+      )?.description,
+    ).toBe("Maximum reasoning depth for the hardest problems.");
+    expect(
+      agentEffortOptionsForModel("codex", "gpt-5.6-sol").find(
+        (option) => option.id === "ultra",
+      )?.description,
+    ).toBe("Maximum reasoning with automatic task delegation.");
+    expect(
+      agentEffortOptionsForModel("claude", "opus").find(
+        (option) => option.id === "xhigh",
+      )?.description,
+    ).toBe("Best setting for most coding and agentic use cases.");
+    expect(
+      agentEffortOptionsForModel("claude", "opus").find(
+        (option) => option.id === "max",
+      )?.description,
+    ).toBe(
+      "For intelligence-demanding tasks that justify higher usage and possible overthinking.",
+    );
+  });
+
+  it("capability-gates GPT-5.6 Codex models above older Codex models", () => {
+    expect(agentModelOptions("codex").map((option) => option.id)).toEqual([
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+    ]);
+    expect(
+      agentModelOptions("codex", undefined, [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+      ]).map((option) => option.id),
+    ).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+    ]);
+    expect(
+      agentModelOptions("codex", undefined, ["gpt-5.6"]).map(
+        (option) => option.id,
+      ),
+    ).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+    ]);
+  });
+
+  it("falls back from GPT-5.6 when Codex aliases are missing or unsupported", () => {
+    expect(
+      normalizeRuntimeSelection({
+        provider: "codex",
+        modelId: "gpt-5.6-sol",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    });
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-sol",
+          effort: "ultra",
+        },
+        undefined,
+        null,
+        ["gpt-5.5"],
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    });
+  });
+
+  it("keeps GPT-5.6 when Codex aliases prove availability", () => {
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "codex",
+          modelId: "gpt-5.6",
+          effort: "ultra",
+        },
+        undefined,
+        ["low", "medium", "high", "xhigh", "max", "ultra"],
+        ["gpt-5.6"],
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-sol",
+      effort: "ultra",
+    });
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "codex",
+          modelId: "gpt-5.6-luna",
+          effort: "ultra",
+        },
+        undefined,
+        ["low", "medium", "high", "xhigh", "max", "ultra"],
+        ["gpt-5.6-luna"],
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-luna",
+      effort: "max",
+    });
+  });
+
+  it("preserves known GPT-5.6 models for persistence without Codex aliases", () => {
+    expect(
+      normalizeRuntimeForPersistence({
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-terra",
+      effort: "ultra",
+    });
+    expect(
+      normalizeRuntimeForPersistence({
+        provider: "codex",
+        modelId: "gpt-5.6-luna",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-luna",
+      effort: "max",
+    });
+    expect(
+      normalizeRuntimeForPersistence({
+        provider: "codex",
+        modelId: "gpt-5.6",
+        effort: "ultra",
+      }),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.6-sol",
+      effort: "ultra",
     });
   });
 

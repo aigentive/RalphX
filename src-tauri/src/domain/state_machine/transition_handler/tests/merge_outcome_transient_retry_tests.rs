@@ -13,11 +13,14 @@
 use super::helpers::*;
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::ExecutionState;
-use crate::domain::entities::{InternalStatus, MergeValidationMode, Project, ProjectId, Task};
+use crate::domain::entities::{
+    InternalStatus, MergeFailureSource, MergeRecoveryEventKind, MergeRecoveryMetadata,
+    MergeValidationMode, Project, ProjectId, Task,
+};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use crate::domain::state_machine::TransitionHandler;
 
-fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService<tauri::Wry>> {
+fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService> {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
@@ -40,6 +43,73 @@ fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService<t
     )
     .with_review_repo(Arc::clone(&app_state.review_repo))
     .into_arc()
+}
+
+async fn handle_git_error_outcome_for_test(error: crate::error::AppError) -> Task {
+    use super::super::merge_outcome_handler::{MergeContext, MergeHandlerOptions};
+    use super::super::merge_strategies::MergeOutcome;
+
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let emitter = Arc::new(MockEventEmitter::new());
+
+    let project_id = ProjectId::from_string("proj-1".to_string());
+    let mut task = Task::new(project_id, "Git error source test".to_string());
+    task.internal_status = InternalStatus::PendingMerge;
+    task.task_branch = Some("feature/test".to_string());
+    let task_id = task.id.clone();
+    task_repo.create(task.clone()).await.unwrap();
+
+    let project = Project::new("test".to_string(), "/tmp/test".to_string());
+    let services = TaskServices::new(
+        Arc::new(crate::domain::state_machine::mocks::MockAgentSpawner::new()),
+        Arc::clone(&emitter) as Arc<dyn EventEmitter>,
+        Arc::new(crate::domain::state_machine::mocks::MockNotifier::new()),
+        Arc::new(MockDependencyManager::new()) as Arc<dyn DependencyManager>,
+        Arc::new(crate::domain::state_machine::mocks::MockReviewStarter::new()),
+        Arc::new(crate::application::MockChatService::new())
+            as Arc<dyn crate::application::ChatService>,
+    );
+
+    let context = create_context_with_services(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+    let task_repo_arc = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+    let opts = MergeHandlerOptions::merge();
+    let outcome = MergeOutcome::GitError(error);
+
+    let mut ctx = MergeContext {
+        task: &mut task,
+        task_id: &task_id,
+        task_id_str: task_id.as_str(),
+        project: &project,
+        repo_path: std::path::Path::new("/tmp/test"),
+        source_branch: "feature/test",
+        target_branch: "main",
+        task_repo: &task_repo_arc,
+        plan_branch_repo: &None,
+        opts: &opts,
+    };
+
+    handler.handle_merge_outcome(outcome, &mut ctx).await;
+    task
+}
+
+fn last_attempt_failed_source(task: &Task) -> Option<MergeFailureSource> {
+    MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+        .expect("metadata should parse")
+        .expect("merge recovery metadata should exist")
+        .events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.kind, MergeRecoveryEventKind::AttemptFailed))
+        .and_then(|event| event.failure_source)
+}
+
+async fn assert_git_error_source(error: crate::error::AppError, expected: MergeFailureSource) {
+    let task = handle_git_error_outcome_for_test(error).await;
+
+    assert_eq!(task.internal_status, InternalStatus::MergeIncomplete);
+    assert_eq!(last_attempt_failed_source(&task), Some(expected));
 }
 
 // ==================
@@ -109,9 +179,7 @@ fn test_transient_error_shallow_file() {
 #[test]
 fn test_permanent_error_not_a_git_repo() {
     use super::super::merge_outcome_handler::is_transient_merge_error;
-    let err = crate::error::AppError::GitOperation(
-        "fatal: not a git repository".to_string(),
-    );
+    let err = crate::error::AppError::GitOperation("fatal: not a git repository".to_string());
     assert!(
         !is_transient_merge_error(&err),
         "not a git repository should be permanent"
@@ -164,6 +232,46 @@ fn test_non_git_error_is_not_transient() {
     );
 }
 
+#[tokio::test]
+async fn test_auth_git_error_records_auth_failure_source() {
+    assert_git_error_source(
+        crate::error::AppError::GitAuth("Git could not authenticate".to_string()),
+        MergeFailureSource::AuthFailure,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_disk_full_git_error_records_disk_full_source() {
+    assert_git_error_source(
+        crate::error::AppError::GitOperation(
+            "fatal: Unable to create '.git/FETCH_HEAD': No space left on device".to_string(),
+        ),
+        MergeFailureSource::DiskFull,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_database_error_records_deterministic_infra_source() {
+    assert_git_error_source(
+        crate::error::AppError::Database("foreign key constraint failed".to_string()),
+        MergeFailureSource::DeterministicInfra,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_unknown_git_error_records_unknown_source() {
+    assert_git_error_source(
+        crate::error::AppError::GitOperation(
+            "fatal: not a git repository (or any of the parent directories): .git".to_string(),
+        ),
+        MergeFailureSource::Unknown,
+    )
+    .await;
+}
+
 #[test]
 fn test_commit_hook_merge_error_detected() {
     use super::super::merge_helpers::is_commit_hook_merge_error_text;
@@ -180,7 +288,8 @@ fn test_commit_hook_merge_error_detected() {
 fn test_plain_commit_failure_without_hook_marker_is_not_commit_hook_error() {
     use super::super::merge_helpers::is_commit_hook_merge_error_text;
     let err = crate::error::AppError::GitOperation(
-        "Failed to commit squash merge in worktree: stdout= stderr=Author identity unknown".to_string(),
+        "Failed to commit squash merge in worktree: stdout= stderr=Author identity unknown"
+            .to_string(),
     );
     assert!(
         !is_commit_hook_merge_error_text(&err.to_string()),
@@ -303,8 +412,7 @@ async fn test_transient_git_error_defers_instead_of_merge_incomplete() {
     );
 
     // Metadata should contain merge_deferred marker
-    let meta: serde_json::Value =
-        serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
     let recovery = meta.get("merge_recovery");
     assert!(
         recovery.is_some(),
@@ -470,7 +578,11 @@ async fn test_commit_hook_policy_error_reroutes_back_to_reexecuting() {
     project.base_branch = Some("main".to_string());
     project.merge_validation_mode = MergeValidationMode::Off;
     let project_id = project.id.clone();
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut task = Task::new(project_id.clone(), "Hook reroute test".to_string());
     task.internal_status = InternalStatus::PendingMerge;
@@ -543,8 +655,11 @@ async fn test_commit_hook_policy_error_reroutes_back_to_reexecuting() {
         "expected durable revision feedback note in metadata, got: {feedback}"
     );
     assert!(
-        !emitter.get_events().iter().any(|e| e.method == "emit_status_change"
-            && e.args.get(2).map(|s| s.as_str()) == Some("merge_incomplete")),
+        !emitter
+            .get_events()
+            .iter()
+            .any(|e| e.method == "emit_status_change"
+                && e.args.get(2).map(|s| s.as_str()) == Some("merge_incomplete")),
         "hook reroute should not emit a merge_incomplete transition"
     );
 
@@ -553,8 +668,13 @@ async fn test_commit_hook_policy_error_reroutes_back_to_reexecuting() {
         .get_notes_by_task_id(&task_id)
         .await
         .expect("review notes query should succeed");
-    let latest = notes.first().expect("hook reroute should persist a review note");
-    assert_eq!(latest.reviewer, crate::domain::entities::ReviewerType::System);
+    let latest = notes
+        .first()
+        .expect("hook reroute should persist a review note");
+    assert_eq!(
+        latest.reviewer,
+        crate::domain::entities::ReviewerType::System
+    );
     assert_eq!(
         latest.outcome,
         crate::domain::entities::ReviewOutcome::ChangesRequested
@@ -757,8 +877,7 @@ async fn test_branch_not_found_nonexistent_repo_transitions_to_merge_incomplete(
     );
 
     // Metadata should have branch_missing flag
-    let meta: serde_json::Value =
-        serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
     assert_eq!(meta.get("branch_missing"), Some(&serde_json::json!(true)));
 }
 
@@ -783,10 +902,7 @@ async fn test_branch_not_found_real_repo_truly_missing_transitions_to_merge_inco
     let task_id = task.id.clone();
     task_repo.create(task.clone()).await.unwrap();
 
-    let project = Project::new(
-        "test".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
+    let project = Project::new("test".to_string(), repo_path.to_string_lossy().to_string());
 
     let services = TaskServices::new(
         Arc::new(crate::domain::state_machine::mocks::MockAgentSpawner::new()),
@@ -852,10 +968,7 @@ async fn test_branch_not_found_but_branch_exists_on_recheck_defers() {
     let task_id = task.id.clone();
     task_repo.create(task.clone()).await.unwrap();
 
-    let project = Project::new(
-        "test".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
+    let project = Project::new("test".to_string(), repo_path.to_string_lossy().to_string());
 
     let services = TaskServices::new(
         Arc::new(crate::domain::state_machine::mocks::MockAgentSpawner::new()),

@@ -10,6 +10,7 @@ export const AgentLaneSchema = z.enum([
   "execution_reviewer",
   "execution_reexecutor",
   "execution_merger",
+  "execution_branch_updater",
 ]);
 
 export type AgentLane = z.infer<typeof AgentLaneSchema>;
@@ -93,6 +94,7 @@ export const EXECUTION_LANES: AgentLane[] = [
   "execution_reviewer",
   "execution_reexecutor",
   "execution_merger",
+  "execution_branch_updater",
 ];
 
 export const AGENT_LANES: AgentLane[] = [...IDEATION_LANES, ...EXECUTION_LANES];

@@ -129,9 +129,14 @@ async fn test_build_plan_merge_commit_msg_no_session_title_falls_back_to_first_t
     let sid = IdeationSessionId::from_string(session_id.to_string());
     session_repo.create(session).await.unwrap();
 
-    let msg =
-        build_plan_merge_commit_msg(&sid, "ralphx/ralphx/plan-111", "main", &task_repo, &session_repo)
-            .await;
+    let msg = build_plan_merge_commit_msg(
+        &sid,
+        "ralphx/ralphx/plan-111",
+        "main",
+        &task_repo,
+        &session_repo,
+    )
+    .await;
 
     assert!(
         msg.starts_with("feat: Add payment gateway"),
@@ -150,9 +155,14 @@ async fn test_build_plan_merge_commit_msg_no_session_no_tasks_uses_generic() {
     let sid = IdeationSessionId::from_string(session_id.to_string());
     session_repo.create(session).await.unwrap();
 
-    let msg =
-        build_plan_merge_commit_msg(&sid, "ralphx/ralphx/plan-222", "main", &task_repo, &session_repo)
-            .await;
+    let msg = build_plan_merge_commit_msg(
+        &sid,
+        "ralphx/ralphx/plan-222",
+        "main",
+        &task_repo,
+        &session_repo,
+    )
+    .await;
 
     assert!(
         msg.contains("Merge plan into main"),
@@ -174,9 +184,14 @@ async fn test_build_plan_merge_commit_msg_truncates_at_20_tasks() {
     let sid = IdeationSessionId::from_string(session_id.to_string());
     session_repo.create(session).await.unwrap();
 
-    let msg =
-        build_plan_merge_commit_msg(&sid, "ralphx/ralphx/plan-333", "main", &task_repo, &session_repo)
-            .await;
+    let msg = build_plan_merge_commit_msg(
+        &sid,
+        "ralphx/ralphx/plan-333",
+        "main",
+        &task_repo,
+        &session_repo,
+    )
+    .await;
 
     assert!(
         msg.contains("Tasks (25):"),
@@ -204,9 +219,14 @@ async fn test_build_plan_merge_commit_msg_user_renamed_title() {
     let sid = IdeationSessionId::from_string(session_id.to_string());
     session_repo.create(session).await.unwrap();
 
-    let msg =
-        build_plan_merge_commit_msg(&sid, "ralphx/ralphx/plan-444", "main", &task_repo, &session_repo)
-            .await;
+    let msg = build_plan_merge_commit_msg(
+        &sid,
+        "ralphx/ralphx/plan-444",
+        "main",
+        &task_repo,
+        &session_repo,
+    )
+    .await;
 
     assert_eq!(
         msg.lines().next().unwrap(),

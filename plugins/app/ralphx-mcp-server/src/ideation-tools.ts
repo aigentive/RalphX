@@ -340,7 +340,8 @@ export const IDEATION_TOOLS: Tool[] = [
       properties: {
         session_id: {
           type: "string",
-          description: "The ideation session ID (provided in context)",
+          description:
+            "The ideation session ID when explicitly provided. If omitted, RalphX uses the current runtime conversation/session context.",
         },
         question: {
           type: "string",
@@ -379,6 +380,12 @@ export const IDEATION_TOOLS: Tool[] = [
         allow_skip: {
           type: "boolean",
           description: "If true, the user can skip the question. Default: true.",
+        },
+        metadata: {
+          type: "object",
+          description:
+            "Optional UI metadata for RalphX-owned question affordances. Use sparingly for structured proposal flows.",
+          additionalProperties: true,
         },
         questions: {
           type: "array",
@@ -433,7 +440,7 @@ export const IDEATION_TOOLS: Tool[] = [
           },
         },
       },
-      required: ["session_id"],
+      required: [],
     },
   },
 
@@ -715,7 +722,27 @@ export const IDEATION_TOOLS: Tool[] = [
         blocker_fingerprint: {
           type: "string",
           description:
-            "Stable dedupe key for this issue, for example scope-drift:<task-id>:<file-or-check>.",
+            "Optional legacy/debug dedupe key. The backend computes the canonical issue identity.",
+        },
+        attach_to_issue_id: {
+          type: "string",
+          description:
+            "Retry field when the backend returns candidate issues. Set this to attach this report to an existing open issue.",
+        },
+        confirm_new: {
+          type: "boolean",
+          description:
+            "Retry field when candidates exist. Set true only when this is a separate issue from all returned candidates.",
+        },
+        new_issue_reason: {
+          type: "string",
+          description:
+            "Concise reason required with confirm_new when candidates exist.",
+        },
+        issue_check_token: {
+          type: "string",
+          description:
+            "Current issue-set token returned by the backend when candidate disambiguation is required.",
         },
         followup_title: {
           type: "string",
@@ -766,15 +793,14 @@ export const IDEATION_TOOLS: Tool[] = [
   {
     name: "delegate_start",
     description:
-      "Start a RalphX-native delegated specialist job. Use this for named specialized agents instead of relying on harness-native subagents. " +
-      "Current parent-context support is ideation-family only, but the delegated runtime itself is backed by dedicated delegated sessions, not ideation child sessions.",
+      "Start a RalphX-native delegated specialist job from the current agent context. Use this for named specialized agents instead of relying on harness-native subagents.",
     inputSchema: {
       type: "object",
       properties: {
         parent_session_id: {
           type: "string",
           description:
-            "Optional explicit parent ideation session that owns the delegated work. When omitted, RalphX infers it from the current ideation or verification-child session context supplied by the MCP transport.",
+            "Optional legacy explicit parent ideation session. Omit this in normal agent contexts; RalphX infers parent context from the MCP transport.",
         },
         parent_turn_id: {
           type: "string",
@@ -787,7 +813,7 @@ export const IDEATION_TOOLS: Tool[] = [
         parent_conversation_id: {
           type: "string",
           description:
-            "Optional parent conversation id for linking the delegated conversation back to the invoker chat.",
+            "Optional parent conversation id for linking the delegated conversation back to the invoker chat. Normally supplied by the MCP transport.",
         },
         parent_tool_use_id: {
           type: "string",

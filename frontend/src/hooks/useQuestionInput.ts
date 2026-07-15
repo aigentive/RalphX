@@ -148,6 +148,31 @@ export function useQuestionInput({
     [activeQuestion, submitAnswer, handleSend]
   );
 
+  const handleQuestionOptionSubmit = useCallback(
+    async (index: number) => {
+      if (!activeQuestion) return;
+
+      const option = activeQuestion.options[index];
+      if (!option) return;
+
+      const response: AskUserQuestionResponse = {
+        requestId: activeQuestion.requestId,
+        taskId: activeQuestion.taskId,
+        selectedOptions: [option.value ?? option.label ?? ""],
+      };
+
+      const submitResult = normalizeSubmitResult(await submitAnswer(response));
+      if (submitResult.success) {
+        setSelectedOptions(new Set());
+        setQuestionInputValue("");
+        if (!submitResult.deliveredToWaitingAgent) {
+          await handleSend(formatLateQuestionAnswer(activeQuestion, response));
+        }
+      }
+    },
+    [activeQuestion, submitAnswer, handleSend]
+  );
+
   return {
     selectedOptions,
     questionInputValue,
@@ -156,5 +181,6 @@ export function useQuestionInput({
     handleMatchedOptions,
     handleQuestionSend,
     handleQuestionSkip,
+    handleQuestionOptionSubmit,
   };
 }

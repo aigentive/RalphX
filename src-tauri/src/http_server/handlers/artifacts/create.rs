@@ -1,5 +1,7 @@
 use super::*;
 use crate::application::harness_runtime_registry::default_verification_auto_verify_enabled;
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::NotificationContextResolver;
 
 pub async fn create_plan_artifact(
     State(state): State<HttpServerState>,
@@ -25,6 +27,7 @@ pub async fn create_plan_artifact(
         is_planning_flow,
         should_auto_verify,
         should_offer_verification_confirmation,
+        notification_session,
     ) =
         state
             .app_state
@@ -84,7 +87,7 @@ pub async fn create_plan_artifact(
                 };
 
                 let session_title = session.title.clone();
-                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_title, is_planning_flow, should_auto_verify, should_offer_verification_confirmation))
+                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_title, is_planning_flow, should_auto_verify, should_offer_verification_confirmation, session))
             })
             .await
             .map_err(|e| {
@@ -92,24 +95,70 @@ pub async fn create_plan_artifact(
                 map_app_err(e)
             })?;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let content_text = match &created.content {
-            ArtifactContent::Inline { text } => text.clone(),
-            ArtifactContent::File { path } => format!("[File: {}]", path),
-        };
-        let _ = app_handle.emit(
-            "plan_artifact:created",
-            serde_json::json!({
-                "sessionId": session_id.as_str(),
-                "artifact": {
-                    "id": created.id.as_str(),
-                    "name": created.name,
-                    "content": content_text,
-                    "version": created.metadata.version,
+    if is_planning_flow {
+        let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
+        let excluded = match notification_context
+            .session_is_automation_owned(&notification_session)
+            .await
+        {
+            Ok(true) => true,
+            Ok(false) => match notification_context
+                .session_has_implementation_task(&notification_session)
+                .await
+            {
+                Ok(has_task) => has_task,
+                Err(error) => {
+                    tracing::warn!(error = %error, session_id = %session_id, "Failed to check implementation ownership for plan notification");
+                    true
                 }
-            }),
-        );
+            },
+            Err(error) => {
+                tracing::warn!(error = %error, session_id = %session_id, "Failed to check automation ownership for plan notification");
+                true
+            }
+        };
+        if !excluded {
+            match notification_context
+                .resolve_ideation_session_target(&notification_session)
+                .await
+            {
+                Ok(resolved) => {
+                    state
+                        .app_state
+                        .notification_service()
+                        .record(InteractiveNotificationProducer::plan_approval(
+                            project_id.to_string(),
+                            session_id.as_str(),
+                            created.id.as_str(),
+                            session_title.as_deref(),
+                            resolved.target,
+                        ))
+                        .await;
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, session_id = %session_id, "Failed to resolve plan notification target");
+                }
+            }
+        }
     }
+
+    let content_text = match &created.content {
+        ArtifactContent::Inline { text } => text.clone(),
+        ArtifactContent::File { path } => format!("[File: {}]", path),
+    };
+    crate::http_server::emit_http_event(
+        &state,
+        "plan_artifact:created",
+        serde_json::json!({
+            "sessionId": session_id.as_str(),
+            "artifact": {
+                "id": created.id.as_str(),
+                "name": created.name,
+                "content": content_text,
+                "version": created.metadata.version,
+            }
+        }),
+    );
 
     // Project lookup for webhook enrichment (non-fatal if not found)
     let project_name = state
@@ -136,10 +185,12 @@ pub async fn create_plan_artifact(
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 
-    // Tauri frontend-only emit — unenriched (frontend payload unchanged)
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit("ideation:plan_created", &ideation_plan_payload);
-    }
+    // Tauri/frontend payload is intentionally emitted before external enrichment.
+    crate::http_server::emit_http_event(
+        &state,
+        "ideation:plan_created",
+        ideation_plan_payload.clone(),
+    );
 
     // Enrich payload for external channel
     presentation_ctx.inject_into(&mut ideation_plan_payload);
@@ -249,14 +300,12 @@ pub async fn create_plan_artifact(
                 session_id.as_str()
             );
         }
-        if let Some(app_handle) = &state.app_state.app_handle {
-            crate::domain::services::emit_verification_pending_confirmation(
-                app_handle,
-                session_id.as_str(),
-                &session_title.unwrap_or_default(),
-                created.id.as_str(),
-            );
-        }
+        crate::application::verification_event_emitters::emit_verification_pending_confirmation(
+            state.app_state.events.as_ref(),
+            session_id.as_str(),
+            &session_title.unwrap_or_default(),
+            created.id.as_str(),
+        );
     }
 
     let mut response = ArtifactResponse::from(created);

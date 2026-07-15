@@ -1,4 +1,4 @@
-use super::super::{MERGE_DEBRIS_METADATA_KEYS, TransitionHandler, is_first_clean_attempt};
+use super::super::{is_first_clean_attempt, TransitionHandler, MERGE_DEBRIS_METADATA_KEYS};
 
 pub(super) async fn maybe_skip_first_attempt_cleanup<'a>(
     handler: &TransitionHandler<'a>,

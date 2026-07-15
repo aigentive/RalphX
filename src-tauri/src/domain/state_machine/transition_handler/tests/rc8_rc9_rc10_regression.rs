@@ -5,7 +5,7 @@
 // RC#10: transition_to_merge_incomplete preserves merge_recovery metadata
 
 use super::helpers::*;
-use crate::domain::entities::{Project, ProjectId, Task, InternalStatus};
+use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
 use crate::domain::repositories::TaskRepository;
 use crate::infrastructure::memory::MemoryTaskRepository;
 use std::fs;
@@ -19,7 +19,7 @@ use tempfile::TempDir;
 /// RC#8: compute_task_worktree_path follows the task-{id} convention.
 #[test]
 fn compute_task_worktree_path_follows_convention() {
-    use super::super::merge_helpers::{compute_task_worktree_path, compute_merge_worktree_path};
+    use super::super::merge_helpers::{compute_merge_worktree_path, compute_task_worktree_path};
 
     let mut project = Project::new("My Project".to_string(), "/tmp/repo".to_string());
     project.worktree_parent_directory = Some("/worktrees".to_string());
@@ -117,9 +117,8 @@ async fn pre_merge_cleanup_step4_includes_task_worktree() {
     );
     project.id = project_id;
     project.base_branch = Some("main".to_string());
-    project.worktree_parent_directory = Some(
-        repo_path.parent().unwrap().to_string_lossy().to_string()
-    );
+    project.worktree_parent_directory =
+        Some(repo_path.parent().unwrap().to_string_lossy().to_string());
 
     // Verify compute_task_worktree_path generates a path with "task-" prefix
     let computed_path = compute_task_worktree_path(&project, &task_id_str);
@@ -206,7 +205,8 @@ async fn source_update_uses_existing_worktree_when_source_checked_out() {
     let worktree_path = temp_dir.path().join("worktrees").join("task-wt");
     let _ = Command::new("git")
         .args([
-            "worktree", "add",
+            "worktree",
+            "add",
             &worktree_path.to_string_lossy(),
             source_branch,
         ])
@@ -214,21 +214,18 @@ async fn source_update_uses_existing_worktree_when_source_checked_out() {
         .output();
     assert!(worktree_path.exists(), "Worktree should have been created");
 
-    let mut project = Project::new("test-project".to_string(), repo_path.to_string_lossy().to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
     project.base_branch = Some("main".to_string());
 
     // Now: source branch is checked out in an existing worktree.
     // update_source_from_target should use that worktree instead of trying
     // to create a new one (which would fail with "already used by worktree").
-    let result = update_source_from_target(
-        repo_path,
-        source_branch,
-        "main",
-        &project,
-        "task-rc9",
-        None,
-    )
-    .await;
+    let result =
+        update_source_from_target(repo_path, source_branch, "main", &project, "task-rc9", None)
+            .await;
 
     assert!(
         matches!(result, SourceUpdateResult::Updated),
@@ -288,7 +285,11 @@ async fn source_update_existing_worktree_with_conflicts_returns_conflicts() {
         .args(["checkout", "-b", source_branch])
         .current_dir(repo_path)
         .output();
-    fs::write(repo_path.join("shared.rs"), "// source version\nfn source() {}").unwrap();
+    fs::write(
+        repo_path.join("shared.rs"),
+        "// source version\nfn source() {}",
+    )
+    .unwrap();
     let _ = Command::new("git")
         .args(["add", "."])
         .current_dir(repo_path)
@@ -303,7 +304,11 @@ async fn source_update_existing_worktree_with_conflicts_returns_conflicts() {
         .args(["checkout", "main"])
         .current_dir(repo_path)
         .output();
-    fs::write(repo_path.join("shared.rs"), "// main version\nfn main_fn() {}").unwrap();
+    fs::write(
+        repo_path.join("shared.rs"),
+        "// main version\nfn main_fn() {}",
+    )
+    .unwrap();
     let _ = Command::new("git")
         .args(["add", "."])
         .current_dir(repo_path)
@@ -317,14 +322,18 @@ async fn source_update_existing_worktree_with_conflicts_returns_conflicts() {
     let worktree_path = temp_dir.path().join("worktrees").join("task-wt-conflict");
     let _ = Command::new("git")
         .args([
-            "worktree", "add",
+            "worktree",
+            "add",
             &worktree_path.to_string_lossy(),
             source_branch,
         ])
         .current_dir(repo_path)
         .output();
 
-    let mut project = Project::new("test-project".to_string(), repo_path.to_string_lossy().to_string());
+    let mut project = Project::new(
+        "test-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
     project.base_branch = Some("main".to_string());
 
     let result = update_source_from_target(
@@ -357,8 +366,8 @@ async fn source_update_existing_worktree_with_conflicts_returns_conflicts() {
 #[tokio::test]
 async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
     use crate::domain::entities::{
-        MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
-        MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
+        MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+        MergeRecoverySource, MergeRecoveryState,
     };
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
@@ -401,16 +410,23 @@ async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
     project_repo.create(project).await.unwrap();
 
     // Build machine with repos wired
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>);
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+    );
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
 
     // Trigger on_enter(PendingMerge) -> attempt_programmatic_merge
     // This will fail (nonexistent git dir) and call transition_to_merge_incomplete
-    let _ = handler.on_enter(&crate::domain::state_machine::machine::State::PendingMerge).await;
+    let _ = handler
+        .on_enter(&crate::domain::state_machine::machine::State::PendingMerge)
+        .await;
 
     // Re-read task to check metadata
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
@@ -422,16 +438,18 @@ async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
     );
 
     // Verify metadata exists
-    assert!(updated_task.metadata.is_some(), "Task should have metadata after merge failure");
+    assert!(
+        updated_task.metadata.is_some(),
+        "Task should have metadata after merge failure"
+    );
 
-    // The merge_recovery events from prior retries should be preserved.
-    // The branch_not_found path also adds a new event (BranchNotFound), so we
-    // expect 2 prior AutoRetryTriggered events + 1 new one from this attempt.
-    let recovery_restored = MergeRecoveryMetadata::from_task_metadata(
-        updated_task.metadata.as_deref(),
-    )
-    .expect("should parse")
-    .expect("should have recovery metadata");
+    // The merge_recovery events from prior retries should be preserved. The
+    // canonical-target precondition fails before strategy dispatch, so it must
+    // not fabricate a BranchNotFound merge-outcome event.
+    let recovery_restored =
+        MergeRecoveryMetadata::from_task_metadata(updated_task.metadata.as_deref())
+            .expect("should parse")
+            .expect("should have recovery metadata");
 
     let retry_count = recovery_restored
         .events
@@ -447,11 +465,17 @@ async fn transition_to_merge_incomplete_preserves_recovery_metadata() {
         retry_count
     );
 
-    // Verify the merge_recovery section exists with multiple events
-    assert!(
-        recovery_restored.events.len() >= 3,
-        "Should have at least 3 events (2 prior retries + 1 new). Got: {}",
-        recovery_restored.events.len()
+    assert_eq!(
+        recovery_restored.events.len(),
+        2,
+        "Pre-strategy authority failure must preserve the two prior events without fabricating a merge outcome"
+    );
+
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata.get("error_code").and_then(|value| value.as_str()),
+        Some("git_target_identity_failed")
     );
 }
 
@@ -467,10 +491,13 @@ async fn transition_to_merge_incomplete_preserves_validation_revert_count() {
     task.task_branch = Some("feature/rc10-revert".to_string());
 
     // Pre-populate with validation_revert_count = 2 (from prior validation failures)
-    task.metadata = Some(serde_json::json!({
-        "validation_revert_count": 2,
-        "merge_failure_source": "validation_failed",
-    }).to_string());
+    task.metadata = Some(
+        serde_json::json!({
+            "validation_revert_count": 2,
+            "merge_failure_source": "validation_failed",
+        })
+        .to_string(),
+    );
 
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
@@ -484,19 +511,25 @@ async fn transition_to_merge_incomplete_preserves_validation_revert_count() {
     project_repo.create(project).await.unwrap();
 
     // Build machine
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>);
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+    );
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
 
-    let _ = handler.on_enter(&crate::domain::state_machine::machine::State::PendingMerge).await;
+    let _ = handler
+        .on_enter(&crate::domain::state_machine::machine::State::PendingMerge)
+        .await;
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    let metadata: serde_json::Value = serde_json::from_str(
-        updated.metadata.as_deref().unwrap(),
-    ).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
 
     // validation_revert_count should be preserved (not reset to 0)
     let revert_count = metadata
@@ -505,7 +538,8 @@ async fn transition_to_merge_incomplete_preserves_validation_revert_count() {
         .unwrap_or(0);
 
     assert_eq!(
-        revert_count, 2,
+        revert_count,
+        2,
         "validation_revert_count should be preserved at 2 (not reset). Got: {}. \
          Full metadata: {}",
         revert_count,
@@ -531,10 +565,13 @@ async fn transition_to_merge_incomplete_preserves_merge_failure_source() {
     task.task_branch = Some("feature/rc10-source".to_string());
 
     // Pre-populate with merge_failure_source (from a prior validation failure)
-    task.metadata = Some(serde_json::json!({
-        "merge_failure_source": "validation_failed",
-        "consecutive_validation_failures": 3,
-    }).to_string());
+    task.metadata = Some(
+        serde_json::json!({
+            "merge_failure_source": "validation_failed",
+            "consecutive_validation_failures": 3,
+        })
+        .to_string(),
+    );
 
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
@@ -547,19 +584,25 @@ async fn transition_to_merge_incomplete_preserves_merge_failure_source() {
     project.base_branch = Some("main".to_string());
     project_repo.create(project).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
-        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>);
+    let services = with_default_test_branch_update_authority(
+        TaskServices::new_mock(),
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    )
+    .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+    .with_project_repo(
+        Arc::clone(&project_repo) as Arc<dyn crate::domain::repositories::ProjectRepository>
+    );
     let context = create_context_with_services(task_id.as_str(), "proj-1", services);
     let mut machine = crate::domain::state_machine::TaskStateMachine::new(context);
     let handler = crate::domain::state_machine::TransitionHandler::new(&mut machine);
 
-    let _ = handler.on_enter(&crate::domain::state_machine::machine::State::PendingMerge).await;
+    let _ = handler
+        .on_enter(&crate::domain::state_machine::machine::State::PendingMerge)
+        .await;
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    let metadata: serde_json::Value = serde_json::from_str(
-        updated.metadata.as_deref().unwrap(),
-    ).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
 
     // consecutive_validation_failures should be preserved
     let cvf = metadata

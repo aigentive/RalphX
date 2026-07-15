@@ -1,71 +1,60 @@
 import type { InfiniteData } from "@tanstack/react-query";
+
 import type { AgentSidebarConversationGroup } from "@/api/chat";
 import { getQueryClient } from "@/lib/queryClient";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
 const AGENT_SIDEBAR_CONVERSATION_QUERY_KEY = ["agents", "sidebar-conversations"] as const;
 
-/**
- * Navigate to a specific ideation session.
- * When the standalone Ideation page is enabled, switches the main view to
- * "ideation" and selects the target session.
- *
- * When the standalone Ideation page is disabled, routes to the Agents surface.
- * If the linked Agent conversation is already present in the sidebar cache,
- * selects it directly; otherwise focuses the owning project and shows Agents.
- *
- * If the session belongs to a different project, pre-writes the target
- * project's view/session maps when using the standalone page and calls selectProject so the App.tsx
- * effect handles the rest (RESTORE phase reads our pre-written values).
- * Safe to call from any current view.
- */
+type AgentTaskMode = "graph" | "kanban";
+
+/** Opens an ideation session through its linked Agent conversation when available. */
 export function navigateToIdeationSession(sessionId: string): void {
-  const standaloneIdeationEnabled = useUiStore.getState().featureFlags.ideationPage;
   const session = useIdeationStore.getState().sessions[sessionId];
+  navigateToAgentsForIdeationSession(sessionId, session?.projectId);
+}
 
-  if (!session) {
-    console.warn(
-      `navigateToIdeationSession: session "${sessionId}" not found in store — falling back to ${standaloneIdeationEnabled ? "direct Ideation navigation" : "Agents navigation"}`,
-    );
-    if (standaloneIdeationEnabled) {
-      useUiStore.getState().setCurrentView("ideation");
-      useIdeationStore.getState().setActiveSession(sessionId);
-    } else {
-      navigateToAgentsForIdeationSession(sessionId);
-    }
-    return;
-  }
+/** Select an Agent conversation by its durable conversation identity. */
+export function navigateToAgentConversation(
+  projectId: string,
+  conversationId: string,
+): void {
+  const agentSessionState = useAgentSessionStore.getState();
+  agentSessionState.selectConversation(projectId, conversationId);
+  useChatStore
+    .getState()
+    .setActiveConversation(`project:${projectId}`, conversationId);
+  navigateToAgentsProject(projectId);
+}
 
-  const { activeProjectId } = useProjectStore.getState();
-  const targetProjectId = session.projectId;
+/** Opens an Agent conversation's Plan artifact. */
+export function navigateToAgentPlan(
+  projectId: string,
+  conversationId: string,
+): void {
+  useAgentSessionStore.getState().setArtifactTab(conversationId, "plan");
+  navigateToAgentConversation(projectId, conversationId);
+}
 
-  if (!standaloneIdeationEnabled) {
-    navigateToAgentsForIdeationSession(sessionId, targetProjectId);
-    return;
-  }
-
-  if (activeProjectId !== null && activeProjectId !== targetProjectId) {
-    // Cross-project navigation: pre-write maps so the App.tsx effect reads
-    // the correct view and session during its RESTORE phase, then trigger
-    // the project switch via selectProject.
-    const uiState = useUiStore.getState();
-    useUiStore.setState({
-      viewByProject: { ...uiState.viewByProject, [targetProjectId]: "ideation" },
-      sessionByProject: {
-        ...uiState.sessionByProject,
-        [targetProjectId]: sessionId,
-      },
-    });
-    useProjectStore.getState().selectProject(targetProjectId);
-    return;
-  }
-
-  // Same-project navigation: fast path.
-  useUiStore.getState().setCurrentView("ideation");
-  useIdeationStore.getState().setActiveSession(sessionId);
+/** Opens an Agent conversation's Tasks artifact at a specific task and view mode. */
+export function navigateToAgentTask(
+  projectId: string,
+  conversationId: string,
+  taskId: string,
+  taskMode: AgentTaskMode,
+): void {
+  const agentSessionState = useAgentSessionStore.getState();
+  agentSessionState.selectConversation(projectId, conversationId);
+  agentSessionState.setTaskArtifactMode(conversationId, taskMode);
+  agentSessionState.focusTaskArtifact(conversationId, taskId);
+  useChatStore
+    .getState()
+    .setActiveConversation(`project:${projectId}`, conversationId);
+  navigateToAgentsProject(projectId);
 }
 
 function navigateToAgentsForIdeationSession(
@@ -78,27 +67,32 @@ function navigateToAgentsForIdeationSession(
     targetProjectId ??
     useProjectStore.getState().activeProjectId;
 
-  if (projectId) {
-    if (linkedConversation) {
-      const agentSessionState = useAgentSessionStore.getState();
-      agentSessionState.selectConversation(
-        projectId,
-        linkedConversation.conversationId,
-      );
-      agentSessionState.setArtifactTab(linkedConversation.conversationId, "plan");
-    } else {
-      useAgentSessionStore.getState().setFocusedProject(projectId);
-    }
+  if (linkedConversation) {
+    navigateToAgentPlan(
+      projectId ?? linkedConversation.projectId,
+      linkedConversation.conversationId,
+    );
+    return;
+  }
 
-    const activeProjectId = useProjectStore.getState().activeProjectId;
-    if (activeProjectId !== projectId) {
-      const uiState = useUiStore.getState();
-      useUiStore.setState({
-        viewByProject: { ...uiState.viewByProject, [projectId]: "agents" },
-      });
-      useProjectStore.getState().selectProject(projectId);
-      return;
-    }
+  if (projectId) {
+    useAgentSessionStore.getState().setFocusedProject(projectId);
+    navigateToAgentsProject(projectId);
+    return;
+  }
+
+  useUiStore.getState().setCurrentView("agents");
+}
+
+function navigateToAgentsProject(projectId: string): void {
+  const activeProjectId = useProjectStore.getState().activeProjectId;
+  if (activeProjectId !== projectId) {
+    const uiState = useUiStore.getState();
+    useUiStore.setState({
+      viewByProject: { ...uiState.viewByProject, [projectId]: "agents" },
+    });
+    useProjectStore.getState().selectProject(projectId);
+    return;
   }
 
   useUiStore.getState().setCurrentView("agents");

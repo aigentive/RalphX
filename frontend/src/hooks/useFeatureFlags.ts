@@ -6,10 +6,14 @@
  * Defaults mirror the app's current flag baseline.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { applyFeatureFlagOverrides } from "@/lib/featureFlags";
+import { useUiStore } from "@/stores/uiStore";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
+
+export { applyFeatureFlagOverrides, isViewEnabled } from "@/lib/featureFlags";
 
 export const FEATURE_FLAGS_QUERY_KEY = ["featureFlags"] as const;
 
@@ -17,15 +21,13 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: false,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
+  agentPersonas: false,
 };
-
-export function applyFeatureFlagOverrides(flags: FeatureFlags): FeatureFlags {
-  return flags;
-}
 
 export function useFeatureFlags() {
   const query = useQuery<FeatureFlags>({
@@ -49,21 +51,19 @@ export function useFeatureFlags() {
   };
 }
 
-/**
- * Pure helper to check if a view is enabled given the current flags.
- * Usable outside of React components.
- */
-export function isViewEnabled(view: string, flags: FeatureFlags): boolean {
-  switch (view) {
-    case "activity":
-      return flags.activityPage;
-    case "extensibility":
-      return flags.extensibilityPage;
-    case "ideation":
-      return flags.ideationPage;
-    case "ticketing":
-      return true;
-    default:
-      return true;
-  }
+export function useUpdateFeatureFlags() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ agentPersonas }: { agentPersonas: boolean }) => {
+      const raw = await invoke("update_ui_feature_flags", {
+        input: { agentPersonas },
+      });
+      return applyFeatureFlagOverrides(featureFlagsSchema.parse(raw));
+    },
+    onSuccess: (flags) => {
+      queryClient.setQueryData(FEATURE_FLAGS_QUERY_KEY, flags);
+      useUiStore.getState().setFeatureFlags(flags);
+    },
+  });
 }

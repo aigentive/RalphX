@@ -56,18 +56,16 @@ pub async fn save_team_session_state(
     State(state): State<HttpServerState>,
     Json(req): Json<SaveTeamSessionStateRequest>,
 ) -> Result<Json<SaveTeamSessionStateResponse>, (StatusCode, String)> {
-    // Emit event for frontend/persistence layer
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "team:session_state_saved",
-            serde_json::json!({
-                "session_id": req.session_id,
-                "phase": req.phase,
-                "team_composition": req.team_composition,
-                "artifact_ids": req.artifact_ids,
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "team:session_state_saved",
+        serde_json::json!({
+            "session_id": req.session_id,
+            "phase": req.phase,
+            "team_composition": req.team_composition,
+            "artifact_ids": req.artifact_ids,
+        }),
+    );
 
     info!(
         session_id = %req.session_id,

@@ -378,6 +378,7 @@ describe("ReviewSettingsSchema", () => {
     expect(DEFAULT_REVIEW_SETTINGS.requireFixApproval).toBe(false);
     expect(DEFAULT_REVIEW_SETTINGS.requireHumanReview).toBe(false);
     expect(DEFAULT_REVIEW_SETTINGS.requireWorkspaceReview).toBe(true);
+    expect(DEFAULT_REVIEW_SETTINGS.runTaskValidations).toBe(true);
     expect(DEFAULT_REVIEW_SETTINGS.maxFixAttempts).toBe(3);
   });
 
@@ -388,6 +389,7 @@ describe("ReviewSettingsSchema", () => {
       requireFixApproval: false,
       requireHumanReview: false,
       requireWorkspaceReview: true,
+      runTaskValidations: true,
       maxFixAttempts: 3,
     };
     expect(() => ReviewSettingsSchema.parse(settings)).not.toThrow();
@@ -400,6 +402,7 @@ describe("ReviewSettingsSchema", () => {
     expect(result.requireFixApproval).toBe(false);
     expect(result.requireHumanReview).toBe(false);
     expect(result.requireWorkspaceReview).toBe(true);
+    expect(result.runTaskValidations).toBe(true);
     expect(result.maxFixAttempts).toBe(3);
   });
 
@@ -413,6 +416,7 @@ describe("ReviewSettingsSchema", () => {
     expect(result.requireFixApproval).toBe(false);
     expect(result.requireHumanReview).toBe(false);
     expect(result.requireWorkspaceReview).toBe(true);
+    expect(result.runTaskValidations).toBe(true);
     expect(result.maxFixAttempts).toBe(5);
   });
 

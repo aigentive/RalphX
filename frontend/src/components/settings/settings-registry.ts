@@ -4,6 +4,7 @@ export type SettingsSectionId =
   | "execution-harnesses"
   | "models"
   | "global-execution"
+  | "personas"
   | "workspace-review"
   | "review"
   | "autonomy"
@@ -19,7 +20,8 @@ export type SettingsSectionId =
   | "granola"
   | "external-mcp"
   | "app-preferences"
-  | "accessibility";
+  | "accessibility"
+  | "notifications";
 
 export type SettingsGroupId =
   | "harness"
@@ -56,6 +58,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "execution", groupId: "general", label: "Execution" },
   { id: "execution-harnesses", groupId: "general", label: "Execution Agents" },
   { id: "global-execution", groupId: "general", label: "Global Capacity" },
+  { id: "personas", groupId: "general", label: "Personas" },
   { id: "workspace-review", groupId: "general", label: "Workspace Review" },
   { id: "review", groupId: "general", label: "Review Policy" },
   { id: "autonomy", groupId: "general", label: "Autonomy Policy" },
@@ -70,6 +73,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "external-mcp", groupId: "access", label: "External MCP" },
   { id: "app-preferences", groupId: "preferences", label: "App Preferences" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
+  { id: "notifications", groupId: "preferences", label: "Notifications" },
 ];
 
 export function isSettingsSectionId(value: unknown): value is SettingsSectionId {

@@ -1,4 +1,6 @@
 use super::*;
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
+use crate::application::NotificationContextResolver;
 
 // ============================================================================
 // POST /api/team/plan/request — Phase 1: validate + store + emit (non-blocking)
@@ -113,23 +115,20 @@ pub async fn request_team_plan_register(
 
         match execute_team_spawn(&state, plan, &plan_id).await {
             Ok(spawn_result) => {
-                if let Some(app_handle) = &state.app_state.app_handle {
-                    app_handle
-                        .emit(
-                            "team:plan_auto_approved",
-                            serde_json::json!({
-                                "plan_id": plan_id,
-                                "context_type": req.context_type,
-                                "context_id": req.context_id,
-                                "process": req.process,
-                                "team_name": spawn_result.team_name,
-                                "teammates_spawned": spawn_result.spawned_teammates,
-                                "message": spawn_result.message,
-                            }),
-                        )
-                        .ok();
-                    info!(plan_id = %plan_id, "Emitted team:plan_auto_approved event");
-                }
+                crate::http_server::emit_http_event(
+                    &state,
+                    "team:plan_auto_approved",
+                    serde_json::json!({
+                        "plan_id": plan_id,
+                        "context_type": req.context_type,
+                        "context_id": req.context_id,
+                        "process": req.process,
+                        "team_name": spawn_result.team_name,
+                        "teammates_spawned": spawn_result.spawned_teammates,
+                        "message": spawn_result.message,
+                    }),
+                );
+                info!(plan_id = %plan_id, "Emitted team:plan_auto_approved event");
                 state.team_tracker.remove_plan_channel(&plan_id).await;
                 Ok(Json(TeamPlanRegisterResponse {
                     success: true,
@@ -145,24 +144,23 @@ pub async fn request_team_plan_register(
             }
         }
     } else {
+        record_team_plan_requested_notification(&state, &plan_id, &req).await;
+
         // Manual flow: emit team:plan_requested for frontend approval dialog
-        if let Some(app_handle) = &state.app_state.app_handle {
-            let emit_result = app_handle.emit(
-                "team:plan_requested",
-                serde_json::json!({
-                    "plan_id": plan_id,
-                    "context_type": req.context_type,
-                    "context_id": req.context_id,
-                    "process": req.process,
-                    "teammates": req.teammates,
-                    "validated": true,
-                    "created_at": Utc::now().to_rfc3339(),
-                }),
-            );
-            info!(plan_id = %plan_id, emit_ok = emit_result.is_ok(), "Emitted team:plan_requested event");
-        } else {
-            warn!("No app_handle available — team:plan_requested event NOT emitted");
-        }
+        crate::http_server::emit_http_event(
+            &state,
+            "team:plan_requested",
+            serde_json::json!({
+                "plan_id": plan_id,
+                "context_type": req.context_type,
+                "context_id": req.context_id,
+                "process": req.process,
+                "teammates": req.teammates,
+                "validated": true,
+                "created_at": Utc::now().to_rfc3339(),
+            }),
+        );
+        info!(plan_id = %plan_id, "Emitted team:plan_requested event");
 
         Ok(Json(TeamPlanRegisterResponse {
             success: true,
@@ -173,6 +171,37 @@ pub async fn request_team_plan_register(
         }))
     }
 }
+
+async fn record_team_plan_requested_notification(
+    state: &HttpServerState,
+    plan_id: &str,
+    request: &RequestTeamPlanRequest,
+) {
+    let notification_context = NotificationContextResolver::from_app_state(&state.app_state);
+    match notification_context
+        .resolve_context_target(&request.context_type, &request.context_id)
+        .await
+    {
+        Ok(resolved) => {
+            state
+                .app_state
+                .notification_service()
+                .record(InteractiveNotificationProducer::team_plan_approval(
+                    plan_id,
+                    &request.process,
+                    resolved,
+                ))
+                .await;
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, plan_id, "Failed to resolve team plan notification context");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "plan_tests.rs"]
+mod tests;
 
 // ============================================================================
 // GET /api/team/plan/await/:plan_id — Phase 2: long-poll until decision (840s)

@@ -597,6 +597,65 @@ describe("PlanDisplay", () => {
   });
 
   // ============================================================================
+  // New conversation action
+  // ============================================================================
+
+  describe("new conversation action", () => {
+    it("only shows the action when a callback is provided", async () => {
+      const user = userEvent.setup();
+
+      render(<PlanDisplay plan={mockPlan} />);
+      await user.click(screen.getByLabelText("Plan actions"));
+
+      expect(
+        screen.queryByRole("menuitem", { name: /new conversation/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("calls the action with the selected historical version", async () => {
+      const user = userEvent.setup();
+      const onStartNewConversationWithPlan = vi.fn();
+      const multiVersionPlan: Artifact = {
+        ...mockPlan,
+        metadata: { ...mockPlan.metadata, version: 3 },
+      };
+      mockGetVersionHistory.mockResolvedValue([
+        { id: "v3-id", version: 3, name: "Plan", created_at: "2026-03-18T10:00:00Z" },
+        { id: "v2-id", version: 2, name: "Plan", created_at: "2026-03-17T10:00:00Z" },
+        { id: "v1-id", version: 1, name: "Plan", created_at: "2026-03-16T10:00:00Z" },
+      ]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multiVersionPlan,
+        content: { type: "inline", text: "# Old version\n\nHistorical body" },
+      });
+
+      render(
+        <PlanDisplay
+          plan={multiVersionPlan}
+          onStartNewConversationWithPlan={onStartNewConversationWithPlan}
+        />,
+      );
+
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+      await user.click(screen.getByTitle("View version history"));
+      const v1Items = await screen.findAllByText(/v1/);
+      await user.click(v1Items[v1Items.length - 1]!);
+      await waitFor(() => {
+        expect(mockGetAtVersion).toHaveBeenCalledWith(multiVersionPlan.id, 1);
+      });
+
+      await user.click(screen.getByLabelText("Plan actions"));
+      await user.click(screen.getByText("New Conversation"));
+
+      expect(onStartNewConversationWithPlan).toHaveBeenCalledWith({
+        artifactId: multiVersionPlan.id,
+        title: multiVersionPlan.name,
+        version: 1,
+      });
+    });
+  });
+
+  // ============================================================================
   // Hover handlers (mouse enter/leave) — chrome buttons & history dropdown
   // ============================================================================
 
@@ -709,6 +768,41 @@ describe("PlanDisplay", () => {
         <PlanDisplay plan={mockPlan} chromeless={true} showApprove={true} isApproved={true} />,
       );
       expect(screen.getByText("Plan Approved")).toBeInTheDocument();
+    });
+
+    it("renders explicit Overview and Proposals controls after the approved badge", () => {
+      const onBodyModeChange = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          isApproved={true}
+          linkedProposalsCount={2}
+          bodyMode="plan"
+          onBodyModeChange={onBodyModeChange}
+        />,
+      );
+
+      const approvedBadge = screen.getByText("Plan Approved");
+      const overviewButton = screen.getByRole("button", {
+        name: /Overview/i,
+      });
+      const proposalsButton = screen.getByRole("button", {
+        name: /2 Proposals/i,
+      });
+      expect(approvedBadge.compareDocumentPosition(overviewButton)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(overviewButton).toHaveAttribute("aria-pressed", "true");
+      expect(proposalsButton).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(proposalsButton);
+      fireEvent.click(proposalsButton);
+      fireEvent.click(overviewButton);
+
+      expect(onBodyModeChange).toHaveBeenNthCalledWith(1, "proposals");
+      expect(onBodyModeChange).toHaveBeenNthCalledWith(2, "proposals");
+      expect(onBodyModeChange).toHaveBeenNthCalledWith(3, "plan");
     });
 
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {
@@ -898,6 +992,27 @@ describe("PlanDisplay", () => {
       await user.click(screen.getByLabelText("Plan actions"));
       await user.click(screen.getByRole("menuitem", { name: /copy markdown/i }));
       expect(writeText).toHaveBeenCalled();
+    });
+
+    it("calls new conversation action from chromeless overflow menu", async () => {
+      const user = userEvent.setup();
+      const onStartNewConversationWithPlan = vi.fn();
+
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          onStartNewConversationWithPlan={onStartNewConversationWithPlan}
+        />,
+      );
+      await user.click(screen.getByLabelText("Plan actions"));
+      await user.click(screen.getByRole("menuitem", { name: /new conversation/i }));
+
+      expect(onStartNewConversationWithPlan).toHaveBeenCalledWith({
+        artifactId: mockPlan.id,
+        title: mockPlan.name,
+        version: mockPlan.metadata.version,
+      });
     });
 
     it("handles clipboard copy failure from the chromeless overflow menu", async () => {

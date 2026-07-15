@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  GIT_AUTH_STARTUP_TOAST_DURATION,
-  createStartupGitAuthToastOptions,
-  hasStartupGitAuthIssue,
-} from "./useGitAuthStartupNotification";
+import { hasStartupGitAuthIssue } from "./useGitAuthStartupNotification";
 import type { GitAuthDiagnostics } from "./useGithubSettings";
 import type { Project } from "@/types/project";
 
@@ -105,16 +101,5 @@ describe("hasStartupGitAuthIssue", () => {
         true,
       ),
     ).toBe(false);
-  });
-});
-
-describe("createStartupGitAuthToastOptions", () => {
-  it("keeps git auth startup warnings visible until the user acts", () => {
-    const options = createStartupGitAuthToastOptions("project-1");
-
-    expect(options.duration).toBe(GIT_AUTH_STARTUP_TOAST_DURATION);
-    expect(options.duration).toBe(Infinity);
-    expect(options.id).toBe("git-auth-startup:project-1");
-    expect(options.className).toBe("git-auth-startup-toast");
   });
 });

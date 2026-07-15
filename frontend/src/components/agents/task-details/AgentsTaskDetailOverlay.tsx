@@ -21,7 +21,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AgentsTaskDetailPanel } from "./AgentsTaskDetailPanel";
 import { TaskEditForm } from "./TaskEditForm";
 import { StatusDropdown } from "./StatusDropdown";
-import { StateTimelineNav } from "./StateTimelineNav";
+import { TaskHistoryDropdown } from "./TaskHistoryDropdown";
 import { useQuery } from "@tanstack/react-query";
 import { useTaskMutation } from "@/hooks/useTaskMutation";
 import { useUiStore } from "@/stores/uiStore";
@@ -49,6 +49,10 @@ import { toast } from "sonner";
 import { AuditTrailDialog } from "./AuditTrailDialog";
 import { getTaskCategoryLabel } from "@/lib/task-category";
 import { cn } from "@/lib/utils";
+import type {
+  TaskHistoryState,
+  TaskRuntimeHistoryContextType,
+} from "@/types/task-history";
 
 // ============================================================================
 // Priority Colors (Tahoe HSL palette)
@@ -181,6 +185,21 @@ const STATUS_CONFIG: Record<
     bg: "var(--status-warning-muted)",
     text: "var(--status-warning)",
   },
+  updating_plan_branch: {
+    label: "Updating Plan Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  updating_task_branch: {
+    label: "Updating Task Branch",
+    bg: "var(--status-info-muted)",
+    text: "var(--status-info)",
+  },
+  branch_update_blocked: {
+    label: "Branch Update Blocked",
+    bg: "var(--status-warning-muted)",
+    text: "var(--status-warning)",
+  },
   merged: {
     label: "Merged",
     bg: "var(--status-success-muted)",
@@ -296,6 +315,11 @@ export interface AgentsTaskDetailOverlayProps {
   backLabel?: string;
   /** Click handler for the back button. Defaults to onCloseOverride when not given. */
   onBack?: () => void;
+  /** Focus the host Agents chat on a task runtime transcript. */
+  onFocusTaskRuntime?: (
+    taskId: string,
+    contextType: TaskRuntimeHistoryContextType
+  ) => void;
 }
 
 export function AgentsTaskDetailOverlay({
@@ -306,6 +330,7 @@ export function AgentsTaskDetailOverlay({
   onCloseOverride,
   backLabel,
   onBack,
+  onFocusTaskRuntime,
 }: AgentsTaskDetailOverlayProps) {
   const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
   const setGlobalSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
@@ -359,9 +384,42 @@ export function AgentsTaskDetailOverlay({
     setIsEditing(false);
   }, [closeSelectedTask]);
 
+  const handleHistoryStateSelect = useCallback(
+    (state: TaskHistoryState | null) => {
+      setHistoryState(state);
+      if (state?.conversationId && state.contextType && selectedTaskId) {
+        onFocusTaskRuntime?.(selectedTaskId, state.contextType);
+      }
+    },
+    [onFocusTaskRuntime, selectedTaskId, setHistoryState]
+  );
+
   // Derived values for history mode (historyState from store)
   const isHistoryMode = historyState !== null;
   const viewStatus = (historyState?.status as InternalStatus | undefined) ?? task?.internalStatus;
+  const historyContextLabel =
+    historyState?.contextType === "task_execution"
+      ? "Execution"
+      : historyState?.contextType === "review"
+        ? "Review"
+        : historyState?.contextType === "merge"
+          ? "Merge"
+          : historyState?.contextType === "branch_update"
+            ? "Branch Update"
+          : null;
+  const historyStageLabel =
+    historyContextLabel && historyState?.attemptIndex
+      ? `${historyContextLabel} attempt ${historyState.attemptIndex}`
+      : historyState
+        ? STATUS_CONFIG[historyState.status]?.label ?? historyState.status
+        : "";
+  const historyHasConversation =
+    historyState?.hasConversation ?? Boolean(historyState?.conversationId);
+  const historyTranscriptMessage = historyHasConversation
+    ? onFocusTaskRuntime
+      ? "Main chat is showing this runtime transcript"
+      : "Runtime transcript available"
+    : "No runtime transcript recorded for this stage";
 
   // Get mutations
   const {
@@ -509,7 +567,7 @@ export function AgentsTaskDetailOverlay({
   const isArchived = !!task.archivedAt;
   const isManagedPlanMerge = task.category === "plan_merge";
   const isSystemControlled = isManagedPlanMerge || systemControlledStatuses.includes(task.internalStatus);
-  const canEdit = !isArchived && !isSystemControlled;
+  const canEdit = !isHistoryMode && !isArchived && !isSystemControlled;
   const categoryLabel = getTaskCategoryLabel(task.category);
   // "Backlog" is the equivalent of "draft" - tasks that haven't started execution yet
   const isBacklog = task.internalStatus === "backlog";
@@ -603,7 +661,7 @@ export function AgentsTaskDetailOverlay({
                   />
                 )}
                 {/* Start Ideation button - only for backlog (draft) tasks */}
-                {isBacklog && (
+                {!isHistoryMode && isBacklog && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -634,7 +692,7 @@ export function AgentsTaskDetailOverlay({
                   </HeaderIconButton>
                 )}
                 {/* Archive button */}
-                {!isArchived && (
+                {!isHistoryMode && !isArchived && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -652,7 +710,7 @@ export function AgentsTaskDetailOverlay({
                   </HeaderIconButton>
                 )}
                 {/* Restore button */}
-                {isArchived && (
+                {!isHistoryMode && isArchived && (
                   <HeaderIconButton
                     variant="ghost"
                     size="icon-sm"
@@ -685,12 +743,12 @@ export function AgentsTaskDetailOverlay({
             </TooltipProvider>
           </div>
 
-          {/* State Timeline Navigation - for viewing historical states (hidden in edit mode) */}
+          {/* History selector for viewing historical states (hidden in edit mode) */}
           {!isEditing && (
-            <StateTimelineNav
+            <TaskHistoryDropdown
               taskId={task.id}
               currentStatus={task.internalStatus}
-              onStateSelect={setHistoryState}
+              onStateSelect={handleHistoryStateSelect}
               selectedState={historyState}
             />
           )}
@@ -703,10 +761,13 @@ export function AgentsTaskDetailOverlay({
             >
               <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
               <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
-                Viewing: {STATUS_CONFIG[historyState.status]?.label ?? historyState.status}
+                Viewing: {historyStageLabel}
               </span>
               <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 {new Date(historyState.timestamp).toLocaleString()}
+              </span>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
+                {historyTranscriptMessage}
               </span>
             </div>
           )}
@@ -757,8 +818,8 @@ export function AgentsTaskDetailOverlay({
             </ScrollArea>
           )}
 
-          {/* Execution Control Bar - always visible at bottom of overlay */}
-          {footer && (
+          {/* Execution Control Bar - current mode only */}
+          {footer && !isHistoryMode && (
             <div className="flex-shrink-0">
               {footer}
             </div>

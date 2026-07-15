@@ -269,16 +269,6 @@ a:not([class*="no-underline"]):hover {
   font-weight: 500;
 }
 
-/* Ideation PlanItem — hover/menu-open use CSS so they clear automatically
-   when selection moves to another item. Inline-style hover painting got
-   stuck because clicking didn't trigger a mouseleave. */
-.plan-item-row:hover:not([aria-current="true"]):not([data-menu-open="true"]) {
-  background-color: var(--overlay-faint);
-}
-.plan-item-row[data-menu-open="true"]:not([aria-current="true"]) {
-  background-color: var(--overlay-faint);
-}
-
 .agents-session-meta {
   color: var(--text-muted);
 }
@@ -595,12 +585,33 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   68%      { opacity: 0.06; }
 }
 
+@keyframes step-progress-active-drift {
+  from { background-position: 0 0; }
+  to   { background-position: 18px 0; }
+}
+
 /* Utility class hooks tied to the keyframes above */
 .animate-badge-pop { animation: badge-pop 200ms cubic-bezier(0.34, 1.56, 0.64, 1); }
 .animate-pulse-critical { animation: pulse-critical 2s ease-in-out infinite; }
 .animate-starter-caret { animation: starter-caret-blink 720ms cubic-bezier(0.4, 0, 0.2, 1) infinite; }
 .status-indicator-running { animation: status-pulse 2s ease-in-out infinite; }
 .task-name-enter { animation: slide-in-right 200ms ease-out; }
+
+.step-progress-active-segment {
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.18) 0,
+    rgba(255, 255, 255, 0.18) 5px,
+    rgba(255, 255, 255, 0.05) 5px,
+    rgba(255, 255, 255, 0.05) 10px
+  );
+  background-size: 18px 18px;
+  opacity: 0.46;
+}
+
+.step-progress-active-segment[data-animated="true"] {
+  animation: step-progress-active-drift 1.2s linear infinite;
+}
 
 .agent-composer-surface {
   container-type: inline-size;
@@ -632,6 +643,10 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   .agent-composer-surface[data-collapsible="true"],
   .agent-composer-surface[data-collapsible="true"] * {
     transition-duration: 0.01ms !important;
+  }
+
+  .step-progress-active-segment[data-animated="true"] {
+    animation: none;
   }
 }
 

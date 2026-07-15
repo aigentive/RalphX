@@ -17,6 +17,8 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.stream.merge_line_read_secs, 600);
     assert_eq!(cfg.stream.completion_grace_secs, 30);
     assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
+    assert_eq!(cfg.stream.notification_retention_read_days, 30);
+    assert_eq!(cfg.stream.notification_retention_max_rows, 1000);
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 1200);
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 60);
@@ -31,6 +33,8 @@ fn test_all_defaults_are_sensible() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         30_000
     );
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
     assert_eq!(cfg.scheduler.watchdog_interval_secs, 60);
     assert_eq!(cfg.supervisor.time_threshold_secs, 600);
@@ -126,6 +130,8 @@ fn test_env_overrides_apply() {
     apply_env_overrides_with(&mut cfg, &|name| match name {
         "RALPHX_STREAM_MERGE_LINE_READ_SECS" => Some("999".to_string()),
         "RALPHX_STREAM_COMPLETION_GRACE_SECS" => Some("45".to_string()),
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS" => Some("14".to_string()),
+        "RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS" => Some("250".to_string()),
         "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS" => Some("2400".to_string()),
         "RALPHX_GIT_CMD_TIMEOUT_SECS" => Some("120".to_string()),
         "RALPHX_GIT_RETRY_BACKOFF_SECS" => Some("2,4,8,16".to_string()),
@@ -135,6 +141,8 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS" => Some("45000".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT" => Some("7".to_string()),
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS" => Some("45000".to_string()),
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS" => Some("300".to_string()),
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS" => Some("1800".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
         "RALPHX_SCHEDULER_READY_SETTLE_MS" => Some("500".to_string()),
         "RALPHX_SUPERVISOR_MAX_TOKENS" => Some("200000".to_string()),
@@ -144,6 +152,8 @@ fn test_env_overrides_apply() {
 
     assert_eq!(cfg.stream.merge_line_read_secs, 999);
     assert_eq!(cfg.stream.completion_grace_secs, 45);
+    assert_eq!(cfg.stream.notification_retention_read_days, 14);
+    assert_eq!(cfg.stream.notification_retention_max_rows, 250);
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 2400);
     // validation_deadline_secs not overridden — should keep default
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
@@ -158,6 +168,8 @@ fn test_env_overrides_apply() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         45_000
     );
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 300);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 1800);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 3600);
     assert_eq!(cfg.scheduler.ready_settle_ms, 500);
     assert_eq!(cfg.supervisor.max_tokens, 200000);
@@ -886,6 +898,67 @@ fn ticketing_dashboard_after_env(value: Option<&str>) -> bool {
         _ => None,
     });
     cfg.ui_feature_flags.ticketing_dashboard
+}
+
+fn agent_personas_after_env(value: Option<&str>) -> bool {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_AGENT_PERSONAS" => value.map(str::to_string),
+        _ => None,
+    });
+    cfg.ui_feature_flags.agent_personas
+}
+
+#[test]
+fn runtime_config_env_override_agent_personas_true_and_false() {
+    assert!(agent_personas_after_env(Some("true")));
+    assert!(agent_personas_after_env(Some("1")));
+    assert!(!agent_personas_after_env(Some("false")));
+    assert!(!agent_personas_after_env(None));
+}
+
+#[test]
+fn runtime_config_env_override_persona_switch_fresh_session_fallback() {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
+
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION" => Some("false".to_string()),
+        _ => None,
+    });
+    assert!(
+        !cfg.ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
 }
 
 #[test]

@@ -69,6 +69,20 @@ Primary project docs:
 - Rust toolchain source of truth: `rust-toolchain.toml` is authoritative.
 - Rust PATH mismatch: if Cargo still uses Homebrew `rustc`, run through `rustup run` with `RUSTC=$(rustup which --toolchain 1.91.0 rustc)`; details in `.claude/rules/rust-test-execution.md`.
 - Rust std API stability (NON-NEGOTIABLE): do not ship unstable std APIs. Source: `.claude/rules/rust-stable-apis.md`.
+- Format what you write (NON-NEGOTIABLE): every Rust file you create or modify must pass `rustfmt --edition 2021 --check <file>` before handoff — format each touched leaf file, never `mod.rs` roots, never broad `cargo fmt`. "Minimal diffs" means no formatter churn on untouched code, not unformatted new code.
+- Test file separation (NON-NEGOTIABLE): no `#[cfg(test)] mod tests` inside production `src-tauri` files — tests go in a sibling `<module>_tests.rs`. If you find a pre-existing inline test block, move it out; never extend it.
+- Behavioral tests only (NON-NEGOTIABLE): every test drives a production entry path and carries a falsifiable assertion. No getter/no-op/line-execution tests. Guards get both directions: CAS wrong-`from` leaves state untouched; suppressed side effects get absence assertions.
+- Rust test stack: root-lib tests need `--features test-utils`; `cargo test` takes ONE name filter; suites run under `cargo nextest`; SQLite repos test on `SqliteTestDb`/`SqliteStateFixture`; scheduler/service tests use memory repos through production tick/entry paths. Source: `.claude/rules/rust-test-execution.md`.
+- Frontend tests: Vitest via `cd frontend && npm run test:run -- <files>`; assert user-visible behavior (Testing Library), not implementation internals; strict TS with no `any`; API layer follows the zod snake_case schema → camelCase transform pipeline (`.claude/rules/api-layer.md`).
+- Package build hygiene (NON-NEGOTIABLE): use each package's configured scripts (`frontend/`: `npm run ...`; `plugins/app/ralphx-mcp-server`: `npm run build` after any `src/` change — committing without rebuilding dist is a broken commit).
+- Zero-warning handoff: both cargo clippy gates, `python3 scripts/check-layering.py`, and touched-suite tests green before reporting done — including on test-only changes.
+
+## Test Coverage Work
+
+- Patch gate: Codecov requires ≥90% patch coverage (`codecov.yml`); read its path EXCLUSIONS first — lines in excluded composition-root/streaming files never count, so don't spend tests there.
+- Measure diff coverage against `origin/main` with `cargo llvm-cov` (lcov output intersected with the diff) and Vitest `--coverage`; two Rust passes max (baseline → write tests from the saved uncovered-line report → confirm).
+- llvm-cov disk budget (NON-NEGOTIABLE): `CARGO_INCREMENTAL=0`; delete `*.profraw` after each pass; keep ≥5G free disk or stop and clean `src-tauri/target/llvm-cov-target`; delete `llvm-cov-target` when done.
+- Coverage is a byproduct of real tests: close gaps by testing uncovered BEHAVIOR (error arms, guard rejections, round-trips on the concrete repo impl that lacks them), never by executing lines without assertions.
 - Worktree safety (NON-NEGOTIABLE): worktree-mode flows must never silently fall back to the main checkout.
 - Verify before commit: review `git diff` against `HEAD` for every touched file.
 - Frontend Playwright visual runs (NON-NEGOTIABLE): run them from `frontend/`, not repo root.

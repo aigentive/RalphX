@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::agents::{AgentHarnessKind, ProviderSessionRef};
 
 use super::{
-    AgentConversationWorkspaceMode, DelegatedSessionId, IdeationSessionId, ProjectId, TaskId,
+    AgentConversationWorkspaceMode, AutomationId, AutomationRunId, CoordinationMode,
+    DelegatedSessionId, IdeationSessionId, ProjectId, TaskId,
 };
 
 /// Unique identifier for a chat conversation
@@ -88,6 +89,9 @@ pub enum ChatContextType {
     Review,
     /// Merge conflict resolution context (merger agent)
     Merge,
+    /// Branch synchronization and conflict-resolution context (branch updater)
+    #[serde(rename = "branch_update")]
+    BranchUpdate,
 }
 
 impl fmt::Display for ChatContextType {
@@ -100,6 +104,7 @@ impl fmt::Display for ChatContextType {
             ChatContextType::TaskExecution => write!(f, "task_execution"),
             ChatContextType::Review => write!(f, "review"),
             ChatContextType::Merge => write!(f, "merge"),
+            ChatContextType::BranchUpdate => write!(f, "branch_update"),
         }
     }
 }
@@ -116,6 +121,7 @@ impl std::str::FromStr for ChatContextType {
             "task_execution" => Ok(ChatContextType::TaskExecution),
             "review" => Ok(ChatContextType::Review),
             "merge" => Ok(ChatContextType::Merge),
+            "branch_update" => Ok(ChatContextType::BranchUpdate),
             _ => Err(format!("Invalid context type: {}", s)),
         }
     }
@@ -227,6 +233,14 @@ pub struct ChatConversation {
     pub provider_profile: Option<String>,
     /// Current project-agent mode for Agents conversations.
     pub agent_mode: Option<AgentConversationWorkspaceMode>,
+    /// Optional active persona bound to this conversation.
+    pub persona_id: Option<String>,
+    /// Conversation-level team coordination state.
+    pub coordination_mode: CoordinationMode,
+    /// Automation that owns this setup or run conversation.
+    pub automation_id: Option<AutomationId>,
+    /// Automation run that owns this run conversation.
+    pub automation_run_id: Option<AutomationRunId>,
     /// Auto-generated or user-set title for this conversation
     pub title: Option<String>,
     /// Number of messages in this conversation
@@ -265,6 +279,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -294,6 +312,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -323,6 +345,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -352,6 +378,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -382,6 +412,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -411,6 +445,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -440,6 +478,10 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            persona_id: None,
+            coordination_mode: CoordinationMode::Solo,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -454,6 +496,13 @@ impl ChatConversation {
             attribution_backfill_completed_at: None,
             attribution_backfill_error_summary: None,
         }
+    }
+
+    /// Create a new conversation for dedicated branch-update conflict resolution.
+    pub fn new_branch_update(task_id: TaskId) -> Self {
+        let mut conversation = Self::new_review(task_id);
+        conversation.context_type = ChatContextType::BranchUpdate;
+        conversation
     }
 
     pub fn update_attribution_backfill_state(
@@ -514,6 +563,11 @@ impl ChatConversation {
 
     pub fn set_agent_mode(&mut self, mode: Option<AgentConversationWorkspaceMode>) {
         self.agent_mode = mode;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_coordination_mode(&mut self, mode: CoordinationMode) {
+        self.coordination_mode = mode;
         self.updated_at = Utc::now();
     }
 

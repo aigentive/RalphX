@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::application::agent_workspace_external_pr_reconciliation::{
     external_pr_reconciliation_skip_reason, reconcile_agent_workspace_external_pr,
     reconcile_recent_agent_workspace_external_prs_on_startup,
@@ -10,18 +12,74 @@ use crate::application::agent_workspace_external_pr_reconciliation::{
     AgentWorkspaceExternalPrReconciliationTrigger,
 };
 use crate::application::chat_service::{ChatService, MockChatService};
+use crate::application::clickup_integration_service::{
+    ClickUpApiClient, ClickUpAuthContext, ClickUpIntegrationService, ClickUpTaskContent,
+    ClickUpWorkspace,
+};
+use crate::application::external_issue_link_service::ExternalIssueLinkService;
 use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, Project,
 };
+use crate::domain::integrations::{
+    ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
+};
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
-use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus};
+use crate::domain::services::github_service::PrDetail;
+use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus, SecretStore};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
-    MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskOutcomeRepository,
+    MemoryClickUpIntegrationSettingsRepository, MemoryExternalIssueLinkRepository,
+    MemoryPlanBranchRepository, MemoryProjectRepository, MemorySecretStore,
+    MemoryTaskOutcomeRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
+
+struct StaticClickUpClient {
+    task: ClickUpTaskContent,
+}
+
+#[async_trait]
+impl ClickUpApiClient for StaticClickUpClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        if self.task.id.eq_ignore_ascii_case(task_id)
+            || self
+                .task
+                .custom_id
+                .as_deref()
+                .is_some_and(|custom_id| custom_id.eq_ignore_ascii_case(task_id))
+        {
+            Ok(self.task.clone())
+        } else {
+            Err("HTTP 404: task not found".to_string())
+        }
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        auth: &ClickUpAuthContext,
+        _team_id: &str,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        self.fetch_task(auth, task_id).await
+    }
+}
 
 fn test_project() -> Project {
     let mut project = Project::new("Demo".to_string(), "/tmp/ralphx-demo".to_string());
@@ -48,6 +106,64 @@ fn test_workspace_with_id(project: &Project, id: &str) -> AgentConversationWorks
             .to_string_lossy()
             .to_string(),
     )
+}
+
+fn clickup_task(id: &str, custom_id: &str) -> ClickUpTaskContent {
+    ClickUpTaskContent {
+        id: id.to_string(),
+        custom_id: Some(custom_id.to_string()),
+        name: "Validated ClickUp task".to_string(),
+        url: Some(format!("https://app.clickup.com/t/{id}")),
+        description: String::new(),
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        creator: None,
+        assignees: Vec::new(),
+        watchers: Vec::new(),
+        tags: Vec::new(),
+        comments: Vec::new(),
+        attachments: Vec::new(),
+        updated_at: None,
+        space_id: None,
+        list_name: None,
+    }
+}
+
+async fn clickup_service(task: ClickUpTaskContent) -> ClickUpIntegrationService {
+    let settings = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    secrets
+        .put_secret("clickup-test-token", "pk_test")
+        .await
+        .expect("secret should save");
+    settings
+        .upsert(&ClickUpIntegrationSettings {
+            enabled: true,
+            token_secret_ref: Some("clickup-test-token".to_string()),
+            workspace_id: Some("workspace-1".to_string()),
+            validation_status: IntegrationValidationStatus::Valid,
+            task_search_available: true,
+            ..Default::default()
+        })
+        .await
+        .expect("settings should save");
+    ClickUpIntegrationService::new(settings, secrets, Arc::new(StaticClickUpClient { task }))
+}
+
+fn pr_detail(number: i64, branch: &str, title: &str, body: Option<&str>) -> PrDetail {
+    PrDetail {
+        number,
+        title: title.to_string(),
+        url: Some(format!("https://github.com/owner/repo/pull/{number}")),
+        head_ref_name: branch.to_string(),
+        base_ref_name: "main".to_string(),
+        body: body.map(str::to_string),
+        is_draft: false,
+        state: PrStatus::Open,
+        author: None,
+        created_at: None,
+    }
 }
 
 async fn wait_for_latest_pr_lookup_calls(github: &MockGithubService, expected: u32) {
@@ -83,6 +199,8 @@ async fn deps_with_workspace(
             workspace_repo: workspace_repo.clone(),
             project_repo,
             github,
+            clickup_integration_service: None,
+            external_issue_link_service: None,
             pr_poller_registry: None,
             chat_service: None,
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -157,6 +275,44 @@ async fn reconciliation_links_external_open_pr_to_unpublished_workspace() {
 }
 
 #[tokio::test]
+async fn reconciliation_restarts_polling_for_linked_open_pr() {
+    let project = test_project();
+    let mut workspace = test_workspace(&project);
+    let conversation_id = workspace.conversation_id.clone();
+    workspace.publication_pr_number = Some(42);
+    workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/42".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(PrStatus::Open);
+    let (mut deps, _) = deps_with_workspace(project, workspace, github.clone()).await;
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+    deps.chat_service = Some(Arc::new(MockChatService::new()) as Arc<dyn ChatService>);
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Skipped("linked_pr_not_terminal")
+    );
+    assert!(
+        registry.is_agent_workspace_polling(&conversation_id),
+        "a linked open PR must regain CI supervision after a poller is lost"
+    );
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
 async fn reconciliation_marks_external_merged_pr_terminal() {
     let project = test_project();
     let workspace = test_workspace(&project);
@@ -167,6 +323,7 @@ async fn reconciliation_marks_external_merged_pr_terminal() {
         url: "https://github.com/owner/repo/pull/43".to_string(),
         status: PrStatus::Merged {
             merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: None,
         },
         is_draft: false,
         head_ref_name: workspace.branch_name.clone(),
@@ -249,6 +406,78 @@ async fn reconciliation_links_external_draft_pr() {
         .await
         .unwrap();
     assert_eq!(events[0].step, "external_pr_linked");
+}
+
+#[tokio::test]
+async fn reconciliation_links_clickup_ticket_from_external_pr_evidence() {
+    let project = test_project();
+    let workspace = test_workspace_with_id(&project, "2c2c2c2c-2c2c-2c2c-2c2c-2c2c2c2c2c2c");
+    let conversation_id = workspace.conversation_id.clone();
+    let github = Arc::new(MockGithubService::new());
+    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+        number: 144,
+        url: "https://github.com/owner/repo/pull/144".to_string(),
+        status: PrStatus::Open,
+        is_draft: false,
+        head_ref_name: workspace.branch_name.clone(),
+        updated_at: Some("2026-05-11T22:12:00Z".to_string()),
+        author_login: None,
+    })));
+    github.will_return_pr_detail(pr_detail(
+        144,
+        &workspace.branch_name,
+        "DEV-42 link ClickUp ticket",
+        Some("Implements the requested ClickUp task."),
+    ));
+    let links = Arc::new(ExternalIssueLinkService::new(Arc::new(
+        MemoryExternalIssueLinkRepository::new(),
+    )));
+    let (mut deps, _workspace_repo) =
+        deps_with_workspace(project.clone(), workspace.clone(), github.clone()).await;
+    deps.clickup_integration_service = Some(Arc::new(
+        clickup_service(clickup_task("8689abc", "DEV-42")).await,
+    ));
+    deps.external_issue_link_service = Some(Arc::clone(&links));
+
+    let outcome = reconcile_agent_workspace_external_pr(
+        deps,
+        conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("reconciliation should succeed");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+            pr_number: 144,
+            pr_status: "open".to_string()
+        }
+    );
+    assert_eq!(github.state().fetch_pr_detail_calls, 1);
+    let ticket_links = links
+        .list_ticket_links_for_conversation(&conversation_id.as_str())
+        .await
+        .expect("ticket links should load");
+    assert_eq!(ticket_links.len(), 1);
+    assert_eq!(ticket_links[0].provider, "clickup");
+    assert_eq!(ticket_links[0].external_id, "8689abc");
+    assert_eq!(ticket_links[0].external_key.as_deref(), Some("DEV-42"));
+    assert_eq!(
+        ticket_links[0].external_url.as_deref(),
+        Some("https://app.clickup.com/t/8689abc")
+    );
+    assert_eq!(
+        ticket_links[0].local_project_id.as_deref(),
+        Some(project.id.as_str())
+    );
+    let sync_records = links
+        .list_sync_records_for_link(&ticket_links[0].id)
+        .await
+        .expect("sync records should load");
+    assert_eq!(sync_records.len(), 1);
+    assert_eq!(sync_records[0].sync_kind, "clickup_git_association");
+    assert_eq!(sync_records[0].local_state.as_deref(), Some("open"));
 }
 
 #[tokio::test]
@@ -378,6 +607,7 @@ async fn reconciliation_marks_linked_merged_pr_terminal_even_when_workspace_miss
     let github = Arc::new(MockGithubService::new());
     github.will_return_status(PrStatus::Merged {
         merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
     });
     let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
 
@@ -430,6 +660,8 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         workspace_repo: workspace_repo.clone(),
         project_repo: project_repo.clone(),
         github: github.clone(),
+        clickup_integration_service: None,
+        external_issue_link_service: None,
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -547,6 +779,9 @@ fn skip_reason_covers_non_reconcilable_workspace_shapes() {
             external_pr_reconciliation_skip_reason(&workspace),
             Some("workspace_terminal")
         );
+
+        workspace.publication_pr_number = Some(92);
+        assert_eq!(external_pr_reconciliation_skip_reason(&workspace), None);
     }
 }
 
@@ -589,6 +824,8 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         workspace_repo: workspace_repo.clone(),
         project_repo,
         github: github.clone(),
+        clickup_integration_service: None,
+        external_issue_link_service: None,
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -624,6 +861,7 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
     let github = Arc::new(MockGithubService::new());
     github.will_return_status(PrStatus::Merged {
         merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
     });
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -632,6 +870,8 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
         workspace_repo: workspace_repo.clone(),
         project_repo,
         github: github.clone(),
+        clickup_integration_service: None,
+        external_issue_link_service: None,
         pr_poller_registry: None,
         chat_service: None,
         agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),

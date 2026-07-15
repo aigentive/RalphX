@@ -135,11 +135,30 @@ fn step_progress_summary_calculates_correctly() {
     assert_eq!(summary.pending, 1);
     assert_eq!(summary.skipped, 1);
     assert_eq!(summary.failed, 0);
-    assert_eq!(summary.percent_complete, 50.0); // (1 completed + 1 skipped) / 4 * 100
+    assert!((summary.percent_complete - 33.333332).abs() < 0.001);
     assert!(summary.current_step.is_some());
     assert_eq!(summary.current_step.unwrap().title, "Step 2");
     assert!(summary.next_step.is_some());
     assert_eq!(summary.next_step.unwrap().title, "Step 3");
+}
+
+#[test]
+fn step_progress_summary_excludes_all_skipped_steps_from_percent() {
+    let task_id = TaskId::new();
+    let mut steps = vec![
+        TaskStep::new(task_id.clone(), "Step 1".to_string(), 0, "user".to_string()),
+        TaskStep::new(task_id.clone(), "Step 2".to_string(), 1, "user".to_string()),
+    ];
+
+    steps[0].status = TaskStepStatus::Skipped;
+    steps[1].status = TaskStepStatus::Skipped;
+
+    let summary = StepProgressSummary::from_steps(&task_id, &steps);
+
+    assert_eq!(summary.total, 2);
+    assert_eq!(summary.completed, 0);
+    assert_eq!(summary.skipped, 2);
+    assert_eq!(summary.percent_complete, 0.0);
 }
 
 #[test]

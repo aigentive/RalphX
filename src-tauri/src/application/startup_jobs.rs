@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter};
 use tracing::{debug, info};
 
 use crate::application::chat_service::uses_execution_slot;
@@ -37,17 +37,29 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentRunRepository, AppStateRepository, ChatConversationRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
+    ExecutionSettingsRepository, IdeationSessionRepository, NotificationRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
+    ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppResult;
 
 use super::TaskTransitionService;
+use crate::infrastructure::agents::claude::{stream_timeouts, StreamTimeoutsConfig};
 
 /// Environment variable that disables startup recovery mechanisms when present.
 pub const RALPHX_DISABLE_STARTUP_RECOVERY_ENV: &str = "RALPHX_DISABLE_STARTUP_RECOVERY";
+
+fn notification_retention_prune_args(
+    config: &StreamTimeoutsConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (chrono::DateTime<chrono::Utc>, u32) {
+    (
+        now - chrono::Duration::days(config.notification_retention_read_days as i64),
+        u32::try_from(config.notification_retention_max_rows).unwrap_or(u32::MAX),
+    )
+}
 
 #[doc(hidden)]
 pub fn is_startup_recovery_disabled_var(value: Option<&std::ffi::OsStr>) -> bool {
@@ -138,13 +150,13 @@ fn startup_resume_chat_context_for_status(status: InternalStatus) -> Option<Chat
 /// Phase 82: Supports optional project scoping via `active_project_state`.
 /// When active project is set, only tasks from that project will be resumed.
 /// When no active project is set, resumption is skipped entirely.
-pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
+pub struct StartupJobRunner {
     task_repo: Arc<dyn TaskRepository>,
     task_dep_repo: Arc<dyn TaskDependencyRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
-    transition_service: Arc<TaskTransitionService<R>>,
+    transition_service: Arc<TaskTransitionService>,
     execution_state: Arc<ExecutionState>,
     /// Phase 82: Active project state for per-project scoping
     active_project_state: Arc<ActiveProjectState>,
@@ -159,12 +171,12 @@ pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
     previous_session_cutoff: chrono::DateTime<chrono::Utc>,
     /// Plan branch repository for resolving plan branch during deferred cleanup
     plan_branch_repo: Option<Arc<dyn crate::domain::repositories::PlanBranchRepository>>,
-    reconciler: ReconciliationRunner<R>,
+    reconciler: ReconciliationRunner,
     /// Optional task scheduler for auto-starting Ready tasks on startup.
     /// When provided, Ready tasks will be scheduled after resuming agent-active tasks.
     task_scheduler: Option<Arc<dyn TaskScheduler>>,
     /// Optional app handle for event emission
-    app_handle: Option<AppHandle<R>>,
+    app_handle: Option<AppHandle>,
     /// Optional review repository for adding audit-trail ReviewNotes on crash recovery
     review_repo: Option<Arc<dyn ReviewRepository>>,
     /// Optional chat service for Phase N+1 ideation recovery.
@@ -175,9 +187,41 @@ pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
     /// Projects whose startup Git/GitHub preflight failed. Startup recovery for
     /// these projects is deferred so recovery does not immediately hit known-bad auth.
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
+    notification_repo: Option<Arc<dyn NotificationRepository>>,
 }
 
-impl<R: Runtime> StartupJobRunner<R> {
+struct StartupSafetyNet {
+    task_repo: Arc<dyn TaskRepository>,
+    task_dep_repo: Arc<dyn TaskDependencyRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    app_handle: Option<AppHandle>,
+}
+
+impl StartupSafetyNet {
+    async fn run(self) {
+        let step_started_at = startup_job_step_started("ready_task_unblock");
+        StartupJobRunner::unblock_ready_tasks_for(
+            Arc::clone(&self.task_repo),
+            Arc::clone(&self.task_dep_repo),
+            Arc::clone(&self.project_repo),
+            self.app_handle.clone(),
+        )
+        .await;
+        startup_job_step_completed("ready_task_unblock", step_started_at);
+
+        let step_started_at = startup_job_step_started("dependency_violation_reconcile");
+        StartupJobRunner::reconcile_dependency_violations_for(
+            self.task_repo,
+            self.task_dep_repo,
+            self.project_repo,
+            self.app_handle,
+        )
+        .await;
+        startup_job_step_completed("dependency_violation_reconcile", step_started_at);
+    }
+}
+
+impl StartupJobRunner {
     async fn persist_startup_status_change(
         &self,
         task: &crate::domain::entities::Task,
@@ -224,7 +268,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         running_agent_registry: Arc<dyn crate::domain::services::RunningAgentRegistry>,
         memory_event_repo: Arc<dyn crate::domain::repositories::MemoryEventRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
-        transition_service: Arc<TaskTransitionService<R>>,
+        transition_service: Arc<TaskTransitionService>,
         execution_state: Arc<ExecutionState>,
         active_project_state: Arc<ActiveProjectState>,
         app_state_repo: Arc<dyn AppStateRepository>,
@@ -275,6 +319,7 @@ impl<R: Runtime> StartupJobRunner<R> {
             chat_service: None,
             ideation_session_repo,
             git_startup_blocked_project_ids: Arc::new(HashSet::new()),
+            notification_repo: None,
         }
     }
 
@@ -519,7 +564,7 @@ impl<R: Runtime> StartupJobRunner<R> {
     }
 
     /// Set the app handle for event emission (builder pattern).
-    pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle.clone());
         self.reconciler = self.reconciler.with_app_handle(app_handle);
         self
@@ -555,39 +600,36 @@ impl<R: Runtime> StartupJobRunner<R> {
         self
     }
 
-    pub fn spawn_post_ready_safety_net(&self, delay: Duration)
-    where
-        R: 'static,
-    {
-        let task_repo = Arc::clone(&self.task_repo);
-        let task_dep_repo = Arc::clone(&self.task_dep_repo);
-        let project_repo = Arc::clone(&self.project_repo);
-        let app_handle = self.app_handle.clone();
+    pub fn with_notification_repo(
+        mut self,
+        notification_repo: Arc<dyn NotificationRepository>,
+    ) -> Self {
+        self.notification_repo = Some(notification_repo);
+        self
+    }
+
+    pub fn spawn_post_ready_safety_net(&self, delay: Duration) {
+        let runner = self.clone_for_safety_net();
         tauri::async_runtime::spawn(async move {
             if delay > Duration::ZERO {
                 tokio::time::sleep(delay).await;
             }
 
-            let step_started_at = startup_job_step_started("ready_task_unblock");
-            Self::unblock_ready_tasks_for(
-                Arc::clone(&task_repo),
-                Arc::clone(&task_dep_repo),
-                Arc::clone(&project_repo),
-                app_handle.clone(),
-            )
-            .await;
-            startup_job_step_completed("ready_task_unblock", step_started_at);
-
-            let step_started_at = startup_job_step_started("dependency_violation_reconcile");
-            Self::reconcile_dependency_violations_for(
-                task_repo,
-                task_dep_repo,
-                project_repo,
-                app_handle,
-            )
-            .await;
-            startup_job_step_completed("dependency_violation_reconcile", step_started_at);
+            runner.run().await;
         });
+    }
+
+    fn clone_for_safety_net(&self) -> StartupSafetyNet {
+        StartupSafetyNet {
+            task_repo: Arc::clone(&self.task_repo),
+            task_dep_repo: Arc::clone(&self.task_dep_repo),
+            project_repo: Arc::clone(&self.project_repo),
+            app_handle: self.app_handle.clone(),
+        }
+    }
+
+    async fn run_post_ready_safety_net(&self) {
+        self.clone_for_safety_net().run().await;
     }
 
     /// Run startup jobs, resuming tasks in agent-active states.
@@ -595,8 +637,24 @@ impl<R: Runtime> StartupJobRunner<R> {
     /// Skips if execution is paused. Stops early if max_concurrent is reached.
     /// For each task in an agent-active state, re-executes entry actions to
     /// respawn the appropriate agent.
-    pub async fn run(&self) -> HashSet<String> {
+    pub fn run(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HashSet<String>> + Send + '_>> {
+        Box::pin(self.run_inner())
+    }
+
+    async fn run_inner(&self) -> HashSet<String> {
         debug!("StartupJobRunner::run() called");
+
+        if let Some(notification_repo) = &self.notification_repo {
+            let step_started_at = startup_job_step_started("notification_retention_prune");
+            let (read_before, max_rows) =
+                notification_retention_prune_args(stream_timeouts(), chrono::Utc::now());
+            if let Err(error) = notification_repo.prune(read_before, max_rows).await {
+                tracing::warn!(error = %error, "Failed to prune durable notifications at startup");
+            }
+            startup_job_step_completed("notification_retention_prune", step_started_at);
+        }
 
         if is_startup_recovery_disabled() {
             info!(
@@ -724,6 +782,8 @@ impl<R: Runtime> StartupJobRunner<R> {
             }
         }
         startup_job_step_completed("app_state_load_and_quota", step_started_at);
+
+        self.run_post_ready_safety_net().await;
 
         match app_settings.execution_halt_mode {
             ExecutionHaltMode::Running => {}
@@ -1352,7 +1412,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         item: crate::application::recovery_queue::RecoveryItem,
         chat_service: &dyn ChatService,
         session_repo: &dyn IdeationSessionRepository,
-        app_handle: Option<&AppHandle<R>>,
+        app_handle: Option<&AppHandle>,
     ) -> Result<(), String> {
         let session_id = IdeationSessionId::from_string(item.context_id.clone());
 
@@ -1590,7 +1650,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         task_repo: Arc<dyn TaskRepository>,
         task_dep_repo: Arc<dyn TaskDependencyRepository>,
         project_repo: Arc<dyn ProjectRepository>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) {
         // Get all projects to scan for blocked tasks
         let projects = match project_repo.get_all().await {
@@ -1772,7 +1832,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         task_repo: Arc<dyn TaskRepository>,
         task_dep_repo: Arc<dyn TaskDependencyRepository>,
         project_repo: Arc<dyn ProjectRepository>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) {
         let projects = match project_repo.get_all().await {
             Ok(p) => p,

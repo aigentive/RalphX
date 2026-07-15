@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus, GitPullRequestArrow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -43,13 +43,27 @@ export interface TeamMetadata {
   debateSummary?: DebateSummaryData | undefined;
 }
 
+export interface PlanDisplayConversationReference {
+  artifactId: string;
+  title: string;
+  version: number;
+}
+
+export type PlanDisplayBodyMode = "plan" | "proposals";
+
 export interface PlanDisplayProps {
   plan: Artifact;
   artifactLabel?: string;
   showApprove?: boolean;
   linkedProposalsCount?: number;
+  bodyMode?: PlanDisplayBodyMode;
+  onBodyModeChange?: (mode: PlanDisplayBodyMode) => void;
+  hideBody?: boolean;
   onEdit?: () => void;
   onExport?: () => void;
+  onStartNewConversationWithPlan?: (
+    reference: PlanDisplayConversationReference,
+  ) => void;
   onApprove?: () => void;
   isApproving?: boolean;
   approveLabel?: string;
@@ -340,8 +354,12 @@ export function PlanDisplay({
   artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
+  bodyMode = "plan",
+  onBodyModeChange,
+  hideBody = false,
   onEdit,
   onExport,
+  onStartNewConversationWithPlan,
   onApprove,
   isApproving = false,
   approveLabel = "Approve Plan",
@@ -372,6 +390,8 @@ export function PlanDisplay({
   const showCreateProposals =
     onCreateProposals &&
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
+  const showProposalBodyToggle =
+    linkedProposalsCount > 0 && onBodyModeChange !== undefined;
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
     !isPlanActionRecommendationPending &&
@@ -471,6 +491,16 @@ export function PlanDisplay({
   const planContent = plan.content.type === "inline" ? plan.content.text : "";
   const displayContent = historicalContent ?? planContent;
   const isViewingHistorical = selectedVersion !== plan.metadata.version;
+  const currentBodyMode = bodyMode ?? "plan";
+  const bodyModeButtonStyle = (isActive: boolean) => ({
+    color: isActive ? "var(--accent-primary)" : "var(--text-secondary)",
+    backgroundColor: isActive
+      ? withAlpha("var(--accent-primary)", 10)
+      : "transparent",
+    borderColor: isActive ? "var(--accent-border)" : "var(--border-subtle)",
+    borderStyle: "solid",
+    borderWidth: "1px",
+  });
 
   const handleBackToLatest = useCallback(() => {
     setSelectedVersion(plan.metadata.version);
@@ -512,6 +542,19 @@ export function PlanDisplay({
     URL.revokeObjectURL(url);
   }, [planContent, plan.name, onExport]);
 
+  const handleStartNewConversationWithPlan = useCallback(() => {
+    onStartNewConversationWithPlan?.({
+      artifactId: plan.id,
+      title: plan.name,
+      version: selectedVersion,
+    });
+  }, [
+    onStartNewConversationWithPlan,
+    plan.id,
+    plan.name,
+    selectedVersion,
+  ]);
+
   if (chromeless) {
     // Extract the leading H1 from the plan body so we can render it on
     // the same row as the action cluster instead of having the title
@@ -527,6 +570,7 @@ export function PlanDisplay({
     const hasActionCTAs =
       (showApprove && !isApproved) ||
       isApproved ||
+      showProposalBodyToggle ||
       onVerifyPlan ||
       showCreateProposals ||
       showImplementDirectly;
@@ -646,6 +690,15 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
+                    {onStartNewConversationWithPlan && (
+                      <DropdownMenuItem
+                        onClick={handleStartNewConversationWithPlan}
+                        className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                      >
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                        New Conversation
+                      </DropdownMenuItem>
+                    )}
                     {onEdit && (
                       <DropdownMenuItem
                         onClick={onEdit}
@@ -708,6 +761,38 @@ export function PlanDisplay({
                   <CheckCircle2 className="w-3 h-3" />
                   Plan Approved
                 </span>
+              )}
+
+              {showProposalBodyToggle && (
+                <>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onBodyModeChange?.("plan")}
+                    aria-pressed={currentBodyMode === "plan"}
+                    data-testid="plan-overview-toggle"
+                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                    style={bodyModeButtonStyle(currentBodyMode === "plan")}
+                  >
+                    <FileText className="w-3 h-3" />
+                    Overview
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onBodyModeChange?.("proposals")}
+                    aria-pressed={currentBodyMode === "proposals"}
+                    data-testid="plan-proposals-toggle"
+                    className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                    style={bodyModeButtonStyle(currentBodyMode === "proposals")}
+                  >
+                    <GitPullRequestArrow className="w-3 h-3" />
+                    {linkedProposalsCount} Proposal
+                    {linkedProposalsCount !== 1 ? "s" : ""}
+                  </Button>
+                </>
               )}
 
               {onVerifyPlan && (
@@ -880,7 +965,7 @@ export function PlanDisplay({
           </div>
         )}
 
-        {isLoadingVersion ? (
+        {hideBody ? null : isLoadingVersion ? (
           <div className="flex items-center justify-center py-12">
             <Loader2
               className="w-6 h-6 animate-spin"
@@ -1121,7 +1206,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
-                      aria-label={`${artifactLabel} actions`}
+                      aria-label="View version history"
                     >
                       <History className="w-3 h-3" />
                       v{selectedVersion}
@@ -1195,6 +1280,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <MoreHorizontal className="w-3.5 h-3.5" />
                     </Button>
@@ -1224,6 +1310,15 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
+                    {onStartNewConversationWithPlan && (
+                      <DropdownMenuItem
+                        onClick={handleStartNewConversationWithPlan}
+                        className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                      >
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                        New Conversation
+                      </DropdownMenuItem>
+                    )}
                     {onEdit && (
                       <DropdownMenuItem
                         onClick={onEdit}

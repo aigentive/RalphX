@@ -10,9 +10,9 @@
 // - StartupJobRunner after resuming agent-active tasks
 // - resume_execution and set_max_concurrent commands (future Phase 26 tasks)
 
-mod watchdog;
 mod helpers;
 mod merge_retry;
+mod watchdog;
 
 pub use watchdog::ReadyWatchdog;
 
@@ -22,20 +22,23 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc, Mutex,
 };
-use tauri::{AppHandle, Runtime};
+use tauri::AppHandle;
 use tokio::sync::{Mutex as TokioMutex, RwLock};
 
-use crate::commands::ExecutionState;
-use crate::application::harness_runtime_registry::default_scheduler_runtime_config;
-use crate::application::runtime_factory::{RuntimeFactoryDeps, build_transition_service_with_fallback};
 use crate::application::chat_service::uses_execution_slot;
+use crate::application::harness_runtime_registry::default_scheduler_runtime_config;
+use crate::application::runtime_factory::{
+    build_transition_service_with_fallback, RuntimeFactoryDeps,
+};
 use crate::commands::execution_commands::context_matches_running_status_for_gc;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     task_metadata::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
         MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
     },
-    ChatContextType, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory,
+    ChatContextType, ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task,
+    TaskCategory,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
@@ -44,12 +47,16 @@ use crate::domain::repositories::{
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     TaskDependencyRepository, TaskRepository,
 };
-use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{
+    GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
+};
 use crate::domain::state_machine::services::TaskScheduler;
 
-use super::{AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService};
-use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_trigger_origin};
+use super::{
+    AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService,
+};
 use crate::domain::state_machine::transition_handler::freshness::FreshnessMetadata;
+use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_trigger_origin};
 
 /// Production implementation of TaskScheduler for auto-scheduling Ready tasks.
 ///
@@ -58,7 +65,7 @@ use crate::domain::state_machine::transition_handler::freshness::FreshnessMetada
 ///
 /// Phase 82: Supports optional project scoping via `active_project_id` filter.
 /// When set, only tasks from that project will be scheduled.
-pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
+pub struct TaskSchedulerService {
     pub(super) execution_state: Arc<ExecutionState>,
     pub(super) project_repo: Arc<dyn ProjectRepository>,
     pub(super) task_repo: Arc<dyn TaskRepository>,
@@ -73,7 +80,7 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) message_queue: Arc<MessageQueue>,
     pub(super) running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub(super) memory_event_repo: Arc<dyn MemoryEventRepository>,
-    pub(super) app_handle: Option<AppHandle<R>>,
+    pub(super) app_handle: Option<AppHandle>,
     /// Optional plan branch repository for feature branch resolution.
     pub(super) plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     /// Optional execution plan repository for filtering out superseded plan tasks.
@@ -92,12 +99,16 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     /// Optional GitHub service so scheduled plan merges can take the PR-mode path.
     pub(super) github_service: Option<Arc<dyn GithubServiceTrait>>,
+    /// Optional PR description drafter required before PR body writes.
+    pub(super) plan_pr_description_drafter: Option<Arc<dyn PlanPrDescriptionDrafter>>,
     /// Self-reference for propagating scheduler through build_transition_service().
     /// Set after Arc-wrapping via set_self_ref(). Uses Mutex since it's written once at init.
     pub(super) self_ref: Mutex<Option<Arc<dyn TaskScheduler>>>,
     /// Phase 82: Optional project ID to scope scheduling to a single project.
     /// When set, only Ready tasks from this project are considered.
     pub(super) active_project_id: RwLock<Option<ProjectId>>,
+    /// Optional execution plan ID to scope scheduling to one implementation attempt.
+    pub(super) active_execution_plan_id: RwLock<Option<ExecutionPlanId>>,
     /// Guard to prevent concurrent scheduling from causing duplicate transitions.
     /// Multiple triggers can fire try_schedule_ready_tasks() simultaneously
     /// (e.g., on_enter(Ready) delayed tokio::spawn + on_exit(agent_state) direct call),
@@ -110,7 +121,7 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) contention_retry_pending: Arc<AtomicU32>,
 }
 
-impl<R: Runtime> TaskSchedulerService<R> {
+impl TaskSchedulerService {
     /// Create a new TaskSchedulerService with all required dependencies.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -128,7 +139,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         message_queue: Arc<MessageQueue>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) -> Self {
         Self {
             execution_state,
@@ -155,8 +166,10 @@ impl<R: Runtime> TaskSchedulerService<R> {
             agent_clients: None,
             pr_poller_registry: None,
             github_service: None,
+            plan_pr_description_drafter: None,
             self_ref: Mutex::new(None),
             active_project_id: RwLock::new(None),
+            active_execution_plan_id: RwLock::new(None),
             scheduling_lock: TokioMutex::new(()),
             contention_retry_pending: Arc::new(AtomicU32::new(0)),
         }
@@ -221,6 +234,14 @@ impl<R: Runtime> TaskSchedulerService<R> {
         self
     }
 
+    pub fn with_plan_pr_description_drafter(
+        mut self,
+        drafter: Arc<dyn PlanPrDescriptionDrafter>,
+    ) -> Self {
+        self.plan_pr_description_drafter = Some(drafter);
+        self
+    }
+
     /// Set the self-reference after wrapping in Arc.
     /// This allows build_transition_service() to propagate the scheduler.
     /// Must be called after Arc::new(scheduler) at each construction site.
@@ -240,6 +261,12 @@ impl<R: Runtime> TaskSchedulerService<R> {
         self.active_project_id.read().await.clone()
     }
 
+    /// Set the active execution plan ID for scoped scheduling.
+    /// When set, only Ready tasks from this execution plan will be scheduled.
+    pub async fn set_active_execution_plan(&self, execution_plan_id: Option<ExecutionPlanId>) {
+        *self.active_execution_plan_id.write().await = execution_plan_id;
+    }
+
     /// Find the oldest schedulable task across all projects (or scoped to active project).
     ///
     /// Phase 82: When active_project_id is set, only tasks from that project are considered.
@@ -252,6 +279,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
     async fn find_oldest_schedulable_task(&self) -> Option<Task> {
         // Phase 82: Get active project filter
         let active_project = self.active_project_id.read().await.clone();
+        let active_execution_plan = self.active_execution_plan_id.read().await.clone();
 
         // Get a batch of oldest Ready tasks to evaluate
         let ready_tasks = match self.task_repo.get_oldest_ready_tasks(50).await {
@@ -263,6 +291,18 @@ impl<R: Runtime> TaskSchedulerService<R> {
         };
 
         for task in ready_tasks {
+            if let Some(ref active_plan_id) = active_execution_plan {
+                if task.execution_plan_id.as_ref() != Some(active_plan_id) {
+                    tracing::debug!(
+                        task_id = task.id.as_str(),
+                        task_execution_plan = ?task.execution_plan_id.as_ref().map(|id| id.as_str()),
+                        active_execution_plan = active_plan_id.as_str(),
+                        "Skipping task: not in active execution plan"
+                    );
+                    continue;
+                }
+            }
+
             // Phase 82: If active project is set, skip tasks from other projects
             if let Some(ref active_pid) = active_project {
                 if task.project_id != *active_pid {
@@ -309,6 +349,15 @@ impl<R: Runtime> TaskSchedulerService<R> {
                     task_id = task.id.as_str(),
                     execution_plan_id = ?task.execution_plan_id.as_ref().map(|id| id.as_str()),
                     "Skipping task: execution plan is no longer active"
+                );
+                continue;
+            }
+
+            if self.is_execution_plan_halted(&task).await {
+                tracing::info!(
+                    task_id = task.id.as_str(),
+                    execution_plan_id = ?task.execution_plan_id.as_ref().map(|id| id.as_str()),
+                    "Skipping task: execution plan is paused or stopped"
                 );
                 continue;
             }
@@ -372,17 +421,15 @@ impl<R: Runtime> TaskSchedulerService<R> {
 
     #[doc(hidden)]
     pub fn set_contention_retry_pending_for_test(&self, value: u32) {
-        self.contention_retry_pending.store(value, Ordering::Relaxed);
+        self.contention_retry_pending
+            .store(value, Ordering::Relaxed);
     }
 
     /// Build a TaskTransitionService for transitioning tasks.
     ///
     /// Creates a fresh instance to avoid circular dependency issues when
     /// the scheduler is called from within TransitionHandler.
-    pub(super) fn build_transition_service(&self) -> Arc<TaskTransitionService<R>>
-    where
-        R: Runtime + 'static,
-    {
+    pub(super) fn build_transition_service(&self) -> Arc<TaskTransitionService> {
         let deps = RuntimeFactoryDeps::from_core(
             Arc::clone(&self.task_repo),
             Arc::clone(&self.task_dependency_repo),
@@ -410,6 +457,11 @@ impl<R: Runtime> TaskSchedulerService<R> {
             self.github_service.as_ref().map(Arc::clone),
             self.pr_poller_registry.as_ref().map(Arc::clone),
         );
+        let deps = if let Some(drafter) = self.plan_pr_description_drafter.as_ref() {
+            deps.with_plan_pr_description_drafter(Arc::clone(drafter))
+        } else {
+            deps
+        };
         let mut service = build_transition_service_with_fallback(
             &self.app_handle,
             Arc::clone(&self.execution_state),
@@ -423,7 +475,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
 }
 
 #[async_trait]
-impl<R: Runtime + 'static> TaskScheduler for TaskSchedulerService<R> {
+impl TaskScheduler for TaskSchedulerService {
     /// Try to schedule Ready tasks if execution slots are available.
     ///
     /// This method loops to fill all available execution slots:
@@ -574,5 +626,70 @@ impl<R: Runtime + 'static> TaskScheduler for TaskSchedulerService<R> {
     /// Retry main-branch merges that were deferred because agents were running.
     async fn try_retry_main_merges(&self) {
         self.retry_main_merges_impl().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::AppState;
+    use crate::domain::entities::{AgentWorkspacePrDescription, PlanBranch, Project};
+    use crate::domain::services::PrReviewState;
+    use crate::error::AppResult;
+
+    struct StaticPlanPrDescriptionDrafter;
+
+    #[async_trait]
+    impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+        async fn draft_plan_description(
+            &self,
+            _project: &Project,
+            _plan_branch: &PlanBranch,
+            _review_base: &str,
+            _review_state: PrReviewState,
+        ) -> AppResult<AgentWorkspacePrDescription> {
+            Ok(AgentWorkspacePrDescription::new(
+                None,
+                "## Summary\n\nScheduler test PR description".to_string(),
+            ))
+        }
+    }
+
+    fn scheduler_for_state(state: &AppState) -> TaskSchedulerService {
+        TaskSchedulerService::new(
+            Arc::new(ExecutionState::new()),
+            Arc::clone(&state.project_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.task_dependency_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.ideation_session_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.memory_event_repo),
+            None,
+        )
+    }
+
+    #[test]
+    fn scheduler_plan_pr_description_drafter_defaults_to_none() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state);
+
+        assert!(scheduler.plan_pr_description_drafter.is_none());
+    }
+
+    #[test]
+    fn scheduler_build_transition_service_carries_plan_pr_description_drafter() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state)
+            .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter));
+
+        assert!(scheduler.plan_pr_description_drafter.is_some());
+        let _service = scheduler.build_transition_service();
     }
 }

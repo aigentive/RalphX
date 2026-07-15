@@ -11,6 +11,11 @@ fn build_startup_pipeline_deps(
     startup_active_project_state: Arc<ActiveProjectState>,
     startup_app_handle: tauri::AppHandle,
     mode: StartupPipelineMode,
+    pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
 ) -> StartupPipelineDeps {
     // Spawn startup job runner to resume tasks in agent-active states
     // Clone references needed for the async task
@@ -34,6 +39,8 @@ fn build_startup_pipeline_deps(
         Arc::clone(&app_state.agent_conversation_granola_note_repo);
     let startup_orphan_worktree_cleanup_marker_repo =
         Arc::clone(&app_state.orphan_worktree_cleanup_marker_repo);
+    let startup_automation_repo = Arc::clone(&app_state.automation_repo);
+    let startup_automation_run_repo = Arc::clone(&app_state.automation_run_repo);
     let startup_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let startup_task_outcome_repo = Arc::clone(&app_state.task_outcome_repo);
     let startup_ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
@@ -62,6 +69,7 @@ fn build_startup_pipeline_deps(
     let startup_git_auth_recovery_state = Arc::clone(&app_state.startup_git_auth_recovery_state);
 
     StartupPipelineDeps {
+        app_state: app_state.clone(),
         execution_state: Arc::clone(&startup_execution_state),
         active_project_state: Arc::clone(&startup_active_project_state),
         task_repo: startup_task_repo,
@@ -79,6 +87,8 @@ fn build_startup_pipeline_deps(
         agent_conversation_linear_issue_repo: startup_agent_conversation_linear_issue_repo,
         agent_conversation_granola_note_repo: startup_agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo: startup_orphan_worktree_cleanup_marker_repo,
+        automation_repo: startup_automation_repo,
+        automation_run_repo: startup_automation_run_repo,
         agent_run_repo: startup_agent_run_repo,
         task_outcome_repo: startup_task_outcome_repo,
         ideation_session_repo: startup_ideation_session_repo,
@@ -106,6 +116,7 @@ fn build_startup_pipeline_deps(
         app_handle: startup_app_handle,
         git_auth_recovery_state: startup_git_auth_recovery_state,
         mode,
+        pr_fix_review_publish_resumer,
     }
 }
 
@@ -114,6 +125,11 @@ pub(crate) fn launch_startup_pipeline(
     app_state: &AppState,
     startup_execution_state: Arc<ExecutionState>,
     startup_active_project_state: Arc<ActiveProjectState>,
+    pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
 ) {
     // Clone app handle to enable event emission in startup tasks
     let startup_app_handle = app.handle().clone();
@@ -133,6 +149,7 @@ pub(crate) fn launch_startup_pipeline(
         startup_active_project_state,
         startup_app_handle,
         StartupPipelineMode::Full,
+        pr_fix_review_publish_resumer,
     );
     tauri::async_runtime::spawn(async move {
         if let Err(error) = application::startup_pipeline::run_startup_pipeline(deps).await {
@@ -145,6 +162,11 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
     app_state: &AppState,
     startup_execution_state: Arc<ExecutionState>,
     startup_active_project_state: Arc<ActiveProjectState>,
+    pr_fix_review_publish_resumer: Option<
+        Arc<
+            dyn crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrFixReviewPublishResumer,
+        >,
+    >,
 ) -> Result<bool, String> {
     let recovery_state = Arc::clone(&app_state.startup_git_auth_recovery_state);
     if !recovery_state.try_begin_resume() {
@@ -161,6 +183,7 @@ pub(crate) async fn resume_deferred_git_startup_pipeline(
             startup_active_project_state,
             app_handle,
             StartupPipelineMode::DeferredGitResume,
+            pr_fix_review_publish_resumer,
         );
         application::startup_pipeline::run_startup_pipeline(deps)
             .await

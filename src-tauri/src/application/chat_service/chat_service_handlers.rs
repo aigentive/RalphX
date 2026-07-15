@@ -14,10 +14,14 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::application::git_service::GitService;
+use crate::application::notification_service::NotificationService;
+use crate::application::persona_resolver::resolve_persona_for_send;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_diff_base::ensure_task_has_non_empty_captured_diff;
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::AppState;
@@ -25,20 +29,22 @@ use crate::application::InteractiveProcessRegistry;
 use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunId, ChatContextType, ChatConversation,
+    app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
-    MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
-    SessionPurpose, Task, TaskId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus, TaskStepStatus,
-    ValidationCacheMetadata, VerificationGap, VerificationStatus,
+    MergeRecoverySource, MergeRecoveryState, PersonaDirective, ReviewNote, ReviewOutcome,
+    ReviewerType, SessionPurpose, Task, TaskId, TaskOutcome, TaskOutcomeId, TaskOutcomeStatus,
+    TaskStepStatus, ValidationCacheMetadata, VerificationGap, VerificationStatus,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ExecutionSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
-    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
+    ProjectMemorySettingsRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_direct_edit_workspace, AgentWorkspaceOutcomeAdapter, MessageQueue, OutcomeLedgerService,
@@ -76,6 +82,105 @@ fn provider_pause_targets_execution(context_type: ChatContextType) -> bool {
 }
 
 const VERIFICATION_AUTO_CONTINUE_METADATA: &str = r#"{"resume_in_place":true}"#;
+const AGENT_STOPPED_BY_USER_MESSAGE: &str = "Agent stopped by user";
+const AGENT_STOPPED_BY_SYSTEM_RECOVERY_MESSAGE: &str = "Agent stream cancelled by system recovery";
+
+fn task_metadata_indicates_recovery_cancellation(metadata: Option<&str>) -> bool {
+    let Some(metadata) = metadata
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return false;
+    };
+
+    if metadata
+        .get("trigger_origin")
+        .and_then(|value| value.as_str())
+        == Some("recovery")
+    {
+        return true;
+    }
+
+    let Some(execution_recovery) = metadata.get("execution_recovery") else {
+        return false;
+    };
+    execution_recovery
+        .get("last_state")
+        .and_then(|value| value.as_str())
+        == Some("retrying")
+        && !execution_recovery
+            .get("stop_retrying")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+}
+
+async fn cancelled_stream_failure_message(
+    context_type: ChatContextType,
+    context_id: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+) -> &'static str {
+    if matches!(
+        context_type,
+        ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
+    ) {
+        let task_id = TaskId::from_string(context_id.to_string());
+        match task_repo.get_by_id(&task_id).await {
+            Ok(Some(task))
+                if task_metadata_indicates_recovery_cancellation(task.metadata.as_deref()) =>
+            {
+                return AGENT_STOPPED_BY_SYSTEM_RECOVERY_MESSAGE;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    context_type = %context_type,
+                    context_id,
+                    error = %error,
+                    "Failed to load task while classifying stream cancellation"
+                );
+            }
+        }
+    }
+
+    AGENT_STOPPED_BY_USER_MESSAGE
+}
+
+async fn mark_cancelled_stream_as_cancelled(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    agent_run_id: &str,
+    context_type: ChatContextType,
+    context_id: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+) {
+    let run_id = AgentRunId::from_string(agent_run_id);
+    match agent_run_repo.get_by_id(&run_id).await {
+        Ok(Some(run)) if run.status != AgentRunStatus::Running => {
+            tracing::info!(
+                agent_run_id,
+                status = %run.status,
+                "Stream cancellation found an already-terminal agent run; preserving existing status"
+            );
+        }
+        Ok(_) => {
+            let message =
+                cancelled_stream_failure_message(context_type, context_id, task_repo).await;
+            if let Err(error) = agent_run_repo.fail(&run_id, message).await {
+                tracing::warn!(
+                    agent_run_id,
+                    error = %error,
+                    "Failed to mark cancelled stream as cancelled"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                agent_run_id,
+                error = %error,
+                "Failed to load agent run before cancelled stream labeling; preserving existing run state"
+            );
+        }
+    }
+}
 
 async fn record_task_execution_outcome<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
@@ -204,17 +309,203 @@ async fn record_direct_workspace_turn_outcome<R: Runtime>(
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     harness: AgentHarnessKind,
 ) -> Result<HashMap<String, String>, String> {
-    let Some(handle) = app_handle.as_ref() else {
-        return Ok(HashMap::new());
-    };
-    let app_state = handle.state::<AppState>();
+    let app_state_provider_repo = app_handle
+        .as_ref()
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
+    let provider_repo = agent_provider_settings_repo
+        .as_ref()
+        .map(Arc::clone)
+        .or(app_state_provider_repo);
     crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-        Some(&app_state.agent_provider_settings_repo),
+        provider_repo.as_ref(),
         harness,
     )
     .await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryRetryProviderDecision {
+    ApplyEnv(HashMap<String, String>),
+    AllowWithoutProviderSettings,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryRetryProviderBlock {
+    Disabled(String),
+    Env(String),
+    MissingProviderSettings,
+}
+
+async fn recovery_retry_provider_decision<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+) -> Result<RecoveryRetryProviderDecision, RecoveryRetryProviderBlock> {
+    let Some(provider_repo) = agent_provider_settings_repo.as_ref() else {
+        return if super::uses_execution_slot(context_type) {
+            Err(RecoveryRetryProviderBlock::MissingProviderSettings)
+        } else {
+            Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings)
+        };
+    };
+
+    crate::application::ensure_provider_spawn_enabled(
+        provider_repo,
+        recovery_harness,
+        "recovery_retry",
+    )
+    .await
+    .map_err(RecoveryRetryProviderBlock::Disabled)?;
+
+    let provider_env =
+        provider_env_for_harness(app_handle, agent_provider_settings_repo, recovery_harness)
+            .await
+            .map_err(RecoveryRetryProviderBlock::Env)?;
+
+    Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env))
+}
+
+async fn recovery_retry_spawnable_with_provider_gate<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+    mut provider_spawnable: chat_service_context::ProviderSpawnableCommand,
+) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+    match recovery_retry_provider_decision(
+        app_handle,
+        agent_provider_settings_repo,
+        recovery_harness,
+        context_type,
+    )
+    .await
+    {
+        Ok(RecoveryRetryProviderDecision::ApplyEnv(provider_env)) => {
+            provider_spawnable.apply_provider_env(&provider_env);
+            Some(provider_spawnable.spawnable)
+        }
+        Ok(RecoveryRetryProviderDecision::AllowWithoutProviderSettings) => {
+            Some(provider_spawnable.spawnable)
+        }
+        Err(_) => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RecoveryRetryProviderGate<'a, R: Runtime> {
+    app_handle: &'a Option<AppHandle<R>>,
+    agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
+    recovery_harness: AgentHarnessKind,
+    context_type: ChatContextType,
+}
+
+impl<'a, R: Runtime> RecoveryRetryProviderGate<'a, R> {
+    fn new(
+        app_handle: &'a Option<AppHandle<R>>,
+        agent_provider_settings_repo: &'a Option<Arc<dyn AgentProviderSettingsRepository>>,
+        recovery_harness: AgentHarnessKind,
+        context_type: ChatContextType,
+    ) -> Self {
+        Self {
+            app_handle,
+            agent_provider_settings_repo,
+            recovery_harness,
+            context_type,
+        }
+    }
+}
+
+async fn resolve_recovery_retry_spawnable<R: Runtime>(
+    retry_provider_spawnable: Result<chat_service_context::ProviderSpawnableCommand, String>,
+    provider_gate: RecoveryRetryProviderGate<'_, R>,
+) -> Option<crate::infrastructure::agents::claude::SpawnableCommand> {
+    match retry_provider_spawnable {
+        Ok(provider_spawnable) => {
+            recovery_retry_spawnable_with_provider_gate(
+                provider_gate.app_handle,
+                provider_gate.agent_provider_settings_repo,
+                provider_gate.recovery_harness,
+                provider_gate.context_type,
+                provider_spawnable,
+            )
+            .await
+        }
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                harness = %provider_gate.recovery_harness,
+                "Failed to build recovery retry spawnable"
+            );
+            None
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecoveryRetryAppRepos {
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    delegated_session_repo: Option<Arc<dyn DelegatedSessionRepository>>,
+}
+
+impl RecoveryRetryAppRepos {
+    fn from_app_handle<R: Runtime>(app_handle: &Option<AppHandle<R>>) -> Self {
+        let Some(handle) = app_handle else {
+            return Self::default();
+        };
+        let app_state = handle.state::<AppState>();
+        Self {
+            ideation_effort_settings_repo: Some(Arc::clone(
+                &app_state.ideation_effort_settings_repo,
+            )),
+            ideation_model_settings_repo: Some(Arc::clone(&app_state.ideation_model_settings_repo)),
+            delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
+        }
+    }
+}
+
+async fn resolve_recovery_retry_persona<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    feature_enabled: bool,
+    conversation: &ChatConversation,
+    context_type: ChatContextType,
+    agent_name_override_set: bool,
+) -> Result<Option<crate::application::persona_prompt::ResolvedPersona>, String> {
+    if !feature_enabled {
+        return Ok(None);
+    }
+    let Some(handle) = app_handle else {
+        return Ok(None);
+    };
+    let Some(app_state) = handle.try_state::<AppState>() else {
+        return Ok(None);
+    };
+    let workspace_mode = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .map_err(|error| format!("Persona workspace lookup failed: {error}"))?
+        .map(|workspace| workspace.mode);
+    resolve_persona_for_send(
+        conversation,
+        &PersonaDirective::Inherit,
+        super::persona_resolve_flags_for_conversation(
+            feature_enabled,
+            false,
+            agent_name_override_set,
+            context_type,
+            conversation,
+            workspace_mode,
+        ),
+        Arc::clone(&app_state.persona_repo),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 fn queue_verification_auto_continue(
@@ -493,6 +784,33 @@ enum ExecutionCompletionAction {
     Failed,
 }
 
+#[derive(Clone, Default)]
+struct RuntimeSupportRepos {
+    execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
+    agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+}
+
+impl RuntimeSupportRepos {
+    fn new(
+        execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+        agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
+        plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+        interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
+    ) -> Self {
+        Self {
+            execution_settings_repo: execution_settings_repo.as_ref().map(Arc::clone),
+            agent_lane_settings_repo: agent_lane_settings_repo.as_ref().map(Arc::clone),
+            agent_provider_settings_repo: agent_provider_settings_repo.as_ref().map(Arc::clone),
+            plan_branch_repo: plan_branch_repo.as_ref().map(Arc::clone),
+            interactive_process_registry: interactive_process_registry.as_ref().map(Arc::clone),
+        }
+    }
+}
+
 fn execution_completion_action(
     _has_output: bool,
     step_state: StepCompletionState,
@@ -527,7 +845,8 @@ fn build_transition_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-) -> TaskTransitionService<R> {
+    runtime_support: RuntimeSupportRepos,
+) -> TaskTransitionService {
     let deps = build_runtime_factory_deps(
         app_handle,
         task_repo,
@@ -543,9 +862,7 @@ fn build_transition_service<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
-        None,
-        None,
-        None,
+        runtime_support,
     );
     build_transition_service_with_fallback(app_handle, execution_state, &deps)
 }
@@ -567,10 +884,8 @@ fn build_task_scheduler_service<R: Runtime>(
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     execution_state: Arc<ExecutionState>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-    execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
-    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
-    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-) -> TaskSchedulerService<R> {
+    runtime_support: RuntimeSupportRepos,
+) -> TaskSchedulerService {
     let deps = build_runtime_factory_deps(
         app_handle,
         task_repo,
@@ -586,9 +901,7 @@ fn build_task_scheduler_service<R: Runtime>(
         message_queue,
         running_agent_registry,
         memory_event_repo,
-        execution_settings_repo,
-        plan_branch_repo,
-        interactive_process_registry,
+        runtime_support,
     );
     build_task_scheduler_with_fallback(app_handle, execution_state, &deps)
 }
@@ -609,9 +922,7 @@ fn build_runtime_factory_deps<R: Runtime>(
     message_queue: Arc<MessageQueue>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
     memory_event_repo: Arc<dyn MemoryEventRepository>,
-    execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
-    plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
-    interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    runtime_support: RuntimeSupportRepos,
 ) -> RuntimeFactoryDeps {
     RuntimeFactoryDeps::from_core(
         task_repo,
@@ -629,17 +940,17 @@ fn build_runtime_factory_deps<R: Runtime>(
         memory_event_repo,
     )
     .with_runtime_support(
-        execution_settings_repo,
+        runtime_support.execution_settings_repo,
+        runtime_support.agent_lane_settings_repo,
+        runtime_support.agent_provider_settings_repo,
+        runtime_support.plan_branch_repo,
+        runtime_support.interactive_process_registry,
+    )
+    .with_agent_conversation_workspace_repo(
         app_handle
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo)),
-        app_handle
-            .as_ref()
-            .and_then(|handle| handle.try_state::<AppState>())
-            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
-        plan_branch_repo,
-        interactive_process_registry,
+            .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo)),
     )
 }
 
@@ -666,9 +977,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
     ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
     delegated_session_repo: &Arc<dyn crate::domain::repositories::DelegatedSessionRepository>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
-    agent_lane_settings_repo: &Option<
-        Arc<dyn crate::domain::repositories::AgentLaneSettingsRepository>,
-    >,
+    agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     ideation_effort_settings_repo: &Option<
         Arc<dyn crate::domain::repositories::IdeationEffortSettingsRepository>,
     >,
@@ -685,6 +995,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     app_handle: &Option<AppHandle<R>>,
     run_chain_id: Option<String>,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     user_message_content: Option<&str>,
     retry_conv: ChatConversation,
     agent_name: Option<&str>,
@@ -730,6 +1042,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             delegated_session_repo: Arc::clone(delegated_session_repo),
             execution_settings_repo: execution_settings_repo.clone(),
             agent_lane_settings_repo: agent_lane_settings_repo.clone(),
+            agent_provider_settings_repo: agent_provider_settings_repo.clone(),
             ideation_effort_settings_repo: ideation_effort_settings_repo.clone(),
             ideation_model_settings_repo: ideation_model_settings_repo.clone(),
             agent_conversation_workspace_repo: None,
@@ -749,6 +1062,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
             project_memory_settings_repo,
+            notification_service: None,
             message_queue: Arc::clone(message_queue),
             running_agent_registry: Arc::clone(running_agent_registry),
             task_step_repo: task_step_repo.clone(),
@@ -760,6 +1074,8 @@ fn build_recovery_retry_background_context<R: Runtime>(
         app_handle: app_handle.clone(),
         run_chain_id,
         is_retry_attempt: true,
+        persona_feature_enabled,
+        agent_name_override_set,
         user_message_content: user_message_content.map(str::to_string),
         turn_metadata: None,
         conversation: Some(retry_conv),
@@ -781,6 +1097,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         team_service: None,
         streaming_state_cache: super::StreamingStateCache::new(),
         interactive_process_registry: interactive_process_registry.clone(),
+        interactive_process_token: None,
         verification_child_registry: verification_child_registry.clone(),
     }
 }
@@ -834,6 +1151,20 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
     let app_state = handle.state::<AppState>();
     let execution_state = handle.state::<Arc<ExecutionState>>();
 
+    match app_state.app_state_repo.get().await {
+        Ok(settings) if settings.execution_halt_mode == ExecutionHaltMode::Paused => {
+            tracing::info!(
+                category = %category,
+                "Provider-triggered global pause already persists; suppressing duplicate delivery"
+            );
+            return true;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to read persisted halt state before provider-triggered pause");
+        }
+    }
+
     execution_state.pause();
     apply_global_rate_limit_backpressure(
         &Some(Arc::clone(execution_state.inner())),
@@ -842,13 +1173,17 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         source_context_id,
     );
 
-    if let Err(error) = app_state
+    let pause_committed = match app_state
         .app_state_repo
         .set_execution_halt_mode(ExecutionHaltMode::Paused)
         .await
     {
-        tracing::warn!(error = %error, "Failed to persist provider-triggered global pause");
-    }
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to persist provider-triggered global pause");
+            false
+        }
+    };
 
     app_state.running_agent_registry.stop_all().await;
     app_state.interactive_process_registry.clear().await;
@@ -857,6 +1192,56 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         .build_transition_service_with_execution_state(Arc::clone(execution_state.inner()));
 
     let paused_at = chrono::Utc::now().to_rfc3339();
+    // The pause timestamp is generated once per successful global-pause authority commit.
+    // Persist it on the source task before using it as the global notification instance key.
+    if pause_committed {
+        let source_task_id = TaskId::from_string(source_context_id.to_string());
+        match app_state.task_repo.get_by_id(&source_task_id).await {
+            Ok(Some(source_task)) => {
+                let source_pause_reason = super::PauseReason::ProviderError {
+                    category: category.clone(),
+                    message: message.to_string(),
+                    retry_after: retry_after.clone(),
+                    previous_status: source_task.internal_status.to_string(),
+                    paused_at: paused_at.clone(),
+                    auto_resumable: true,
+                    resume_attempts: 0,
+                };
+                let mut source_task_with_pause = source_task.clone();
+                source_task_with_pause.metadata = Some(
+                    source_pause_reason.write_to_task_metadata(source_task.metadata.as_deref()),
+                );
+                source_task_with_pause.touch();
+                match app_state.task_repo.update(&source_task_with_pause).await {
+                    Ok(()) => {
+                        app_state
+                            .notification_service()
+                            .record(
+                                TaskPipelineNotificationProducer::provider_paused_notification(
+                                    &paused_at,
+                                    &category.to_string(),
+                                ),
+                            )
+                            .await;
+                    }
+                    Err(error) => tracing::warn!(
+                        source_context_id,
+                        error = %error,
+                        "Failed to persist provider-pause notification instance"
+                    ),
+                }
+            }
+            Ok(None) => tracing::warn!(
+                source_context_id,
+                "Provider-triggered global pause has no source task for its notification"
+            ),
+            Err(error) => tracing::warn!(
+                source_context_id,
+                error = %error,
+                "Failed to load provider-pause source task for notification"
+            ),
+        }
+    }
     let projects = match app_state.project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
@@ -1008,10 +1393,33 @@ fn seal_unresolved_content_blocks_json(
     serde_json::to_string(&content_blocks).ok().or(Some(raw))
 }
 
+fn terminal_timeline_content_blocks(
+    content: &str,
+    content_blocks_json: Option<&str>,
+) -> Vec<ContentBlockItem> {
+    if let Some(raw) = content_blocks_json {
+        if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlockItem>>(raw) {
+            if !blocks.is_empty() {
+                return blocks;
+            }
+        }
+    }
+
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentBlockItem::Text {
+            text: content.to_string(),
+        }]
+    }
+}
+
 async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     app_handle: Option<&AppHandle<R>>,
     event_ctx: &EventContextPayload,
+    conversation_id: &ChatConversationId,
     message_id: &str,
     role: &str,
     content: &str,
@@ -1021,6 +1429,16 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
 ) {
     let sealed_tool_calls = seal_unresolved_tool_calls_json(tool_calls_json, reason);
     let sealed_content_blocks = seal_unresolved_content_blocks_json(content_blocks_json, reason);
+    let terminal_content_blocks =
+        terminal_timeline_content_blocks(content, sealed_content_blocks.as_deref());
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        &terminal_content_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     super::chat_service_send_background::finalize_assistant_message(
         chat_message_repo,
         app_handle,
@@ -1030,7 +1448,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
         content,
         sealed_tool_calls.as_deref(),
         sealed_content_blocks.as_deref(),
-        Vec::new(),
+        timeline_items,
     )
     .await;
 }
@@ -1078,6 +1496,20 @@ async fn persist_shutdown_interrupted_metadata(
         .await;
 }
 
+fn stream_error_recovery_reason_code(
+    stream_error: &StreamError,
+) -> crate::domain::entities::ExecutionRecoveryReasonCode {
+    use crate::domain::entities::ExecutionRecoveryReasonCode;
+    match stream_error {
+        StreamError::Timeout { .. } => ExecutionRecoveryReasonCode::Timeout,
+        StreamError::ParseStall { .. } => ExecutionRecoveryReasonCode::ParseStall,
+        StreamError::AgentExit { .. } => ExecutionRecoveryReasonCode::AgentExit,
+        StreamError::LocalToolFailed { .. } => ExecutionRecoveryReasonCode::LocalToolFailed,
+        StreamError::ValidationFailed { .. } => ExecutionRecoveryReasonCode::ValidationFailed,
+        _ => ExecutionRecoveryReasonCode::Unknown,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_stream_success<R: Runtime>(
     agent_run_id: &str,
@@ -1105,6 +1537,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     app_handle: &Option<AppHandle<R>>,
     interactive_process_registry: &Option<Arc<InteractiveProcessRegistry>>,
     review_repo: &Option<Arc<dyn ReviewRepository>>,
@@ -1122,6 +1556,13 @@ pub(super) async fn handle_stream_success<R: Runtime>(
         has_output,
     )
     .await;
+    let runtime_support = RuntimeSupportRepos::new(
+        execution_settings_repo,
+        agent_lane_settings_repo,
+        agent_provider_settings_repo,
+        plan_branch_repo,
+        interactive_process_registry,
+    );
 
     // Handle task state transition (only for TaskExecution)
     if context_type == ChatContextType::TaskExecution {
@@ -1190,9 +1631,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
-                        execution_settings_repo.clone(),
-                        plan_branch_repo.clone(),
-                        interactive_process_registry.clone(),
+                        runtime_support.clone(),
                     );
                     let scheduler_concrete = Arc::new(scheduler_svc);
                     scheduler_concrete
@@ -1215,23 +1654,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        runtime_support.clone(),
                     )
                     .with_task_scheduler(task_scheduler);
-                    let transition_service = if let Some(ref repo) = execution_settings_repo {
-                        transition_service.with_execution_settings_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref repo) = plan_branch_repo {
-                        transition_service.with_plan_branch_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                        transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                    } else {
-                        transition_service
-                    };
                     let step_state = fetch_step_completion_state(task_step_repo, &task_id).await;
                     let validation_complete = if let Some(episode_entered_at) = episode_entered_at {
                         validated_completion_override(&current_task_for_gate, episode_entered_at)
@@ -1240,12 +1665,49 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         false
                     };
                     let all_steps_done = step_state == StepCompletionState::AllComplete;
-                    let completion_action = execution_completion_action(
+                    let mut completion_action = execution_completion_action(
                         has_output,
                         step_state,
                         completion_tool_called,
                         validation_complete,
                     );
+                    let mut completion_blocked_error: Option<String> = None;
+                    if completion_action == ExecutionCompletionAction::PendingReview {
+                        let project_for_gate = project_repo
+                            .get_by_id(&current_task_for_gate.project_id)
+                            .await;
+                        let diff_guard_result = match project_for_gate {
+                            Ok(Some(project)) => {
+                                ensure_task_has_non_empty_captured_diff(
+                                    &current_task_for_gate,
+                                    &project,
+                                    "stream_success_completion",
+                                )
+                                .await
+                                .map_err(|error| error.to_string())
+                            }
+                            Ok(None) => Err(format!(
+                                "empty_task_diff_guard: project {} for task {} was not found during stream_success_completion",
+                                current_task_for_gate.project_id.as_str(),
+                                task_id.as_str()
+                            )),
+                            Err(error) => Err(format!(
+                                "empty_task_diff_guard: failed to load project {} for task {} during stream_success_completion: {}",
+                                current_task_for_gate.project_id.as_str(),
+                                task_id.as_str(),
+                                error
+                            )),
+                        };
+                        if let Err(error) = diff_guard_result {
+                            tracing::warn!(
+                                task_id = task_id.as_str(),
+                                error = %error,
+                                "Worker completion downgraded to failure because task-owned diff is empty or unavailable"
+                            );
+                            completion_blocked_error = Some(error);
+                            completion_action = ExecutionCompletionAction::Failed;
+                        }
+                    }
 
                     if completion_action == ExecutionCompletionAction::PendingReview
                         && all_steps_done
@@ -1351,8 +1813,9 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
                             .unwrap_or_else(|| serde_json::json!({}));
                         if let Some(obj) = metadata_obj.as_object_mut() {
-                            let incomplete_message =
-                                "Agent ended without completing all task steps";
+                            let incomplete_message = completion_blocked_error
+                                .as_deref()
+                                .unwrap_or("Agent ended without completing all task steps");
                             obj.insert(
                                 "last_agent_error".to_string(),
                                 serde_json::json!(incomplete_message),
@@ -1528,23 +1991,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             Arc::clone(running_agent_registry),
                             Arc::clone(exec_state),
                             Arc::clone(memory_event_repo),
+                            runtime_support.clone(),
                         );
-                        let transition_service = if let Some(ref repo) = execution_settings_repo {
-                            transition_service.with_execution_settings_repo(Arc::clone(repo))
-                        } else {
-                            transition_service
-                        };
-                        let transition_service = if let Some(ref repo) = plan_branch_repo {
-                            transition_service.with_plan_branch_repo(Arc::clone(repo))
-                        } else {
-                            transition_service
-                        };
-                        let transition_service = if let Some(ref ipr) = interactive_process_registry
-                        {
-                            transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                        } else {
-                            transition_service
-                        };
 
                         if let Err(e) = transition_service
                             .transition_task(&task_id, InternalStatus::Escalated)
@@ -1847,6 +2295,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     stored_session_id: Option<&str>,
     effective_harness: AgentHarnessKind,
     is_retry_attempt: bool,
+    persona_feature_enabled: bool,
+    agent_name_override_set: bool,
     user_message_content: Option<&str>,
     conversation: Option<&ChatConversation>,
     resolved_project_id: Option<String>,
@@ -1854,6 +2304,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     plugin_dir: &Path,
     working_directory: &Path,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
     artifact_repo: &Arc<dyn ArtifactRepository>,
     conversation_repo: &Arc<dyn ChatConversationRepository>,
@@ -1871,6 +2322,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     question_state: &Option<Arc<QuestionState>>,
     plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     execution_settings_repo: &Option<Arc<dyn ExecutionSettingsRepository>>,
+    agent_lane_settings_repo: &Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: &Option<Arc<dyn AgentProviderSettingsRepository>>,
     app_handle: &Option<AppHandle<R>>,
     agent_name: Option<&str>,
     team_mode: bool,
@@ -1881,7 +2334,15 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     verification_child_registry: &Option<
         Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>,
     >,
+    notification_service: &Option<Arc<NotificationService>>,
 ) -> bool {
+    let runtime_support = RuntimeSupportRepos::new(
+        execution_settings_repo,
+        agent_lane_settings_repo,
+        agent_provider_settings_repo,
+        plan_branch_repo,
+        interactive_process_registry,
+    );
     let conversation_provider_session_ref =
         conversation.and_then(|conv| conv.provider_session_ref());
     let stored_provider_harness = conversation_provider_session_ref
@@ -1955,6 +2416,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 plan_branch_repo,
                 task_step_repo,
                 execution_settings_repo,
+                agent_lane_settings_repo,
+                agent_provider_settings_repo,
                 app_handle,
                 interactive_process_registry,
                 review_repo,
@@ -2038,6 +2501,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 plan_branch_repo,
                 task_step_repo,
                 execution_settings_repo,
+                agent_lane_settings_repo,
+                agent_provider_settings_repo,
                 app_handle,
                 interactive_process_registry,
                 review_repo,
@@ -2071,12 +2536,31 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             context_id,
             "Stream cancelled — skipping error recovery and fallback transitions"
         );
-        let _ = agent_run_repo
-            .fail(
-                &AgentRunId::from_string(agent_run_id),
-                "Agent stopped by user",
-            )
-            .await;
+        if effective_harness == AgentHarnessKind::Codex {
+            if let Err(error) = conversation_repo
+                .clear_provider_session_ref(&conversation_id)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    %error,
+                    "Failed to clear provider session after an incomplete Codex turn was cancelled"
+                );
+            } else {
+                tracing::info!(
+                    conversation_id = conversation_id.as_str(),
+                    "Cleared provider session after an incomplete Codex turn was cancelled"
+                );
+            }
+        }
+        mark_cancelled_stream_as_cancelled(
+            agent_run_repo,
+            agent_run_id,
+            context_type,
+            context_id,
+            task_repo,
+        )
+        .await;
 
         // Update pre-created message — append stop note to any content already flushed
         let (existing_content, existing_tool_calls, existing_content_blocks) =
@@ -2088,8 +2572,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         };
         finalize_assistant_message_with_terminal_tool_state(
             chat_message_repo,
+            chat_timeline_repo,
             app_handle.as_ref(),
             event_ctx,
+            &conversation_id,
             pre_assistant_msg_id,
             &get_assistant_role(&context_type).to_string(),
             &stop_note,
@@ -2181,6 +2667,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(artifact_repo),
                     Some(Arc::clone(ideation_session_repo)),
                     task_proposal_repo.clone(),
+                    Arc::clone(agent_run_repo),
+                    agent_run_id,
+                    agent_provider_settings_repo.as_ref().map(Arc::clone),
+                    persona_feature_enabled,
+                    agent_name_override_set,
                     &session_id,
                     app_handle.as_ref(),
                 )
@@ -2213,92 +2704,98 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 provider_session_id: new_session_id.clone(),
                             },
                         );
-                        let ideation_effort_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.ideation_effort_settings_repo)
-                        });
-                        let agent_lane_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.agent_lane_settings_repo)
-                        });
-                        let ideation_model_settings_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.ideation_model_settings_repo)
-                        });
-                        let delegated_session_repo = app_handle.as_ref().map(|handle| {
-                            let app_state = handle.state::<AppState>();
-                            Arc::clone(&app_state.delegated_session_repo)
-                        });
+                        let retry_app_repos = RecoveryRetryAppRepos::from_app_handle(app_handle);
+                        let retry_agent_lane_settings_repo =
+                            agent_lane_settings_repo.as_ref().map(Arc::clone);
+                        let retry_agent_provider_settings_repo =
+                            agent_provider_settings_repo.as_ref().map(Arc::clone);
+                        let retry_persona = resolve_recovery_retry_persona(
+                            app_handle,
+                            persona_feature_enabled,
+                            conv,
+                            context_type,
+                            agent_name_override_set,
+                        )
+                        .await;
+                        let retry_persona_for_attribution = retry_persona
+                            .as_ref()
+                            .ok()
+                            .and_then(|persona| persona.clone());
 
-                        let retry_provider_spawnable =
-                            chat_service_context::build_resume_command_for_harness(
-                                recovery_harness,
-                                cli_path,
-                                plugin_dir,
-                                context_type,
-                                context_id,
-                                msg,
-                                None,
-                                None,
-                                working_directory,
-                                &new_session_id,
-                                resolved_project_id.as_deref(),
-                                &[],
-                                if context_type == ChatContextType::Project {
-                                    Some(conversation_id.as_str())
-                                } else {
-                                    None
-                                },
-                                team_mode,
-                                Arc::clone(chat_attachment_repo),
-                                Arc::clone(artifact_repo),
-                                agent_lane_settings_repo.clone(),
-                                ideation_effort_settings_repo.clone(),
-                                ideation_model_settings_repo.clone(),
-                                Arc::clone(ideation_session_repo),
-                                Arc::clone(
-                                    delegated_session_repo
-                                        .as_ref()
-                                        .expect("delegated session repo available"),
-                                ),
-                                Arc::clone(task_repo),
-                                &[],
-                                0,
-                                None,
-                                None,
-                                false,
-                                None,
-                            )
-                            .await;
-                        let retry_spawnable = match retry_provider_spawnable {
-                            Ok(mut provider_spawnable) => {
-                                match provider_env_for_harness(app_handle, recovery_harness).await {
-                                    Ok(provider_env) => {
-                                        provider_spawnable.apply_provider_env(&provider_env);
-                                        Some(provider_spawnable.spawnable)
-                                    }
-                                    Err(error) => {
-                                        tracing::error!(
-                                            error = %error,
-                                            harness = %recovery_harness,
-                                            "Failed to load provider env file for recovery retry"
-                                        );
+                        let retry_provider_spawnable = match retry_persona {
+                            Ok(persona) => {
+                                chat_service_context::build_resume_command_for_harness(
+                                    recovery_harness,
+                                    cli_path,
+                                    plugin_dir,
+                                    context_type,
+                                    context_id,
+                                    msg,
+                                    persona,
+                                    None,
+                                    None,
+                                    working_directory,
+                                    &new_session_id,
+                                    resolved_project_id.as_deref(),
+                                    &[],
+                                    if context_type == ChatContextType::Project {
+                                        Some(conversation_id.as_str())
+                                    } else {
                                         None
-                                    }
-                                }
+                                    },
+                                    team_mode,
+                                    Arc::clone(chat_attachment_repo),
+                                    Arc::clone(artifact_repo),
+                                    retry_agent_lane_settings_repo.clone(),
+                                    retry_app_repos.ideation_effort_settings_repo.clone(),
+                                    retry_app_repos.ideation_model_settings_repo.clone(),
+                                    Arc::clone(ideation_session_repo),
+                                    Arc::clone(
+                                        retry_app_repos
+                                            .delegated_session_repo
+                                            .as_ref()
+                                            .expect("delegated session repo available"),
+                                    ),
+                                    Arc::clone(task_repo),
+                                    &[],
+                                    0,
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                )
+                                .await
                             }
-                            Err(error) => {
-                                tracing::error!(
-                                    error = %error,
-                                    harness = %recovery_harness,
-                                    "Failed to build recovery retry spawnable"
-                                );
-                                None
-                            }
+                            Err(error) => Err(format!("Persona unavailable: {error}")),
                         };
+                        let retry_provider_gate = RecoveryRetryProviderGate::new(
+                            app_handle,
+                            &retry_agent_provider_settings_repo,
+                            recovery_harness,
+                            context_type,
+                        );
+                        let retry_spawnable = resolve_recovery_retry_spawnable(
+                            retry_provider_spawnable,
+                            retry_provider_gate,
+                        )
+                        .await;
 
                         if let Some(spawnable) = retry_spawnable {
+                            let persona_injected = spawnable.persona_injected();
+                            let persona_injection_skipped_reason =
+                                spawnable.persona_injection_skipped_reason();
                             if let Ok(retry_child) = spawnable.spawn().await {
+                                super::record_persona_run_attribution(
+                                    agent_run_repo,
+                                    app_handle.as_ref(),
+                                    &conversation_id,
+                                    agent_run_id,
+                                    recovery_harness,
+                                    retry_persona_for_attribution.as_ref(),
+                                    persona_injected,
+                                    persona_injection_skipped_reason,
+                                )
+                                .await;
                                 super::chat_service_send_background::spawn_send_message_background(
                                     build_recovery_retry_background_context(
                                         retry_child,
@@ -2320,13 +2817,15 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         task_dependency_repo,
                                         project_repo,
                                         ideation_session_repo,
-                                        delegated_session_repo
+                                        retry_app_repos
+                                            .delegated_session_repo
                                             .as_ref()
                                             .expect("delegated session repo available"),
                                         execution_settings_repo,
-                                        &agent_lane_settings_repo,
-                                        &ideation_effort_settings_repo,
-                                        &ideation_model_settings_repo,
+                                        &retry_agent_lane_settings_repo,
+                                        &retry_agent_provider_settings_repo,
+                                        &retry_app_repos.ideation_effort_settings_repo,
+                                        &retry_app_repos.ideation_model_settings_repo,
                                         task_proposal_repo,
                                         activity_event_repo,
                                         memory_event_repo,
@@ -2337,6 +2836,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         plan_branch_repo,
                                         app_handle,
                                         run_chain_id.clone(),
+                                        persona_feature_enabled,
+                                        agent_name_override_set,
                                         user_message_content,
                                         retry_conv,
                                         agent_name,
@@ -2391,14 +2892,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Redact secrets from error string before propagating to non-tracing sinks
     let redacted_error = redact(error);
 
-    // AgentExit where the work is actually complete: the agent called
+    // A late agent-exit or local-tool diagnostic where the work is actually complete: the agent called
     // execution_complete successfully, green validation was cached for the
     // current attempt/HEAD, and the provider process exited before the normal
     // success finalizer ran. Treat this as a successful execution completion
     // before the generic failure path can persist stale stderr or emit
     // agent:error.
     if context_type == ChatContextType::TaskExecution
-        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
+        && matches!(
+            stream_error,
+            Some(StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. })
+        )
     {
         if let Some(ref exec_state) = execution_state {
             let task_id = TaskId::from_string(context_id.to_string());
@@ -2438,22 +2942,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     Arc::clone(running_agent_registry),
                     Arc::clone(exec_state),
                     Arc::clone(memory_event_repo),
+                    runtime_support.clone(),
                 );
-                let transition_service = if let Some(ref repo) = execution_settings_repo {
-                    transition_service.with_execution_settings_repo(Arc::clone(repo))
-                } else {
-                    transition_service
-                };
-                let transition_service = if let Some(ref repo) = plan_branch_repo {
-                    transition_service.with_plan_branch_repo(Arc::clone(repo))
-                } else {
-                    transition_service
-                };
-                let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                    transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                } else {
-                    transition_service
-                };
 
                 if transition_service
                     .transition_task(&task_id, InternalStatus::PendingReview)
@@ -2468,8 +2958,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .await;
                     finalize_assistant_message_with_terminal_tool_state(
                         chat_message_repo,
+                        chat_timeline_repo,
                         app_handle.as_ref(),
                         event_ctx,
+                        &conversation_id,
                         pre_assistant_msg_id,
                         &get_assistant_role(&context_type).to_string(),
                         &existing_content,
@@ -2531,8 +3023,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     read_existing_message_content(chat_message_repo, pre_assistant_msg_id).await;
                 finalize_assistant_message_with_terminal_tool_state(
                     chat_message_repo,
+                    chat_timeline_repo,
                     app_handle.as_ref(),
                     event_ctx,
+                    &conversation_id,
                     pre_assistant_msg_id,
                     &get_assistant_role(&context_type).to_string(),
                     &existing_content,
@@ -2585,8 +3079,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 read_existing_message_content(chat_message_repo, pre_assistant_msg_id).await;
             finalize_assistant_message_with_terminal_tool_state(
                 chat_message_repo,
+                chat_timeline_repo,
                 app_handle.as_ref(),
                 event_ctx,
+                &conversation_id,
                 pre_assistant_msg_id,
                 &get_assistant_role(&context_type).to_string(),
                 &existing_content,
@@ -2627,8 +3123,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     };
     finalize_assistant_message_with_terminal_tool_state(
         chat_message_repo,
+        chat_timeline_repo,
         app_handle.as_ref(),
         event_ctx,
+        &conversation_id,
         pre_assistant_msg_id,
         &get_assistant_role(&context_type).to_string(),
         &error_note,
@@ -2795,22 +3293,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 if !se.is_provider_error() {
                                     use crate::domain::entities::{
                                         ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
-                                        ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
-                                        ExecutionRecoverySource, ExecutionRecoveryState,
+                                        ExecutionRecoveryMetadata, ExecutionRecoverySource,
+                                        ExecutionRecoveryState,
                                     };
                                     let failure_source = se.to_execution_failure_source();
-                                    let reason_code = match se {
-                                        StreamError::Timeout { .. } => {
-                                            ExecutionRecoveryReasonCode::Timeout
-                                        }
-                                        StreamError::ParseStall { .. } => {
-                                            ExecutionRecoveryReasonCode::ParseStall
-                                        }
-                                        StreamError::AgentExit { .. } => {
-                                            ExecutionRecoveryReasonCode::AgentExit
-                                        }
-                                        _ => ExecutionRecoveryReasonCode::Unknown,
-                                    };
+                                    let reason_code = stream_error_recovery_reason_code(se);
                                     let recovery_event = ExecutionRecoveryEvent::new(
                                         ExecutionRecoveryEventKind::Failed,
                                         ExecutionRecoverySource::System,
@@ -2824,10 +3311,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         )
                                         .unwrap_or(None)
                                         .unwrap_or_default();
-                                    recovery.append_event_with_state(
-                                        recovery_event,
-                                        ExecutionRecoveryState::Retrying,
-                                    );
+                                    let recovery_state = if failure_source.is_transient() {
+                                        ExecutionRecoveryState::Retrying
+                                    } else {
+                                        recovery.stop_retrying = true;
+                                        ExecutionRecoveryState::Failed
+                                    };
+                                    recovery
+                                        .append_event_with_state(recovery_event, recovery_state);
                                     if let Ok(recovery_value) = serde_json::to_value(&recovery) {
                                         obj.insert(
                                             "execution_recovery".to_string(),
@@ -2931,15 +3422,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         }
                     }
 
-                    // AgentExit where the work is actually complete → agent called
+                    // Late agent-exit/local-tool diagnostics where the work is actually complete → agent called
                     // execution_complete successfully but exited with signal (code=None).
                     // Override to PendingReview only when a current-attempt, HEAD-matched green
                     // validation cache proves completion. Completed steps alone are not enough:
                     // a failed agent can mark steps done before leaving uncommitted or invalid
                     // working-tree changes behind.
                     let target_status = if target_status == InternalStatus::Failed
-                        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
-                    {
+                        && matches!(
+                            stream_error,
+                            Some(
+                                StreamError::AgentExit { .. } | StreamError::LocalToolFailed { .. }
+                            )
+                        ) {
                         let validation_complete = if let Some(episode_entered_at) =
                             episode_entered_at
                         {
@@ -2955,7 +3450,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 task_id = task_id.as_str(),
                                 all_steps_done,
                                 validation_complete,
-                                "AgentExit with current green validation cache — overriding Failed → PendingReview"
+                                "Late execution diagnostic with current green validation cache — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {
@@ -2981,22 +3476,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        runtime_support.clone(),
                     );
-                    let transition_service = if let Some(ref repo) = execution_settings_repo {
-                        transition_service.with_execution_settings_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref repo) = plan_branch_repo {
-                        transition_service.with_plan_branch_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                        transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                    } else {
-                        transition_service
-                    };
 
                     if let Err(transition_err) = transition_service
                         .transition_task(&task_id, target_status)
@@ -3042,6 +3523,19 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                         "target_status": target_status.to_string(),
                                     }),
                                 );
+                            }
+                            if let Some(notification_service) = notification_service {
+                                notification_service
+                                    .record(
+                                        TaskPipelineNotificationProducer::task_stuck_notification(
+                                            &current_task,
+                                            agent_run_id,
+                                            format!(
+                                                "The automatic recovery transition failed: {retry_err}"
+                                            ),
+                                        ),
+                                    )
+                                    .await;
                             }
                         } else if target_status == InternalStatus::PendingReview {
                             record_task_execution_outcome(
@@ -3409,22 +3903,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         Arc::clone(running_agent_registry),
                         Arc::clone(exec_state),
                         Arc::clone(memory_event_repo),
+                        runtime_support.clone(),
                     );
-                    let transition_service = if let Some(ref repo) = execution_settings_repo {
-                        transition_service.with_execution_settings_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref repo) = plan_branch_repo {
-                        transition_service.with_plan_branch_repo(Arc::clone(repo))
-                    } else {
-                        transition_service
-                    };
-                    let transition_service = if let Some(ref ipr) = interactive_process_registry {
-                        transition_service.with_interactive_process_registry(Arc::clone(ipr))
-                    } else {
-                        transition_service
-                    };
 
                     if let Err(e) = transition_service
                         .transition_task(&task_id, InternalStatus::Escalated)

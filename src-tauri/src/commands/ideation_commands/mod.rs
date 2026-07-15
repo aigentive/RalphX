@@ -27,6 +27,7 @@ mod ideation_commands_harness_availability;
 pub mod ideation_commands_model;
 mod ideation_commands_orchestrator;
 mod ideation_commands_proposals;
+mod ideation_commands_restart;
 mod ideation_commands_session;
 mod ideation_commands_types;
 
@@ -49,6 +50,9 @@ pub use ideation_commands_model::*;
 pub use ideation_commands_orchestrator::*;
 pub use ideation_commands_proposals::*;
 #[doc(hidden)]
+pub use ideation_commands_restart::restart_ideation_implementation_core;
+pub use ideation_commands_restart::*;
+#[doc(hidden)]
 pub use ideation_commands_session::create_ideation_session_impl;
 pub use ideation_commands_session::*;
 
@@ -59,3 +63,5 @@ pub use ideation_commands_dependencies::build_dependency_graph;
 
 #[cfg(test)]
 mod ideation_commands_orchestrator_tests;
+#[cfg(test)]
+mod ideation_commands_restart_tests;

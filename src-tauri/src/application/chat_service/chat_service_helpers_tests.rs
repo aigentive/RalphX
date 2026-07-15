@@ -102,6 +102,12 @@ fn test_harness_supports_team_mode_only_for_claude() {
 }
 
 #[test]
+fn test_rx_native_team_is_supported_by_standard_harnesses() {
+    assert!(harness_supports_rx_native_team(AgentHarnessKind::Claude));
+    assert!(harness_supports_rx_native_team(AgentHarnessKind::Codex));
+}
+
+#[test]
 fn test_effective_team_mode_for_harness_respects_requested_false() {
     assert!(!effective_team_mode_for_harness(
         false,
@@ -160,6 +166,31 @@ fn test_harness_supports_merge_completion_watcher_only_for_claude() {
     ));
     assert!(!harness_supports_merge_completion_watcher(
         AgentHarnessKind::Codex
+    ));
+}
+
+#[test]
+fn fresh_provider_session_policy_rejects_implicit_workflow_continuation() {
+    assert!(should_start_fresh_provider_session(
+        false,
+        false,
+        Some("ralphx-pr-fixer")
+    ));
+    assert!(should_start_fresh_provider_session(false, true, None));
+    assert!(should_start_fresh_provider_session(true, false, None));
+    assert!(!should_start_fresh_provider_session(false, false, None));
+}
+
+#[test]
+fn provider_session_model_compatibility_requires_an_exact_known_match() {
+    assert!(provider_session_model_matches_requested(None, "gpt-5.5"));
+    assert!(provider_session_model_matches_requested(
+        Some("gpt-5.5"),
+        "gpt-5.5"
+    ));
+    assert!(!provider_session_model_matches_requested(
+        Some("gpt-5.6"),
+        "gpt-5.5"
     ));
 }
 

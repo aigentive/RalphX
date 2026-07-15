@@ -8,6 +8,7 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
+import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +17,7 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 
 const {
@@ -233,6 +235,64 @@ describe("AgentsView artifact pane", () => {
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBeInTheDocument();
   });
 
+  it("opens the Automation artifact tab by default for automation setup chats", async () => {
+    mockAgentViewData(
+      conversation({
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      }),
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    await waitFor(() =>
+      expect(pane).toHaveAttribute("data-active-tab", "automation"),
+    );
+    expect(pane).toHaveAttribute("data-automation-id", "automation-1");
+  });
+
+  it("forwards automation-owned conversations to the automation artifact pane action", async () => {
+    const onOpenAutomation = vi.fn();
+    mockAgentViewData(
+      conversation({
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      })
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "automation",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView({ onOpenAutomation });
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "automation");
+    expect(pane).toHaveAttribute("data-automation-id", "automation-1");
+
+    fireEvent.click(screen.getByTestId("mock-open-automation"));
+
+    expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
+  });
+
   it("opens the Review tab when a workspace Review artifact is created", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
@@ -346,6 +406,39 @@ describe("AgentsView artifact pane", () => {
     });
 
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("does not invalidate selected workspace Review queries for unrelated child lifecycle events", async () => {
+    const invalidateQueriesSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    invalidateQueriesSpy.mockClear();
+
+    act(() => {
+      fireAgentViewEvent("agent:run_started", {
+        conversationId: "task-conversation-1",
+        contextId: "task-1",
+        taskId: "task-1",
+      });
+    });
+
+    expect(invalidateQueriesSpy).not.toHaveBeenCalledWith({
+      queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+    });
+    invalidateQueriesSpy.mockRestore();
   });
 
   it("does not auto-start Review from the UI when retained related runtimes are only waiting for input", async () => {
@@ -539,6 +632,7 @@ describe("AgentsView artifact pane", () => {
     );
     expect(screen.queryByTestId("agents-artifact-pane")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
+    expect(screen.getByLabelText("Plan")).toBeInTheDocument();
 
     mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
     await act(async () => {
@@ -662,7 +756,7 @@ describe("AgentsView artifact pane", () => {
     );
   });
 
-  it("shows the Proposals shortcut after a plan-mode session has proposals", async () => {
+  it("keeps Proposals out of header shortcuts after a plan-mode session has proposals", async () => {
     mockAgentViewData(conversation({ agentMode: "plan" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({
@@ -676,11 +770,11 @@ describe("AgentsView artifact pane", () => {
         {
           id: "proposal-1",
           sessionId: "session-1",
-          title: "Gate proposal tab visibility",
-          description: "Show Proposals only when proposal content exists.",
+          title: "Gate embedded proposal access",
+          description: "Keep proposals inside the Plan tab.",
           category: "frontend",
           steps: ["Update artifact tabs"],
-          acceptanceCriteria: ["Proposals shortcut appears with content"],
+          acceptanceCriteria: ["Proposals remain available inside Plan"],
           suggestedPriority: "high",
           priorityScore: 90,
           priorityReason: "Avoids empty navigation",
@@ -716,7 +810,10 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
     );
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
-    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-artifact-tab-proposal"),
+    ).not.toBeInTheDocument();
   });
 
 });

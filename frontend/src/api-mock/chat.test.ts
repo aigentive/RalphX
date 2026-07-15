@@ -4,6 +4,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
   mockChatApi,
+  mockArchiveConversation,
   mockGetAgentConversationRuntimeStatuses,
   mockGetAgentRunningStates,
   mockGetConversationSummary,
@@ -218,6 +219,22 @@ describe("mockListAgentSidebarConversations", () => {
   });
 });
 
+describe("mockArchiveConversation", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("archives the conversation when the caller explicitly declines PR closure", async () => {
+    seedMockConversation(conversation("archive-target", "Archive target"), []);
+
+    const archived = await mockArchiveConversation("archive-target", {
+      closePullRequest: false,
+    });
+
+    expect(archived.archivedAt).not.toBeNull();
+  });
+});
+
 describe("mockGetAgentRunningStates", () => {
   it("returns idle bulk running states for requested context ids", async () => {
     await expect(
@@ -265,6 +282,71 @@ describe("mockGetConversationSummary", () => {
 
     await expect(mockGetConversationSummary("summary-1")).resolves.toEqual(seeded);
     await expect(mockChatApi.getConversationSummary("summary-1")).resolves.toEqual(seeded);
+  });
+});
+
+describe("mock Team coordination mode", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("persists Team intent when starting an Agent conversation", async () => {
+    const result = await mockChatApi.startAgentConversation({
+      projectId: "project-1",
+      content: "Start Team work",
+      mode: "edit",
+      teamIntent: { coordinationMode: "rx_native_team" },
+    });
+
+    expect(result.conversation.coordinationMode).toBe("rx_native_team");
+    await expect(
+      mockChatApi.getConversationSummary(result.conversation.id)
+    ).resolves.toMatchObject({
+      id: result.conversation.id,
+      coordinationMode: "rx_native_team",
+    });
+  });
+
+  it("persists Team intent when sending into an existing conversation", async () => {
+    seedMockConversation(conversation("team-send", "Team send"), []);
+
+    const result = await mockChatApi.sendAgentMessage(
+      "project",
+      "project-1",
+      "Enable Team",
+      undefined,
+      undefined,
+      {
+        conversationId: "team-send",
+        teamIntent: { coordinationMode: "rx_native_team" },
+      }
+    );
+
+    expect(result).toMatchObject({
+      conversationId: "team-send",
+      isNewConversation: false,
+    });
+    await expect(mockGetConversationSummary("team-send")).resolves.toMatchObject({
+      coordinationMode: "rx_native_team",
+    });
+  });
+
+  it("updates and reports missing Team coordination conversations", async () => {
+    seedMockConversation(conversation("team-toggle", "Team toggle"), []);
+
+    await expect(
+      mockChatApi.updateAgentConversationCoordinationMode({
+        conversationId: "team-toggle",
+        coordinationMode: "rx_native_team",
+      })
+    ).resolves.toMatchObject({ coordinationMode: "rx_native_team" });
+
+    await expect(
+      mockChatApi.updateAgentConversationCoordinationMode({
+        conversationId: "missing-team-toggle",
+        coordinationMode: "solo",
+      })
+    ).rejects.toThrow("No mock conversation seeded for missing-team-toggle");
   });
 });
 

@@ -175,6 +175,28 @@ export function PermissionDialog() {
     return unsubscribe;
   }, [eventBus]);
 
+  // The notification center is a second entry point to this same queue. Reload
+  // authoritative pending state and move the selected request to the front.
+  useEffect(() => {
+    const reopen = (event: Event) => {
+      const requestId = event instanceof CustomEvent && typeof event.detail?.requestId === "string"
+        ? event.detail.requestId
+        : undefined;
+      void api.permission.getPendingPermissions().then((pending) => {
+        setRequests((previous) => {
+          const merged = [...previous, ...pending.filter((request) => !previous.some((known) => known.request_id === request.request_id))];
+          if (!requestId) return merged;
+          const selected = merged.find((request) => request.request_id === requestId);
+          return selected ? [selected, ...merged.filter((request) => request.request_id !== requestId)] : merged;
+        });
+      }).catch((error: unknown) => {
+        console.error("Failed to re-open pending permission:", error);
+      });
+    };
+    window.addEventListener("ralphx:open-permission-dialog", reopen);
+    return () => window.removeEventListener("ralphx:open-permission-dialog", reopen);
+  }, []);
+
   const handleDecision = async (decision: "allow" | "deny") => {
     if (!currentRequest) return;
 

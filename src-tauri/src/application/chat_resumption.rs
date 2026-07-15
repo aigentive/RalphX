@@ -13,16 +13,17 @@
 // - Sends "Continue where you left off." message to resume the stored provider session
 
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime};
+use tauri::AppHandle;
 use tracing::{info, warn};
 
 use crate::application::agent_workspace_continuation::{
-    classify_agent_workspace_continuation, AgentWorkspaceContinuationBlock,
+    classify_agent_workspace_continuation_with_plan_branch, AgentWorkspaceContinuationBlock,
 };
 use crate::application::chat_service::{
     should_recover_silent_completion, silent_completion_recovery_attempt,
     silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
-    silent_completion_recovery_metadata, silent_completion_recovery_prompt, SendMessageOptions,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt,
+    team_intent_for_persisted_coordination_mode, SendCallerContext, SendMessageOptions,
 };
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::runtime_factory::{
@@ -36,7 +37,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    ExecutionSettingsRepository, PlanBranchRepository, TaskRepository,
+    AutomationRunRepository, ExecutionSettingsRepository, PlanBranchRepository, TaskRepository,
 };
 use crate::domain::services::RunningAgentKey;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -48,8 +49,9 @@ const DURABLE_SILENT_COMPLETION_RECOVERY_MESSAGE_LIMIT: u32 = 20;
 ///
 /// Finds all conversations that were interrupted when the app shut down
 /// and resumes them by sending a message with `--resume` to continue the provider session.
-pub struct ChatResumptionRunner<R: Runtime = tauri::Wry> {
+pub struct ChatResumptionRunner {
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    automation_run_repo: Arc<dyn AutomationRunRepository>,
     chat_runtime_deps: ChatRuntimeFactoryDeps,
     task_repo: Arc<dyn TaskRepository>,
     execution_state: Arc<ExecutionState>,
@@ -58,19 +60,25 @@ pub struct ChatResumptionRunner<R: Runtime = tauri::Wry> {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
-    app_handle: Option<AppHandle<R>>,
+    app_handle: Option<AppHandle>,
 }
 
-impl<R: Runtime> ChatResumptionRunner<R> {
+impl ChatResumptionRunner {
     /// Create a new ChatResumptionRunner with all required dependencies.
     pub(crate) fn new(
         agent_run_repo: Arc<dyn AgentRunRepository>,
+        automation_run_repo: Arc<dyn AutomationRunRepository>,
         task_repo: Arc<dyn TaskRepository>,
         execution_state: Arc<ExecutionState>,
         chat_runtime_deps: ChatRuntimeFactoryDeps,
     ) -> Self {
+        debug_assert!(
+            Arc::ptr_eq(&automation_run_repo, &chat_runtime_deps.automation_run_repo,),
+            "chat resumption automation repository must match runtime factory dependencies"
+        );
         Self {
             agent_run_repo,
+            automation_run_repo,
             chat_runtime_deps,
             task_repo,
             execution_state,
@@ -122,7 +130,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
     }
 
     /// Set the Tauri app handle (builder pattern).
-    pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
         self
     }
@@ -163,6 +171,12 @@ impl<R: Runtime> ChatResumptionRunner<R> {
 
             // 4. Resume each (skip if handled by task resumption)
             for conv in sorted {
+                if !self
+                    .is_non_automation_resume_candidate(&conv.conversation)
+                    .await
+                {
+                    continue;
+                }
                 if self.is_handled_by_task_resumption(&conv).await {
                     info!(
                         conversation_id = conv.conversation.id.as_str(),
@@ -252,6 +266,9 @@ impl<R: Runtime> ChatResumptionRunner<R> {
 
         let mut recovered = 0u32;
         for conversation in conversations {
+            if !self.is_non_automation_resume_candidate(&conversation).await {
+                continue;
+            }
             let runtime_context_id = conversation.id.as_str();
             if self
                 .has_active_runtime_for_context(ChatContextType::Project, &runtime_context_id)
@@ -356,11 +373,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
                     ChatContextType::Project,
                     &conversation.context_id,
                     &prompt,
-                    SendMessageOptions {
-                        metadata: Some(metadata),
-                        conversation_id_override: Some(conversation.id),
-                        ..Default::default()
-                    },
+                    durable_silent_completion_recovery_send_options(&conversation, metadata),
                 )
                 .await
             {
@@ -383,6 +396,39 @@ impl<R: Runtime> ChatResumptionRunner<R> {
             }
         }
         recovered
+    }
+
+    async fn is_non_automation_resume_candidate(&self, conversation: &ChatConversation) -> bool {
+        if conversation.automation_id.is_some() {
+            info!(
+                conversation_id = conversation.id.as_str(),
+                "[CHAT_RESUMPTION] Skipping automation-owned conversation; recovery is scheduler-owned"
+            );
+            return false;
+        }
+
+        match self
+            .automation_run_repo
+            .find_run_by_conversation_id(&conversation.id)
+            .await
+        {
+            Ok(Some(_)) => {
+                info!(
+                    conversation_id = conversation.id.as_str(),
+                    "[CHAT_RESUMPTION] Skipping automation-owned conversation found by run lookup; recovery is scheduler-owned"
+                );
+                false
+            }
+            Ok(None) => true,
+            Err(error) => {
+                warn!(
+                    conversation_id = conversation.id.as_str(),
+                    error = %error,
+                    "[CHAT_RESUMPTION] Failed to determine automation ownership; skipping candidate"
+                );
+                false
+            }
+        }
     }
 
     async fn blocked_agent_workspace_resume_reason(
@@ -442,9 +488,14 @@ impl<R: Runtime> ChatResumptionRunner<R> {
             }
         };
 
-        classify_agent_workspace_continuation(&project, &workspace)
-            .blocked_reason()
-            .cloned()
+        classify_agent_workspace_continuation_with_plan_branch(
+            &project,
+            &workspace,
+            self.plan_branch_repo.as_deref(),
+        )
+        .await
+        .blocked_reason()
+        .cloned()
     }
 
     async fn has_active_runtime_for_context(
@@ -488,7 +539,10 @@ impl<R: Runtime> ChatResumptionRunner<R> {
     /// are already handled by StartupJobRunner via entry actions.
     async fn is_handled_by_task_resumption(&self, conv: &InterruptedConversation) -> bool {
         match conv.conversation.context_type {
-            ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+            ChatContextType::TaskExecution
+            | ChatContextType::Review
+            | ChatContextType::Merge
+            | ChatContextType::BranchUpdate => {
                 // Check if the task is in an agent-active status
                 let task_id = TaskId::from_string(conv.conversation.context_id.clone());
                 match self.task_repo.get_by_id(&task_id).await {
@@ -539,7 +593,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
     }
 
     /// Create a ChatService instance for resumption.
-    fn create_chat_service(&self) -> AppChatService<R> {
+    fn create_chat_service(&self) -> AppChatService {
         let deps = self.chat_runtime_deps.clone().with_runtime_support(
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
@@ -654,6 +708,7 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
         ChatContextType::TaskExecution => 0, // Highest priority
         ChatContextType::Review => 1,
         ChatContextType::Merge => 2, // Same priority as review (agent-active)
+        ChatContextType::BranchUpdate => 2,
         ChatContextType::Task => 3,
         ChatContextType::Ideation => 4,
         ChatContextType::Delegation => 5,
@@ -664,6 +719,21 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
 fn startup_resumption_send_options(conversation: &ChatConversation) -> SendMessageOptions {
     SendMessageOptions {
         conversation_id_override: Some(conversation.id),
+        team_intent: team_intent_for_persisted_coordination_mode(conversation.coordination_mode),
+        caller_context: SendCallerContext::StartupResumption,
+        ..Default::default()
+    }
+}
+
+fn durable_silent_completion_recovery_send_options(
+    conversation: &ChatConversation,
+    metadata: String,
+) -> SendMessageOptions {
+    SendMessageOptions {
+        metadata: Some(metadata),
+        conversation_id_override: Some(conversation.id),
+        team_intent: team_intent_for_persisted_coordination_mode(conversation.coordination_mode),
+        caller_context: SendCallerContext::StartupResumption,
         ..Default::default()
     }
 }

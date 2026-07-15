@@ -7,6 +7,7 @@ pub mod harness_agent_catalog;
 pub mod internal_skills;
 pub mod mcp_runtime_context;
 pub mod mock;
+pub mod persona_overlay;
 pub mod spawn_isolation;
 pub mod spawner;
 
@@ -32,6 +33,7 @@ pub use codex::{
     probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, CodexCliClient, CodexExecCliConfig,
     CodexMcpRuntimeContext, ResolvedCodexCli,
 };
+pub(crate) use harness_agent_catalog::escape_prompt_context_text;
 pub use mock::{MockAgenticClient, MockCall, MockCallType};
 pub use mcp_runtime_context::McpRuntimeContext;
 pub use spawner::AgenticClientSpawner;

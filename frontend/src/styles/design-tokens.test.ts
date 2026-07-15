@@ -128,7 +128,7 @@ describe("design-tokens", () => {
         /\[data-theme="light"\]\s+\.agents-session-meta\s*\{[^}]*color:\s*#6A6A72\s*!important;/s
       );
       expect(cssContent).toMatch(
-        /\[data-theme="light"\]\s+\[data-testid="reviews-panel-shell"\]\s*\{[^}]*background-color:\s*#F4F4F6\s*!important;[^}]*border-left-color:\s*#E5E5E8\s*!important;/s
+        /\[data-theme="light"\]\s+\[data-testid="notifications-panel-shell"\]\s*\{[^}]*background-color:\s*#F4F4F6\s*!important;[^}]*border-left-color:\s*#E5E5E8\s*!important;/s
       );
       expect(cssContent).toMatch(
         /\[data-theme="light"\]\s+\[data-testid="kanban-split-layout"\][^{]*\{[^}]*background-color:\s*#FFFFFF\s*!important;/s

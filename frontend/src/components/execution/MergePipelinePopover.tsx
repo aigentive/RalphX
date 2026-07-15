@@ -17,8 +17,11 @@ import { ActiveMergeCard } from "./ActiveMergeCard";
 import { WaitingMergeCard } from "./WaitingMergeCard";
 import { AttentionMergeCard } from "./AttentionMergeCard";
 import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
+import {
+  mergePipelineTaskTarget,
+  type ExecutionBarTaskNavigationTarget,
+} from "./executionTaskNavigation";
 import { api } from "@/lib/tauri";
-import { useUiStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
 import { getStatusIconConfig } from "@/types/status-icons";
 
@@ -39,6 +42,8 @@ interface MergePipelinePopoverProps {
   open?: boolean;
   /** Optional controlled open-state handler */
   onOpenChange?: (open: boolean) => void;
+  /** Called when a task row should open its Agent conversation task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
 }
 
 interface SectionHeaderProps {
@@ -89,6 +94,7 @@ export function MergePipelinePopover({
   alignOffset = -24,
   open,
   onOpenChange,
+  onNavigateToTask,
 }: MergePipelinePopoverProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const popoverOpen = open ?? uncontrolledOpen;
@@ -99,8 +105,6 @@ export function MergePipelinePopover({
     attention: true,
   });
 
-  const navigateToTask = useUiStore((s) => s.navigateToTask);
-
   const handleStopMerge = async (taskId: string) => {
     try {
       await api.tasks.move(taskId, "stopped");
@@ -110,8 +114,13 @@ export function MergePipelinePopover({
   };
 
   const handleViewDetails = (taskId: string) => {
+    const task = [...active, ...waiting, ...needsAttention].find(
+      (item) => item.taskId === taskId,
+    );
     handleOpenChange(false);
-    navigateToTask(taskId);
+    if (task) {
+      onNavigateToTask?.(mergePipelineTaskTarget(task));
+    }
   };
 
   const handleRetryMerge = async (taskId: string) => {

@@ -45,9 +45,15 @@ jobs:
               - 'plugins/app/ralphx-mcp-server/**'
               - 'scripts/prepare-release-runtime.sh'
             rust:
+              - '.cargo/**'
               - 'src-tauri/**'
               - 'rust-toolchain.toml'
+              - 'scripts/bench-rust-build.sh'
+              - 'scripts/baselines/layering.json'
               - 'scripts/ci-install-linux-deps.sh'
+              - 'scripts/check-layering.py'
+              - 'scripts/check-rust-test-features.py'
+              - 'scripts/test-rust-fast.sh'
               - 'scripts/validate_sqlite_migrations.py'
             frontend:
               - 'frontend/**'
@@ -165,22 +171,73 @@ jobs:
         run: |
           python3 scripts/validate_sqlite_migrations.py
 
+      - name: Validate Rust test feature gates
+        run: |
+          python3 scripts/check-rust-test-features.py
+
+      - name: Validate Rust layering ratchet
+        run: |
+          python3 scripts/check-layering.py
+
       - name: Run IPC contract tests
         run: |
           cargo nextest run \
             --manifest-path src-tauri/Cargo.toml \
             --profile ci \
-            --test task_commands \
-            --test api_key_commands \
-            --test project_commands \
-            --test harness_provider_commands \
-            --test unified_chat_commands \
-            --test task_step_commands \
+            --features test-utils \
+            --test suite_ipc_commands \
             ipc_contract
+
+  rust-lib-nextest-archive:
+    name: Rust Lib Tests Archive
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Build Rust lib tests archive
+        run: |
+          cargo nextest archive \
+            --manifest-path src-tauri/Cargo.toml \
+            --lib \
+            --profile ci \
+            --features test-utils \
+            --archive-file rust-lib-tests.tar.zst
+
+      - name: Upload Rust lib tests archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-lib-tests-nextest-archive
+          path: rust-lib-tests.tar.zst
+          if-no-files-found: error
+          retention-days: 1
 
   rust-lib-tests:
     name: Rust Lib Tests (Shard ${{ matrix.partition }})
-    needs: changes
+    needs:
+      - changes
+      - rust-lib-nextest-archive
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -205,18 +262,62 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
 
+      - name: Download Rust lib tests archive
+        uses: actions/download-artifact@v8
+        with:
+          name: rust-lib-tests-nextest-archive
+          path: .
+
+      - name: Run Rust lib tests shard ${{ matrix.partition }}
+        run: |
+          cargo nextest run \
+            --archive-file rust-lib-tests.tar.zst \
+            --workspace-remap "${GITHUB_WORKSPACE}/src-tauri" \
+            --profile ci \
+            --partition hash:${{ matrix.partition }}
+
+  rust-clippy:
+    name: Rust Clippy
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+          components: clippy
+
       - name: Rust cache
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Run Rust lib tests shard ${{ matrix.partition }}
+      - name: Run clippy without default features
         run: |
-          cargo nextest run \
+          cargo clippy \
             --manifest-path src-tauri/Cargo.toml \
             --lib \
-            --profile ci \
-            --partition hash:${{ matrix.partition }}
+            --bins \
+            --no-default-features \
+            -- -D warnings
+
+      - name: Run clippy with all targets and all features
+        run: |
+          cargo clippy \
+            --manifest-path src-tauri/Cargo.toml \
+            --all-targets \
+            --all-features \
+            -- -D warnings
 
   rust-doctests:
     name: Rust Doctests
@@ -245,15 +346,93 @@ jobs:
 
       - name: Run Rust doctests
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --doc
+          cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc
+
+  rust-full-integration:
+    name: Rust Full Integration
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Run full Rust integration suite
+        run: |
+          cargo nextest run \
+            --manifest-path src-tauri/Cargo.toml \
+            --profile ci \
+            --features test-utils
+
+  rust-macos-build:
+    name: Rust macOS Build
+    needs: changes
+    # Temporarily disabled: current PR macOS runners make this check too slow to be feasible.
+    # Keep the job definition and rust-tests dependency so it can be re-enabled by restoring
+    # the original condition: needs.changes.outputs.run_rust == 'true'
+    if: ${{ false && needs.changes.outputs.run_rust == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Build macOS app without bundling
+        run: CI=false npm run tauri -- build --no-bundle
+        working-directory: frontend
 
   rust-tests:
     name: Rust Tests
     needs:
       - changes
       - rust-ipc-contracts
+      - rust-lib-nextest-archive
       - rust-lib-tests
+      - rust-clippy
       - rust-doctests
+      - rust-full-integration
+      - rust-macos-build
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -274,8 +453,12 @@ jobs:
 
           for job_result in \
             "${{ needs.rust-ipc-contracts.result }}" \
+            "${{ needs.rust-lib-nextest-archive.result }}" \
             "${{ needs.rust-lib-tests.result }}" \
-            "${{ needs.rust-doctests.result }}"; do
+            "${{ needs.rust-clippy.result }}" \
+            "${{ needs.rust-doctests.result }}" \
+            "${{ needs.rust-full-integration.result }}" \
+            "${{ needs.rust-macos-build.result }}"; do
             if [[ "${job_result}" != "success" && "${job_result}" != "skipped" ]]; then
               echo "Rust suite result: ${job_result}" >&2
               exit 1

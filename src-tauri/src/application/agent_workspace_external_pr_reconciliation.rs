@@ -7,8 +7,19 @@ use dashmap::DashMap;
 use futures::{stream, StreamExt as _};
 use tauri::{AppHandle, Emitter};
 
+use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::chat_service::ChatService;
-use crate::application::services::pr_merge_poller::cleanup_terminal_agent_workspace_after_pr;
+use crate::application::clickup_git_association::{
+    reconcile_clickup_pr_to_conversation, ClickUpGitEvidence, ClickUpPrAssociationInput,
+    ClickUpPrAssociationOutcome,
+};
+use crate::application::clickup_integration_service::ClickUpIntegrationService;
+use crate::application::external_issue_link_service::ExternalIssueLinkService;
+use crate::application::git_service::GitService;
+use crate::application::services::pr_merge_poller::terminalize_agent_workspace_after_pr;
+use crate::application::ticketing_cache_invalidator::{
+    TicketingCacheInvalidatedEvent, TICKETING_CACHE_INVALIDATED_EVENT,
+};
 use crate::application::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -51,6 +62,8 @@ pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
     pub github: Arc<dyn GithubServiceTrait>,
+    pub clickup_integration_service: Option<Arc<ClickUpIntegrationService>>,
+    pub external_issue_link_service: Option<Arc<ExternalIssueLinkService>>,
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -219,6 +232,15 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         );
     }
     emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+    reconcile_clickup_ticket_for_workspace_pr(
+        &deps,
+        &workspace,
+        &project,
+        pr.number,
+        Some(pr.url.clone()),
+        pr_status,
+    )
+    .await;
 
     if matches!(pr.status, PrStatus::Open) {
         if let (Some(registry), Some(chat_service)) =
@@ -236,12 +258,16 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
             );
         }
     } else {
-        cleanup_terminal_agent_workspace_after_pr(
+        terminalize_agent_workspace_after_pr(
             Arc::clone(&deps.workspace_repo),
+            Arc::clone(&deps.agent_run_repo),
+            deps.chat_service.as_ref().map(Arc::clone),
             &conversation_id,
             &project,
             Some(Arc::clone(&deps.github)),
             matches!(pr.status, PrStatus::Merged { .. }),
+            true,
+            pr_status,
         )
         .await;
     }
@@ -268,7 +294,30 @@ async fn reconcile_linked_agent_workspace_pr(
         .check_pr_status(Path::new(&project.working_directory), pr_number)
         .await?;
     let pr_status = publication_status_for_pr_status(&status);
-    if !matches!(status, PrStatus::Closed | PrStatus::Merged { .. }) {
+    reconcile_clickup_ticket_for_workspace_pr(
+        &deps,
+        workspace,
+        project,
+        pr_number,
+        workspace.publication_pr_url.clone(),
+        pr_status,
+    )
+    .await;
+    if matches!(status, PrStatus::Open) {
+        if let (Some(registry), Some(chat_service)) =
+            (deps.pr_poller_registry.as_ref(), deps.chat_service.as_ref())
+        {
+            registry.start_agent_workspace_polling(
+                workspace.conversation_id.clone(),
+                pr_number,
+                project.clone(),
+                Path::new(&workspace.worktree_path).to_path_buf(),
+                Arc::clone(&deps.workspace_repo),
+                Arc::clone(&deps.agent_run_repo),
+                Arc::clone(&deps.task_outcome_repo),
+                Arc::clone(chat_service),
+            );
+        }
         return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
             "linked_pr_not_terminal",
         ));
@@ -315,12 +364,16 @@ async fn reconcile_linked_agent_workspace_pr(
         })
         .await?;
     emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
-    cleanup_terminal_agent_workspace_after_pr(
+    terminalize_agent_workspace_after_pr(
         Arc::clone(&deps.workspace_repo),
+        Arc::clone(&deps.agent_run_repo),
+        deps.chat_service.as_ref().map(Arc::clone),
         &workspace.conversation_id,
         project,
         matches!(status, PrStatus::Merged { .. }).then(|| Arc::clone(&deps.github)),
         pr_status == "merged",
+        true,
+        pr_status,
     )
     .await;
 
@@ -328,6 +381,156 @@ async fn reconcile_linked_agent_workspace_pr(
         pr_number,
         pr_status: pr_status.to_string(),
     })
+}
+
+async fn reconcile_clickup_ticket_for_workspace_pr(
+    deps: &AgentWorkspaceExternalPrReconciliationDeps,
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+    pr_number: i64,
+    pr_url: Option<String>,
+    pr_status: &str,
+) {
+    let (Some(clickup), Some(links)) = (
+        deps.clickup_integration_service.as_deref(),
+        deps.external_issue_link_service.as_deref(),
+    ) else {
+        return;
+    };
+
+    let detail = deps
+        .github
+        .fetch_pr_detail(Path::new(&project.working_directory), pr_number)
+        .await;
+    let (branch, title, body, detail_url) = match detail {
+        Ok(detail) => (detail.head_ref_name, detail.title, detail.body, detail.url),
+        Err(error) => {
+            tracing::debug!(
+                conversation_id = workspace.conversation_id.as_str(),
+                pr_number,
+                error = %error,
+                "ClickUp association PR detail unavailable; using branch evidence"
+            );
+            (workspace.branch_name.clone(), String::new(), None, None)
+        }
+    };
+    let worktree_path =
+        match resolve_valid_agent_conversation_workspace_path(project, workspace).await {
+            Ok(path) => Some(path),
+            Err(error) => {
+                tracing::debug!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "ClickUp association skipped local Git evidence for an invalid workspace path"
+                );
+                None
+            }
+        };
+    let commit_subjects = match worktree_path.as_deref() {
+        Some(worktree_path) => {
+            match GitService::get_commits_between(worktree_path, &workspace.base_ref, "HEAD").await
+            {
+                Ok(commits) => commits
+                    .into_iter()
+                    .take(40)
+                    .map(|commit| commit.message)
+                    .collect(),
+                Err(error) => {
+                    tracing::debug!(
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error = %error,
+                        "ClickUp association commit evidence unavailable"
+                    );
+                    Vec::new()
+                }
+            }
+        }
+        None => Vec::new(),
+    };
+    let head_sha = match worktree_path.as_deref() {
+        Some(worktree_path) => GitService::get_head_sha(worktree_path).await.ok(),
+        None => None,
+    };
+    let outcome = reconcile_clickup_pr_to_conversation(
+        clickup,
+        links,
+        ClickUpPrAssociationInput {
+            conversation_id: workspace.conversation_id.as_str(),
+            project_id: project.id.to_string(),
+            evidence: ClickUpGitEvidence {
+                branch,
+                title,
+                body,
+                commit_subjects,
+            },
+            pr_number,
+            pr_url: pr_url.or(detail_url),
+            pr_status: pr_status.to_string(),
+            head_sha,
+        },
+    )
+    .await;
+
+    match outcome {
+        Ok(ClickUpPrAssociationOutcome::Linked { task_id, link_id }) => {
+            tracing::info!(
+                conversation_id = workspace.conversation_id.as_str(),
+                pr_number,
+                task_id,
+                link_id,
+                "Linked ClickUp task to RalphX conversation from Git evidence"
+            );
+            emit_clickup_link_changed(deps.app_handle.as_ref(), project, workspace, &task_id);
+        }
+        Ok(ClickUpPrAssociationOutcome::Ambiguous { task_ids }) => tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            task_ids = ?task_ids,
+            "ClickUp Git association was ambiguous and was not persisted"
+        ),
+        Ok(ClickUpPrAssociationOutcome::PendingValidation { errors }) => tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            errors = ?errors,
+            "ClickUp Git association validation is pending"
+        ),
+        Ok(other) => tracing::debug!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            outcome = ?other,
+            "ClickUp Git association produced no link"
+        ),
+        Err(error) => tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            pr_number,
+            error = %error,
+            "ClickUp Git association failed without blocking PR reconciliation"
+        ),
+    }
+}
+
+fn emit_clickup_link_changed(
+    app_handle: Option<&AppHandle>,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    task_id: &str,
+) {
+    let Some(handle) = app_handle else {
+        return;
+    };
+    let event = TicketingCacheInvalidatedEvent {
+        provider: "clickup".to_string(),
+        ticket_id: Some(task_id.to_string()),
+        ticket_key: None,
+        container_id: None,
+        project_id: Some(project.id.to_string()),
+        reason: "git_conversation_linked".to_string(),
+        invalidated_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let _ = handle.emit(TICKETING_CACHE_INVALIDATED_EVENT, event);
+    emit_workspace_changed(Some(handle), &workspace.conversation_id);
 }
 
 fn publication_status_for_pr_status(status: &PrStatus) -> &'static str {
@@ -434,7 +637,8 @@ pub(crate) fn external_pr_reconciliation_skip_reason(
     if matches!(
         workspace.publication_pr_status.as_deref(),
         Some("closed") | Some("merged")
-    ) {
+    ) && workspace.publication_pr_number.is_none()
+    {
         return Some("workspace_terminal");
     }
     if workspace.publication_pr_number.is_some() {

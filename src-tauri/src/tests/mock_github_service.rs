@@ -92,8 +92,11 @@ pub struct MockGithubState {
     pub last_fetch_pr_detail_number: Option<i64>,
     pub last_fetch_pr_review_thread_number: Option<i64>,
     pub last_fetch_pr_health_number: Option<i64>,
+    pub last_mark_pr_ready_working_dir: Option<String>,
     pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
+    pub last_enable_pr_auto_merge_working_dir: Option<String>,
     pub last_disable_pr_auto_merge_number: Option<i64>,
+    pub last_disable_pr_auto_merge_working_dir: Option<String>,
     pub last_push_branch_name: Option<String>,
     pub last_close_pr_number: Option<i64>,
     pub last_delete_remote_branch_name: Option<String>,
@@ -315,10 +318,11 @@ impl GithubServiceTrait for MockGithubService {
             .unwrap_or(Ok((1, "https://github.com/owner/repo/pull/1".to_string())))
     }
 
-    async fn mark_pr_ready(&self, _working_dir: &Path, pr_number: i64) -> AppResult<()> {
+    async fn mark_pr_ready(&self, working_dir: &Path, pr_number: i64) -> AppResult<()> {
         let mut s = self.state.lock().expect("lock poisoned");
         s.mark_pr_ready_calls += 1;
         s.last_mark_pr_ready_number = Some(pr_number);
+        s.last_mark_pr_ready_working_dir = Some(working_dir.to_string_lossy().into_owned());
         s.mark_pr_ready_result.take().unwrap_or(Ok(()))
     }
 
@@ -488,20 +492,22 @@ impl GithubServiceTrait for MockGithubService {
 
     async fn enable_pr_auto_merge(
         &self,
-        _working_dir: &Path,
+        working_dir: &Path,
         pr_number: i64,
         method: &str,
     ) -> AppResult<()> {
         let mut s = self.state.lock().expect("lock poisoned");
         s.enable_pr_auto_merge_calls += 1;
         s.last_enable_pr_auto_merge_args = Some((pr_number, method.to_string()));
+        s.last_enable_pr_auto_merge_working_dir = Some(working_dir.to_string_lossy().into_owned());
         s.enable_pr_auto_merge_result.take().unwrap_or(Ok(()))
     }
 
-    async fn disable_pr_auto_merge(&self, _working_dir: &Path, pr_number: i64) -> AppResult<()> {
+    async fn disable_pr_auto_merge(&self, working_dir: &Path, pr_number: i64) -> AppResult<()> {
         let mut s = self.state.lock().expect("lock poisoned");
         s.disable_pr_auto_merge_calls += 1;
         s.last_disable_pr_auto_merge_number = Some(pr_number);
+        s.last_disable_pr_auto_merge_working_dir = Some(working_dir.to_string_lossy().into_owned());
         s.disable_pr_auto_merge_result.take().unwrap_or(Ok(()))
     }
 

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { getTraceLogPath, redactSecrets, resetTraceLogPathForTests, safeError, safeTrace, } from "../redact.js";
+import { ARG_REDACTED_TOOLS, getTraceLogPath, redactToolArgsForLog, redactToolResultForLog, redactSecrets, resetTraceLogPathForTests, safeError, safeTrace, } from "../redact.js";
 afterEach(() => {
     delete process.env.RALPHX_MCP_TRACE_DIR;
     delete process.env.RALPHX_AGENT_TYPE;
@@ -15,6 +15,21 @@ afterEach(() => {
     delete process.env.RALPHX_PROJECT_ID;
     delete process.env.RALPHX_WORKING_DIRECTORY;
     resetTraceLogPathForTests();
+});
+describe("persona tool argument redaction", () => {
+    it.each(["save_persona_draft", "get_persona_draft", "persona_future_tool"])("redacts %s arguments before logging", (toolName) => {
+        expect(ARG_REDACTED_TOOLS.has(toolName) || toolName.startsWith("persona_")).toBe(true);
+        expect(redactToolArgsForLog(toolName, { content: "private persona body" })).toBe("***PERSONA_ARGS_REDACTED***");
+    });
+    it("leaves non-persona tool arguments unchanged", () => {
+        const args = { task_id: "task-1", note: "safe" };
+        expect(redactToolArgsForLog("update_task", args)).toBe(args);
+    });
+    it("redacts persona tool results before logging", () => {
+        expect(redactToolResultForLog("get_persona_draft", {
+            content: "private persona body",
+        })).toBe("***PERSONA_ARGS_REDACTED***");
+    });
 });
 describe("redactSecrets — pattern matching", () => {
     // Pattern 1: Anthropic API keys

@@ -23,16 +23,17 @@ use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_merged_plan_branch_local_artifacts_with_known_local_branches,
     cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches,
-    LocalGitArtifactCleanupReport,
+    terminal_agent_workspace_cleanup_marker_for_report,
+    terminal_plan_branch_cleanup_marker_for_report, LocalGitArtifactCleanupReport,
 };
 use crate::application::git_service::{git_cmd, FetchOriginOutcome, GitService};
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ExecutionPlanId,
-    ExecutionPlanStatus, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-    ProjectId, Task, TaskCategory, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, ExecutionPlanId, ExecutionPlanStatus, InternalStatus,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -47,6 +48,7 @@ use crate::domain::state_machine::transition_handler::{
     create_draft_pr_if_needed, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
     sync_plan_branch_pr_if_needed,
 };
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 const PR_METADATA_REFRESH_CONCURRENCY: usize = 8;
 const PR_CREATION_RECOVERY_PROJECT_CONCURRENCY: usize = 4;
@@ -283,21 +285,6 @@ impl TerminalCleanupStats {
             elapsed_ms = started_at.elapsed().as_millis(),
             "Terminal cleanup: startup local artifact cleanup summary"
         );
-    }
-}
-
-fn terminal_cleanup_marker_for_report(
-    report: &LocalGitArtifactCleanupReport,
-) -> Option<&'static str> {
-    if report.branch_deleted || report.worktree_removed {
-        return Some("cleaned");
-    }
-
-    match report.skipped_reason.as_deref() {
-        Some("branch_missing") => Some("branch_missing"),
-        Some(reason) if reason.starts_with("branch_not_merged:") => Some("unsafe"),
-        Some(reason) if reason.starts_with("target_ref_missing:") => Some("target_ref_missing"),
-        _ => None,
     }
 }
 
@@ -647,13 +634,22 @@ async fn recover_missing_draft_prs_for_project(
                     push_status = %plan_branch.pr_push_status,
                     "PR startup recovery: syncing pending PR branch push for active plan branch"
                 );
-                sync_plan_branch_pr_if_needed(
+                if let Err(error) = sync_plan_branch_pr_if_needed(
                     &project,
                     &plan_branch,
                     &github_service,
                     &plan_branch_repo,
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        branch_id = plan_branch.id.as_str(),
+                        branch = %plan_branch.branch_name,
+                        merge_task_id = merge_task.id.as_str(),
+                        error = %error,
+                        "PR startup recovery: pending PR branch push sync failed"
+                    );
+                }
             }
 
             let refresh_lookup_started_at = Instant::now();
@@ -1064,7 +1060,7 @@ pub async fn recover_pr_pollers(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     project_repo: Arc<dyn ProjectRepository>,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let task_ids = match plan_branch_repo.find_pr_polling_task_ids().await {
@@ -1231,6 +1227,62 @@ async fn recover_one_agent_workspace_pr_poller(
     let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
         return;
     };
+
+    if workspace.mode == AgentConversationWorkspaceMode::ReviewPr {
+        let existing = match workspace_repo
+            .get_pr_review_monitor(&workspace.conversation_id)
+            .await
+        {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to load Review PR monitor"
+                );
+                return;
+            }
+        };
+        if existing.is_none() {
+            let head_sha = workspace
+                .source_pull_request
+                .as_ref()
+                .and_then(|pull_request| pull_request.head_ref_oid.clone());
+            let mut monitor = AgentWorkspacePrReviewMonitor::new(
+                workspace.conversation_id.clone(),
+                workspace.project_id.clone(),
+                pr_number,
+                head_sha,
+            );
+            monitor.monitor_enabled = true;
+            monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+            if let Err(error) = workspace_repo.upsert_pr_review_monitor(monitor).await {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to rearm legacy Review PR monitor"
+                );
+                return;
+            }
+        } else if existing.as_ref().is_some_and(|monitor| {
+            !monitor.monitor_enabled
+                && monitor.status == AgentWorkspacePrReviewMonitorStatus::Terminal
+        }) {
+            if let Err(error) = workspace_repo
+                .set_pr_review_monitor_enabled(&workspace.conversation_id, true)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to rearm legacy Review PR monitor"
+                );
+                return;
+            }
+        } else if existing.is_some_and(|monitor| !monitor.monitor_enabled) {
+            return;
+        }
+    }
 
     let project = match project_repo.get_by_id(&workspace.project_id).await {
         Ok(Some(project)) => project,
@@ -1529,7 +1581,7 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
             {
                 Ok(report) if report.branch_deleted => {
                     stats.observe_report(&report);
-                    if let Some(status) = terminal_cleanup_marker_for_report(&report) {
+                    if let Some(status) = terminal_plan_branch_cleanup_marker_for_report(&report) {
                         mark_plan_branch_local_cleanup_status(
                             &plan_branch_repo,
                             &plan_branch,
@@ -1545,7 +1597,7 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
                 }
                 Ok(report) => {
                     stats.observe_report(&report);
-                    if let Some(status) = terminal_cleanup_marker_for_report(&report) {
+                    if let Some(status) = terminal_plan_branch_cleanup_marker_for_report(&report) {
                         mark_plan_branch_local_cleanup_status(
                             &plan_branch_repo,
                             &plan_branch,
@@ -1720,7 +1772,10 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             {
                 Ok(report) => {
                     stats.observe_report(&report);
-                    if let Some(status) = terminal_cleanup_marker_for_report(&report) {
+                    if let Some(status) = terminal_agent_workspace_cleanup_marker_for_report(
+                        &report,
+                        delete_branch_if_merged,
+                    ) {
                         mark_workspace_local_cleanup_status(
                             &workspace_repo,
                             &workspace,
@@ -1751,6 +1806,93 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     }
 
     stats.log_summary("agent_workspace", started_at, false);
+}
+
+pub async fn run_periodic_terminal_pr_local_cleanup(
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    let Some(interval) = terminal_pr_local_cleanup_interval() else {
+        tracing::info!("Terminal PR local cleanup: periodic cleanup disabled by runtime config");
+        return;
+    };
+
+    run_periodic_terminal_pr_local_cleanup_with_interval(
+        interval,
+        plan_branch_repo,
+        workspace_repo,
+        project_repo,
+        github_service,
+        running_agent_registry,
+    )
+    .await;
+}
+
+async fn run_periodic_terminal_pr_local_cleanup_with_interval(
+    interval: Duration,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+        run_terminal_pr_local_cleanup_once(
+            Arc::clone(&plan_branch_repo),
+            Arc::clone(&workspace_repo),
+            Arc::clone(&project_repo),
+            github_service.as_ref().map(Arc::clone),
+            Arc::clone(&running_agent_registry),
+        )
+        .await;
+    }
+}
+
+pub(crate) async fn run_terminal_pr_local_cleanup_once(
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
+        let unblocked_git_projects = Arc::new(HashSet::new());
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&plan_branch_repo),
+            Arc::clone(&project_repo),
+            github_service.as_ref().map(Arc::clone),
+            Arc::clone(&unblocked_git_projects),
+            Arc::clone(&running_agent_registry),
+        )
+        .await;
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            workspace_repo,
+            project_repo,
+            github_service,
+            unblocked_git_projects,
+            running_agent_registry,
+        )
+        .await;
+    })
+    .await;
+}
+
+fn terminal_pr_local_cleanup_interval() -> Option<Duration> {
+    terminal_pr_local_cleanup_interval_from_secs(
+        git_runtime_config().terminal_pr_local_cleanup_interval_secs,
+    )
+}
+
+fn terminal_pr_local_cleanup_interval_from_secs(interval_secs: u64) -> Option<Duration> {
+    if interval_secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(interval_secs))
+    }
 }
 
 async fn terminal_cleanup_should_pause_for_user_work(
@@ -1858,7 +2000,7 @@ async fn recover_one_pr_poller(
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     project_repo: Arc<dyn ProjectRepository>,
-    transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    transition_service: Arc<TaskTransitionService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let mut task = match task_repo.get_by_id(&task_id).await {
@@ -2425,40 +2567,133 @@ mod tests {
     #[test]
     fn terminal_cleanup_markers_are_derived_from_cleanup_reports() {
         assert_eq!(
-            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+            terminal_plan_branch_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
                 branch_deleted: true,
                 ..LocalGitArtifactCleanupReport::default()
             }),
             Some("cleaned")
         );
         assert_eq!(
-            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+            terminal_plan_branch_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
                 skipped_reason: Some("branch_missing".to_string()),
                 ..LocalGitArtifactCleanupReport::default()
             }),
             Some("branch_missing")
         );
         assert_eq!(
-            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+            terminal_plan_branch_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
                 skipped_reason: Some("target_ref_missing:main".to_string()),
                 ..LocalGitArtifactCleanupReport::default()
             }),
             Some("target_ref_missing")
         );
         assert_eq!(
-            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+            terminal_plan_branch_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
                 skipped_reason: Some("branch_not_merged:main".to_string()),
                 ..LocalGitArtifactCleanupReport::default()
             }),
             Some("unsafe")
         );
         assert_eq!(
-            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+            terminal_agent_workspace_cleanup_marker_for_report(
+                &LocalGitArtifactCleanupReport {
+                    skipped_reason: Some("workspace_has_uncommitted_changes".to_string()),
+                    ..LocalGitArtifactCleanupReport::default()
+                },
+                false
+            ),
+            Some("workspace_dirty")
+        );
+        assert_eq!(
+            terminal_agent_workspace_cleanup_marker_for_report(
+                &LocalGitArtifactCleanupReport::default(),
+                false
+            ),
+            Some("cleaned")
+        );
+        assert_eq!(
+            terminal_agent_workspace_cleanup_marker_for_report(
+                &LocalGitArtifactCleanupReport {
+                    skipped_reason: Some("branch_not_ralphx_owned".to_string()),
+                    ..LocalGitArtifactCleanupReport::default()
+                },
+                true
+            ),
+            Some("branch_preserved_non_owned")
+        );
+        assert_eq!(
+            terminal_plan_branch_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+                skipped_reason: Some("workspace_path_mismatch".to_string()),
+                ..LocalGitArtifactCleanupReport::default()
+            }),
+            Some("unsafe")
+        );
+        assert_eq!(
+            terminal_agent_workspace_cleanup_marker_for_report(
+                &LocalGitArtifactCleanupReport {
+                    skipped_reason: Some("workspace_path_not_directory".to_string()),
+                    ..LocalGitArtifactCleanupReport::default()
+                },
+                true
+            ),
+            Some("unsafe")
+        );
+        assert_eq!(
+            terminal_agent_workspace_cleanup_marker_for_report(
+                &LocalGitArtifactCleanupReport {
+                    skipped_reason: Some("workspace_points_to_project_root".to_string()),
+                    ..LocalGitArtifactCleanupReport::default()
+                },
+                true
+            ),
+            Some("unsafe")
+        );
+        assert_eq!(
+            terminal_agent_workspace_cleanup_marker_for_report(
+                &LocalGitArtifactCleanupReport {
+                    skipped_reason: Some("unexpected_skip_reason".to_string()),
+                    ..LocalGitArtifactCleanupReport::default()
+                },
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            terminal_plan_branch_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
                 skipped_reason: Some("agent_running".to_string()),
                 ..LocalGitArtifactCleanupReport::default()
             }),
             None
         );
+    }
+
+    #[test]
+    fn terminal_pr_local_cleanup_interval_can_be_disabled() {
+        assert_eq!(terminal_pr_local_cleanup_interval_from_secs(0), None);
+        assert_eq!(
+            terminal_pr_local_cleanup_interval_from_secs(15),
+            Some(Duration::from_secs(15))
+        );
+    }
+
+    #[tokio::test]
+    async fn periodic_terminal_cleanup_loop_retries_until_cancelled() {
+        let app_state = AppState::new_test();
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(25),
+            run_periodic_terminal_pr_local_cleanup_with_interval(
+                Duration::from_millis(1),
+                Arc::clone(&app_state.plan_branch_repo),
+                Arc::clone(&app_state.agent_conversation_workspace_repo),
+                Arc::clone(&app_state.project_repo),
+                None,
+                Arc::clone(&app_state.running_agent_registry),
+            ),
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -3028,14 +3263,14 @@ mod tests {
             .unwrap();
         let branch = startup_workspace_branch(&project);
         let workspace = startup_workspace(&project, &branch);
-        let worktree_path = Path::new(&workspace.worktree_path);
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
 
-        GitService::create_worktree(repo.path(), worktree_path, &branch, "main")
+        GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
             .await
             .expect("create worktree");
         std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
-        run_git(worktree_path, &["add", "."]);
-        run_git(worktree_path, &["commit", "-m", "agent work"]);
+        run_git(&worktree_path, &["add", "."]);
+        run_git(&worktree_path, &["commit", "-m", "agent work"]);
         run_git(
             repo.path(),
             &["merge", "--no-ff", &branch, "-m", "merge agent"],
@@ -3063,6 +3298,104 @@ mod tests {
             0,
             "startup cleanup should use GitService maintenance fetches, not GithubService fetch_remote"
         );
+    }
+
+    #[tokio::test]
+    async fn periodic_terminal_cleanup_once_removes_merged_workspace_artifacts() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = startup_workspace_branch(&project);
+        let workspace = startup_workspace(&project, &branch);
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+
+        GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
+            .await
+            .expect("create worktree");
+        std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+        run_git(&worktree_path, &["add", "."]);
+        run_git(&worktree_path, &["commit", "-m", "agent work"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", &branch, "-m", "merge agent"],
+        );
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        run_terminal_pr_local_cleanup_once(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(!worktree_path.exists());
+        assert!(!branch_exists(repo.path(), &branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn periodic_terminal_cleanup_once_removes_merged_plan_branch_artifacts() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/plan-periodic";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("periodic-plan.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "periodic plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge periodic plan"],
+        );
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("periodic-plan-artifact"),
+            IdeationSessionId::from_string("periodic-plan-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(130);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        run_terminal_pr_local_cleanup_once(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(!branch_exists(repo.path(), branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
     #[tokio::test]
@@ -3344,10 +3677,7 @@ mod tests {
         ));
         let transition_service = Arc::new(
             app_state
-                .build_transition_service_for_runtime::<tauri::Wry>(
-                    Arc::new(ExecutionState::new()),
-                    None,
-                )
+                .build_transition_service_for_runtime(Arc::new(ExecutionState::new()), None)
                 .with_github_service(Arc::clone(&github) as Arc<dyn GithubServiceTrait>)
                 .with_pr_poller_registry(Arc::clone(&registry)),
         );
@@ -3405,10 +3735,7 @@ mod tests {
         ));
         let transition_service = Arc::new(
             app_state
-                .build_transition_service_for_runtime::<tauri::Wry>(
-                    Arc::new(ExecutionState::new()),
-                    None,
-                )
+                .build_transition_service_for_runtime(Arc::new(ExecutionState::new()), None)
                 .with_github_service(Arc::clone(&github) as Arc<dyn GithubServiceTrait>)
                 .with_pr_poller_registry(Arc::clone(&registry)),
         );

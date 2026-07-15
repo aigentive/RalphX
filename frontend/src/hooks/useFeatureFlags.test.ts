@@ -13,7 +13,10 @@ import {
   useFeatureFlags,
 } from "./useFeatureFlags";
 import { invoke } from "@tauri-apps/api/core";
-import type { FeatureFlags } from "@/types/feature-flags";
+import {
+  featureFlagsSchema,
+  type FeatureFlags,
+} from "@/types/feature-flags";
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -35,24 +38,29 @@ describe("isViewEnabled", () => {
     activityPage: true,
     extensibilityPage: true,
     ideationPage: true,
+    automationsPage: true,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: true,
+    agentPersonas: false,
   };
   const activityDisabled: FeatureFlags = {
     activityPage: false,
     extensibilityPage: true,
     ideationPage: true,
+    automationsPage: true,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: true,
+    agentPersonas: false,
   };
   const extensibilityDisabled: FeatureFlags = {
     activityPage: true,
     extensibilityPage: false,
     ideationPage: true,
+    automationsPage: true,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,
@@ -62,10 +70,12 @@ describe("isViewEnabled", () => {
     activityPage: false,
     extensibilityPage: false,
     ideationPage: false,
+    automationsPage: false,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: false,
+    agentPersonas: false,
   };
 
   it("returns true for kanban regardless of flags", () => {
@@ -75,6 +85,11 @@ describe("isViewEnabled", () => {
   it("returns flags.ideationPage for ideation view", () => {
     expect(isViewEnabled("ideation", allEnabled)).toBe(true);
     expect(isViewEnabled("ideation", allDisabled)).toBe(false);
+  });
+
+  it("returns flags.automationsPage for automations view", () => {
+    expect(isViewEnabled("automations", allEnabled)).toBe(true);
+    expect(isViewEnabled("automations", allDisabled)).toBe(false);
   });
 
   it("returns true for graph regardless of flags", () => {
@@ -113,14 +128,28 @@ describe("applyFeatureFlagOverrides", () => {
   const baseFlags: FeatureFlags = {
     activityPage: true,
     extensibilityPage: true,
+    ideationPage: false,
+    automationsPage: false,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,
     ticketingDashboard: true,
+    agentPersonas: false,
   };
 
   it("returns flags unchanged", () => {
     expect(applyFeatureFlagOverrides(baseFlags)).toEqual(baseFlags);
+  });
+});
+
+describe("featureFlagsSchema", () => {
+  it("defaults agentPersonas to false when the backend omits it", () => {
+    expect(
+      featureFlagsSchema.parse({
+        activityPage: true,
+        extensibilityPage: true,
+      }).agentPersonas,
+    ).toBe(false);
   });
 });
 
@@ -147,10 +176,12 @@ describe("useFeatureFlags", () => {
       activityPage: true,
       extensibilityPage: true,
       ideationPage: false,
+      automationsPage: true,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
+      agentPersonas: false,
     });
   });
 
@@ -168,10 +199,12 @@ describe("useFeatureFlags", () => {
       activityPage: false,
       extensibilityPage: true,
       ideationPage: false,
+      automationsPage: true,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
+      agentPersonas: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -195,10 +228,12 @@ describe("useFeatureFlags", () => {
       activityPage: true,
       extensibilityPage: true,
       ideationPage: false,
+      automationsPage: true,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
       ticketingDashboard: false,
+      agentPersonas: false,
     });
   });
 });

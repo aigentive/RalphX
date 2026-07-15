@@ -1,9 +1,14 @@
 use axum::{extract::State, http::StatusCode, Json};
+use sha2::{Digest, Sha256};
 
 use crate::domain::entities::{
-    AgentConversationIssue, ChatContextType, ChatConversation, ChatConversationId, ProjectId,
-    TaskId, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED, AGENT_CONVERSATION_ISSUE_STATUS_OPEN,
-    AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
+    canonicalize_agent_conversation_issue, AgentConversationIssue,
+    AgentConversationIssueCanonicalIdentity, AgentConversationIssueCanonicalInput,
+    AgentConversationIssueOccurrence, ChatContextType, ChatConversation, ChatConversationId,
+    ProjectId, TaskId, AGENT_CONVERSATION_ISSUE_DEDUPE_CANDIDATE_ATTACHED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW, AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
+    AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 use crate::http_server::handlers::agent_followups::create_followup_agent_conversation_for_request;
 use crate::http_server::helpers::get_task_context_impl;
@@ -20,6 +25,10 @@ type JsonError = (StatusCode, Json<serde_json::Value>);
 
 fn json_error(status: StatusCode, message: impl Into<String>) -> JsonError {
     (status, Json(serde_json::json!({ "error": message.into() })))
+}
+
+fn json_error_body(status: StatusCode, body: serde_json::Value) -> JsonError {
+    (status, Json(body))
 }
 
 fn trim_optional(value: Option<&str>) -> Option<String> {
@@ -67,6 +76,98 @@ fn request_source_task_id(req: &RegisterAgentConversationIssueRequest) -> Option
         .then(|| trim_optional(req.source_context_id.as_deref()))
         .flatten()
     })
+}
+
+fn canonical_identity_for_issue(
+    issue: &AgentConversationIssue,
+) -> AgentConversationIssueCanonicalIdentity {
+    canonicalize_agent_conversation_issue(&AgentConversationIssueCanonicalInput {
+        issue_kind: issue.issue_kind.as_str(),
+        blocking_scope: issue.blocking_scope.as_str(),
+        title: issue.title.as_str(),
+        summary: issue.summary.as_str(),
+        evidence: issue.evidence.as_deref(),
+        recommendation: issue.recommendation.as_deref(),
+        blocker_fingerprint: issue.blocker_fingerprint.as_deref(),
+        source_task_id: issue.source_task_id.as_deref(),
+    })
+}
+
+fn issue_check_token(
+    conversation_id: &ChatConversationId,
+    issues: &[AgentConversationIssue],
+) -> String {
+    let mut parts = issues
+        .iter()
+        .map(|issue| {
+            format!(
+                "{}:{}:{}",
+                issue.id,
+                issue.updated_at.to_rfc3339(),
+                issue.status
+            )
+        })
+        .collect::<Vec<_>>();
+    parts.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(conversation_id.as_str().as_bytes());
+    hasher.update(b"|");
+    hasher.update(parts.join("|").as_bytes());
+    let digest = hasher.finalize();
+    let suffix = digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("v1:{}:{suffix}", conversation_id.as_str())
+}
+
+async fn issue_response_with_occurrences(
+    state: &HttpServerState,
+    issue: AgentConversationIssue,
+) -> Result<AgentConversationIssueResponse, JsonError> {
+    let occurrences = state
+        .app_state
+        .agent_conversation_issue_repo
+        .list_occurrences_by_issue(&issue.id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load Agent conversation issue occurrences: {error}"),
+            )
+        })?;
+    Ok(AgentConversationIssueResponse::from(issue).with_occurrences(occurrences))
+}
+
+async fn issue_responses_with_occurrences(
+    state: &HttpServerState,
+    issues: Vec<AgentConversationIssue>,
+) -> Result<Vec<AgentConversationIssueResponse>, JsonError> {
+    let mut responses = Vec::with_capacity(issues.len());
+    for issue in issues {
+        responses.push(issue_response_with_occurrences(state, issue).await?);
+    }
+    Ok(responses)
+}
+
+async fn append_issue_occurrence(
+    state: &HttpServerState,
+    issue: &AgentConversationIssue,
+    dedupe_decision: &str,
+) -> Result<AgentConversationIssueOccurrence, JsonError> {
+    let occurrence = AgentConversationIssueOccurrence::from_issue(issue, dedupe_decision);
+    state
+        .app_state
+        .agent_conversation_issue_repo
+        .append_occurrence(&occurrence)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to save Agent conversation issue occurrence: {error}"),
+            )
+        })
 }
 
 async fn resolve_origin_conversation(
@@ -326,8 +427,59 @@ pub async fn register_agent_issue(
         trim_optional(req.followup_prompt.as_deref()),
         req.auto_followup_eligible,
     );
+    let canonical_identity = canonical_identity_for_issue(&issue);
+    issue.apply_canonical_identity(&canonical_identity);
 
-    if let Some(blocker_fingerprint) = issue.blocker_fingerprint.as_deref() {
+    let mut dedupe_result = AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED.to_string();
+    let mut candidate_issues = Vec::new();
+    let mut issue_check_token_response = None;
+
+    if let Some(attach_to_issue_id) = trim_optional(req.attach_to_issue_id.as_deref()) {
+        let mut existing = state
+            .app_state
+            .agent_conversation_issue_repo
+            .get_by_id(&attach_to_issue_id)
+            .await
+            .map_err(|error| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to load existing Agent conversation issue: {error}"),
+                )
+            })?
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::NOT_FOUND,
+                    "attach_to_issue_id did not match an existing Agent conversation issue",
+                )
+            })?;
+        if existing.conversation_id != origin.id
+            || existing.project_id.as_str() != origin.context_id
+            || existing.status != AGENT_CONVERSATION_ISSUE_STATUS_OPEN
+        {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "attach_to_issue_id must be an open issue on the same origin Agent conversation",
+            ));
+        }
+        existing.refresh_from(issue);
+        issue = existing;
+        dedupe_result = AGENT_CONVERSATION_ISSUE_DEDUPE_CANDIDATE_ATTACHED.to_string();
+    } else if let Some(mut existing) = state
+        .app_state
+        .agent_conversation_issue_repo
+        .find_open_by_canonical_fingerprint(&origin.id, &canonical_identity.fingerprint)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to inspect existing Agent conversation issues: {error}"),
+            )
+        })?
+    {
+        existing.refresh_from(issue);
+        issue = existing;
+        dedupe_result = AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED.to_string();
+    } else if let Some(blocker_fingerprint) = issue.blocker_fingerprint.as_deref() {
         if let Some(mut existing) = state
             .app_state
             .agent_conversation_issue_repo
@@ -345,9 +497,102 @@ pub async fn register_agent_issue(
                 )
             })?
         {
+            existing.apply_canonical_identity(&canonical_identity);
             existing.refresh_from(issue);
             issue = existing;
+            dedupe_result = AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED.to_string();
+        } else if canonical_identity.candidate_match_eligible {
+            candidate_issues = state
+                .app_state
+                .agent_conversation_issue_repo
+                .list_open_candidates_by_identity(
+                    &origin.id,
+                    &canonical_identity.scope_kind,
+                    &canonical_identity.scope_subject,
+                    &canonical_identity.family,
+                    &canonical_identity.fingerprint,
+                    5,
+                )
+                .await
+                .map_err(|error| {
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to inspect candidate Agent conversation issues: {error}"),
+                    )
+                })?;
         }
+    } else if canonical_identity.candidate_match_eligible {
+        candidate_issues = state
+            .app_state
+            .agent_conversation_issue_repo
+            .list_open_candidates_by_identity(
+                &origin.id,
+                &canonical_identity.scope_kind,
+                &canonical_identity.scope_subject,
+                &canonical_identity.family,
+                &canonical_identity.fingerprint,
+                5,
+            )
+            .await
+            .map_err(|error| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to inspect candidate Agent conversation issues: {error}"),
+                )
+            })?;
+    }
+
+    if dedupe_result == AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED && !candidate_issues.is_empty() {
+        let expected_token = issue_check_token(&origin.id, &candidate_issues);
+        if !req.confirm_new {
+            let candidate_responses =
+                issue_responses_with_occurrences(&state, candidate_issues).await?;
+            return Err(json_error_body(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": "needs_issue_disambiguation",
+                    "message": "A similar open Agent conversation issue already exists. Retry with attach_to_issue_id, or confirm_new plus new_issue_reason and issue_check_token.",
+                    "dedupe_result": "candidate_required",
+                    "canonical_fingerprint": canonical_identity.fingerprint,
+                    "candidate_issues": candidate_responses,
+                    "issue_check_token": expected_token,
+                }),
+            ));
+        }
+        let Some(new_issue_reason) = trim_optional(req.new_issue_reason.as_deref()) else {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "new_issue_reason is required when confirm_new is true and candidates exist",
+            ));
+        };
+        if trim_optional(req.issue_check_token.as_deref()).as_deref()
+            != Some(expected_token.as_str())
+        {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "issue_check_token must match the current candidate issue set when confirming a new issue",
+            ));
+        }
+        issue.recommendation = issue
+            .recommendation
+            .take()
+            .map(|value| format!("{value}\n\nConfirmed separate issue: {new_issue_reason}"))
+            .or_else(|| Some(format!("Confirmed separate issue: {new_issue_reason}")));
+        dedupe_result = AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW.to_string();
+        issue_check_token_response = Some(expected_token);
+    } else if req.confirm_new {
+        let Some(new_issue_reason) = trim_optional(req.new_issue_reason.as_deref()) else {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "new_issue_reason is required when confirm_new is true",
+            ));
+        };
+        issue.recommendation = issue
+            .recommendation
+            .take()
+            .map(|value| format!("{value}\n\nConfirmed separate issue: {new_issue_reason}"))
+            .or_else(|| Some(format!("Confirmed separate issue: {new_issue_reason}")));
+        dedupe_result = AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW.to_string();
     }
 
     let mut saved_issue = state
@@ -361,6 +606,7 @@ pub async fn register_agent_issue(
                 format!("Failed to save Agent conversation issue: {error}"),
             )
         })?;
+    let occurrence = append_issue_occurrence(&state, &saved_issue, &dedupe_result).await?;
     let followup = maybe_create_auto_followup(&state, &saved_issue, &req).await?;
     if let Some(followup) = followup.as_ref() {
         saved_issue = save_issue_linked_followup(&state, &saved_issue.id, followup).await?;
@@ -369,11 +615,19 @@ pub async fn register_agent_issue(
         .as_ref()
         .map(|response| !response.reused_existing)
         .unwrap_or(false);
+    let issue_response = issue_response_with_occurrences(&state, saved_issue).await?;
+    let occurrence_count = issue_response.occurrence_count;
 
     Ok(Json(RegisterAgentConversationIssueResponse {
-        issue: saved_issue.into(),
+        issue: issue_response,
         auto_followup_created,
         followup,
+        dedupe_result,
+        canonical_fingerprint: Some(canonical_identity.fingerprint),
+        occurrence_id: Some(occurrence.id),
+        occurrence_count,
+        candidate_issues: Vec::new(),
+        issue_check_token: issue_check_token_response,
     }))
 }
 
@@ -382,7 +636,7 @@ pub async fn list_agent_conversation_issues(
     Json(req): Json<ListAgentConversationIssuesRequest>,
 ) -> Result<Json<ListAgentConversationIssuesResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(req.conversation_id);
-    let issues = state
+    let raw_issues = state
         .app_state
         .agent_conversation_issue_repo
         .list_by_conversation(&conversation_id, req.include_resolved)
@@ -392,11 +646,13 @@ pub async fn list_agent_conversation_issues(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to list Agent conversation issues: {error}"),
             )
-        })?
-        .into_iter()
-        .map(AgentConversationIssueResponse::from)
-        .collect();
-    Ok(Json(ListAgentConversationIssuesResponse { issues }))
+        })?;
+    let issue_check_token = issue_check_token(&conversation_id, &raw_issues);
+    let issues = issue_responses_with_occurrences(&state, raw_issues).await?;
+    Ok(Json(ListAgentConversationIssuesResponse {
+        issues,
+        issue_check_token,
+    }))
 }
 
 fn validate_status(status: &str) -> Result<&'static str, JsonError> {

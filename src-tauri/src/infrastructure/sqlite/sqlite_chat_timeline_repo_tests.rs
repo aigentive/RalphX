@@ -241,7 +241,10 @@ async fn page_hydrates_ask_user_question_result_payloads() {
         hydrated.result_json.as_deref(),
         Some(expected_result_json.as_str())
     );
-    assert_eq!(hydrated.raw_block_json.as_deref(), Some(expected_raw_block_json));
+    assert_eq!(
+        hydrated.raw_block_json.as_deref(),
+        Some(expected_raw_block_json)
+    );
 }
 
 #[tokio::test]
@@ -358,4 +361,33 @@ async fn mark_message_items_finalized_updates_streaming_rows() {
         .expect("item exists");
     assert_eq!(loaded.status, ChatTimelineItemStatus::Finalized);
     assert!(loaded.finalized_at.is_some());
+}
+
+#[tokio::test]
+async fn delete_message_items_except_block_indices_removes_obsolete_rows() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-delete-stale");
+    insert_parent_message(&db, conversation_id, &message_id);
+    timeline_repo
+        .upsert_item(text_item(conversation_id, &message_id, 0, "keep"))
+        .await
+        .expect("insert kept item");
+    timeline_repo
+        .upsert_item(text_item(conversation_id, &message_id, 1, "drop"))
+        .await
+        .expect("insert stale item");
+
+    timeline_repo
+        .delete_message_items_except_block_indices(&message_id, vec![0])
+        .await
+        .expect("delete stale message items");
+
+    let remaining = timeline_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("load remaining timeline");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].block_index, 0);
+    assert_eq!(remaining[0].text.as_deref(), Some("keep"));
 }

@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn feature_disabled_error_variant_matches() {
+    let err = AppError::FeatureDisabled("[Personas disabled: agent personas]".to_string());
+
+    assert!(matches!(err, AppError::FeatureDisabled(_)));
+    // Bare passthrough Display so surfaced strings START with the A15 prefix.
+    assert_eq!(err.to_string(), "[Personas disabled: agent personas]");
+}
+
+#[test]
+fn persona_unavailable_display_is_bare_message() {
+    let message = "[Persona unavailable: persona abc is not active]".to_string();
+    let err = AppError::PersonaUnavailable(message.clone());
+
+    assert!(matches!(err, AppError::PersonaUnavailable(_)));
+    assert_eq!(err.to_string(), message);
+}
+
+#[test]
 fn test_database_error_display() {
     let err = AppError::Database("connection failed".to_string());
     assert_eq!(err.to_string(), "Database error: connection failed");

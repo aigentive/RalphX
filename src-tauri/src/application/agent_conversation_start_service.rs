@@ -5,29 +5,47 @@ use tauri::{Emitter, Runtime};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspaceSetupMode,
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint,
+    resolve_valid_agent_conversation_workspace_path,
+    validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
+    AgentConversationWorkspaceBranchNameHint, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
-use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
+use crate::application::clickup_git_association::{
+    clickup_identity_from_task, resolve_clickup_ticket_start, ClickUpTicketStartResolution,
+};
+use crate::application::external_issue_link_service::TicketConversationLinkInput;
+use crate::application::git_service::GitService;
+use crate::application::personas::PersonaService;
+use crate::application::plan_reference_import::{
+    import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
+    selected_plan_reference,
+};
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, ChatContextType, ChatConversation, ChatConversationId, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, PersonaDirective, PersonaId,
+    ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
 };
+use crate::error::AppError;
+use crate::infrastructure::agents::claude::agent_personas_enabled;
 
 mod helpers;
 
 use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
-    apply_ticket_canonical_branch_base_selection, base_selection_allows_ticket_canonical_branch,
+    archive_empty_seeded_draft_after_setup_failure,
+    archive_supplied_seeded_draft_after_setup_failure, clickup_task_lookup_key_from_references,
     emit_start_agent_conversation_progress, ensure_linked_branch_workspace_available,
-    ensure_plan_workspace_planning_session_link, first_ticket_start_base_reference,
-    hydrate_linked_branch_source_pull_request, log_start_agent_conversation_phase,
+    ensure_plan_workspace_planning_session_link, ensure_review_pr_monitor_for_workspace,
+    first_ticket_branch_name_hint, hydrate_linked_branch_source_pull_request,
+    linked_setup_failure_error, log_start_agent_conversation_phase,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
     trim_optional_input,
@@ -49,6 +67,8 @@ pub struct AgentWorkspaceSourcePullRequestInput {
 pub struct StartAgentConversationInput {
     pub project_id: String,
     pub content: String,
+    /// Optional active persona to bind before the first project-conversation send.
+    pub persona_id: Option<String>,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
     /// Optional visible parent conversation for follow-up/branch conversations.
@@ -85,6 +105,8 @@ pub struct StartAgentConversationInput {
     /// Structured artifact references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Optional Team request for the Agent conversation.
+    pub team_intent: Option<TeamIntent>,
 }
 
 #[derive(Debug)]
@@ -103,6 +125,19 @@ pub struct AgentConversationStartDeps<'a, R: Runtime + 'static> {
 
 pub struct AgentConversationStartService<'a, R: Runtime + 'static> {
     deps: AgentConversationStartDeps<'a, R>,
+}
+
+const PERSONA_BINDING_PROJECT_CONTEXT_ERROR: &str =
+    "Persona bindings require Project conversation context";
+
+fn ensure_persona_binding_project_context(context_type: ChatContextType) -> Result<(), AppError> {
+    if context_type == ChatContextType::Project {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            PERSONA_BINDING_PROJECT_CONTEXT_ERROR.to_string(),
+        ))
+    }
 }
 
 impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
@@ -146,6 +181,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             harness_override,
         )
         .await?;
+        crate::application::managed_team::validate_native_team_intent(
+            input.team_intent.as_ref(),
+            harness_override.unwrap_or(DEFAULT_AGENT_HARNESS),
+        )
+        .map_err(|error| error.to_string())?;
         log_start_agent_conversation_phase(
             &input.project_id,
             None,
@@ -156,26 +196,38 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-        let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
+        let mut base_branch_mode =
+            parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
         let mut base_ref = trim_optional_input(input.base_ref);
         let mut base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
         let conversation_title = trim_optional_input(input.title);
+        let persona_id = trim_optional_input(input.persona_id).map(PersonaId::from_string);
         let draft_conversation_id = input
             .conversation_id
             .as_deref()
             .map(str::trim)
             .filter(|conversation_id| !conversation_id.is_empty())
             .map(ChatConversationId::from_string);
-        let ticket_start_base_reference =
-            first_ticket_start_base_reference(&input.composer_integration_references);
+        let mut ticket_branch_name_hint =
+            first_ticket_branch_name_hint(&input.composer_integration_references);
         let mut source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
             base_ref_kind,
             base_ref.as_deref(),
         )?;
-        let should_create_workspace =
-            agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
+        validate_review_pr_workspace_source_pull_request(mode, source_pull_request.as_ref())
+            .map_err(|error| error.to_string())?;
+        let selected_plan_reference = selected_plan_reference(&input.composer_artifact_references)?;
+        let requested_coordination_mode = input
+            .team_intent
+            .as_ref()
+            .map(|intent| intent.coordination_mode);
+        let should_create_workspace = agent_mode_should_create_workspace(
+            mode,
+            source_pull_request.as_ref(),
+            selected_plan_reference.is_some(),
+        );
         let project_id = ProjectId::from_string(input.project_id.clone());
         log_start_agent_conversation_phase(
             &input.project_id,
@@ -200,39 +252,105 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             project_lookup_started,
         );
 
-        if should_create_workspace
-            && base_selection_allows_ticket_canonical_branch(
-                base_ref_kind,
-                source_pull_request.as_ref(),
-            )
+        let validated_clickup_task = if let Some(lookup_key) =
+            clickup_task_lookup_key_from_references(&input.composer_integration_references)?
         {
-            if let Some(ticket_reference) = ticket_start_base_reference.as_ref() {
-                let ticket_base_started = Instant::now();
-                let canonical = ensure_ticket_canonical_branch(
-                    self.deps.state,
-                    &project_id,
-                    &ticket_reference.provider,
-                    &ticket_reference.issue_key,
+            let task = self
+                .deps
+                .state
+                .clickup_integration_service
+                .fetch_task(&lookup_key)
+                .await?;
+            let identity = clickup_identity_from_task(&task);
+            ticket_branch_name_hint = Some(AgentConversationWorkspaceBranchNameHint {
+                provider: "clickup".to_string(),
+                ticket_token: identity.preferred_token(),
+            });
+
+            let should_auto_resolve_ticket_base = should_create_workspace
+                && matches!(
+                    mode,
+                    AgentConversationWorkspaceMode::Edit
+                        | AgentConversationWorkspaceMode::Plan
+                        | AgentConversationWorkspaceMode::Ideation
                 )
-                .await
-                .map_err(|error| error.to_string())?;
-                apply_ticket_canonical_branch_base_selection(
-                    &mut base_ref_kind,
-                    &mut base_ref,
-                    &mut base_display_name,
-                    &ticket_reference.issue_key,
-                    &canonical.branch_name,
+                && matches!(
+                    base_ref_kind,
+                    None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
+                        | Some(IdeationAnalysisBaseRefKind::CurrentBranch)
                 );
-                log_start_agent_conversation_phase(
-                    &input.project_id,
-                    None,
-                    "resolve_ticket_base",
-                    ticket_base_started,
-                );
+            if should_auto_resolve_ticket_base {
+                match resolve_clickup_ticket_start(
+                    &identity,
+                    std::path::Path::new(&project.working_directory),
+                    self.deps.state.github_service.as_deref(),
+                )
+                .await?
+                {
+                    ClickUpTicketStartResolution::NoMatch => {}
+                    ClickUpTicketStartResolution::Unique(candidate) => {
+                        base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
+                        base_branch_mode = Some(AgentConversationWorkspaceBranchMode::Linked);
+                        base_ref = Some(candidate.branch_name.clone());
+                        base_display_name = Some(format!(
+                            "ClickUp {} ({})",
+                            identity.preferred_token(),
+                            candidate.branch_name
+                        ));
+                        source_pull_request = candidate.pull_request.map(|pull_request| {
+                            AgentWorkspaceSourcePullRequest {
+                                number: pull_request.number,
+                                url: Some(pull_request.url),
+                                title: Some(pull_request.title),
+                                head_ref_name: pull_request.head_ref_name,
+                                base_ref_name: Some(pull_request.base_ref_name),
+                                head_ref_oid: pull_request.head_ref_oid,
+                            }
+                        });
+                    }
+                    ClickUpTicketStartResolution::Ambiguous { branch_names } => {
+                        return Err(format!(
+                            "ClickUp task {} matches multiple open PRs or branches ({}); select the intended branch explicitly",
+                            identity.preferred_token(),
+                            branch_names.join(", ")
+                        ));
+                    }
+                }
             }
+            Some(task)
+        } else {
+            None
+        };
+
+        if let Some(persona_id) = persona_id.as_ref() {
+            if let Some(conversation_id) = draft_conversation_id.as_ref() {
+                let existing = self
+                    .deps
+                    .state
+                    .chat_conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+                ensure_persona_binding_project_context(existing.context_type)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                ensure_persona_binding_project_context(ChatContextType::Project)
+                    .map_err(|error| error.to_string())?;
+            }
+
+            PersonaService::new(
+                self.deps.state.db.clone(),
+                Arc::clone(&self.deps.state.persona_repo),
+                Arc::clone(&self.deps.state.chat_conversation_repo),
+            )
+            .ensure_bindable(agent_personas_enabled(), persona_id)
+            .await
+            .map_err(|error| error.to_string())?;
         }
+
         if should_create_workspace {
-            ensure_linked_branch_workspace_available(
+            if let Err(error) = ensure_linked_branch_workspace_available(
                 self.deps.state,
                 &project_id,
                 draft_conversation_id.as_ref(),
@@ -240,7 +358,23 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 base_ref.as_deref(),
                 source_pull_request.as_ref(),
             )
-            .await?;
+            .await
+            {
+                if let Some(conversation_id) = draft_conversation_id.as_ref() {
+                    if let Err(archive_error) = archive_supplied_seeded_draft_after_setup_failure(
+                        self.deps.state,
+                        &input.project_id,
+                        conversation_id,
+                    )
+                    .await
+                    {
+                        return Err(linked_setup_failure_error(format!(
+                            "{error}; failed to archive failed draft: {archive_error}",
+                        )));
+                    }
+                }
+                return Err(linked_setup_failure_error(error));
+            }
         }
         source_pull_request = hydrate_linked_branch_source_pull_request(
             self.deps.state,
@@ -274,6 +408,9 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             ChatConversation::new_project(project_id)
         };
         conversation.set_agent_mode(Some(mode));
+        if let Some(coordination_mode) = requested_coordination_mode {
+            conversation.set_coordination_mode(coordination_mode);
+        }
         let should_create_conversation = draft_conversation_id.is_none();
         if let Some(parent_conversation_id) = parent_conversation_id.as_deref() {
             if should_create_conversation {
@@ -328,28 +465,82 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 "Setup workspace",
             );
         }
+        let mut composer_artifact_references = input.composer_artifact_references.clone();
         let workspace = if should_create_workspace {
             let pr_automation_defaults =
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
                     .await?;
-            let mut workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
-                &project,
-                &conversation.id,
-                mode,
-                AgentConversationWorkspaceBaseSelection {
-                    kind: base_ref_kind,
-                    branch_mode: base_branch_mode,
-                    base_ref,
-                    display_name: base_display_name,
-                    source_pull_request,
-                },
-                AgentConversationWorkspaceSetupMode::Deferred,
-                pr_automation_defaults,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-            ensure_plan_workspace_planning_session_link(self.deps.state, &project, &mut workspace)
+            let mut workspace =
+                match prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
+                    &project,
+                    &conversation.id,
+                    mode,
+                    AgentConversationWorkspaceBaseSelection {
+                        kind: base_ref_kind,
+                        branch_mode: base_branch_mode,
+                        base_ref,
+                        display_name: base_display_name,
+                        source_pull_request,
+                    },
+                    AgentConversationWorkspaceSetupMode::Deferred,
+                    pr_automation_defaults,
+                    // Automation runs (setup + successors) prefer the advanced
+                    // remote-tracking base so successor worktrees build on merged work
+                    // (integration-branch model). Non-automation chats keep the local
+                    // start-point.
+                    conversation.automation_id.is_some(),
+                    ticket_branch_name_hint.clone(),
+                )
+                .await
+                {
+                    Ok(workspace) => workspace,
+                    Err(error) => {
+                        let mut error = error.to_string();
+                        if !should_create_conversation {
+                            if let Err(archive_error) =
+                                archive_empty_seeded_draft_after_setup_failure(
+                                    self.deps.state,
+                                    &conversation,
+                                )
+                                .await
+                            {
+                                error = format!(
+                                    "{error}; failed to archive failed draft: {archive_error}",
+                                );
+                            }
+                        }
+                        return Err(
+                            if base_branch_mode
+                                == Some(AgentConversationWorkspaceBranchMode::Linked)
+                            {
+                                linked_setup_failure_error(error)
+                            } else {
+                                error
+                            },
+                        );
+                    }
+                };
+            if let Some(plan_reference) = selected_plan_reference.as_ref() {
+                let import = import_agent_conversation_plan_reference(
+                    self.deps.state,
+                    &project,
+                    &mut workspace,
+                    plan_reference,
+                )
                 .await?;
+                composer_artifact_references = rewrite_imported_plan_reference(
+                    &composer_artifact_references,
+                    plan_reference,
+                    &import.composer_reference,
+                );
+            } else {
+                ensure_plan_workspace_planning_session_link(
+                    self.deps.state,
+                    &project,
+                    &mut workspace,
+                )
+                .await?;
+            }
             Some(workspace)
         } else {
             None
@@ -369,7 +560,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             "persist_conversation",
             "Saving chat",
         );
-        let conversation = if should_create_conversation {
+        let mut conversation = if should_create_conversation {
             self.deps
                 .state
                 .chat_conversation_repo
@@ -383,8 +574,25 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 .update_agent_mode(&conversation.id, Some(mode))
                 .await
                 .map_err(|error| error.to_string())?;
+            if let Some(coordination_mode) = requested_coordination_mode {
+                self.deps
+                    .state
+                    .chat_conversation_repo
+                    .update_coordination_mode(&conversation.id, coordination_mode)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             conversation
         };
+        if let Some(persona_id) = persona_id.as_ref() {
+            self.deps
+                .state
+                .chat_conversation_repo
+                .update_persona_binding(&conversation.id, Some(persona_id.as_str()))
+                .await
+                .map_err(|error| error.to_string())?;
+            conversation.persona_id = Some(persona_id.to_string());
+        }
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
@@ -425,12 +633,68 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             },
             None => None,
         };
+        ensure_review_pr_monitor_for_workspace(
+            self.deps.state.agent_conversation_workspace_repo.as_ref(),
+            workspace.as_ref(),
+        )
+        .await?;
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
             "persist_workspace",
             workspace_persist_started,
         );
+
+        if let Some(clickup_task) = validated_clickup_task.as_ref() {
+            let head_sha = match workspace.as_ref() {
+                Some(workspace) => {
+                    match resolve_valid_agent_conversation_workspace_path(&project, workspace).await
+                    {
+                        Ok(worktree_path) => GitService::get_head_sha(&worktree_path).await.ok(),
+                        Err(_) => None,
+                    }
+                }
+                None => None,
+            };
+            let metadata_json = serde_json::json!({
+                "source": "ticket_start",
+                "title": clickup_task.name,
+                "branch": workspace.as_ref().map(|workspace| workspace.branch_name.as_str()),
+                "pr_number": workspace.as_ref().and_then(|workspace| {
+                    workspace.source_pull_request.as_ref().map(|pull_request| pull_request.number)
+                }),
+                "validated_at": chrono::Utc::now().to_rfc3339(),
+            })
+            .to_string();
+            self.deps
+                .state
+                .external_issue_link_service
+                .upsert_ticket_conversation_link(TicketConversationLinkInput {
+                    provider: "clickup".to_string(),
+                    external_kind: "clickup".to_string(),
+                    external_id: clickup_task.id.clone(),
+                    external_key: clickup_task.custom_id.clone(),
+                    external_url: clickup_task.url.clone(),
+                    conversation_id: conversation.id.as_str(),
+                    project_id: project.id.to_string(),
+                    local_sha: head_sha,
+                    local_state: Some("active".to_string()),
+                    metadata_json: Some(metadata_json),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = self.deps.app_handle.emit(
+                "ticketing:cache_invalidated",
+                serde_json::json!({
+                    "provider": "clickup",
+                    "ticketId": clickup_task.id,
+                    "ticketKey": clickup_task.custom_id,
+                    "projectId": project.id.to_string(),
+                    "reason": "conversation_started",
+                    "invalidatedAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
+        }
 
         let event_emit_started = Instant::now();
         if should_create_conversation {
@@ -517,6 +781,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 SendMessageOptions {
                     harness_override,
                     agent_name_override: Some(agent_name_for_workspace_mode(mode).to_string()),
+                    persona_directive: persona_id
+                        .as_ref()
+                        .map(|persona_id| PersonaDirective::Explicit(persona_id.clone()))
+                        .unwrap_or_default(),
                     model_override,
                     logical_effort_override,
                     service_tier_override,
@@ -524,7 +792,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     working_directory_override,
                     composer_project_references: input.composer_project_references.clone(),
                     composer_integration_references: input.composer_integration_references.clone(),
-                    composer_artifact_references: input.composer_artifact_references.clone(),
+                    composer_artifact_references,
+                    team_intent: input.team_intent.clone(),
                     ..Default::default()
                 },
             )

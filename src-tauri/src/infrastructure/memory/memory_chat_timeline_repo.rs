@@ -130,6 +130,20 @@ impl ChatTimelineRepository for MemoryChatTimelineRepository {
         Ok(items)
     }
 
+    async fn delete_message_items_except_block_indices(
+        &self,
+        message_id: &ChatMessageId,
+        retained_block_indices: Vec<i64>,
+    ) -> AppResult<()> {
+        let retained_block_indices: std::collections::HashSet<i64> =
+            retained_block_indices.into_iter().collect();
+        self.items.write().unwrap().retain(|_, item| {
+            item.message_id.as_ref() != Some(message_id)
+                || retained_block_indices.contains(&item.block_index)
+        });
+        Ok(())
+    }
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()> {
         let mut items = self.items.write().unwrap();
         let now = Utc::now();

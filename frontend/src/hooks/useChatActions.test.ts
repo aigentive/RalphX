@@ -102,6 +102,7 @@ interface SetupOptions {
   messageCount?: number;
   activeConversationId?: string | null | undefined;
   onUserMessageSent?: Parameters<typeof useChatActions>[0]["onUserMessageSent"];
+  onPersonaUnavailable?: Parameters<typeof useChatActions>[0]["onPersonaUnavailable"];
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -116,6 +117,7 @@ function setup(opts: SetupOptions = {}) {
     messageCount = 5,
     activeConversationId = undefined,
     onUserMessageSent = undefined,
+    onPersonaUnavailable = undefined,
   } = opts;
 
   const mutateAsync = vi.fn().mockResolvedValue({
@@ -138,6 +140,7 @@ function setup(opts: SetupOptions = {}) {
       activeConversationId,
       messageCount,
       onUserMessageSent,
+      onPersonaUnavailable,
     })
   );
 
@@ -182,6 +185,22 @@ describe("useChatActions", () => {
       });
 
       expect(mutateAsync).toHaveBeenCalledWith({ content: "hello world", attachmentIds: undefined });
+    });
+
+    it("passes Team intent to the send mutation", async () => {
+      const { result, mutateAsync } = setup();
+
+      await act(async () => {
+        await result.current.handleSend("hello Team", undefined, undefined, {
+          teamIntent: { coordinationMode: "rx_native_team" },
+        });
+      });
+
+      expect(mutateAsync).toHaveBeenCalledWith({
+        content: "hello Team",
+        attachmentIds: undefined,
+        teamIntent: { coordinationMode: "rx_native_team" },
+      });
     });
 
     it("preserves attachment IDs when a send is queued", async () => {
@@ -263,6 +282,23 @@ describe("useChatActions", () => {
       expect(mutateAsync).not.toHaveBeenCalled();
     });
 
+    it("suppresses the generic toast and reports persona-unavailable sends inline", async () => {
+      const onPersonaUnavailable = vi.fn();
+      const { result, mutateAsync } = setup({ onPersonaUnavailable });
+      mutateAsync.mockRejectedValue(
+        new Error("[Persona unavailable: Reviewer Voice was archived]"),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("continue the review");
+      });
+
+      expect(onPersonaUnavailable).toHaveBeenCalledWith(
+        "[Persona unavailable: Reviewer Voice was archived]",
+      );
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+
     it("review mode sends via chatApi.sendAgentMessage directly", async () => {
       const { result, mutateAsync } = setup({
         contextType: "review",
@@ -287,6 +323,31 @@ describe("useChatActions", () => {
       );
       expect(mockActions.setSending).toHaveBeenCalledWith("review:task-42", true);
       expect(mockInvalidateQueries).toHaveBeenCalled();
+    });
+
+    it("review mode sends Team intent via direct send options", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review with Team", undefined, undefined, {
+          teamIntent: { coordinationMode: "rx_native_team" },
+        });
+      });
+
+      expect(mutateAsync).not.toHaveBeenCalled();
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "review",
+        "task-42",
+        "review with Team",
+        undefined,
+        undefined,
+        { teamIntent: { coordinationMode: "rx_native_team" } },
+      );
     });
 
     it("review mode sets activeConversation when isNewConversation is true", async () => {

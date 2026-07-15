@@ -139,6 +139,22 @@ describe("QuestionInputBanner", () => {
       expect(onChipClick).toHaveBeenCalledWith(0);
     });
 
+    it("uses a custom pending label for inline question actions", () => {
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          planApprovalAction={{
+            label: "Apply proposal",
+            pendingLabel: "Applying...",
+            onClick: vi.fn(),
+            isPending: true,
+          }}
+        />
+      );
+
+      expect(screen.getByRole("button", { name: "Applying..." })).toBeDisabled();
+    });
+
     it("renders batch progress and skip action when skipping is allowed", async () => {
       const user = userEvent.setup();
       const onSkip = vi.fn();

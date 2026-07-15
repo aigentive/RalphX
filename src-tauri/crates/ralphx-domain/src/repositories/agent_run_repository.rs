@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
     InterruptedConversation,
@@ -65,6 +66,17 @@ pub trait AgentRunRepository: Send + Sync {
         id: &AgentRunId,
         attribution: &AgentRunAttribution,
     ) -> AppResult<()>;
+
+    /// Persist body-free persona identity and injection outcome for one run.
+    async fn set_persona_attribution(
+        &self,
+        _id: &AgentRunId,
+        _attribution: PersonaRunAttribution,
+    ) -> AppResult<()> {
+        Err(crate::error::AppError::Infrastructure(
+            "AgentRunRepository does not support persona attribution".to_string(),
+        ))
+    }
 
     /// Complete a run (set status to Completed and completed_at timestamp)
     async fn complete(&self, id: &AgentRunId) -> AppResult<()>;

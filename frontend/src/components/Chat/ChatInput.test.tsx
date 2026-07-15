@@ -302,6 +302,35 @@ describe("ChatInput", () => {
         screen.queryByText(/Enter to send.*Shift\+Enter.*new line/i)
       ).not.toBeInTheDocument();
     });
+
+    it("renders an optional persona control on the right of the helper footer", () => {
+      render(
+        <ChatInput
+          {...defaultProps}
+          personaControl={<button type="button">design-voice</button>}
+        />,
+      );
+
+      const footer = screen.getByTestId("chat-input-footer");
+      expect(footer).toHaveTextContent(
+        "Enter to send · Shift+Enter for new line",
+      );
+      expect(
+        screen.getByRole("button", { name: "design-voice" }),
+      ).toBeInTheDocument();
+    });
+
+    it("does not render a persona footer element when no control is provided", () => {
+      render(<ChatInput {...defaultProps} />);
+
+      expect(
+        screen.queryByTestId("chat-input-persona-control"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input-footer")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Enter to send · Shift+Enter for new line"),
+      ).toBeInTheDocument();
+    });
   });
 
   // ============================================================================

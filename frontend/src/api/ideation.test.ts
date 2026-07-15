@@ -432,6 +432,31 @@ describe("ideationApi.sessions", () => {
     });
   });
 
+  describe("restartImplementation", () => {
+    it("should call restart_ideation_implementation and transform the result", async () => {
+      mockInvoke.mockResolvedValue({
+        session_id: "session-1",
+        old_execution_plan_id: "exec-old",
+        execution_plan_id: "exec-new",
+        archived_task_count: 2,
+        created_task_ids: ["task-1", "task-2"],
+      });
+
+      const result = await ideationApi.sessions.restartImplementation("session-1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("restart_ideation_implementation", {
+        sessionId: "session-1",
+      });
+      expect(result).toEqual({
+        sessionId: "session-1",
+        oldExecutionPlanId: "exec-old",
+        executionPlanId: "exec-new",
+        archivedTaskCount: 2,
+        createdTaskIds: ["task-1", "task-2"],
+      });
+    });
+  });
+
 });
 
 

@@ -28,14 +28,17 @@ Usage: scripts/test-rust-fast.sh <mode>
 
 Modes:
   ipc           Run the IPC contract integration suites.
+  layering      Run the Rust layering ratchet.
   lib-1         Run lib shard 1/2.
   lib-2         Run lib shard 2/2.
   lib           Run both lib shards sequentially against the shared target dir.
   lib-parallel  Run both lib shards in parallel with isolated target dirs.
-  pr            Reproduce PR Rust CI locally: IPC + lib shards sequentially.
+  pr            Reproduce PR Rust CI locally: layering + IPC + lib shards.
   pr-parallel   Reproduce PR Rust CI locally with isolated per-lane target dirs.
   doc           Run doctests.
-  main          Reproduce push-to-main Rust CI locally: PR stack + doctests.
+  full-integration
+                Run the push-only full Rust integration sweep.
+  main          Reproduce push-to-main Rust CI locally: PR stack + doctests + full integration.
   help          Show this message.
 
 Notes:
@@ -44,6 +47,8 @@ Notes:
     isolating CARGO_TARGET_DIR per lane.
   - All paths are checkout-local; in a worktree, caches live under that
     worktree's src-tauri/target and the script refuses to drift across checkouts.
+  - Root lib and IPC lanes currently pass --features test-utils so Tauri mock
+    tests stay covered while the backend test surface is being decoupled.
 EOF
 }
 
@@ -61,12 +66,13 @@ ipc_cmd() {
   cargo nextest run \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
-    --test task_commands \
-    --test api_key_commands \
-    --test project_commands \
-    --test unified_chat_commands \
-    --test task_step_commands \
+    --features test-utils \
+    --test suite_ipc_commands \
     ipc_contract
+}
+
+layering_cmd() {
+  python3 scripts/check-layering.py
 }
 
 lib_shard_cmd() {
@@ -75,15 +81,27 @@ lib_shard_cmd() {
     --manifest-path "${MANIFEST_PATH}" \
     --lib \
     --profile ci \
+    --features test-utils \
     --partition "hash:${partition}"
 }
 
 doc_cmd() {
-  cargo test --manifest-path "${MANIFEST_PATH}" --doc
+  cargo test --manifest-path "${MANIFEST_PATH}" --workspace --doc
+}
+
+full_integration_cmd() {
+  cargo nextest run \
+    --manifest-path "${MANIFEST_PATH}" \
+    --profile ci \
+    --features test-utils
 }
 
 run_ipc() {
   run_cmd "ipc" ipc_cmd
+}
+
+run_layering() {
+  run_cmd "layering" layering_cmd
 }
 
 run_lib_shard() {
@@ -93,6 +111,10 @@ run_lib_shard() {
 
 run_docs() {
   run_cmd "doc" doc_cmd
+}
+
+run_full_integration() {
+  run_cmd "full-integration" full_integration_cmd
 }
 
 run_isolated_ipc() {
@@ -167,6 +189,9 @@ case "${mode}" in
   ipc)
     run_ipc
     ;;
+  layering)
+    run_layering
+    ;;
   lib-1)
     run_lib_shard "1/2"
     ;;
@@ -181,21 +206,28 @@ case "${mode}" in
     run_lib_parallel
     ;;
   pr)
+    run_layering
     run_ipc
     run_lib_shard "1/2"
     run_lib_shard "2/2"
     ;;
   pr-parallel)
+    run_layering
     run_pr_parallel
     ;;
   doc)
     run_docs
     ;;
+  full-integration)
+    run_full_integration
+    ;;
   main)
+    run_layering
     run_ipc
     run_lib_shard "1/2"
     run_lib_shard "2/2"
     run_docs
+    run_full_integration
     ;;
   help|-h|--help)
     usage

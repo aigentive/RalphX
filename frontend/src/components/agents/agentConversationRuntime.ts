@@ -15,6 +15,7 @@ const AGENT_EFFORTS = new Set<AgentEffort>([
   "high",
   "xhigh",
   "max",
+  "ultra",
 ]);
 
 const WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER: Record<AgentProvider, string> = {
@@ -35,9 +36,6 @@ export function getAgentTerminalUnavailableReason(
   if (!workspace) {
     return "Terminal requires a workspace-backed conversation";
   }
-  if (workspaceHasExternalOwner(workspace)) {
-    return "Terminal disabled while ideation or execution owns this workspace";
-  }
   return null;
 }
 
@@ -46,9 +44,6 @@ export function getAgentTerminalArchivedReason(
   workspace: AgentConversationWorkspace | null,
 ): string | null {
   if (!conversation || conversation.contextType !== "project" || !workspace) {
-    return null;
-  }
-  if (workspaceHasExternalOwner(workspace)) {
     return null;
   }
 
@@ -64,19 +59,6 @@ export function getAgentTerminalArchivedReason(
     return "Workspace missing. Send a follow-up to continue in a fresh workspace.";
   }
   return null;
-}
-
-function workspaceHasExternalOwner(workspace: AgentConversationWorkspace): boolean {
-  return (
-    Boolean(workspace.linkedPlanBranchId) ||
-    workspaceIsLinkedNonEditWorkspace(workspace)
-  );
-}
-
-function workspaceIsLinkedNonEditWorkspace(
-  workspace: AgentConversationWorkspace
-): boolean {
-  return Boolean(workspace.linkedIdeationSessionId && workspace.mode !== "edit");
 }
 
 export function runtimeFromConversation(

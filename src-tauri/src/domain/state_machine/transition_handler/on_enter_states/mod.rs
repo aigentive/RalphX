@@ -6,6 +6,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::domain::entities::InternalStatus;
+use crate::domain::state_machine::services::{
+    BranchUpdateWorkflow, BranchUpdateWorkflowOutcome, TaskNotification,
+};
 use chrono::Utc;
 
 use super::super::machine::State;
@@ -35,6 +39,7 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 
 mod execution;
+mod branch_update;
 mod merge;
 mod outcomes;
 mod qa;
@@ -61,12 +66,23 @@ async fn get_task_plan_branch(
 
 /// Handle the result of ensure_branches_fresh() for an entry point.
 /// Returns Ok(()) if fresh or skipped, Err if needs routing or blocking.
-async fn apply_freshness_result(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FreshnessApplyOutcome {
+    Ready,
+    Updated(crate::domain::entities::BranchUpdateDirection),
+}
+
+pub(super) async fn apply_freshness_result(
     result: Result<freshness::FreshnessMetadata, FreshnessAction>,
     task: &crate::domain::entities::Task,
     task_id_str: &str,
     task_repo: &Arc<dyn TaskRepository>,
-) -> AppResult<()> {
+    branch_update_repo: Option<&Arc<dyn crate::domain::repositories::BranchUpdateRepository>>,
+    branch_update_workflow: Option<&Arc<dyn BranchUpdateWorkflow>>,
+    project: &crate::domain::entities::Project,
+    repo_path: &Path,
+    origin_state: &str,
+) -> AppResult<FreshnessApplyOutcome> {
     let task_id = TaskId::from_string(task_id_str.to_string());
     match result {
         Ok(updated_meta) => {
@@ -83,11 +99,12 @@ async fn apply_freshness_result(
             {
                 tracing::warn!(task_id = task_id_str, error = %e, "Failed to persist freshness metadata");
             }
-            Ok(())
+            Ok(FreshnessApplyOutcome::Ready)
         }
-        Err(FreshnessAction::RouteToMerging {
+        Err(FreshnessAction::RouteToBranchUpdate {
             mut freshness_metadata,
-            ..
+            conflict_type,
+            conflict_files,
         }) => {
             // INVARIANT: freshness_count_incremented_by signals to the corrective handler
             // (task_transition_service.rs) that freshness_conflict_count was already
@@ -108,11 +125,233 @@ async fn apply_freshness_result(
             {
                 tracing::warn!(task_id = task_id_str, error = %e, "Failed to persist freshness conflict metadata");
             }
-            Err(AppError::BranchFreshnessConflict)
+            let branch_update_repo = branch_update_repo.ok_or_else(|| {
+                AppError::ExecutionBlocked(
+                    "Branch update authority repository is unavailable".to_string(),
+                )
+            })?;
+            let direction = if conflict_type == "plan_update" {
+                crate::domain::entities::BranchUpdateDirection::PlanBranch
+            } else {
+                crate::domain::entities::BranchUpdateDirection::TaskBranch
+            };
+            let continuation = match origin_state {
+                "re_executing" => crate::domain::entities::BranchUpdateContinuation::ResumeReExecution,
+                "reviewing" => crate::domain::entities::BranchUpdateContinuation::ResumeReview,
+                "waiting_on_pr" => crate::domain::entities::BranchUpdateContinuation::ResumeWaitingOnPr,
+                "pr_branch_publication" => crate::domain::entities::BranchUpdateContinuation::FinalizePostMergePrPublication,
+                "pending_merge" => crate::domain::entities::BranchUpdateContinuation::RetryPendingMerge,
+                _ => crate::domain::entities::BranchUpdateContinuation::ResumeExecution,
+            };
+            let (source_branch, target_branch) = if direction
+                == crate::domain::entities::BranchUpdateDirection::PlanBranch
+            {
+                (
+                    freshness_metadata.source_branch.clone(),
+                    freshness_metadata.target_branch.clone(),
+                )
+            } else {
+                (
+                    freshness_metadata.target_branch.clone(),
+                    freshness_metadata.source_branch.clone(),
+                )
+            };
+            let source_branch = source_branch.ok_or_else(|| {
+                AppError::ExecutionBlocked("Branch update source is missing".to_string())
+            })?;
+            let target_branch = target_branch.ok_or_else(|| {
+                AppError::ExecutionBlocked("Branch update target is missing".to_string())
+            })?;
+            let identity = GitService::canonical_target_identity(repo_path, &target_branch).await?;
+            let workspace_path = if direction
+                == crate::domain::entities::BranchUpdateDirection::PlanBranch
+            {
+                super::merge_helpers::compute_plan_update_worktree_path(project, task_id_str)
+            } else {
+                super::merge_helpers::compute_source_update_worktree_path(project, task_id_str)
+            };
+            let mut operation = crate::domain::entities::BranchUpdateOperation::new(
+                task.id.clone(),
+                direction,
+                continuation,
+                uuid::Uuid::new_v4().to_string(),
+                source_branch,
+                target_branch,
+                crate::domain::entities::BranchUpdateWorkspaceOwnership::OperationWorktree,
+                crate::domain::entities::BranchUpdateCapacityOwnership::Inherited,
+                identity,
+                chrono::Utc::now(),
+            );
+            operation.workspace_path = Some(std::path::PathBuf::from(workspace_path));
+            operation.conflict_files = conflict_files.into_iter().map(Into::into).collect();
+            operation.observed_source_sha =
+                Some(GitService::resolve_ref_sha(repo_path, &operation.source_branch).await?);
+            operation.observed_target_sha =
+                Some(GitService::resolve_ref_sha(repo_path, &operation.target_branch).await?);
+            let update_status = if direction
+                == crate::domain::entities::BranchUpdateDirection::PlanBranch
+            {
+                InternalStatus::UpdatingPlanBranch
+            } else {
+                InternalStatus::UpdatingTaskBranch
+            };
+            let operation_for_execution = operation.clone();
+            let fencing_epoch = match branch_update_repo
+                .activate(crate::domain::repositories::BranchUpdateActivation {
+                    operation,
+                    expected_status: task.internal_status,
+                    update_status,
+                    trigger: "branch_freshness_conflict".to_string(),
+                })
+                .await?
+            {
+                crate::domain::repositories::BranchUpdateActivationOutcome::Applied {
+                    fencing_epoch,
+                    ..
+                } => fencing_epoch,
+                outcome => {
+                    return Err(AppError::Conflict(format!(
+                        "Branch update activation lost authority: {outcome:?}"
+                    )))
+                }
+            };
+            let workflow = branch_update_workflow.ok_or_else(|| {
+                AppError::ExecutionBlocked(
+                    "Branch update workflow adapter is unavailable".to_string(),
+                )
+            })?;
+            match workflow
+                .execute_programmatic(
+                    Arc::clone(branch_update_repo),
+                    Arc::clone(task_repo),
+                    repo_path,
+                    &operation_for_execution,
+                    update_status,
+                    fencing_epoch,
+                )
+                .await?
+            {
+                BranchUpdateWorkflowOutcome::Completed { .. } => {
+                    Ok(FreshnessApplyOutcome::Updated(direction))
+                }
+                BranchUpdateWorkflowOutcome::ContinuationPending => {
+                    Err(AppError::ExecutionBlocked(
+                        "Branch update completed and is awaiting its durable publication continuation".to_string(),
+                    ))
+                }
+                BranchUpdateWorkflowOutcome::NeedsAgent => {
+                    Err(AppError::BranchFreshnessConflict)
+                }
+                BranchUpdateWorkflowOutcome::Blocked => {
+                    Err(AppError::Conflict("Branch update is blocked and requires attention".to_string()))
+                }
+            }
         }
-        Err(FreshnessAction::ExecutionBlocked { reason }) => {
+        Err(FreshnessAction::ExecutionBlocked { reason, .. }) => {
             Err(AppError::ExecutionBlocked(reason))
         }
+    }
+}
+
+fn stale_execution_worktree_cleanup_blocked_error(
+    task_id_str: &str,
+    worktree_path: &Path,
+    error: impl std::fmt::Display,
+    context: &str,
+) -> AppError {
+    AppError::ExecutionBlocked(format!(
+        "{}: structural: failed to clean stale execution worktree '{}' during {} for task {}: {}",
+        GIT_ISOLATION_ERROR_PREFIX,
+        worktree_path.display(),
+        context,
+        task_id_str,
+        error
+    ))
+}
+
+fn registered_task_worktree_matches_branch(
+    registered_path: &str,
+    registered_branch: Option<&str>,
+    expected_path: &Path,
+    expected_branch: &str,
+) -> bool {
+    Path::new(registered_path) == expected_path && registered_branch == Some(expected_branch)
+}
+
+async fn existing_task_worktree_is_reusable(
+    repo_path: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    task_id_str: &str,
+) -> bool {
+    match GitService::list_worktrees(repo_path).await {
+        Ok(worktrees) => worktrees.iter().any(|worktree| {
+            registered_task_worktree_matches_branch(
+                &worktree.path,
+                worktree.branch.as_deref(),
+                worktree_path,
+                branch,
+            )
+        }),
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id_str,
+                error = %e,
+                worktree_path = %worktree_path.display(),
+                "Could not list worktrees before stale task worktree cleanup"
+            );
+            false
+        }
+    }
+}
+
+async fn delete_existing_execution_worktree_or_block(
+    repo_path: &Path,
+    worktree_path: &Path,
+    task_id_str: &str,
+    context: &str,
+) -> AppResult<()> {
+    if !worktree_path.exists() {
+        return Ok(());
+    }
+
+    GitService::delete_worktree(repo_path, worktree_path)
+        .await
+        .map_err(|e| {
+            stale_execution_worktree_cleanup_blocked_error(task_id_str, worktree_path, e, context)
+        })
+}
+
+#[derive(Debug, Clone)]
+struct TaskExecutionWorktree {
+    branch: String,
+    worktree_path: std::path::PathBuf,
+    base_ref: String,
+    base_sha: String,
+}
+
+fn persisted_task_branch_base_or_block(
+    task: &Task,
+    branch: &str,
+    task_id_str: &str,
+) -> AppResult<(String, String)> {
+    let base_ref = task
+        .task_branch_base_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let base_sha = task
+        .task_branch_base_sha
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match (base_ref, base_sha) {
+        (Some(base_ref), Some(base_sha)) => Ok((base_ref.to_string(), base_sha.to_string())),
+        _ => Err(AppError::ExecutionBlocked(format!(
+            "{}: structural: existing task branch '{}' for task {} is missing immutable base metadata; reset/recreate the task branch before execution can continue",
+            GIT_ISOLATION_ERROR_PREFIX, branch, task_id_str
+        ))),
     }
 }
 
@@ -123,7 +362,7 @@ async fn apply_freshness_result(
 /// creates (or checks out an existing) branch into the worktree.
 ///
 /// Does NOT update the database — the caller is responsible for persisting the
-/// returned `(branch_name, worktree_path)` onto the task.
+/// returned branch, worktree path, base ref, and base SHA onto the task.
 ///
 /// # Errors
 /// Returns `AppError::ExecutionBlocked` if the git worktree cannot be created.
@@ -138,7 +377,7 @@ async fn create_fresh_branch_and_worktree(
     pr_creation_guard: &Option<Arc<dashmap::DashMap<PlanBranchId, ()>>>,
     github_service: &Option<Arc<dyn GithubServiceTrait>>,
     plan_pr_description_drafter: &Option<Arc<dyn PlanPrDescriptionDrafter>>,
-) -> AppResult<(String, std::path::PathBuf)> {
+) -> AppResult<TaskExecutionWorktree> {
     let branch = format!("ralphx/{}/task-{}", slugify(&project.name), task_id_str);
     let resolved_base = resolve_task_base_branch(
         task,
@@ -173,13 +412,31 @@ async fn create_fresh_branch_and_worktree(
 
     // Clean up stale task worktree from a prior execution attempt
     if worktree_path_buf.exists() {
-        if let Err(e) = GitService::delete_worktree(repo_path, &worktree_path_buf).await {
-            tracing::warn!(
+        if existing_task_worktree_is_reusable(repo_path, &worktree_path_buf, &branch, task_id_str)
+            .await
+        {
+            let (base_ref, base_sha) =
+                persisted_task_branch_base_or_block(task, &branch, task_id_str)?;
+            tracing::info!(
                 task_id = task_id_str,
-                error = %e,
-                "Failed to clean stale task worktree (non-fatal)"
+                branch = %branch,
+                worktree_path = %worktree_path_buf.display(),
+                "Reusing existing registered task worktree"
             );
+            return Ok(TaskExecutionWorktree {
+                branch,
+                worktree_path: worktree_path_buf,
+                base_ref,
+                base_sha,
+            });
         }
+        delete_existing_execution_worktree_or_block(
+            repo_path,
+            &worktree_path_buf,
+            task_id_str,
+            "fresh branch creation",
+        )
+        .await?;
     }
 
     // Check if branch already exists from a previous execution attempt
@@ -188,19 +445,43 @@ async fn create_fresh_branch_and_worktree(
         .unwrap_or(false);
 
     // Create worktree — use existing branch if it exists, create new one otherwise
-    let result = if branch_exists {
+    let result: AppResult<TaskExecutionWorktree> = if branch_exists {
+        let (base_ref, base_sha) =
+            persisted_task_branch_base_or_block(task, &branch, task_id_str)?;
         tracing::info!(
             task_id = task_id_str,
             branch = %branch,
             "Branch already exists, checking out existing branch into worktree"
         );
-        GitService::checkout_existing_branch_worktree(repo_path, &worktree_path_buf, &branch).await
+        GitService::checkout_existing_branch_worktree(repo_path, &worktree_path_buf, &branch)
+            .await
+            .map(|_| TaskExecutionWorktree {
+                branch,
+                worktree_path: worktree_path_buf,
+                base_ref,
+                base_sha,
+            })
     } else {
-        GitService::create_worktree(repo_path, &worktree_path_buf, &branch, base_branch).await
+        let base_sha = GitService::get_branch_sha(repo_path, base_branch)
+            .await
+            .map_err(|e| {
+                AppError::ExecutionBlocked(format!(
+                    "{}: structural: could not resolve base branch '{}' to a commit SHA before creating task branch: {}",
+                    GIT_ISOLATION_ERROR_PREFIX, base_branch, e
+                ))
+            })?;
+        GitService::create_worktree(repo_path, &worktree_path_buf, &branch, base_branch)
+            .await
+            .map(|_| TaskExecutionWorktree {
+                branch,
+                worktree_path: worktree_path_buf,
+                base_ref: base_branch.to_string(),
+                base_sha,
+            })
     };
 
     match result {
-        Ok(_) => Ok((branch, worktree_path_buf)),
+        Ok(worktree) => Ok(worktree),
         Err(e) => Err(AppError::ExecutionBlocked(format!(
             "{}: could not create worktree at '{}': {}",
             GIT_ISOLATION_ERROR_PREFIX, worktree_path_str, e
@@ -214,6 +495,7 @@ struct MergePromptContext {
     is_plan_update_conflict: bool,
     is_source_update_conflict: bool,
     is_pr_branch_update_conflict: bool,
+    is_pr_branch_publication_conflict: bool,
     freshness_conflict_count: u32,
     base_branch: Option<String>,
     source_branch: Option<String>,
@@ -222,6 +504,27 @@ struct MergePromptContext {
 
 impl<'a> super::TransitionHandler<'a> {
     pub(super) async fn on_enter_dispatch(&self, state: &State) -> AppResult<()> {
+        if let Some(context) = self.machine.context.services.notification_context.clone() {
+            let status = match state {
+                State::QaFailed(_) => Some(InternalStatus::QaFailed),
+                State::ReviewPassed => Some(InternalStatus::ReviewPassed),
+                State::Escalated => Some(InternalStatus::Escalated),
+                State::Failed(_) => Some(InternalStatus::Failed),
+                State::MergeConflict => Some(InternalStatus::MergeConflict),
+                State::MergeIncomplete => Some(InternalStatus::MergeIncomplete),
+                State::Blocked => Some(InternalStatus::Blocked),
+                _ => None,
+            };
+            if let Some(status) = status {
+                self.machine
+                    .context
+                    .services
+                    .notifier
+                    .notify(context, TaskNotification::StateEntered(status))
+                    .await;
+            }
+        }
+
         match state {
             State::Ready => {
                 // When entering Ready, spawn QA prep agent if enabled
@@ -293,6 +596,9 @@ impl<'a> super::TransitionHandler<'a> {
             }
             State::Merging => {
                 Box::pin(self.enter_merging_state()).await?;
+            }
+            State::UpdatingPlanBranch | State::UpdatingTaskBranch => {
+                self.enter_branch_update_state().await?;
             }
             State::WaitingOnPr => {
                 self.maybe_start_pr_mode_merge_poller(&self.machine.context.task_id)

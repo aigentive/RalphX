@@ -5,11 +5,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{timeout, Duration};
 use tracing::info;
 
+use crate::application::interactive_notification_producer::InteractiveNotificationProducer;
 use crate::application::question_state::QuestionState;
 use crate::application::team_events;
 use crate::application::team_state_tracker::TeammateStatus;
@@ -53,6 +54,7 @@ use super::{
     AgentToolCallPayload, AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
+use crate::AppState;
 
 #[doc(hidden)]
 pub(crate) fn stream_mode_for_harness(harness: AgentHarnessKind) -> HarnessStreamMode {
@@ -68,6 +70,94 @@ pub(crate) fn provider_session_ref_for_harness(
         harness,
         provider_session_id: provider_session_id.into(),
     }
+}
+
+pub(crate) fn is_user_attended_turn_completion(
+    context_type: ChatContextType,
+    automation_run_owned: bool,
+    ideation_session_has_parent: bool,
+) -> bool {
+    !automation_run_owned
+        && !ideation_session_has_parent
+        && matches!(
+            context_type,
+            ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+        )
+}
+
+async fn record_agent_waiting_if_user_attended<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: &ChatConversationId,
+) {
+    let Some(state) = app_handle.try_state::<AppState>() else {
+        tracing::warn!("Agent turn completed without managed AppState; agent_waiting skipped");
+        return;
+    };
+    let conversation = match state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+    {
+        Ok(Some(conversation)) => conversation,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(error = %error, conversation_id = %conversation_id, "Failed to load conversation for agent_waiting");
+            return;
+        }
+    };
+
+    let (project_id, ideation_session_has_parent, context_title) = match context_type {
+        ChatContextType::Ideation => {
+            let session_id = crate::domain::entities::IdeationSessionId::from_string(context_id);
+            match state.ideation_session_repo.get_by_id(&session_id).await {
+                Ok(Some(session)) => (
+                    Some(session.project_id.to_string()),
+                    session.parent_session_id.is_some(),
+                    session.title,
+                ),
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(error = %error, session_id = %session_id, "Failed to load ideation session for agent_waiting");
+                    return;
+                }
+            }
+        }
+        ChatContextType::Project => (Some(context_id.to_string()), false, None),
+        ChatContextType::Task => {
+            let task_id = TaskId::from_string(context_id.to_string());
+            match state.task_repo.get_by_id(&task_id).await {
+                Ok(Some(task)) => (Some(task.project_id.to_string()), false, Some(task.title)),
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(error = %error, task_id = %task_id, "Failed to load task for agent_waiting");
+                    return;
+                }
+            }
+        }
+        ChatContextType::Delegation
+        | ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge
+        | ChatContextType::BranchUpdate => return,
+    };
+
+    if !is_user_attended_turn_completion(
+        context_type,
+        conversation.automation_run_id.is_some(),
+        ideation_session_has_parent,
+    ) {
+        return;
+    }
+    state
+        .notification_service()
+        .record_ephemeral(InteractiveNotificationProducer::agent_waiting(
+            project_id,
+            &conversation.id.as_str(),
+            conversation.title.as_deref().or(context_title.as_deref()),
+        ))
+        .await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +379,7 @@ pub(super) async fn persist_timeline_snapshot(
     let role = MessageRole::Orchestrator;
     let mut persisted_items = Vec::new();
     let mut persistence_failed = false;
+    let mut retained_block_indices = Vec::new();
 
     for (index, block) in content_blocks.iter().enumerate() {
         let kind = match block {
@@ -296,6 +387,7 @@ pub(super) async fn persist_timeline_snapshot(
             ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
             ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
         };
+        retained_block_indices.push(index as i64);
 
         let mut item = ChatTimelineItem::for_message_block(
             message_id.clone(),
@@ -349,13 +441,17 @@ pub(super) async fn persist_timeline_snapshot(
         }
     }
 
-    if status == ChatTimelineItemStatus::Finalized {
-        let _ = repo.mark_message_items_finalized(&message_id).await;
-    }
-
     if persistence_failed {
         Vec::new()
     } else {
+        if status != ChatTimelineItemStatus::Streaming {
+            let _ = repo
+                .delete_message_items_except_block_indices(&message_id, retained_block_indices)
+                .await;
+        }
+        if status == ChatTimelineItemStatus::Finalized {
+            let _ = repo.mark_message_items_finalized(&message_id).await;
+        }
         persisted_items
     }
 }
@@ -1005,6 +1101,34 @@ impl CompletionSignalTracker {
             .map(|called_at| called_at.elapsed() < grace_duration)
             .unwrap_or(false)
     }
+}
+
+fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
+    let Some(result) = result else {
+        return true;
+    };
+    if ["is_error", "isError"].iter().any(|key| {
+        result
+            .get(*key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }) {
+        return false;
+    }
+    if result
+        .get("success")
+        .and_then(|value| value.as_bool())
+        .is_some_and(|success| !success)
+    {
+        return false;
+    }
+    if let Some(status) = result.get("status").and_then(|value| value.as_str()) {
+        let status = status.to_ascii_lowercase();
+        if matches!(status.as_str(), "error" | "failed" | "failure") {
+            return false;
+        }
+    }
+    true
 }
 
 // ============================================================================
@@ -1724,17 +1848,6 @@ pub async fn process_stream_background<R: Runtime>(
                         mut tool_call,
                         parent_tool_use_id,
                     } => {
-                        if is_completion_tool_name(&tool_call.name) {
-                            completion_signal_tracker.mark_completion_called();
-                            tracing::info!(
-                                conversation_id = %conversation_id_str,
-                                context_id,
-                                tool_name = %tool_call.name,
-                                grace_secs = completion_grace_duration.as_secs(),
-                                "Completion tool called, entering shutdown grace period"
-                            );
-                        }
-
                         // Capture old file content for Edit/Write tool calls
                         let name_lower = tool_call.name.to_lowercase();
                         if name_lower == "edit" || name_lower == "write" {
@@ -1893,7 +2006,29 @@ pub async fn process_stream_background<R: Runtime>(
                             "TurnComplete: finalizing assistant message for interactive turn"
                         );
 
-                        if processor.result_is_error {
+                        let accepted_completion_diagnostic = if processor.result_is_error
+                            && completion_signal_tracker.was_called()
+                        {
+                            let error_msg = if !processor.result_errors.is_empty() {
+                                processor.result_errors.join("; ")
+                            } else if !processor.response_text.trim().is_empty() {
+                                processor.response_text.trim().to_string()
+                            } else {
+                                "Agent failed during execution".to_string()
+                            };
+                            super::chat_service_errors::classify_provider_error(&error_msg)
+                                .is_none()
+                        } else {
+                            false
+                        };
+
+                        if accepted_completion_diagnostic {
+                            tracing::warn!(
+                                conversation_id = %conversation_id_str,
+                                ?session_id,
+                                "TurnComplete carried a non-provider error after accepted completion; treating it as post-completion diagnostic noise"
+                            );
+                        } else if processor.result_is_error {
                             tracing::warn!(
                                 conversation_id = %conversation_id_str,
                                 ?session_id,
@@ -2061,6 +2196,13 @@ pub async fn process_stream_background<R: Runtime>(
                                     None,
                                 ),
                             );
+                            record_agent_waiting_if_user_attended(
+                                handle,
+                                context_type,
+                                context_id,
+                                conversation_id,
+                            )
+                            .await;
                         }
 
                         // Clear streaming state cache (same as normal run_completed path)
@@ -2535,8 +2677,36 @@ pub async fn process_stream_background<R: Runtime>(
                     StreamEvent::ToolResultReceived {
                         tool_use_id,
                         result,
+                        is_error,
                         parent_tool_use_id,
                     } => {
+                        if let Some(tool_call) = processor
+                            .tool_calls
+                            .iter()
+                            .find(|tool_call| tool_call.id.as_deref() == Some(&tool_use_id))
+                        {
+                            if is_completion_tool_name(&tool_call.name) {
+                                if !is_error && completion_tool_result_accepted(Some(&result)) {
+                                    completion_signal_tracker.mark_completion_called();
+                                    tracing::info!(
+                                        conversation_id = %conversation_id_str,
+                                        context_id,
+                                        tool_name = %tool_call.name,
+                                        grace_secs = completion_grace_duration.as_secs(),
+                                        "Completion tool result accepted, entering shutdown grace period"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        conversation_id = %conversation_id_str,
+                                        context_id,
+                                        tool_name = %tool_call.name,
+                                        result = ?result,
+                                        "Completion tool result rejected; not entering shutdown grace period"
+                                    );
+                                }
+                            }
+                        }
+
                         let result_preview = build_live_tool_result_preview_for_tool_id(
                             &processor.tool_calls,
                             Some(&conversation_id_str),
@@ -3071,10 +3241,19 @@ pub async fn process_stream_background<R: Runtime>(
         {
             return Err(provider_err);
         }
-        return Err(StreamError::AgentExit {
-            exit_code: status.code(),
-            stderr: error_msg,
-        });
+        if completion_signal_tracker.was_called() {
+            tracing::warn!(
+                conversation_id = %conversation_id_str,
+                context_id,
+                error = %error_msg,
+                "Agent result reported a non-provider error after accepted completion; treating it as post-completion diagnostic noise"
+            );
+        } else {
+            return Err(StreamError::AgentExit {
+                exit_code: status.code(),
+                stderr: error_msg,
+            });
+        }
     }
 
     if !status.success()
@@ -3460,8 +3639,22 @@ async fn process_codex_stream_background<R: Runtime>(
                     }
                 }
 
-                if is_completion_tool_name(&tool_call.name) {
-                    completion_signal_tracker.mark_completion_called();
+                if snapshot.phase == CodexToolCallPhase::Completed
+                    && is_completion_tool_name(&tool_call.name)
+                {
+                    if extract_codex_error(&event).is_none()
+                        && completion_tool_result_accepted(tool_call.result.as_ref())
+                    {
+                        completion_signal_tracker.mark_completion_called();
+                    } else {
+                        tracing::warn!(
+                            conversation_id = %conversation_id_str,
+                            context_id,
+                            tool_name = %tool_call.name,
+                            result = ?tool_call.result,
+                            "Codex completion tool returned an error; not entering shutdown grace period"
+                        );
+                    }
                 }
             }
 
@@ -3570,14 +3763,23 @@ async fn process_codex_stream_background<R: Runtime>(
         }
     }
 
-    let stderr_content = {
+    let (stderr_content, status) = if codex_turn_completed {
+        detach_codex_completed_process_cleanup(child, stderr_task);
+        (String::new(), None)
+    } else {
         let raw = stderr_task.await.unwrap_or_default();
-        crate::utils::secret_redactor::redact(&raw)
+        let stderr_content = crate::utils::secret_redactor::redact(&raw);
+        let status = child.wait().await.map_err(|error| StreamError::AgentExit {
+            exit_code: None,
+            stderr: error.to_string(),
+        })?;
+        (stderr_content, Some(status))
     };
-    let status = child.wait().await.map_err(|error| StreamError::AgentExit {
-        exit_code: None,
-        stderr: error.to_string(),
-    })?;
+    let status_success = status
+        .as_ref()
+        .map(|status| status.success())
+        .unwrap_or(true);
+    let status_code = status.as_ref().and_then(|status| status.code());
 
     let outcome = StreamOutcome {
         response_text,
@@ -3605,7 +3807,7 @@ async fn process_codex_stream_background<R: Runtime>(
         &conversation_id_str,
         &assistant_message_id,
         &outcome.content_blocks,
-        if status.success() || codex_turn_completed || outcome.has_meaningful_output() {
+        if status_success || codex_turn_completed || outcome.has_meaningful_output() {
             ChatTimelineItemStatus::Finalized
         } else {
             ChatTimelineItemStatus::Error
@@ -3619,12 +3821,13 @@ async fn process_codex_stream_background<R: Runtime>(
     if let Some(stream_error) = super::chat_service_errors::classify_codex_stream_failure(
         &runtime_errors,
         &local_tool_errors,
-        status.code(),
+        status_code,
+        codex_turn_completed || completion_signal_tracker.was_called(),
     ) {
         return Err(stream_error);
     }
 
-    if !status.success()
+    if !status_success
         && !codex_turn_completed
         && !outcome.has_meaningful_output()
         && !completion_signal_tracker.was_called()
@@ -3635,10 +3838,38 @@ async fn process_codex_stream_background<R: Runtime>(
         {
             return Err(provider_error);
         }
-        return Err(StreamError::AgentExit {
-            exit_code: status.code(),
-            stderr: stderr_trimmed,
-        });
+        if !stderr_trimmed.is_empty() {
+            return Err(StreamError::AgentExit {
+                exit_code: status_code,
+                stderr: stderr_trimmed,
+            });
+        }
+    }
+
+    if !outcome.has_meaningful_output() && !completion_signal_tracker.was_called() {
+        if persist_conversation_provider_session_ref {
+            if let Some(repository) = conversation_repo.as_ref() {
+                if let Err(error) = repository.clear_provider_session_ref(conversation_id).await {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "Failed to clear provider session after empty Codex completion"
+                    );
+                }
+            }
+        }
+        tracing::warn!(
+            context_type = %context_type,
+            context_id,
+            conversation_id = %conversation_id,
+            exit_code = ?status_code,
+            status_success,
+            codex_turn_completed,
+            runtime_error_count = runtime_errors.len(),
+            local_tool_error_count = local_tool_errors.len(),
+            "Codex terminal stream produced no meaningful completion"
+        );
+        return Err(StreamError::NoOutput { context_type });
     }
 
     if outcome.tool_calls.is_empty() {
@@ -3659,6 +3890,23 @@ async fn process_codex_stream_background<R: Runtime>(
     }
 
     Ok(outcome)
+}
+
+fn detach_codex_completed_process_cleanup(
+    mut child: tokio::process::Child,
+    stderr_task: tokio::task::JoinHandle<String>,
+) {
+    std::mem::drop(tokio::spawn(async move {
+        let _ = child.start_kill();
+        if tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        }
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stderr_task).await;
+    }));
 }
 
 /// Determines whether the stream should be killed on timeout.

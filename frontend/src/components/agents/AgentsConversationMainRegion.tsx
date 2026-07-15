@@ -20,13 +20,14 @@ interface AgentsConversationMainRegionProps {
   chatFocusOptions: ActiveConversationPanelProps["chatFocusOptions"];
   defaultProjectId: StartConversationPanelProps["defaultProjectId"];
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
+  hasAttachedPlanArtifact: ActiveConversationPanelProps["hasAttachedPlanArtifact"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
-  workspaceReviewRuntimeStatus: ActiveConversationPanelProps["workspaceReviewRuntimeStatus"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
+  onActiveTeamEnabledChange: ActiveConversationPanelProps["onActiveTeamEnabledChange"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onActiveProviderChange: ActiveConversationPanelProps["onActiveProviderChange"];
@@ -34,10 +35,15 @@ interface AgentsConversationMainRegionProps {
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
+  onFocusIdeationSessionForConversation: ActiveConversationPanelProps[
+    "onFocusIdeationSessionForConversation"
+  ];
   onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
   onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
   onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
+  onFocusAutomationRun: ActiveConversationPanelProps["onFocusAutomationRun"];
   onOpenTaskArtifact: ActiveConversationPanelProps["onOpenTaskArtifact"];
+  onOpenAutomation?: ActiveConversationPanelProps["onOpenAutomation"];
   onForkConversation: ActiveConversationPanelProps["onForkConversation"];
   onOpenPlanArtifact: ActiveConversationPanelProps["onOpenPlanArtifact"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
@@ -58,6 +64,7 @@ interface AgentsConversationMainRegionProps {
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
+  updatingTeamConversationId: ActiveConversationPanelProps["updatingTeamConversationId"];
   terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
@@ -76,13 +83,14 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   chatFocusOptions,
   defaultProjectId,
   defaultRuntime,
+  hasAttachedPlanArtifact,
   hasAutoOpenArtifacts,
   isLoadingProjects,
   modelRegistry,
   normalizedActiveRuntime,
-  workspaceReviewRuntimeStatus = null,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
+  onActiveTeamEnabledChange,
   onActiveEffortChange,
   onActiveModelChange,
   onActiveProviderChange,
@@ -90,10 +98,13 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onConversationModeSwitched,
   onCreateProject,
   onFocusIdeationSession,
+  onFocusIdeationSessionForConversation,
   onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
+  onFocusAutomationRun,
   onOpenTaskArtifact,
+  onOpenAutomation,
   onForkConversation,
   onOpenPlanArtifact,
   onOpenPublishPane,
@@ -114,6 +125,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  updatingTeamConversationId,
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
@@ -131,21 +143,27 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         availableArtifactTabs={availableArtifactTabs}
         chatFocus={chatFocus}
         chatFocusOptions={chatFocusOptions}
+        hasAttachedPlanArtifact={hasAttachedPlanArtifact}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
-        workspaceReviewRuntimeStatus={workspaceReviewRuntimeStatus}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
+        onActiveTeamEnabledChange={onActiveTeamEnabledChange}
         onActiveEffortChange={onActiveEffortChange}
         onActiveModelChange={onActiveModelChange}
         onActiveProviderChange={onActiveProviderChange}
         onAgentUserMessageSent={onAgentUserMessageSent}
         onConversationModeSwitched={onConversationModeSwitched}
         onFocusIdeationSession={onFocusIdeationSession}
+        onFocusIdeationSessionForConversation={
+          onFocusIdeationSessionForConversation
+        }
         onFocusWorkspaceReview={onFocusWorkspaceReview}
         onFocusVerificationSession={onFocusVerificationSession}
         onFocusTaskRuntime={onFocusTaskRuntime}
+        onFocusAutomationRun={onFocusAutomationRun}
         onOpenTaskArtifact={onOpenTaskArtifact}
+        {...(onOpenAutomation ? { onOpenAutomation } : {})}
         onForkConversation={onForkConversation}
         onOpenPlanArtifact={onOpenPlanArtifact}
         onOpenPublishPane={onOpenPublishPane}
@@ -163,6 +181,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
+        updatingTeamConversationId={updatingTeamConversationId}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />

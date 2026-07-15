@@ -19,16 +19,16 @@ pub mod recovery_queue;
 pub mod verification_handoff;
 pub mod verification_reconciliation;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::application::interactive_process_registry::InteractiveProcessRegistry;
-use crate::application::TaskTransitionService;
+use crate::application::{NotificationService, TaskTransitionService};
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository,
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, BranchUpdateRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
     PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
@@ -36,13 +36,13 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 
+pub use policy::UserRecoveryAction;
 #[doc(hidden)]
 pub use policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, RecoveryPolicy,
 };
-pub use policy::UserRecoveryAction;
 
-pub struct ReconciliationRunner<R: Runtime = tauri::Wry> {
+pub struct ReconciliationRunner {
     pub(crate) task_repo: Arc<dyn TaskRepository>,
     pub(crate) task_dep_repo: Arc<dyn TaskDependencyRepository>,
     pub(crate) project_repo: Arc<dyn ProjectRepository>,
@@ -56,20 +56,24 @@ pub struct ReconciliationRunner<R: Runtime = tauri::Wry> {
     pub(crate) running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub(crate) memory_event_repo: Arc<dyn MemoryEventRepository>,
     pub(crate) agent_run_repo: Arc<dyn AgentRunRepository>,
-    pub(crate) transition_service: Arc<TaskTransitionService<R>>,
+    pub(crate) transition_service: Arc<TaskTransitionService>,
     pub(crate) execution_state: Arc<ExecutionState>,
     pub(crate) execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub(crate) plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    pub(crate) branch_update_repo: Option<Arc<dyn BranchUpdateRepository>>,
     pub(crate) interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub(crate) review_repo: Option<Arc<dyn ReviewRepository>>,
-    pub(crate) app_handle: Option<AppHandle<R>>,
+    pub(crate) app_handle: Option<AppHandle>,
     pub(crate) policy: RecoveryPolicy,
-    pub(crate) prompt_tracker: Arc<Mutex<HashSet<String>>>,
+    /// Optional application notification effect, injected for non-Tauri runners and tests.
+    pub(crate) notification_service: Option<Arc<NotificationService>>,
+    /// Active recovery prompt key -> concrete prompt instance id.
+    pub(crate) prompt_tracker: Arc<Mutex<HashMap<String, String>>>,
     /// PR poller registry for GitHub PR polling (own DI, separate from TaskServices — AD18).
     pub(crate) pr_poller_registry: Option<Arc<crate::application::PrPollerRegistry>>,
 }
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_repo: Arc<dyn TaskRepository>,
@@ -85,9 +89,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
-        transition_service: Arc<TaskTransitionService<R>>,
+        transition_service: Arc<TaskTransitionService>,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) -> Self {
         Self {
             task_repo,
@@ -107,22 +111,34 @@ impl<R: Runtime> ReconciliationRunner<R> {
             execution_state,
             execution_settings_repo: None,
             plan_branch_repo: None,
+            branch_update_repo: None,
             interactive_process_registry: None,
             review_repo: None,
             app_handle,
             policy: RecoveryPolicy,
-            prompt_tracker: Arc::new(Mutex::new(HashSet::new())),
+            notification_service: None,
+            prompt_tracker: Arc::new(Mutex::new(HashMap::new())),
             pr_poller_registry: None,
         }
     }
 
-    pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
+        self
+    }
+
+    pub fn with_notification_service(mut self, service: Arc<NotificationService>) -> Self {
+        self.notification_service = Some(service);
         self
     }
 
     pub fn with_plan_branch_repo(mut self, repo: Arc<dyn PlanBranchRepository>) -> Self {
         self.plan_branch_repo = Some(repo);
+        self
+    }
+
+    pub fn with_branch_update_repo(mut self, repo: Arc<dyn BranchUpdateRepository>) -> Self {
+        self.branch_update_repo = Some(repo);
         self
     }
 

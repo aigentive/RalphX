@@ -7,6 +7,8 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -35,6 +37,25 @@ pub use types::*;
 /// Must be unauthenticated and registered before any auth middleware layers.
 pub(crate) async fn health_handler() -> StatusCode {
     StatusCode::OK
+}
+
+pub(crate) fn emit_app_event(app_state: &AppState, event: &str, payload: Value) {
+    app_state.events.emit(event, payload);
+}
+
+pub(crate) fn emit_http_event(state: &HttpServerState, event: &str, payload: Value) {
+    emit_app_event(&state.app_state, event, payload);
+}
+
+pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
+    state: &HttpServerState,
+    event: &str,
+    payload: &T,
+) {
+    if let Err(error) = ralphx_events::emit_serialized(state.app_state.events.as_ref(), event, payload)
+    {
+        tracing::warn!(%event, %error, "Failed to serialize HTTP event payload");
+    }
 }
 
 pub async fn start_http_server(
@@ -149,6 +170,9 @@ pub async fn start_http_server(
         )
         // Session tools (ralphx-utility-session-namer agent)
         .route("/api/update_session_title", post(update_session_title))
+        // Persona tools (flag-gated in the handler because MCP grants are flag-agnostic).
+        .route("/api/save_persona_draft", post(save_persona_draft))
+        .route("/api/get_persona_draft/:id", get(get_persona_draft))
         // Session linking tools (ralphx-ideation agent)
         .route("/api/create_child_session", post(create_child_session))
         .route(
@@ -325,6 +349,10 @@ pub async fn start_http_server(
             "/api/project_skills/export/apply",
             post(apply_project_skill_export),
         )
+        // Automation setup-agent tools; caller identity is header-derived.
+        .route("/api/get_automation", post(get_automation))
+        .route("/api/update_automation", post(update_automation))
+        .route("/api/finalize_automation", post(finalize_automation))
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))
         .route("/api/add_task_note", post(add_task_note))
@@ -369,6 +397,19 @@ pub async fn start_http_server(
         .route("/api/mark_issue_addressed", post(mark_issue_addressed_http))
         // Worker context tools (worker agent)
         .route("/api/task_context/:task_id", get(get_task_context))
+        .route("/api/task_validation/run", post(run_task_validation_http))
+        .route(
+            "/api/task_validation/summary/:task_id",
+            get(get_task_validation_summary_http),
+        )
+        .route(
+            "/api/task_validation/diff",
+            post(get_validation_task_diff_http),
+        )
+        .route(
+            "/api/task_validation/diff_stat",
+            post(get_validation_task_diff_stat_http),
+        )
         .route("/api/artifact/:artifact_id", get(get_artifact_full))
         .route(
             "/api/artifact/:artifact_id/version/:version",
@@ -400,6 +441,22 @@ pub async fn start_http_server(
         // Git merge endpoints (merger agent)
         .route("/api/git/tasks/:id/complete-merge", post(complete_merge))
         .route(
+            "/api/branch-updates/tasks/:id/context",
+            get(get_branch_update_context),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/complete",
+            post(complete_branch_update),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/report-conflict",
+            post(report_branch_update_conflict),
+        )
+        .route(
+            "/api/branch-updates/tasks/:id/report-incomplete",
+            post(report_branch_update_incomplete),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/complete-repair",
             post(complete_agent_workspace_repair),
         )
@@ -428,12 +485,20 @@ pub async fn start_http_server(
             get(get_agent_workspace_pr_review_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-settings",
+            put(update_agent_workspace_pr_review_settings),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-context",
             get(get_agent_workspace_review_context),
         )
         .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-runs",
             post(start_agent_workspace_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-fixer-runs",
+            post(start_agent_workspace_review_fixer_run),
         )
         .route(
             "/api/agent-workspaces/:conversation_id/workspace-review-artifact",

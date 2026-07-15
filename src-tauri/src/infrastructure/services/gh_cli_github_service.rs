@@ -1583,8 +1583,10 @@ pub(crate) fn parse_pr_status_output(json_str: &str) -> AppResult<PrStatus> {
         "MERGED" => {
             // mergeCommit is an object with "oid" when merged, null otherwise
             let sha = v["mergeCommit"]["oid"].as_str().map(str::to_string);
+            let merged_at = v["mergedAt"].as_str().map(str::to_string);
             Ok(PrStatus::Merged {
                 merge_commit_sha: sha,
+                merged_at,
             })
         }
         other => Err(AppError::Infrastructure(format!(
@@ -1821,8 +1823,10 @@ fn parse_pr_status_value(v: &Value) -> AppResult<PrStatus> {
         "CLOSED" => Ok(PrStatus::Closed),
         "MERGED" => {
             let sha = v["mergeCommit"]["oid"].as_str().map(str::to_string);
+            let merged_at = v["mergedAt"].as_str().map(str::to_string);
             Ok(PrStatus::Merged {
                 merge_commit_sha: sha,
+                merged_at,
             })
         }
         other => Err(AppError::Infrastructure(format!(

@@ -1,4 +1,6 @@
 use super::*;
+use crate::domain::entities::InternalStatus;
+use crate::domain::state_machine::services::{Notifier, TaskNotification};
 
 // ==================
 // MockAgentSpawner tests
@@ -131,32 +133,73 @@ async fn test_mock_event_emitter_clear() {
 // MockNotifier tests
 // ==================
 
+fn notification_context(
+    task_id: &str,
+) -> crate::domain::state_machine::services::NotificationContext {
+    use crate::domain::entities::{ProjectId, Task, TaskId};
+
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let mut task = Task::new(project_id.clone(), "Notifier test task".to_string());
+    task.id = TaskId::from_string(task_id.to_string());
+    crate::domain::state_machine::services::NotificationContext {
+        task,
+        history_entry_id: "history-1".to_string(),
+        project_id,
+    }
+}
+
 #[tokio::test]
 async fn test_mock_notifier_records_notify() {
     let notifier = MockNotifier::new();
-    notifier.notify("task_failed", "task-123").await;
+    notifier
+        .notify(
+            notification_context("task-123"),
+            TaskNotification::StateEntered(InternalStatus::Failed),
+        )
+        .await;
 
     let notifications = notifier.get_notifications();
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].method, "notify");
+    assert_eq!(notifications[0].args[0], "StateEntered(Failed)");
+    assert_eq!(notifications[0].args[1], "task-123");
 }
 
 #[tokio::test]
 async fn test_mock_notifier_records_notify_with_message() {
     let notifier = MockNotifier::new();
     notifier
-        .notify_with_message("qa_failed", "task-456", "3 tests failed")
+        .notify(
+            notification_context("task-456"),
+            TaskNotification::ReviewError {
+                message: "3 tests failed".to_string(),
+            },
+        )
         .await;
 
     let notifications = notifier.get_notifications();
-    assert_eq!(notifications[0].args.len(), 3);
+    assert_eq!(
+        notifications[0].args[0],
+        "ReviewError { message: \"3 tests failed\" }"
+    );
+    assert_eq!(notifications[0].args[1], "task-456");
 }
 
 #[tokio::test]
 async fn test_mock_notifier_notification_count() {
     let notifier = MockNotifier::new();
-    notifier.notify("n1", "task-1").await;
-    notifier.notify("n2", "task-2").await;
+    notifier
+        .notify(
+            notification_context("task-1"),
+            TaskNotification::StateEntered(InternalStatus::QaFailed),
+        )
+        .await;
+    notifier
+        .notify(
+            notification_context("task-2"),
+            TaskNotification::StateEntered(InternalStatus::MergeConflict),
+        )
+        .await;
 
     assert_eq!(notifier.notification_count(), 2);
 }
@@ -164,16 +207,26 @@ async fn test_mock_notifier_notification_count() {
 #[tokio::test]
 async fn test_mock_notifier_has_notification() {
     let notifier = MockNotifier::new();
-    notifier.notify("task_failed", "task-1").await;
+    notifier
+        .notify(
+            notification_context("task-1"),
+            TaskNotification::StateEntered(InternalStatus::Failed),
+        )
+        .await;
 
-    assert!(notifier.has_notification("task_failed"));
-    assert!(!notifier.has_notification("qa_failed"));
+    assert!(notifier.has_notification("StateEntered(Failed)"));
+    assert!(!notifier.has_notification("StateEntered(QaFailed)"));
 }
 
 #[tokio::test]
 async fn test_mock_notifier_clear() {
     let notifier = MockNotifier::new();
-    notifier.notify("n", "task-1").await;
+    notifier
+        .notify(
+            notification_context("task-1"),
+            TaskNotification::StateEntered(InternalStatus::Escalated),
+        )
+        .await;
     notifier.clear();
 
     assert_eq!(notifier.notification_count(), 0);

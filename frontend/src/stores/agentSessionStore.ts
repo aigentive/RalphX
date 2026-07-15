@@ -3,27 +3,33 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 import {
-  normalizeAgentRuntimeSelection,
+  normalizeAgentRuntimeForPersistence,
   type AgentEffort,
   type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
 import type {
+  AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  TeamIntent,
 } from "@/api/chat";
+import type {
+  AutomationJudgeState,
+  AutomationRunStatus,
+} from "@/api/automations";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
 export type AgentArtifactTab =
   | "review"
+  | "automation"
   | "issues"
   | "plan"
   | "verification"
-  | "proposal"
   | "tasks"
   | "skills"
   | "pr"
@@ -33,7 +39,7 @@ export type AgentArtifactTab =
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
-export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarGroupBy = "project" | "publication" | "automation";
 export type AgentSidebarPublicationState =
   | "active"
   | "draft"
@@ -47,6 +53,30 @@ export interface AgentArtifactState {
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
 }
+
+export interface AgentTaskArtifactFocusRequest {
+  taskId: string;
+  requestId: number;
+}
+
+export interface AgentAutomationRunFocusRequest {
+  projectId: string;
+  automationId: string;
+  runId: string;
+  conversationId: string;
+  runStatus: AutomationRunStatus | null;
+  judgeState: AutomationJudgeState | null;
+  workspaceMode: AgentConversationWorkspaceMode | null;
+  hasPlanArtifact: boolean;
+  hasPullRequest: boolean;
+  seededTab: AgentArtifactTab;
+  requestId: number;
+}
+
+export type AgentAutomationRunFocusRequestInput = Omit<
+  AgentAutomationRunFocusRequest,
+  "requestId"
+>;
 
 export interface AgentBranchBaseCacheEntry {
   options: BranchBaseOption[];
@@ -63,11 +93,37 @@ export interface AgentStartConversationDraft {
   composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
+export interface AgentStartConversationRetryInput {
+  projectId: string;
+  content: string;
+  runtime: AgentRuntimeSelection;
+  runtimeProviderContext?: AgentRuntimeProviderContext;
+  mode: AgentConversationWorkspaceMode;
+  base: AgentConversationBaseSelection | null;
+  codexFastMode?: boolean | null;
+  teamIntent?: TeamIntent | null;
+  composerArtifactReferences?: ComposerArtifactReference[];
+  composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
+}
+
+export interface AgentRuntimeProviderContext {
+  supportedEfforts?: string[] | null;
+  supportedModelAliases?: string[] | null;
+}
+
+export interface AgentStartConversationFailure {
+  kind: "linked_setup";
+  message: string;
+  retryInput: AgentStartConversationRetryInput;
+}
+
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
   startConversationDraft: AgentStartConversationDraft | null;
+  startConversationFailure: AgentStartConversationFailure | null;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -77,6 +133,14 @@ interface AgentSessionState {
   sidebarPublicationStateFilters: AgentSidebarPublicationState[];
   pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
+  taskArtifactFocusRequestByConversationId: Record<
+    string,
+    AgentTaskArtifactFocusRequest
+  >;
+  automationRunFocusRequestByConversationId: Record<
+    string,
+    AgentAutomationRunFocusRequest
+  >;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
@@ -90,6 +154,7 @@ interface AgentSessionActions {
   clearSelection: () => void;
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   consumeStartConversationDraft: () => AgentStartConversationDraft | null;
+  setStartConversationFailure: (failure: AgentStartConversationFailure | null) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -108,6 +173,15 @@ interface AgentSessionActions {
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
   setTaskArtifactMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
+  focusTaskArtifact: (conversationId: string, taskId: string) => void;
+  requestAutomationRunFocus: (
+    setupConversationId: string,
+    request: AgentAutomationRunFocusRequestInput
+  ) => void;
+  clearAutomationRunFocusRequest: (
+    setupConversationId: string,
+    requestId?: number
+  ) => void;
   setRuntimeForConversation: (
     conversationId: string,
     projectId: string,
@@ -136,7 +210,26 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 6;
+const AGENT_SESSION_STORE_VERSION = 7;
+
+type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
+
+export function normalizeAgentArtifactTab(
+  tab: LegacyAgentArtifactTab,
+): AgentArtifactTab {
+  return tab === "proposal" ? "plan" : tab;
+}
+
+function normalizeAgentArtifactState(
+  artifactState: Omit<AgentArtifactState, "activeTab"> & {
+    activeTab: LegacyAgentArtifactTab;
+  },
+): AgentArtifactState {
+  return {
+    ...artifactState,
+    activeTab: normalizeAgentArtifactTab(artifactState.activeTab),
+  };
+}
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
   if (!value || typeof value !== "object") {
@@ -146,8 +239,26 @@ function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSele
   return Object.fromEntries(
     Object.entries(value).map(([key, runtime]) => [
       key,
-      normalizeAgentRuntimeSelection(runtime),
+      normalizeAgentRuntimeForPersistence(runtime),
     ])
+  );
+}
+
+function migrateArtifactStateRecord(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([conversationId, artifactState]) => {
+      if (!artifactState || typeof artifactState !== "object") {
+        return [conversationId, artifactState];
+      }
+      const state = artifactState as Record<string, unknown>;
+      return state.activeTab === "proposal"
+        ? [conversationId, { ...state, activeTab: "plan" }]
+        : [conversationId, artifactState];
+    }),
   );
 }
 
@@ -196,14 +307,21 @@ export function migrateAgentSessionStore(
     nextState.lastModelEffortByProvider = {};
   }
 
+  if (version < 7) {
+    nextState.artifactByConversationId = migrateArtifactStateRecord(
+      nextState.artifactByConversationId,
+    );
+  }
+
   return nextState;
 }
 
 function ensureArtifactState(state: AgentSessionState, conversationId: string): AgentArtifactState {
-  if (!state.artifactByConversationId[conversationId]) {
-    state.artifactByConversationId[conversationId] = { ...DEFAULT_ARTIFACT_STATE };
-  }
-  return state.artifactByConversationId[conversationId];
+  const current =
+    state.artifactByConversationId[conversationId] ?? DEFAULT_ARTIFACT_STATE;
+  const normalized = normalizeAgentArtifactState(current);
+  state.artifactByConversationId[conversationId] = normalized;
+  return normalized;
 }
 
 function expandOnlyProject(state: AgentSessionState, projectId: string) {
@@ -251,6 +369,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       selectedProjectId: null,
       selectedConversationId: null,
       startConversationDraft: null,
+      startConversationFailure: null,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -260,6 +379,8 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
       pinnedConversationIds: {},
       artifactByConversationId: {},
+      taskArtifactFocusRequestByConversationId: {},
+      automationRunFocusRequestByConversationId: {},
       runtimeByConversationId: {},
       lastRuntimeByProjectId: {},
       branchBaseCacheByProjectId: {},
@@ -305,6 +426,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         });
         return consumedDraft;
       },
+
+      setStartConversationFailure: (failure) =>
+        set((state) => {
+          state.startConversationFailure = failure;
+        }),
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {
@@ -390,13 +516,14 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setArtifactTab: (conversationId, tab) =>
         set((state) => {
           const artifactState = ensureArtifactState(state, conversationId);
-          artifactState.activeTab = tab;
+          artifactState.activeTab = normalizeAgentArtifactTab(tab);
           artifactState.isOpen = true;
         }),
 
       setArtifactState: (conversationId, artifactState) =>
         set((state) => {
-          state.artifactByConversationId[conversationId] = { ...artifactState };
+          state.artifactByConversationId[conversationId] =
+            normalizeAgentArtifactState(artifactState);
         }),
 
       setTaskArtifactMode: (conversationId, mode) =>
@@ -404,9 +531,47 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           ensureArtifactState(state, conversationId).taskMode = mode;
         }),
 
+      focusTaskArtifact: (conversationId, taskId) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.activeTab = "tasks";
+          artifactState.isOpen = true;
+          const current =
+            state.taskArtifactFocusRequestByConversationId[conversationId];
+          state.taskArtifactFocusRequestByConversationId[conversationId] = {
+            taskId,
+            requestId: (current?.requestId ?? 0) + 1,
+          };
+        }),
+
+      requestAutomationRunFocus: (setupConversationId, request) =>
+        set((state) => {
+          const current =
+            state.automationRunFocusRequestByConversationId[setupConversationId];
+          state.automationRunFocusRequestByConversationId[setupConversationId] = {
+            ...request,
+            requestId: (current?.requestId ?? 0) + 1,
+          };
+        }),
+
+      clearAutomationRunFocusRequest: (setupConversationId, requestId) =>
+        set((state) => {
+          const current =
+            state.automationRunFocusRequestByConversationId[setupConversationId];
+          if (!current) {
+            return;
+          }
+          if (requestId !== undefined && current.requestId !== requestId) {
+            return;
+          }
+          delete state.automationRunFocusRequestByConversationId[
+            setupConversationId
+          ];
+        }),
+
       setRuntimeForConversation: (conversationId, projectId, runtime) =>
         set((state) => {
-          const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
           state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
@@ -417,7 +582,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
 
       setLastRuntimeForProject: (projectId, runtime) =>
         set((state) => {
-          const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
+          const normalizedRuntime = normalizeAgentRuntimeForPersistence(runtime);
           state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
           state.lastModelEffortByProvider[normalizedRuntime.provider] = {
             modelId: normalizedRuntime.modelId,

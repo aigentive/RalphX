@@ -4,10 +4,12 @@ use super::{
     compose_codex_prompt, compose_codex_prompt_for_profile,
     compose_codex_prompt_for_profile_with_learned_skills,
     compose_codex_prompt_for_profile_with_runtime_context, configure_spawn,
-    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models, probe_codex_cli,
-    resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
-    CodexMcpRuntimeContext,
+    compose_codex_prompt_for_profile_with_outcome, parse_codex_fast_mode_feature,
+    parse_codex_fast_mode_supported_models, parse_codex_model_catalog_capabilities,
+    probe_codex_cli, redact_persona_from_codex_prompt, resolve_codex_cli_from_candidates,
+    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
 };
+
 use crate::domain::agents::LogicalEffort;
 use crate::domain::services::learned_skill_adapters::{
     LearnedSkillBucket, LearnedSkillRecord, LearnedSkillSelectionRequest, LearnedSkillStage,
@@ -16,8 +18,40 @@ use crate::domain::services::learned_skill_adapters::{
 use crate::infrastructure::agents::internal_skills::{
     PreExecutionLearnedSkillContext, PRE_EXECUTION_LEARNED_SKILLS_ENV,
 };
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+
+#[test]
+fn persona_codex_prompt_outcome_is_reasoned_when_agent_prompt_is_unavailable() {
+    let composition = compose_codex_prompt_for_profile_with_outcome(
+        "User prompt",
+        None,
+        Some("ralphx-chat-project"),
+        None,
+        Some("<ralphx_agent_persona>secret</ralphx_agent_persona>"),
+    );
+
+    assert_eq!(composition.prompt, "User prompt");
+    assert!(!composition.persona_injected);
+    assert_eq!(
+        composition.persona_injection_skipped_reason,
+        Some("codex_plugin_dir_unavailable")
+    );
+}
+
+#[test]
+fn persona_codex_debug_prompt_redaction_removes_body() {
+    let redacted = redact_persona_from_codex_prompt(
+        "before<ralphx_agent_persona>SECRET_PERSONA_BODY</ralphx_agent_persona>after",
+    );
+
+    assert_eq!(
+        redacted,
+        "before<ralphx_agent_persona>[redacted]</ralphx_agent_persona>after"
+    );
+    assert!(!redacted.contains("SECRET_PERSONA_BODY"));
+}
 
 struct EnvGuard {
     key: &'static str,
@@ -47,6 +81,13 @@ impl Drop for EnvGuard {
     }
 }
 
+fn path_index(entries: &[PathBuf], path: impl AsRef<Path>) -> usize {
+    entries
+        .iter()
+        .position(|entry| entry == path.as_ref())
+        .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
+}
+
 fn write_executable(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write executable");
     #[cfg(unix)]
@@ -74,6 +115,22 @@ fn full_codex_capabilities() -> CodexCliCapabilities {
         supports_mcp_subcommand: true,
         supports_fast_mode_feature: true,
         fast_mode_supported_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
+        supported_model_aliases: vec!["gpt-5.5".to_string()],
+        supported_efforts: vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+        ],
+        model_supported_efforts: BTreeMap::from([(
+            "gpt-5.5".to_string(),
+            vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ],
+        )]),
     }
 }
 
@@ -112,6 +169,79 @@ fn parse_codex_fast_mode_supported_models_reads_speed_tier_catalog() {
     assert_eq!(models, vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]);
 }
 
+#[test]
+fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
+    let catalog = parse_codex_model_catalog_capabilities(
+        r#"{
+          "models": [
+            {
+              "slug": "gpt-5.6-sol",
+              "visibility": "list",
+              "supported_reasoning_levels": [
+                {"effort": "low"},
+                {"effort": "medium"},
+                {"effort": "high"},
+                {"effort": "xhigh"},
+                {"effort": "max"},
+                {"effort": "ultra"},
+                {"effort": "warp"}
+              ]
+            },
+            {
+              "slug": "gpt-5.6-luna",
+              "visibility": "list",
+              "supported_reasoning_levels": [
+                {"effort": "medium"},
+                {"effort": "low"},
+                {"effort": "max"}
+              ]
+            },
+            {
+              "slug": "hidden-model",
+              "visibility": "hidden",
+              "supported_reasoning_levels": [{"effort": "ultra"}]
+            }
+          ]
+        }"#,
+    );
+
+    assert_eq!(
+        catalog.supported_model_aliases,
+        vec!["gpt-5.6-luna".to_string(), "gpt-5.6-sol".to_string()]
+    );
+    assert_eq!(
+        catalog.supported_efforts,
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+            "ultra".to_string(),
+        ]
+    );
+    assert_eq!(
+        catalog.model_supported_efforts.get("gpt-5.6-sol"),
+        Some(&vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+            "ultra".to_string(),
+        ])
+    );
+    assert_eq!(
+        catalog.model_supported_efforts.get("gpt-5.6-luna"),
+        Some(&vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "max".to_string(),
+        ])
+    );
+    assert!(!catalog.model_supported_efforts.contains_key("hidden-model"));
+}
+
 fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
     let plugin_dir = root.join("plugins/app");
     std::fs::create_dir_all(plugin_dir.join("agents")).expect("create plugin agents dir");
@@ -139,6 +269,13 @@ fn codex_mcp_args_override(overrides: &[String]) -> &str {
         .iter()
         .find_map(|entry| entry.strip_prefix("mcp_servers.ralphx.args="))
         .expect("Codex MCP args override")
+}
+
+fn override_keys(overrides: &[String]) -> Vec<&str> {
+    overrides
+        .iter()
+        .map(|entry| entry.split_once('=').map_or(entry.as_str(), |(key, _)| key))
+        .collect()
 }
 
 fn seed_live_agent_yaml(root: &Path, agent_name: &str) {
@@ -179,10 +316,18 @@ fn build_codex_exec_command_sets_agent_tool_path() {
 
     assert!(path.contains("/opt/homebrew/bin"));
     assert!(path.contains("/usr/local/bin"));
+    if let Some(home) = dirs::home_dir() {
+        let cargo_bin = home.join(".cargo").join("bin");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert!(
+            path_index(&entries, &cargo_bin) < path_index(&entries, "/opt/homebrew/bin"),
+            "user cargo shim should stay before Homebrew in Codex spawn PATH: {path}"
+        );
+    }
 }
 
 #[test]
-fn probe_codex_cli_prepends_resolved_node_for_env_shim() {
+fn probe_codex_cli_ensures_resolved_node_for_env_shim() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
@@ -211,8 +356,10 @@ elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
   printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
 elif [ "$1" = "features" ] && [ "$2" = "list" ]; then
   printf '%s\n' 'fast_mode stable true'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ -z "$3" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.6-sol","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]}]}'
 elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ "$3" = "--bundled" ]; then
-  printf '%s\n' '{"models":[{"slug":"gpt-5.5","additional_speed_tiers":["fast"],"service_tiers":[{"id":"priority","name":"Fast"}]},{"slug":"gpt-5.4-mini","additional_speed_tiers":[]}]}'
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"additional_speed_tiers":["fast"],"service_tiers":[{"id":"priority","name":"Fast"}]},{"slug":"gpt-5.4-mini","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"additional_speed_tiers":[]}]}'
 else
   printf 'unexpected args: %s\n' "$*" >&2
   exit 64
@@ -244,6 +391,21 @@ fi
     assert_eq!(
         capabilities.fast_mode_supported_models(),
         vec!["gpt-5.5".to_string()]
+    );
+    assert_eq!(
+        capabilities.supported_model_aliases,
+        vec!["gpt-5.6-sol".to_string()]
+    );
+    assert_eq!(
+        capabilities.supported_effort_labels(),
+        vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+            "ultra".to_string(),
+        ]
     );
 }
 
@@ -461,6 +623,30 @@ fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
 }
 
 #[test]
+fn build_codex_exec_resume_args_requires_resume_capability() {
+    let mut capabilities = full_codex_capabilities();
+    capabilities.supports_resume_subcommand = false;
+
+    let error =
+        build_codex_exec_resume_args(&capabilities, "session-123", &CodexExecCliConfig::default())
+            .expect_err("old Codex CLIs without resume support must not build resume args");
+
+    assert!(error.contains("resume subcommand"));
+}
+
+#[test]
+fn build_codex_exec_resume_args_uses_resume_when_supported() {
+    let args = build_codex_exec_resume_args(
+        &full_codex_capabilities(),
+        "session-123",
+        &CodexExecCliConfig::default(),
+    )
+    .expect("build codex resume args");
+
+    assert_eq!(&args[..3], ["exec", "resume", "session-123"]);
+}
+
+#[test]
 fn build_codex_exec_resume_args_enables_fast_service_tier() {
     let args = build_codex_exec_resume_args(
         &full_codex_capabilities(),
@@ -513,6 +699,8 @@ fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
         (LogicalEffort::Medium, "medium"),
         (LogicalEffort::High, "high"),
         (LogicalEffort::XHigh, "xhigh"),
+        (LogicalEffort::Max, "max"),
+        (LogicalEffort::Ultra, "ultra"),
     ] {
         let args = build_codex_exec_args(
             &full_codex_capabilities(),
@@ -902,7 +1090,8 @@ fn build_codex_mcp_overrides_includes_runtime_feature_flags_from_agent_metadata(
         overrides
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
-        "Codex runtime feature flags should flow into config overrides: {overrides:?}"
+        "Codex runtime feature flags should flow into config overrides; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -923,19 +1112,22 @@ fn build_codex_mcp_overrides_pr_describer_enables_submit_tool_without_shell() {
         overrides
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
-        "PR describer should disable Codex shell tool: {overrides:?}"
+        "PR describer should disable Codex shell tool; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| entry
             == "mcp_servers.ralphx.enabled_tools=[\"submit_agent_workspace_pr_description\"]"),
-        "PR describer enabled tools should be limited to its submit tool: {overrides:?}"
+        "PR describer enabled tools should be limited to its submit tool; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx.args=")
                 && entry.contains("--allowed-tools=submit_agent_workspace_pr_description")),
-        "PR describer stdio MCP args should pass the submit-tool allowlist: {overrides:?}"
+        "PR describer stdio MCP args should pass the submit-tool allowlist; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -957,11 +1149,13 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         context_id: Some("session-123".to_string()),
         conversation_id: Some("conversation-current".to_string()),
         task_id: None,
+        task_state: Some("re_executing".to_string()),
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: vec![root.join("project-root")],
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
+        agent_run_id: Some("run-123".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1022,6 +1216,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         "expected project-id CLI arg in overrides: {args_override}"
     );
     assert!(
+        args_override.contains("--task-state"),
+        "expected task-state CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("re_executing"),
+        "expected task-state value in overrides: {args_override}"
+    );
+    assert!(
         args_override.contains("--filesystem-read-root"),
         "expected filesystem read-root CLI arg in overrides: {args_override}"
     );
@@ -1049,20 +1251,28 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         args_override.contains("conversation-abc"),
         "expected parent conversation id value in overrides: {args_override}"
     );
+    assert!(
+        args_override.contains("--agent-run-id"),
+        "expected agent-run-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("run-123"),
+        "expected agent run id value in overrides: {args_override}"
+    );
 }
 
 #[test]
-fn configure_spawn_prepends_resolved_node_bin_to_path() {
+fn configure_spawn_preserves_user_shims_while_ensuring_node_bin() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("env mutex");
-    let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
-        .parent()
-        .map(PathBuf::from)
-        .expect("resolved node bin");
+    let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+    let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
+    let expected_node_bin = PathBuf::from("/tmp/fake-node-bin");
 
     let mut cmd = tokio::process::Command::new("/usr/bin/env");
-    cmd.env("PATH", "/usr/bin:/bin");
     configure_spawn(&mut cmd, None);
 
     let path_value = cmd
@@ -1073,7 +1283,14 @@ fn configure_spawn_prepends_resolved_node_bin_to_path() {
         })
         .expect("PATH env");
     let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
-    assert_eq!(path_entries.first(), Some(&expected_node_bin));
+    if let Some(home) = dirs::home_dir() {
+        let cargo_bin = home.join(".cargo").join("bin");
+        assert!(
+            path_index(&path_entries, &cargo_bin) < path_index(&path_entries, &expected_node_bin),
+            "user cargo shim should stay before inserted Node bin: {path_value:?}"
+        );
+    }
+    assert!(path_index(&path_entries, &expected_node_bin) < path_index(&path_entries, "/usr/bin"));
 
     let screenshot_dir = cmd
         .as_std()
@@ -1116,29 +1333,34 @@ harnesses:
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx.url=")),
-        "external MCP transport should use a streamable HTTP URL: {overrides:?}"
+        "external MCP transport should use a streamable HTTP URL; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| {
             entry == "mcp_servers.ralphx.bearer_token_env_var=\"RALPHX_TAURI_MCP_BYPASS_TOKEN\""
         }),
-        "external MCP transport should use the Tauri bypass token env var: {overrides:?}"
+        "external MCP transport should use the Tauri bypass token env var; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "mcp_servers.ralphx.enabled_tools=[\"v1_start_ideation\",\"v1_get_ideation_status\"]"),
-        "external MCP enabled tools should come from Codex metadata: {overrides:?}"
+        "external MCP enabled tools should come from Codex metadata; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         !overrides.iter().any(|entry| entry.contains(".command=") || entry.contains(".args=")),
-        "external MCP transport must not point Codex at the bundled stdio MCP server: {overrides:?}"
+        "external MCP transport must not point Codex at the bundled stdio MCP server; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
-        "runtime feature flags should still be preserved: {overrides:?}"
+        "runtime feature flags should still be preserved; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1161,7 +1383,29 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
 
     assert!(
         args.contains("--allowed-tools=") && args.contains("ask_user_question"),
-        "Codex Plan chat must keep ask_user_question for interactive Agent conversations: {overrides:?}"
+        "Codex Plan chat must keep ask_user_question for interactive Agent conversations; override keys: {:?}",
+        override_keys(&overrides)
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "features.apply_patch_freeform=false"),
+        "Codex Plan profile must disable the legacy apply_patch feature if the CLI recognizes it; override keys: {:?}",
+        override_keys(&overrides)
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "features.apply_patch_streaming_events=false"),
+        "Codex Plan profile must disable apply_patch streaming events if the CLI recognizes them; override keys: {:?}",
+        override_keys(&overrides)
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "include_apply_patch_tool=false"),
+        "Codex Plan profile must disable the direct apply_patch tool config if the CLI recognizes it; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1184,11 +1428,13 @@ fn build_codex_mcp_overrides_filters_plan_question_tool_for_external_runs() {
 
     assert!(
         !args.contains("ask_user_question"),
-        "External Codex Plan chat spawns must filter ask_user_question: {overrides:?}"
+        "External Codex Plan chat spawns must filter ask_user_question; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         args.contains("get_session_plan"),
-        "Filtering interactive tools must preserve non-interactive Plan tools: {overrides:?}"
+        "Filtering interactive tools must preserve non-interactive Plan tools; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1201,6 +1447,7 @@ fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
         Some(&plugin_dir),
         Some("ralphx-ideation"),
         Some("plan"),
+        None,
     );
 
     assert!(prompt.contains("<agent_runtime_profile>"));
@@ -1212,6 +1459,53 @@ fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
         compose_codex_prompt("Create a plan", Some(&plugin_dir), Some("ralphx-ideation"));
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
     assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
+}
+
+#[test]
+fn codex_prompt_orders_persona_before_skills_and_runtime_profile_inside_ralphx_agent_instructions()
+{
+    let root = project_root();
+    let plugin_dir = root.join("plugins/app");
+    let persona = "<ralphx_agent_persona>Persona voice</ralphx_agent_persona>";
+    let prompt = compose_codex_prompt_for_profile(
+        "<!-- ralphx_internal_skill=ralphx-agent-workspace-swe -->",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+        Some("plan"),
+        Some(persona),
+    );
+
+    let instructions = prompt
+        .find("<ralphx_agent_instructions>")
+        .expect("agent instructions");
+    let persona = prompt.find(persona).expect("persona block");
+    // The live profile prompt mentions these tags in prose, so anchor on the
+    // APPENDED blocks (last occurrence), not the first prose mention.
+    let skills = prompt
+        .rfind("<ralphx_internal_skills>")
+        .expect("internal skills");
+    let runtime_profile = prompt
+        .rfind("<agent_runtime_profile>")
+        .expect("runtime profile");
+
+    assert!(instructions < persona && persona < skills && skills < runtime_profile);
+}
+
+#[test]
+fn compose_codex_prompt_for_profile_without_persona_is_byte_identical_to_today() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins/app");
+    let wrapper = compose_codex_prompt("Create a plan", Some(&plugin_dir), Some("ralphx-ideation"));
+    let threaded = compose_codex_prompt_for_profile(
+        "Create a plan",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+        None,
+        None,
+    );
+
+    assert_eq!(threaded, wrapper);
+    assert!(!threaded.contains("<ralphx_agent_persona>"));
 }
 
 #[test]
@@ -1244,27 +1538,31 @@ harnesses:
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx.url=")),
-        "external MCP transport should remain configured: {overrides:?}"
+        "external MCP transport should remain configured; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides
             .iter()
             .any(|entry| entry.starts_with("mcp_servers.ralphx_internal.command=")),
-        "internal MCP sidecar should launch bundled stdio server: {overrides:?}"
+        "internal MCP sidecar should launch bundled stdio server; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| {
             entry
                 == "mcp_servers.ralphx_internal.enabled_tools=[\"create_agent_task\",\"list_agent_tasks\"]"
         }),
-        "internal sidecar enabled tools should come from internal_mcp_tools: {overrides:?}"
+        "internal sidecar enabled tools should come from internal_mcp_tools; override keys: {:?}",
+        override_keys(&overrides)
     );
     assert!(
         overrides.iter().any(|entry| {
             entry.contains("mcp_servers.ralphx_internal.args=")
                 && entry.contains("--allowed-tools=create_agent_task,list_agent_tasks")
         }),
-        "internal sidecar args should pass narrowed --allowed-tools: {overrides:?}"
+        "internal sidecar args should pass narrowed --allowed-tools; override keys: {:?}",
+        override_keys(&overrides)
     );
 }
 
@@ -1293,11 +1591,13 @@ harnesses:
         context_id: Some("project-123".to_string()),
         conversation_id: Some("conversation current".to_string()),
         task_id: None,
+        task_state: Some("reviewing".to_string()),
         project_id: Some("project-123".to_string()),
         working_directory: Some(root.join("workspace")),
         filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
+        agent_run_id: Some("run 789".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1328,5 +1628,9 @@ harnesses:
     assert!(
         url_override.contains("parent_conversation_id=conversation%20456"),
         "external MCP URL should include encoded parent conversation id: {url_override}"
+    );
+    assert!(
+        url_override.contains("agent_run_id=run%20789"),
+        "external MCP URL should include encoded agent run id: {url_override}"
     );
 }

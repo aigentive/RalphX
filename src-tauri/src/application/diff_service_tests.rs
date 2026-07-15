@@ -286,6 +286,53 @@ fn test_get_file_diff_for_worktree_uses_current_disk_content() {
     assert_eq!(diff.new_total_lines, 3, "Disk has 3 lines after edit");
 }
 
+#[test]
+fn worktree_file_diff_from_ref_reads_tracked_disk_changes() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(repo_path.join("README.md"), "# Test Repo\n\nChanged\n")
+        .expect("Failed to update README");
+
+    let diff_service = DiffService::new();
+    let diff = diff_service
+        .get_worktree_file_diff_from_ref("README.md", &repo_path.to_string_lossy(), &base)
+        .expect("worktree diff should load");
+
+    assert_eq!(diff.file_path, "README.md");
+    assert_eq!(diff.language, "markdown");
+    assert!(!diff.is_binary);
+    assert_eq!(diff.old_total_lines, 1);
+    assert_eq!(diff.new_total_lines, 3);
+    assert!(diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .any(|line| line.content.contains("Changed")));
+}
+
+#[test]
+fn worktree_file_diff_from_ref_falls_back_to_untracked_file_diff() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(repo_path.join("notes.md"), "one\ntwo\n").expect("Failed to write notes");
+
+    let diff_service = DiffService::new();
+    let diff = diff_service
+        .get_worktree_file_diff_from_ref("notes.md", &repo_path.to_string_lossy(), &base)
+        .expect("untracked file diff should load");
+
+    assert_eq!(diff.file_path, "notes.md");
+    assert_eq!(diff.language, "markdown");
+    assert!(!diff.is_binary);
+    assert_eq!(diff.old_total_lines, 0);
+    assert_eq!(diff.new_total_lines, 2);
+    assert!(diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .any(|line| line.content == "two"));
+}
+
 #[tokio::test]
 async fn test_detect_conflicts_clean_merge() {
     let (_temp_dir, repo_path) = create_git_repo();

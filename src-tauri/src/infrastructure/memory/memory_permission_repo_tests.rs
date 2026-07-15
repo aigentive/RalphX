@@ -10,6 +10,7 @@ fn sample_permission(request_id: &str) -> PendingPermissionInfo {
         task_id: None,
         context_type: None,
         context_id: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 

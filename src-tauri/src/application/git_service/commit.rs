@@ -1,5 +1,8 @@
 use super::git_cmd;
 use super::*;
+use tempfile::NamedTempFile;
+
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 #[derive(Debug, Default)]
 struct StageSelection {
@@ -98,6 +101,56 @@ impl GitService {
     // =========================================================================
     // Commit Operations
     // =========================================================================
+
+    /// Return the Git tree ID produced by staging all Git-visible worktree
+    /// content in an isolated temporary index. The real index is never changed.
+    pub async fn working_tree_fingerprint(path: &Path) -> AppResult<String> {
+        let repo_path = validate_absolute_non_root_path(path, "validation fingerprint repository")?;
+        let temporary_index = NamedTempFile::new().map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to create temporary validation index: {error}"
+            ))
+        })?;
+        let index_path = temporary_index.path().to_string_lossy().to_string();
+        temporary_index.close().map_err(|error| {
+            AppError::Infrastructure(format!(
+                "failed to prepare temporary validation index: {error}"
+            ))
+        })?;
+        let environment = [("GIT_INDEX_FILE", index_path.as_str())];
+
+        let read_tree =
+            git_cmd::run_with_env(&["read-tree", "HEAD"], &repo_path, &environment).await?;
+        if !read_tree.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "failed to initialize validation snapshot index: {}",
+                String::from_utf8_lossy(&read_tree.stderr).trim()
+            )));
+        }
+        let add_all =
+            git_cmd::run_with_env(&["add", "-A", "--", "."], &repo_path, &environment).await?;
+        if !add_all.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "failed to stage validation snapshot: {}",
+                String::from_utf8_lossy(&add_all.stderr).trim()
+            )));
+        }
+        let write_tree = git_cmd::run_with_env(&["write-tree"], &repo_path, &environment).await?;
+        if !write_tree.status.success() {
+            return Err(AppError::GitOperation(format!(
+                "failed to write validation snapshot: {}",
+                String::from_utf8_lossy(&write_tree.stderr).trim()
+            )));
+        }
+        let fingerprint = String::from_utf8_lossy(&write_tree.stdout)
+            .trim()
+            .to_string();
+        // The path is produced by NamedTempFile and is never derived from task
+        // or repository input.
+        // codeql[rust/path-injection]
+        let _ = std::fs::remove_file(index_path);
+        Ok(fingerprint)
+    }
 
     /// Stage modified/new files (excluding deletions) and create a commit.
     ///
@@ -234,7 +287,16 @@ impl GitService {
     /// # Arguments
     /// * `path` - Path to the git repository or worktree
     pub async fn has_uncommitted_changes(path: &Path) -> AppResult<bool> {
-        let output = git_cmd::run(&["status", "--porcelain"], path).await?;
+        Ok(!Self::uncommitted_change_summary(path).await?.is_empty())
+    }
+
+    /// Return a short, human-readable summary of staged/unstaged/untracked changes.
+    ///
+    /// Uses `git status --porcelain=v1 -uall`, which respects `.gitignore` and
+    /// includes untracked source files that would otherwise be lost if a task
+    /// worktree were cleaned up before committing.
+    pub async fn uncommitted_change_summary(path: &Path) -> AppResult<Vec<String>> {
+        let output = git_cmd::run(&["status", "--porcelain=v1", "-uall"], path).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -245,7 +307,18 @@ impl GitService {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(!stdout.trim().is_empty())
+        Ok(stdout
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .take(25)
+            .collect())
     }
 
     /// Check if there are staged changes ready to commit

@@ -337,6 +337,75 @@ async fn evaluate_and_prune_task_status_mismatch_prunes() {
 }
 
 #[tokio::test]
+async fn evaluate_and_prune_recent_merge_status_mismatch_waits_for_settlement() {
+    let app_state = AppState::new_test();
+
+    let project = Project::new("P".to_string(), "/test".to_string());
+    app_state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "T".to_string());
+    task.internal_status = InternalStatus::Merged;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let run_id = create_running_agent_run(&app_state).await;
+    let key = RunningAgentKey::new("merge", task.id.as_str());
+    register_stale_entry(&app_state, &key, &run_id, None).await;
+    app_state
+        .running_agent_registry
+        .update_heartbeat(&key, chrono::Utc::now())
+        .await;
+
+    let engine = build_engine(&app_state, None);
+    let entries = app_state.running_agent_registry.list_all().await;
+    let (_, info) = entries.iter().find(|(k, _)| k == &key).unwrap();
+
+    let pruned = engine.evaluate_and_prune(&key, info, true).await;
+    assert!(
+        !pruned,
+        "recent live merge status mismatch should wait for terminal-tool settlement"
+    );
+    assert!(app_state.running_agent_registry.is_running(&key).await);
+}
+
+#[tokio::test]
+async fn evaluate_and_prune_stale_merge_status_mismatch_prunes_after_settlement_grace() {
+    let app_state = AppState::new_test();
+
+    let project = Project::new("P".to_string(), "/test".to_string());
+    app_state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "T".to_string());
+    task.internal_status = InternalStatus::Merged;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    let run_id = create_running_agent_run(&app_state).await;
+    let key = RunningAgentKey::new("merge", task.id.as_str());
+    register_stale_entry(&app_state, &key, &run_id, None).await;
+    let grace_secs = i64::try_from(
+        crate::infrastructure::agents::claude::stream_timeouts().completion_grace_secs,
+    )
+    .unwrap_or(i64::MAX - 1);
+    app_state
+        .running_agent_registry
+        .update_heartbeat(
+            &key,
+            chrono::Utc::now() - chrono::Duration::seconds(grace_secs + 1),
+        )
+        .await;
+
+    let engine = build_engine(&app_state, None);
+    let entries = app_state.running_agent_registry.list_all().await;
+    let (_, info) = entries.iter().find(|(k, _)| k == &key).unwrap();
+
+    let pruned = engine.evaluate_and_prune(&key, info, true).await;
+    assert!(
+        pruned,
+        "stale merge status mismatch should prune after settlement grace"
+    );
+    assert!(!app_state.running_agent_registry.is_running(&key).await);
+}
+
+#[tokio::test]
 async fn evaluate_and_prune_task_missing_prunes() {
     let app_state = AppState::new_test();
 
@@ -407,7 +476,7 @@ async fn slot_counter_corrected_after_prune_via_reconciler() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
 
-    let transition_service = Arc::new(TaskTransitionService::<tauri::Wry>::new(
+    let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -424,7 +493,7 @@ async fn slot_counter_corrected_after_prune_via_reconciler() {
         Arc::clone(&app_state.memory_event_repo),
     ));
 
-    let reconciler: ReconciliationRunner<tauri::Wry> = ReconciliationRunner::new(
+    let reconciler: ReconciliationRunner = ReconciliationRunner::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),

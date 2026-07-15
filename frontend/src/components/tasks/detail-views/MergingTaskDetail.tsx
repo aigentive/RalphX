@@ -55,12 +55,6 @@ import { statusTint, withAlpha } from "@/lib/theme-colors";
 import { useTaskStateHistory } from "@/hooks/useReviews";
 import { useTaskStateTransitions } from "@/hooks/useTaskStateTransitions";
 
-const FRESHNESS_BANNER_COPY: Record<string, string> = {
-  executing: "Stale branches detected when starting execution. Task will resume execution after resolution.",
-  re_executing: "Stale branches detected when re-entering execution. Task will resume execution after resolution.",
-  reviewing: "Stale branches detected when starting review. Task will resume review after resolution.",
-};
-
 interface MergingTaskDetailProps {
   task: Task;
   isHistorical?: boolean;
@@ -465,7 +459,10 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
       const fallback = task.taskBranch ?? "task branch";
       if (parsed?.pr_branch_update_conflict === true) {
         return {
-          type: "pr_branch_update" as const,
+          type:
+            parsed?.pr_branch_publication_conflict === true
+              ? ("pr_branch_publication" as const)
+              : ("pr_branch_update" as const),
           base: String(parsed.base_branch ?? parsed.source_branch ?? "main"),
           target: String(parsed.target_branch ?? fallback),
         };
@@ -490,18 +487,6 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
       return parsed?.revalidating === true;
     } catch {
       return false;
-    }
-  }, [task.metadata]);
-
-  // Parse freshness_origin_state from task metadata — present when task entered Merging due to stale branches
-  const freshnessOriginState = useMemo(() => {
-    if (!task.metadata) return null;
-    try {
-      const parsed = typeof task.metadata === "string" ? JSON.parse(task.metadata) : task.metadata;
-      const origin = parsed?.freshness_origin_state;
-      return typeof origin === "string" ? origin : null;
-    } catch {
-      return null;
     }
   }, [task.metadata]);
 
@@ -541,7 +526,9 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
 
   // PR mode: fetch plan branch for PR status display
   const { data: planBranch } = usePlanBranchForTask(task.id);
-  const isPrBranchUpdateConflict = mergeConflictContext?.type === "pr_branch_update";
+  const isPrBranchUpdateConflict =
+    mergeConflictContext?.type === "pr_branch_update" ||
+    mergeConflictContext?.type === "pr_branch_publication";
   const isPrMode =
     (isWaitingOnPr || (isAgentPhase && !isPrBranchUpdateConflict)) &&
     planBranch?.prEligible === true &&
@@ -622,16 +609,6 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
       description={task.description}
       testId="merging-task-detail"
     >
-      {/* Freshness Context Banner — shown when task entered Merging due to stale branch detection */}
-      {freshnessOriginState !== null && FRESHNESS_BANNER_COPY[freshnessOriginState] !== undefined && (
-        <div className="px-4 py-3 bg-status-info/10 border-b border-status-info/20 flex items-center gap-2">
-          <Info className="w-4 h-4 text-status-info shrink-0" />
-          <span className="text-sm text-status-info">
-            {FRESHNESS_BANNER_COPY[freshnessOriginState]}
-          </span>
-        </div>
-      )}
-
       {/* Status Banner */}
       <StatusBanner
         icon={
@@ -667,6 +644,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               ? "Merge Attempted"
               : isValidationRecovery
               ? "Fixing Validation Errors"
+              : mergeConflictContext?.type === "pr_branch_publication"
+              ? "Publishing PR Branch"
               : mergeConflictContext?.type === "pr_branch_update"
               ? "Updating PR Branch"
               : mergeConflictContext?.type === "plan_update"
@@ -680,6 +659,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
             ? "Waiting on Pull Request"
             : isValidationRecovery
             ? "Fixing Validation Errors..."
+            : mergeConflictContext?.type === "pr_branch_publication"
+            ? "Publishing PR Branch"
             : mergeConflictContext?.type === "pr_branch_update"
             ? "Updating PR Branch"
             : mergeConflictContext?.type === "plan_update"
@@ -698,6 +679,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               ? "Merge attempt captured in history"
               : isValidationRecovery
               ? "Agent was fixing build errors"
+              : mergeConflictContext?.type === "pr_branch_publication"
+              ? "Merger agent was reconciling the remote PR branch before publication"
               : mergeConflictContext?.type === "pr_branch_update"
               ? "Merger agent was updating the PR branch from its base branch"
               : mergeConflictContext?.type === "plan_update"
@@ -713,6 +696,10 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               : "Review and merge the GitHub PR. RalphX will finish this plan after GitHub reports it merged."
             : isValidationRecovery
             ? "AI agent is fixing build errors"
+            : mergeConflictContext?.type === "pr_branch_publication"
+            ? planBranch?.prNumber
+              ? `A merger agent is incorporating remote updates into PR #${planBranch.prNumber} so publication can finish.`
+              : `A merger agent is incorporating remote PR branch updates from ${mergeConflictContext.base} so publication can finish.`
             : mergeConflictContext?.type === "pr_branch_update"
             ? planBranch?.prNumber
               ? `A merger agent is updating PR #${planBranch.prNumber} with the latest changes from ${mergeConflictContext.base} so GitHub review can continue.`
@@ -905,7 +892,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
         <SectionTitle muted>Branch</SectionTitle>
         {isPrWait && planBranch ? (
           <BranchFlow source={planBranch.branchName} target={planBranch.sourceBranch} size="sm" />
-        ) : mergeConflictContext?.type === "pr_branch_update" ? (
+        ) : mergeConflictContext?.type === "pr_branch_update" ||
+          mergeConflictContext?.type === "pr_branch_publication" ? (
           <BranchFlow source={mergeConflictContext.base} target={mergeConflictContext.target} size="sm" />
         ) : mergeConflictContext?.type === "plan_update" ? (
           <BranchFlow source={mergeConflictContext.base} target={mergeConflictContext.target} size="sm" />

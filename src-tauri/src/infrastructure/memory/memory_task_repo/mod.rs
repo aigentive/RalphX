@@ -160,7 +160,7 @@ impl TaskRepository for MemoryTaskRepository {
         from: InternalStatus,
         to: InternalStatus,
         trigger: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<String> {
         // Update task status
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
@@ -171,9 +171,10 @@ impl TaskRepository for MemoryTaskRepository {
 
         // Record history
         let mut history = self.history.write().await;
+        let history_id = uuid::Uuid::new_v4().to_string();
         history.push((id.clone(), StatusTransition::new(from, to, trigger)));
 
-        Ok(())
+        Ok(history_id)
     }
 
     async fn get_status_history(&self, id: &TaskId) -> AppResult<Vec<StatusTransition>> {

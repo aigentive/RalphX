@@ -48,13 +48,17 @@ function makeWrapper(queryClient = makeQueryClient()) {
   };
 }
 
-function makeReview(changes: FileChange[] = []): AgentWorkspaceReview {
+function makeReview(
+  changes: FileChange[] = [],
+  overrides: Partial<AgentWorkspaceReview> = {},
+): AgentWorkspaceReview {
   return {
     changes,
     commits: [],
     baseRef: "origin/main",
     headRef: "HEAD",
     supportsWorktreeModes: true,
+    ...overrides,
   };
 }
 
@@ -216,5 +220,40 @@ describe("useAgentWorkspaceChangeSummary", () => {
 
     await waitFor(() => expect(result.current.effectiveMode).toBe("cumulative"));
     expect(result.current.refKind).toEqual({ kind: "cumulative_head" });
+  });
+
+  it("falls back to cumulative files for non-worktree summaries", async () => {
+    const cumulativeFile: FileChange = {
+      path: "src/plan-branch.ts",
+      status: "modified",
+      additions: 3,
+      deletions: 1,
+      isGenerated: false,
+    };
+    mockGetCumulativeFiles.mockResolvedValue([cumulativeFile]);
+    const liveSummary = makeLiveSummary({
+      supportsWorktreeModes: false,
+      staged: { fileCount: 2, additions: 6, deletions: 2 },
+      unstaged: { fileCount: 1, additions: 3, deletions: 1 },
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentWorkspaceChangeSummary({
+          conversationId: "conversation-1",
+          review: makeReview([], { supportsWorktreeModes: false }),
+          liveSummary,
+          hydrateWorktreeFileLists: true,
+        }),
+      { wrapper: makeWrapper() },
+    );
+
+    expect(result.current.supportsWorktreeModes).toBe(false);
+    expect(result.current.effectiveMode).toBe("cumulative");
+    expect(result.current.refKind).toEqual({ kind: "cumulative_head" });
+    await waitFor(() => expect(mockGetCumulativeFiles).toHaveBeenCalledWith("conversation-1"));
+    await waitFor(() => expect(result.current.currentFiles).toEqual([cumulativeFile]));
+    expect(mockGetStagedFiles).not.toHaveBeenCalled();
+    expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
   });
 });

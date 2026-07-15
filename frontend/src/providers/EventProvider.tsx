@@ -30,9 +30,12 @@ import { useIdeationEvents } from "@/hooks/useIdeationEvents";
 import { usePlanArtifactEvents } from "@/hooks/useEvents.planArtifact";
 import { useVerificationEvents } from "@/hooks/useVerificationEvents";
 import { useVerificationBootstrap } from "@/hooks/useVerificationBootstrap";
+import { useTaskValidationEventInvalidation } from "@/hooks/useTaskValidationEvents";
 import { useFreshnessBlockedNotification } from "@/hooks/useFreshnessBlockedNotification";
 import { useGitAuthStartupNotification } from "@/hooks/useGitAuthStartupNotification";
 import { useGlobalAgentLifecycle } from "@/hooks/useGlobalAgentLifecycle";
+import { useNotificationEvents } from "@/hooks/useNotificationEvents";
+import { useNotificationToasts } from "@/hooks/useNotificationToasts";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
 
 /**
@@ -80,6 +83,8 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useStepEvents(); // Listen to step events for task execution progress
   useSupervisorAlerts();
   useReviewEvents();
+  useNotificationEvents();
+  useNotificationToasts();
   useFileChangeEvents();
   useAgentEvents(); // Listen to agent:message events for Activity view (no active conversation)
   useExecutionErrorEvents(); // Handle agent execution errors and unstick UI
@@ -88,6 +93,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   usePlanArtifactEvents(); // Listen to plan artifact events for real-time updates
   useVerificationEvents(); // Listen to plan verification status changes globally
   useVerificationBootstrap(); // Hydrate pending verification confirmations on startup and project switch
+  useTaskValidationEventInvalidation(); // Refresh task validation summaries on lifecycle events
   useFreshnessBlockedNotification(); // Show toast when task is freshness-blocked
   useGitAuthStartupNotification(); // Warn before Git/GitHub-dependent startup work fails
   useGlobalAgentLifecycle(); // Global agent lifecycle → agentStatus for all sessions

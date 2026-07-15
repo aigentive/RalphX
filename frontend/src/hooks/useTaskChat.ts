@@ -30,7 +30,12 @@ import { useTaskStateTransitions } from "./useTaskStateTransitions";
  * - review: Review process conversation
  * - merge: Merge agent conflict resolution conversation
  */
-export type TaskContextType = "task" | "task_execution" | "review" | "merge";
+export type TaskContextType =
+  | "task"
+  | "task_execution"
+  | "review"
+  | "merge"
+  | "branch_update";
 
 /**
  * Hook for task-specific chat functionality with context-aware messaging

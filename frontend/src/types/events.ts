@@ -401,6 +401,69 @@ export const MergeValidationStepEventSchema = z.object({
 export type MergeValidationStepEvent = z.infer<typeof MergeValidationStepEventSchema>;
 
 // ============================================================================
+// Task Validation Events
+// ============================================================================
+
+export const TaskValidationEventSchema = z.object({
+  type: z.enum([
+    "run_started",
+    "command_started",
+    "command_output",
+    "command_completed",
+    "run_completed",
+  ]),
+  task_id: z.string(),
+  project_id: z.string(),
+  run_id: z.string(),
+  status: z.enum([
+    "running",
+    "passed",
+    "failed",
+    "error",
+    "cancelled",
+    "skipped",
+    "cached",
+  ]),
+  purpose: z.string(),
+  context_type: z.string(),
+  mode: z.string(),
+  policy_enabled: z.boolean(),
+  run_started_at: z.string(),
+  run_completed_at: z.string().optional(),
+  requested_by_agent: z.string().optional(),
+  head_sha: z.string().optional(),
+  head_short_sha: z.string().optional(),
+  base_ref: z.string().optional(),
+  current_for_head: z.boolean().optional(),
+  current_for_execution_episode: z.boolean().optional(),
+  review_evidence_eligible: z.boolean().optional(),
+  ineligible_reason: z.string().nullable().optional(),
+  command_id: z.string().optional(),
+  command_source: z.string().optional(),
+  command_ref: z.string().optional(),
+  command: z.string().optional(),
+  cwd: z.string().optional(),
+  label: z.string().optional(),
+  category: z.string().optional(),
+  reason: z.string().optional(),
+  cache_decision: z.enum(["ran", "cached", "stale", "forced", "skipped"]).optional(),
+  exit_code: z.number().nullable().optional(),
+  duration_ms: z.number().nullable().optional(),
+  stream: z.enum(["stdout", "stderr"]).optional(),
+  stdout_delta: z.string().optional(),
+  stderr_delta: z.string().optional(),
+  stdout_snippet: z.string().optional(),
+  stderr_snippet: z.string().optional(),
+  stdout_log_path: z.string().optional(),
+  stderr_log_path: z.string().optional(),
+  command_started_at: z.string().optional(),
+  command_completed_at: z.string().optional(),
+  emitted_at: z.string(),
+});
+
+export type TaskValidationEvent = z.infer<typeof TaskValidationEventSchema>;
+
+// ============================================================================
 // Merge Progress Events (high-level phases)
 // ============================================================================
 

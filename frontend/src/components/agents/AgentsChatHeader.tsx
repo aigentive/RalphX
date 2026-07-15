@@ -69,12 +69,12 @@ import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
   getAgentWorkspaceEffectiveBaseLabel,
-  hasPublishedWorkspacePr,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 import {
   AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   agentWorkspaceKeys,
+  canInspectAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
 
 const HEADER_IDEATION_ARTIFACT_TABS: Array<{
@@ -86,7 +86,6 @@ const HEADER_IDEATION_ARTIFACT_TABS: Array<{
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
-  { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
 
@@ -718,7 +717,7 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
       }),
     enabled:
       !terminalStatus &&
-      (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),
+      canInspectAgentWorkspaceFreshness(workspace),
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const isBaseBlocked = freshness?.baseStatus === "blocked";

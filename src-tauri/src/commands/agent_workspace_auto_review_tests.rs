@@ -26,7 +26,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project, AutomationRunId,
 };
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::running_agent_registry::RunningAgentKey;
@@ -213,6 +213,10 @@ fn skip_reason_codes_are_stable() {
         (
             AutoReviewSkipReason::ManualOnlyTerminalPr,
             "manual_only_terminal_pr",
+        ),
+        (
+            AutoReviewSkipReason::PlanPhaseAutomationRun,
+            "plan_phase_automation_run",
         ),
         (
             AutoReviewSkipReason::NoReviewableChanges,
@@ -461,6 +465,44 @@ async fn auto_review_start_action_starts_when_existing_review_is_outdated() {
     assert_eq!(action, AutoReviewStartAction::Start);
 }
 
+#[tokio::test]
+async fn auto_review_skips_plan_phase_automation_run_without_spawning_review() {
+    let (_temp, repo, base_sha) = init_repo();
+    add_all_workspace_delta_sources(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let mut workspace = workspace(&project, &repo, Some(base_sha));
+    workspace.mode = AgentConversationWorkspaceMode::Plan;
+    let mut conversation = ChatConversation::new_project(workspace.project_id.clone());
+    conversation.id = workspace.conversation_id.clone();
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Plan);
+    conversation.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("automation conversation should persist");
+
+    let decision = maybe_start_auto_review(&state, &execution_state, &workspace)
+        .await
+        .expect("auto-review should resolve");
+
+    assert_eq!(
+        decision,
+        AutoReviewDecision::Skipped(AutoReviewSkipReason::PlanPhaseAutomationRun)
+    );
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("workspace monitor lookup should succeed");
+    assert!(
+        monitor.is_none(),
+        "plan-phase automation turn completion must not create a review monitor"
+    );
+}
+
 #[test]
 fn base_update_auto_review_trigger_dedupes_when_workspace_is_already_in_flight() {
     let (_temp, repo, base_sha) = init_repo();
@@ -669,14 +711,14 @@ async fn app_handle_auto_review_adapter_reports_missing_state_and_missing_worksp
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build");
     let missing_state =
-        maybe_start_auto_review_from_app_handle(&no_state_app.handle(), ChatConversationId::new())
+        maybe_start_auto_review_from_app_handle(no_state_app.handle(), ChatConversationId::new())
             .await
             .expect_err("missing AppState should error");
     assert_eq!(missing_state, "AppState is not available");
 
     let no_execution_app = test_app(AppState::new_test());
     let missing_execution = maybe_start_auto_review_from_app_handle(
-        &no_execution_app.handle(),
+        no_execution_app.handle(),
         ChatConversationId::new(),
     )
     .await
@@ -685,7 +727,7 @@ async fn app_handle_auto_review_adapter_reports_missing_state_and_missing_worksp
 
     let app = test_app_with_execution_state(AppState::new_test());
     let missing_workspace =
-        maybe_start_auto_review_from_app_handle(&app.handle(), ChatConversationId::new())
+        maybe_start_auto_review_from_app_handle(app.handle(), ChatConversationId::new())
             .await
             .expect("missing workspace should be a skip decision");
     assert_eq!(
@@ -948,7 +990,7 @@ async fn resolve_review_event_workspace_returns_direct_workspace_conversation() 
     let app = test_app(state);
 
     let resolved = resolve_workspace_conversation_id_for_review_event(
-        &app.handle(),
+        app.handle(),
         &workspace.conversation_id,
     )
     .await
@@ -971,7 +1013,7 @@ async fn resolve_review_event_workspace_maps_child_conversation_to_parent_worksp
     let child_id = seed_child_conversation(&state, &workspace).await;
     let app = test_app(state);
 
-    let resolved = resolve_workspace_conversation_id_for_review_event(&app.handle(), &child_id)
+    let resolved = resolve_workspace_conversation_id_for_review_event(app.handle(), &child_id)
         .await
         .expect("child resolution should succeed");
 
@@ -993,11 +1035,11 @@ async fn resolve_review_event_workspace_ignores_unrelated_and_missing_conversati
     let app = test_app(state);
 
     let unresolved =
-        resolve_workspace_conversation_id_for_review_event(&app.handle(), &unrelated_id)
+        resolve_workspace_conversation_id_for_review_event(app.handle(), &unrelated_id)
             .await
             .expect("unrelated resolution should succeed");
     let missing = resolve_workspace_conversation_id_for_review_event(
-        &app.handle(),
+        app.handle(),
         &ChatConversationId::new(),
     )
     .await
@@ -1014,7 +1056,7 @@ async fn resolve_review_event_workspace_reports_missing_app_state() {
         .expect("mock app should build");
 
     let error = resolve_workspace_conversation_id_for_review_event(
-        &app.handle(),
+        app.handle(),
         &ChatConversationId::new(),
     )
     .await

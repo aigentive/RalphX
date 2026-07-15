@@ -63,6 +63,10 @@ export default defineConfig(async ({ mode }) => {
           __dirname,
           "./src/mocks/tauri-plugin-global-shortcut.ts"
         ),
+        "@tauri-apps/plugin-notification": path.resolve(
+          __dirname,
+          "./src/mocks/tauri-plugin-notification.ts"
+        ),
       }
     : {};
 

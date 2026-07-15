@@ -17,9 +17,10 @@ use super::chat_service_types::{
 };
 use super::{event_context, has_meaningful_output, EventContextPayload, StreamingStateCache};
 use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
+    InteractiveProcessKey, InteractiveProcessRegistry, InteractiveProcessToken,
 };
 use crate::application::memory_orchestration::trigger_memory_pipelines;
+use crate::application::notification_service::NotificationService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
@@ -34,13 +35,14 @@ use crate::domain::entities::{ChatConversation, ChatTimelineItem};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
-    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository,
-    ProjectMemorySettingsRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectMemorySettingsRepository,
+    ProjectRepository, QueuedMessageRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -63,6 +65,7 @@ pub(super) struct BackgroundRunRepos {
     pub delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     pub ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     pub ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
@@ -75,6 +78,7 @@ pub(super) struct BackgroundRunRepos {
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
     pub project_memory_settings_repo: Arc<dyn ProjectMemorySettingsRepository>,
+    pub notification_service: Option<Arc<NotificationService>>,
     pub message_queue: Arc<MessageQueue>,
     pub running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -109,6 +113,8 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub run_chain_id: Option<String>,
     // Run metadata
     pub is_retry_attempt: bool,
+    pub persona_feature_enabled: bool,
+    pub agent_name_override_set: bool,
     pub user_message_content: Option<String>,
     pub turn_metadata: Option<String>,
     pub conversation: Option<ChatConversation>,
@@ -124,6 +130,9 @@ pub(super) struct BackgroundRunContext<R: Runtime> {
     pub streaming_state_cache: StreamingStateCache,
     // Interactive process registry for stdin cleanup on process exit
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    // Entry identity captured at registration; prevents an old stream exit from
+    // deleting a newer process that replaced the same context key.
+    pub interactive_process_token: Option<InteractiveProcessToken>,
     // Verification child process registry for PID-based cleanup after reconciliation
     pub verification_child_registry:
         Option<Arc<super::verification_child_process_registry::VerificationChildProcessRegistry>>,
@@ -352,8 +361,10 @@ pub(crate) fn should_recover_silent_completion(
     cancellation_requested: bool,
     has_session_for_queue: bool,
 ) -> bool {
-    context_type == ChatContextType::Project
-        && has_session_for_queue
+    matches!(
+        context_type,
+        ChatContextType::Project | ChatContextType::Ideation
+    ) && has_session_for_queue
         && turns_finalized == 0
         && !silent_interactive_exit
         && !cancellation_requested
@@ -955,6 +966,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             app_handle,
             run_chain_id,
             is_retry_attempt,
+            persona_feature_enabled,
+            agent_name_override_set,
             user_message_content,
             turn_metadata,
             conversation,
@@ -966,6 +979,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             team_service,
             streaming_state_cache,
             interactive_process_registry,
+            interactive_process_token,
             verification_child_registry,
         } = ctx;
         let BackgroundRunRepos {
@@ -982,6 +996,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             delegated_session_repo,
             execution_settings_repo,
             agent_lane_settings_repo,
+            agent_provider_settings_repo,
             ideation_effort_settings_repo,
             ideation_model_settings_repo,
             agent_conversation_workspace_repo,
@@ -992,6 +1007,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             activity_event_repo,
             memory_event_repo,
             project_memory_settings_repo,
+            notification_service,
             message_queue,
             running_agent_registry,
             task_step_repo,
@@ -999,6 +1015,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         } = repos;
 
         tracing::debug!("send_background start");
+        let conversation_coordination_mode =
+            conversation.as_ref().map(|conversation| conversation.coordination_mode);
         let event_ctx = event_context(&conversation_id, &context_type, &context_id);
         let split_verification_transcript = should_split_verification_transcript(
             context_type,
@@ -1131,7 +1149,18 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 &runtime_context_id,
             );
 
-            ipr.remove(&ipr_key).await;
+            let removed = match interactive_process_token {
+                Some(token) => ipr.remove_if_token(&ipr_key, token).await,
+                None => ipr.remove(&ipr_key).await,
+            };
+            if removed.is_none() {
+                tracing::debug!(
+                    %context_type,
+                    context_id = %context_id,
+                    runtime_context_id = %runtime_context_id,
+                    "[IPR_REMOVE] Stream exit preserved newer interactive process"
+                );
+            }
             if team_still_active {
                 tracing::info!(
                     %context_type,
@@ -1455,6 +1484,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &plan_branch_repo,
                     &task_step_repo,
                     &execution_settings_repo,
+                    &agent_lane_settings_repo,
+                    &agent_provider_settings_repo,
                     &app_handle,
                     &interactive_process_registry,
                     &review_repo,
@@ -1502,6 +1533,17 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                             Arc::clone(&artifact_repo),
                             Arc::clone(&conversation_repo),
                             Arc::clone(&agent_run_repo),
+                            app_handle
+                                .as_ref()
+                                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                                .map(|app_state| Arc::clone(&app_state.automation_run_repo))
+                                .unwrap_or_else(|| {
+                                    Arc::new(
+                                        crate::infrastructure::memory::MemoryAutomationRunRepository::new(
+                                            crate::infrastructure::memory::MemoryAutomationRepository::new_shared_state(),
+                                        ),
+                                    )
+                                }),
                             Arc::clone(&project_repo),
                             Arc::clone(&task_repo),
                             Arc::clone(&task_dependency_repo),
@@ -1515,12 +1557,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         .with_runtime_support(
                             Some(exec_settings.clone()),
                             agent_lane_settings_repo.as_ref().map(Arc::clone),
-                            app_handle
-                                .as_ref()
-                                .and_then(|handle| handle.try_state::<crate::application::AppState>())
-                                .map(|app_state| {
-                                    Arc::clone(&app_state.agent_provider_settings_repo)
-                                }),
+                            agent_provider_settings_repo.as_ref().map(Arc::clone),
                             None,
                             None,
                         )
@@ -1853,8 +1890,10 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         &runtime_context_id,
                         conversation_id,
                         sess_id,
+                        persona_feature_enabled,
                         &message_queue,
                         queued_message_repo,
+                        agent_provider_settings_repo.as_ref().map(Arc::clone),
                         &running_agent_registry,
                         &agent_run_repo,
                         &chat_message_repo,
@@ -1871,6 +1910,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         execution_state.clone(),
                         app_handle.clone(),
                         resolved_project_id.as_deref(),
+                        conversation_coordination_mode,
                         team_mode,
                         cancellation_token.clone(),
                         run_chain_id.as_deref(),
@@ -1991,6 +2031,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     stored_session_id.as_deref(),
                     harness,
                     is_retry_attempt,
+                    persona_feature_enabled,
+                    agent_name_override_set,
                     user_message_content.as_deref(),
                     conversation.as_ref(),
                     resolved_project_id.clone(),
@@ -1998,6 +2040,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &plugin_dir,
                     &working_directory,
                     &chat_message_repo,
+                    &chat_timeline_repo,
                     &chat_attachment_repo,
                     &artifact_repo,
                     &conversation_repo,
@@ -2015,6 +2058,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &question_state,
                     &plan_branch_repo,
                     &execution_settings_repo,
+                    &agent_lane_settings_repo,
+                    &agent_provider_settings_repo,
                     &app_handle,
                     agent_name.as_deref(),
                     team_mode,
@@ -2023,6 +2068,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &review_repo,
                     &task_step_repo,
                     &verification_child_registry,
+                    &notification_service,
                 )
                 .await;
 
@@ -2063,8 +2109,10 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 &runtime_context_id,
                                 conversation_id,
                                 session_id,
+                                persona_feature_enabled,
                                 &message_queue,
                                 queued_message_repo,
+                                agent_provider_settings_repo.as_ref().map(Arc::clone),
                                 &running_agent_registry,
                                 &agent_run_repo,
                                 &chat_message_repo,
@@ -2081,6 +2129,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 execution_state.clone(),
                                 app_handle.clone(),
                                 resolved_project_id.as_deref(),
+                                conversation_coordination_mode,
                                 team_mode,
                                 cancellation_token.clone(),
                                 run_chain_id.as_deref(),

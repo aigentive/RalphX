@@ -251,12 +251,12 @@ html[data-theme="high-contrast"] main {
   border-right-color: #555555 !important;
 }
 
-[data-theme="high-contrast"] [data-testid="reviews-panel-shell"] {
+[data-theme="high-contrast"] [data-testid="notifications-panel-shell"] {
   background-color: #0A0A0A !important;
   border-left-color: #555555 !important;
 }
 
-[data-theme="high-contrast"] [data-testid="reviews-panel-frame"] {
+[data-theme="high-contrast"] [data-testid="notifications-panel-frame"] {
   background-color: #0A0A0A !important;
 }
 
@@ -488,17 +488,6 @@ html[data-theme="high-contrast"] main {
 }
 [data-theme="high-contrast"] [data-testid="modal-overlay"] {
   background-color: rgba(0,0,0,.60) !important;
-}
-
-/* HC sidebar / list-row separation — on pure-black rails the default hover
-   tint (15% white) is subtle. Add a bottom divider between adjacent rows so
-   the list reads as discrete items even at rest. PlanItem tags itself with
-   `data-testid="plan-item-<id>"`. */
-[data-theme="high-contrast"] [data-testid="plan-browser"] [data-testid^="plan-item-"] {
-  border-bottom: 1px solid var(--border-subtle);
-}
-[data-theme="high-contrast"] [data-testid="plan-browser"] [data-testid^="plan-item-"]:last-child {
-  border-bottom: none;
 }
 
 /* Inside the light-scoped settings modal, the consolidated button-border

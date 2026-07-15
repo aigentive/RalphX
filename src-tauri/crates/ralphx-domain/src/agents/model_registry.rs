@@ -158,7 +158,9 @@ impl AgentModelRegistrySnapshot {
         &self,
         provider: AgentHarnessKind,
     ) -> Option<&AgentModelDefinition> {
-        self.enabled_for_provider(provider).next()
+        let default_model_id = default_model_for_provider(provider);
+        self.find_enabled(provider, default_model_id)
+            .or_else(|| self.enabled_for_provider(provider).next())
     }
 }
 
@@ -252,6 +254,53 @@ pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
         ),
         AgentModelDefinition::built_in(
             AgentHarnessKind::Codex,
+            "gpt-5.6-sol",
+            "gpt-5.6-sol - Flagship GPT-5.6 model for complex coding, research, and agentic work.",
+            "gpt-5.6-sol",
+            Some("Flagship GPT-5.6 model for complex coding, research, and agentic work."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+                LogicalEffort::Ultra,
+            ],
+            LogicalEffort::Medium,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Codex,
+            "gpt-5.6-terra",
+            "gpt-5.6-terra - High-intelligence GPT-5.6 model for substantial coding and research tasks.",
+            "gpt-5.6-terra",
+            Some("High-intelligence GPT-5.6 model for substantial coding and research tasks."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+                LogicalEffort::Ultra,
+            ],
+            LogicalEffort::Medium,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Codex,
+            "gpt-5.6-luna",
+            "gpt-5.6-luna - Efficient GPT-5.6 model for capable everyday coding work.",
+            "gpt-5.6-luna",
+            Some("Efficient GPT-5.6 model for capable everyday coding work."),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ],
+            LogicalEffort::Medium,
+        ),
+        AgentModelDefinition::built_in(
+            AgentHarnessKind::Codex,
             "gpt-5.5",
             "gpt-5.5 - Frontier model for complex coding, research, and real-world work.",
             "gpt-5.5",
@@ -330,6 +379,13 @@ pub fn lightweight_model_for_provider(provider: AgentHarnessKind) -> &'static st
     }
 }
 
+pub fn plan_judge_model_for_provider(provider: AgentHarnessKind) -> &'static str {
+    match provider {
+        AgentHarnessKind::Claude => "sonnet",
+        AgentHarnessKind::Codex => "gpt-5.4",
+    }
+}
+
 pub fn default_effort_for_provider(provider: AgentHarnessKind) -> LogicalEffort {
     match provider {
         AgentHarnessKind::Claude => LogicalEffort::Medium,
@@ -349,6 +405,8 @@ pub fn default_efforts_for_provider(provider: AgentHarnessKind) -> &'static [Log
             LogicalEffort::Medium,
             LogicalEffort::High,
             LogicalEffort::XHigh,
+            LogicalEffort::Max,
+            LogicalEffort::Ultra,
         ],
     }
 }
@@ -360,6 +418,7 @@ fn effort_order(effort: LogicalEffort) -> u8 {
         LogicalEffort::High => 2,
         LogicalEffort::XHigh => 3,
         LogicalEffort::Max => 4,
+        LogicalEffort::Ultra => 5,
     }
 }
 

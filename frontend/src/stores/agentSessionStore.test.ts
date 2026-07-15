@@ -111,9 +111,83 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("preserves remembered GPT-5.6 runtimes during migration", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          runtimeByConversationId: {
+            "conversation-1": {
+              provider: "codex",
+              modelId: "gpt-5.6-terra",
+              effort: "ultra",
+            },
+          },
+          lastRuntimeByProjectId: {
+            "project-1": {
+              provider: "codex",
+              modelId: "gpt-5.6-luna",
+              effort: "ultra",
+            },
+          },
+        },
+        1,
+      ),
+    ).toMatchObject({
+      runtimeByConversationId: {
+        "conversation-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-terra",
+          effort: "ultra",
+        },
+      },
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "codex",
+          modelId: "gpt-5.6-luna",
+          effort: "max",
+        },
+      },
+    });
+  });
+
   it("returns persistedState unchanged when version is at-or-above current", () => {
     expect(migrateAgentSessionStore({ showAllProjects: false }, 99)).toEqual({
       showAllProjects: false,
+    });
+  });
+
+  it("migrates legacy standalone proposal artifact tabs to Plan", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          artifactByConversationId: {
+            "conversation-1": {
+              isOpen: true,
+              activeTab: "proposal",
+              taskMode: "kanban",
+            },
+            "conversation-2": {
+              isOpen: false,
+              activeTab: "tasks",
+              taskMode: "graph",
+            },
+          },
+        },
+        6,
+      ),
+    ).toMatchObject({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "kanban",
+        },
+        "conversation-2": {
+          isOpen: false,
+          activeTab: "tasks",
+          taskMode: "graph",
+        },
+      },
     });
   });
 
@@ -138,6 +212,41 @@ describe("agentSessionStore", () => {
         "unpushed",
       ],
       pinnedConversationIds: {},
+    });
+  });
+
+  it("migrates stale persisted Proposals artifact tabs to Plan", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          artifactByConversationId: {
+            "conversation-1": {
+              isOpen: true,
+              activeTab: "proposal",
+              taskMode: "graph",
+            },
+            "conversation-2": {
+              isOpen: true,
+              activeTab: "verification",
+              taskMode: "kanban",
+            },
+          },
+        },
+        6,
+      ),
+    ).toMatchObject({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+        "conversation-2": {
+          isOpen: true,
+          activeTab: "verification",
+          taskMode: "kanban",
+        },
+      },
     });
   });
 
@@ -196,8 +305,10 @@ describe("agentSessionStore", () => {
         {
           kind: "plan" as const,
           artifactId: "plan-1",
-          label: "Plan",
           title: "Fix flow",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
         },
       ];
       const composerIntegrationReferences = [
@@ -296,13 +407,13 @@ describe("agentSessionStore", () => {
         togglePinnedConversation,
       } = useAgentSessionStore.getState();
 
-      setSidebarGroupBy("publication");
+      setSidebarGroupBy("automation");
       setSidebarProjectFilterIds(["project-2"]);
       setSidebarPublicationStateFilters(["merged", "closed"]);
       togglePinnedConversation("conversation-1");
 
       let s = useAgentSessionStore.getState();
-      expect(s.sidebarGroupBy).toBe("publication");
+      expect(s.sidebarGroupBy).toBe("automation");
       expect(s.sidebarProjectFilterIds).toEqual(["project-2"]);
       expect(s.sidebarPublicationStateFilters).toEqual(["merged", "closed"]);
       expect(s.pinnedConversationIds["conversation-1"]).toBe(true);
@@ -373,6 +484,95 @@ describe("agentSessionStore", () => {
       expect(selectHasStoredArtifactState(null)(useAgentSessionStore.getState())).toBe(false);
     });
 
+    it("focusTaskArtifact opens the Tasks tab and increments focus requests", () => {
+      const { focusTaskArtifact } = useAgentSessionStore.getState();
+
+      focusTaskArtifact("c1", "task-1");
+      let state = useAgentSessionStore.getState();
+      expect(selectArtifactState("c1")(state)).toMatchObject({
+        isOpen: true,
+        activeTab: "tasks",
+      });
+      expect(state.taskArtifactFocusRequestByConversationId.c1).toEqual({
+        taskId: "task-1",
+        requestId: 1,
+      });
+
+      focusTaskArtifact("c1", "task-2");
+      state = useAgentSessionStore.getState();
+      expect(state.taskArtifactFocusRequestByConversationId.c1).toEqual({
+        taskId: "task-2",
+        requestId: 2,
+      });
+    });
+
+    it("stores and clears automation run focus requests without persisting them", () => {
+      const {
+        clearAutomationRunFocusRequest,
+        requestAutomationRunFocus,
+      } = useAgentSessionStore.getState();
+
+      requestAutomationRunFocus("setup-conversation-1", {
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-1",
+        conversationId: "run-conversation-1",
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+        seededTab: "plan",
+      });
+      let state = useAgentSessionStore.getState();
+      expect(state.automationRunFocusRequestByConversationId["setup-conversation-1"]).toEqual({
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-1",
+        conversationId: "run-conversation-1",
+        runStatus: "awaiting_plan_approval",
+        judgeState: "none",
+        workspaceMode: "plan",
+        hasPlanArtifact: true,
+        hasPullRequest: false,
+        seededTab: "plan",
+        requestId: 1,
+      });
+
+      requestAutomationRunFocus("setup-conversation-1", {
+        projectId: "project-1",
+        automationId: "automation-1",
+        runId: "run-2",
+        conversationId: "run-conversation-2",
+        runStatus: "published",
+        judgeState: "none",
+        workspaceMode: null,
+        hasPlanArtifact: false,
+        hasPullRequest: true,
+        seededTab: "pr",
+      });
+      state = useAgentSessionStore.getState();
+      expect(state.automationRunFocusRequestByConversationId["setup-conversation-1"]).toMatchObject({
+        runId: "run-2",
+        conversationId: "run-conversation-2",
+        requestId: 2,
+      });
+
+      clearAutomationRunFocusRequest("setup-conversation-1", 1);
+      expect(
+        useAgentSessionStore.getState().automationRunFocusRequestByConversationId[
+          "setup-conversation-1"
+        ],
+      ).toMatchObject({ runId: "run-2", requestId: 2 });
+
+      clearAutomationRunFocusRequest("setup-conversation-1", 2);
+      expect(
+        useAgentSessionStore.getState().automationRunFocusRequestByConversationId[
+          "setup-conversation-1"
+        ],
+      ).toBeUndefined();
+    });
+
     it("setRuntimeForConversation + setLastRuntimeForProject normalize via lib/agent-models", () => {
       const { setRuntimeForConversation, setLastRuntimeForProject } =
         useAgentSessionStore.getState();
@@ -396,6 +596,26 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
         modelId: "gpt-5.4-mini",
         effort: "medium",
+      });
+
+      setRuntimeForConversation("c2", "p3", {
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      });
+      expect(useAgentSessionStore.getState().runtimeByConversationId.c2).toEqual({
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      });
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectId.p3).toEqual({
+        provider: "codex",
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
+      });
+      expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
+        modelId: "gpt-5.6-terra",
+        effort: "ultra",
       });
     });
 

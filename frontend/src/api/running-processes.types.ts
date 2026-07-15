@@ -1,6 +1,7 @@
 // Frontend types for running processes API (camelCase)
 
 import type { TaskStep } from "@/types/task-step";
+import type { ExecutionTaskAgentWorkspace } from "./execution-task-agent-workspace";
 
 /**
  * Step progress summary - frontend representation (camelCase)
@@ -43,6 +44,7 @@ export interface RunningProcess {
   elapsedSeconds: number | null;
   triggerOrigin: string | null;
   taskBranch: string | null;
+  agentWorkspace?: ExecutionTaskAgentWorkspace | null;
   teamName?: string;
   teammates?: TeammateSummary[];
   currentWave?: number;
@@ -66,6 +68,8 @@ export interface RunningIdeationSession {
 export interface RunningWorkspaceSession {
   conversationId: string;
   projectId: string;
+  automationId: string | null;
+  automationRunId: string | null;
   title: string;
   elapsedSeconds: number | null;
   model: string | null;

@@ -1,7 +1,7 @@
-// RC#6: Plan update conflict worktree creation tests.
+// Dedicated plan-update conflict worktree creation tests (originally RC#6).
 //
 // Verifies that when plan branch update from main produces conflicts during
-// on_enter(PendingMerge), a merge-* worktree is created and the merger agent
+// on_enter(PendingMerge), a plan-update-* worktree is retained and the branch updater
 // is spawned. Previously, the code set worktree_path to a merge-* path without
 // creating the directory, causing "no valid merge worktree" spawn failures.
 //
@@ -12,7 +12,7 @@ use crate::domain::entities::{
     GitMode, IdeationSessionId, InternalStatus, MergeStrategy, PlanBranchStatus, Project,
     ProjectId, Task,
 };
-use crate::domain::repositories::PlanBranchRepository;
+use crate::domain::repositories::{BranchUpdateRepository, PlanBranchRepository};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::{State, TransitionHandler};
 use crate::infrastructure::memory::MemoryPlanBranchRepository;
@@ -26,8 +26,15 @@ fn make_services_with_chat_and_plan_repo(
     task_repo: Arc<MemoryTaskRepository>,
     project_repo: Arc<MemoryProjectRepository>,
     plan_branch_repo: Arc<MemoryPlanBranchRepository>,
-) -> (Arc<MockChatService>, TaskServices) {
+) -> (
+    Arc<MockChatService>,
+    Arc<dyn BranchUpdateRepository>,
+    TaskServices,
+) {
     let chat_service = Arc::new(MockChatService::new());
+    let branch_update_repo = crate::testing::memory_branch_update_repository_with_task_repository(
+        Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+    );
     let services = TaskServices::new(
         Arc::new(MockAgentSpawner::new()) as Arc<dyn AgentSpawner>,
         Arc::new(MockEventEmitter::new()) as Arc<dyn EventEmitter>,
@@ -36,11 +43,15 @@ fn make_services_with_chat_and_plan_repo(
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
     )
+    .with_branch_update_repo(Arc::clone(&branch_update_repo))
+    .with_branch_update_workflow(crate::testing::branch_update_workflow(
+        Arc::clone(&chat_service) as Arc<dyn ChatService>,
+    ))
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
     .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>);
-    (chat_service, services)
+    (chat_service, branch_update_repo, services)
 }
 
 /// Create a real git repo where a plan branch conflicts with main.
@@ -78,7 +89,11 @@ fn setup_plan_conflict_repo() -> (RealGitRepo, String, tempfile::TempDir) {
         .args(["checkout", "plan/feature-1"])
         .current_dir(path)
         .output();
-    std::fs::write(path.join("shared.rs"), "// plan version\nfn shared() { todo!() }").unwrap();
+    std::fs::write(
+        path.join("shared.rs"),
+        "// plan version\nfn shared() { todo!() }",
+    )
+    .unwrap();
     let _ = std::process::Command::new("git")
         .args(["add", "shared.rs"])
         .current_dir(path)
@@ -101,24 +116,21 @@ fn setup_plan_conflict_repo() -> (RealGitRepo, String, tempfile::TempDir) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// RC#6: Plan update conflict creates merge worktree and spawns merger agent
+// Plan update conflict creates an operation worktree and spawns the branch updater
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// RC#6: Plan branch update conflict → merge-* worktree created → merger agent spawned.
+/// Plan branch update conflict → plan-update-* worktree retained → branch updater spawned.
 ///
 /// Orchestration chain:
 ///   on_enter(PendingMerge)
 ///   → attempt_programmatic_merge
 ///   → resolve_merge_branches → target = plan/feature-1 (not main)
-///   → update_plan_from_main(plan/feature-1, main) → PlanUpdateResult::Conflicts
-///   → side_effects: create merge-{task_id} worktree with plan branch checked out
-///   → task.worktree_path = merge-{task_id}, task.status = Merging
-///   → on_enter_dispatch(Merging) → chat_service.send_message(Merge, ...) ← verified
-///
-/// Before RC#6 fix, the code set worktree_path to merge-{task_id} but never created
-/// the directory, causing "no valid merge worktree" errors on agent spawn.
+///   → dedicated update authority creates plan-update-{task_id}
+///   → programmatic update reports conflicts and retains that worktree
+///   → task.status = UpdatingPlanBranch
+///   → branch updater receives the exact operation workspace
 #[tokio::test]
-async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
+async fn plan_update_conflict_retains_operation_worktree_and_spawns_branch_updater() {
     let (git_repo, plan_branch, worktree_parent) = setup_plan_conflict_repo();
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
@@ -126,7 +138,10 @@ async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
     let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
 
     let project_id = ProjectId::from_string("proj-1".to_string());
-    let mut task = Task::new(project_id.clone(), "RC#6 plan update conflict test".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "RC#6 plan update conflict test".to_string(),
+    );
     task.internal_status = InternalStatus::PendingMerge;
     task.task_branch = Some(git_repo.task_branch.clone());
     task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
@@ -145,7 +160,7 @@ async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
     let pb = make_plan_branch("artifact-1", &plan_branch, PlanBranchStatus::Active, None);
     plan_branch_repo.create(pb).await.unwrap();
 
-    let (chat_service, services) = make_services_with_chat_and_plan_repo(
+    let (chat_service, branch_update_repo, services) = make_services_with_chat_and_plan_repo(
         Arc::clone(&task_repo),
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
@@ -158,11 +173,11 @@ async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
 
-    // Verify: task transitioned to Merging (not MergeIncomplete)
+    // Verify: the conflict remains in the truthful dedicated update state.
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merging,
-        "Plan update conflict must transition to Merging (not MergeIncomplete). Got {:?}. Metadata: {:?}",
+        InternalStatus::UpdatingPlanBranch,
+        "Plan update conflict must transition to UpdatingPlanBranch. Got {:?}. Metadata: {:?}",
         updated.internal_status,
         updated.metadata,
     );
@@ -177,42 +192,49 @@ async fn rc6_plan_update_conflict_creates_merge_worktree_and_spawns_agent() {
         updated.metadata,
     );
 
-    // Verify: worktree_path is set and points to a merge-* directory
-    let wt_path = updated.worktree_path.as_ref().expect(
-        "worktree_path must be set after plan_update_conflict routing"
-    );
+    // The operation, not the task's normal execution workspace, owns the conflict worktree.
+    assert!(updated.worktree_path.is_none());
+    let operation = branch_update_repo
+        .get_active_operation(&task_id)
+        .await
+        .unwrap()
+        .expect("dedicated update state must have an active operation");
+    let wt_path = operation
+        .workspace_path
+        .as_ref()
+        .expect("branch update operation must own its worktree")
+        .to_string_lossy();
     assert!(
-        wt_path.contains("merge-"),
-        "worktree_path must contain 'merge-' prefix. Got: {}",
+        wt_path.contains("plan-update-"),
+        "worktree_path must contain 'plan-update-' prefix. Got: {}",
         wt_path,
     );
 
-    // Verify: the merge-* worktree directory actually exists on disk
-    let wt_dir = std::path::PathBuf::from(wt_path);
+    // Verify: the operation worktree directory actually exists on disk.
+    let wt_dir = std::path::PathBuf::from(wt_path.as_ref());
     assert!(
         wt_dir.exists(),
-        "RC#6 fix: merge worktree directory must exist on disk. Path: {}",
+        "Plan-update worktree directory must exist on disk. Path: {}",
         wt_path,
     );
 
-    // Verify: merger agent was spawned (chat_service was called)
+    // Verify: branch updater was spawned (chat_service was called).
     assert!(
         chat_service.call_count() >= 1,
-        "Plan update conflict must spawn a merger agent (call_count={}). \
-         on_enter_dispatch(Merging) must call chat_service.send_message(Merge, ...).",
+        "Plan update conflict must spawn a branch updater (call_count={}).",
         chat_service.call_count(),
     );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// RC#6: Stale plan-update worktree is cleaned up before merge worktree creation
+// Stale plan-update worktree is cleaned before the operation workspace is recreated
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Verify that a stale plan-update-* worktree from a prior attempt is cleaned up
-/// before creating the merge-* worktree. Without cleanup, git would refuse to
+/// before recreating the operation worktree. Without cleanup, git would refuse to
 /// create a second worktree for the same branch.
 #[tokio::test]
-async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
+async fn stale_plan_update_worktree_is_cleaned_before_operation_retry() {
     let (git_repo, plan_branch, worktree_parent) = setup_plan_conflict_repo();
 
     // Pre-create a stale plan-update worktree (simulates a prior failed attempt)
@@ -231,11 +253,15 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
     task_repo.create(task).await.unwrap();
 
     // Create stale plan-update worktree with plan branch checked out
-    let stale_wt_path = worktree_parent.path().join(slug).join(format!("plan-update-{}", task_id_str));
+    let stale_wt_path = worktree_parent
+        .path()
+        .join(slug)
+        .join(format!("plan-update-{}", task_id_str));
     std::fs::create_dir_all(stale_wt_path.parent().unwrap()).unwrap();
     let stale_output = std::process::Command::new("git")
         .args([
-            "worktree", "add",
+            "worktree",
+            "add",
             stale_wt_path.to_str().unwrap(),
             &plan_branch,
         ])
@@ -247,7 +273,10 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
         "Stale plan-update worktree creation must succeed: {}",
         String::from_utf8_lossy(&stale_output.stderr),
     );
-    assert!(stale_wt_path.exists(), "Stale plan-update worktree must exist");
+    assert!(
+        stale_wt_path.exists(),
+        "Stale plan-update worktree must exist"
+    );
 
     let mut project = Project::new("test-project".to_string(), git_repo.path_string());
     project.id = project_id;
@@ -260,7 +289,7 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
     let pb = make_plan_branch("artifact-1", &plan_branch, PlanBranchStatus::Active, None);
     plan_branch_repo.create(pb).await.unwrap();
 
-    let (chat_service, services) = make_services_with_chat_and_plan_repo(
+    let (chat_service, branch_update_repo, services) = make_services_with_chat_and_plan_repo(
         Arc::clone(&task_repo),
         Arc::clone(&project_repo),
         Arc::clone(&plan_branch_repo),
@@ -273,28 +302,37 @@ async fn rc6_stale_plan_update_worktree_cleaned_up_before_merge_creation() {
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
 
-    // Verify: task transitioned to Merging despite the stale worktree
+    // Verify: task reaches the dedicated update state despite the stale worktree.
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merging,
-        "Must transition to Merging even with stale plan-update worktree. Got {:?}. Metadata: {:?}",
+        InternalStatus::UpdatingPlanBranch,
+        "Must transition to UpdatingPlanBranch even with a stale plan-update worktree. Got {:?}. Metadata: {:?}",
         updated.internal_status,
         updated.metadata,
     );
 
-    // Verify: merge-* worktree exists
-    let wt_path = updated.worktree_path.as_ref().expect("worktree_path must be set");
+    // Verify: the recreated operation-owned plan-update-* worktree exists.
+    assert!(updated.worktree_path.is_none());
+    let operation = branch_update_repo
+        .get_active_operation(&task_id)
+        .await
+        .unwrap()
+        .expect("dedicated update state must have an active operation");
+    let wt_path = operation
+        .workspace_path
+        .as_ref()
+        .expect("branch update operation must own its worktree");
     let wt_dir = std::path::PathBuf::from(wt_path);
     assert!(
         wt_dir.exists(),
-        "merge-* worktree must exist after stale cleanup. Path: {}",
-        wt_path,
+        "plan-update-* worktree must exist after stale cleanup. Path: {}",
+        wt_path.display(),
     );
 
-    // Verify: merger agent was spawned
+    // Verify: branch updater was spawned.
     assert!(
         chat_service.call_count() >= 1,
-        "Merger agent must be spawned after stale worktree cleanup (call_count={})",
+        "Branch updater must be spawned after stale worktree cleanup (call_count={})",
         chat_service.call_count(),
     );
 }

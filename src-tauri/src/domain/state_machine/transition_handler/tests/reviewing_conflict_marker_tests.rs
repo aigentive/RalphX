@@ -2,8 +2,8 @@
 // and BranchFreshnessConflict routing during auto-transition (Fix 1 coverage).
 //
 // Fix 2: on_enter(Reviewing) scans task worktree for conflict markers via
-//   GitService::has_conflict_markers(). If found, returns Err(BranchFreshnessConflict)
-//   and persists conflict_markers_detected + branch_freshness_conflict in metadata.
+//   GitService::has_conflict_markers(). Marker-only evidence is not directional,
+//   so it returns ReviewWorktreeConflictMarkers and persists only attention metadata.
 //
 // Fix 1: TaskTransitionService catches BranchFreshnessConflict from on_enter during
 //   auto-transition and routes the task to Merging (tested indirectly via on_enter result).
@@ -84,7 +84,7 @@ fn build_machine(
 }
 
 // ==========================================================================
-// Test 1: Conflict markers in task worktree → BranchFreshnessConflict
+// Test 1: Marker-only task worktree conflict → review-worktree attention
 //
 // Uses separate project dir (clean) and task worktree (has conflict markers).
 // The freshness check runs on the clean project dir, so the auto-commit guard
@@ -92,7 +92,7 @@ fn build_machine(
 // ==========================================================================
 
 #[tokio::test]
-async fn test_reviewing_on_enter_conflict_markers_returns_freshness_error() {
+async fn test_reviewing_on_enter_marker_only_conflicts_do_not_route_to_branch_update() {
     // Clean project repo (freshness check runs here)
     let project_temp = tempfile::TempDir::new().unwrap();
     init_git_repo(project_temp.path());
@@ -149,9 +149,9 @@ async fn test_reviewing_on_enter_conflict_markers_returns_freshness_error() {
     assert!(
         matches!(
             result.as_ref().unwrap_err(),
-            AppError::BranchFreshnessConflict
+            AppError::ReviewWorktreeConflictMarkers
         ),
-        "Error should be BranchFreshnessConflict, got: {:?}",
+        "Error should be ReviewWorktreeConflictMarkers, got: {:?}",
         result.unwrap_err()
     );
 }
@@ -226,7 +226,10 @@ async fn test_has_conflict_markers_detects_real_merge_conflict() {
     run(&["add", "shared.txt"]);
     run(&["commit", "-m", "change on main"]);
     let merge_out = run(&["merge", "other", "--no-edit"]);
-    assert!(!merge_out.status.success(), "Merge should fail with conflict");
+    assert!(
+        !merge_out.status.success(),
+        "Merge should fail with conflict"
+    );
 
     let has_markers = crate::application::git_service::GitService::has_conflict_markers(repo_path)
         .await
@@ -336,8 +339,7 @@ async fn test_reviewing_on_enter_none_worktree_skips_scan() {
 // ==========================================================================
 // Test 7: Conflict markers → metadata persistence
 //
-// Verifies that on BranchFreshnessConflict, conflict_markers_detected and
-// branch_freshness_conflict are persisted in task metadata.
+// Verifies marker-only review failures do not masquerade as branch freshness.
 // ==========================================================================
 
 #[tokio::test]
@@ -378,8 +380,8 @@ async fn test_reviewing_conflict_markers_metadata_persistence() {
 
     let result = handler.on_enter(&State::Reviewing).await;
     assert!(
-        matches!(result, Err(AppError::BranchFreshnessConflict)),
-        "Expected BranchFreshnessConflict, got: {:?}",
+        matches!(result, Err(AppError::ReviewWorktreeConflictMarkers)),
+        "Expected ReviewWorktreeConflictMarkers, got: {:?}",
         result
     );
 
@@ -394,10 +396,15 @@ async fn test_reviewing_conflict_markers_metadata_persistence() {
         "Metadata should have conflict_markers_detected=true. Full metadata: {:?}",
         metadata
     );
-    assert_eq!(
+    assert_ne!(
         metadata.get("branch_freshness_conflict"),
         Some(&serde_json::json!(true)),
-        "Metadata should have branch_freshness_conflict=true. Full metadata: {:?}",
+        "Marker-only evidence must not claim a freshness conflict. Full metadata: {:?}",
+        metadata
+    );
+    assert!(
+        metadata.get("branch_update_operation_id").is_none(),
+        "Marker-only evidence must not create branch-update authority. Full metadata: {:?}",
         metadata
     );
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::domain::repositories::ValidationRunRepository;
 use crate::AppState;
 
 pub(crate) fn run_startup_cleanup(app_state: &AppState) {
@@ -42,6 +43,15 @@ pub(crate) fn run_startup_cleanup(app_state: &AppState) {
         });
     }
 
+    // Validation commands are also spawned under the app process. On restart,
+    // any durable running validation row from a previous process is orphaned.
+    {
+        let validation_run_repo = Arc::clone(&app_state.validation_run_repo);
+        tauri::async_runtime::block_on(async move {
+            mark_orphaned_validation_runs_on_startup(validation_run_repo).await;
+        });
+    }
+
     // All spawned processes are Tauri children — app restart means they are dead.
     {
         let process_repo = Arc::clone(&app_state.process_repo);
@@ -58,3 +68,26 @@ pub(crate) fn run_startup_cleanup(app_state: &AppState) {
         });
     }
 }
+
+async fn mark_orphaned_validation_runs_on_startup(
+    validation_run_repo: Arc<dyn ValidationRunRepository>,
+) {
+    match validation_run_repo
+        .mark_running_runs_error(chrono::Utc::now())
+        .await
+    {
+        Ok(n) if n > 0 => info!(
+            count = n,
+            "Marked orphaned running validation runs as error on startup"
+        ),
+        Ok(_) => {}
+        Err(e) => warn!(
+            error = %e,
+            "Failed to mark orphaned running validation runs as error on startup"
+        ),
+    }
+}
+
+#[cfg(test)]
+#[path = "startup_cleanup_tests.rs"]
+mod startup_cleanup_tests;

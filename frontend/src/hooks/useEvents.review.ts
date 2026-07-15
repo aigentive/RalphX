@@ -62,7 +62,7 @@ function normalizeReviewEventPayload(payload: unknown): unknown | null {
  *
  * @example
  * ```tsx
- * function ReviewsPanel() {
+ * function ReviewSummary() {
  *   useReviewEvents(); // Auto-refreshes review data on backend events
  *   const { data } = usePendingReviews(projectId);
  *   return <ReviewList reviews={data} />;
@@ -95,7 +95,7 @@ export function useReviewEvents() {
         queryKey: reviewKeys.pending(),
       });
 
-      // Also invalidate tasks awaiting review (for ReviewsPanel badges)
+      // Keep legacy review task consumers in sync.
       queryClient.invalidateQueries({
         queryKey: reviewKeys.tasksAwaitingReview(),
       });

@@ -1,14 +1,15 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
 use crate::infrastructure::agents::claude::agent_names::{
-    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_CHAT_PROJECT,
+    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_AUTOMATION_JUDGE,
+    SHORT_AUTOMATION_PLAN_JUDGE, SHORT_AUTOMATION_SETUP, SHORT_BRANCH_UPDATER, SHORT_CHAT_PROJECT,
     SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
     SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
     SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
     SHORT_IDEATION_SPECIALIST_FRONTEND, SHORT_IDEATION_SPECIALIST_INFRA,
     SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
     SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
-    SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
+    SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY, SHORT_PERSONA_EXTRACTOR,
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
     SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
     SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
@@ -19,7 +20,30 @@ use crate::infrastructure::agents::harness_agent_catalog::{
     AgentPromptHarness,
 };
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 #[test]
 fn test_yaml_loaded_has_unique_names() {
@@ -116,6 +140,35 @@ fn test_get_allowed_tools_mcp_only_agent() {
         get_allowed_tools("ralphx-utility-session-namer"),
         Some(String::new())
     );
+}
+
+#[test]
+fn persona_extractor_resolved_cli_tools_exclude_native_fs_exec_and_are_nonempty() {
+    let config = get_agent_config(SHORT_PERSONA_EXTRACTOR)
+        .expect("persona extractor should resolve through the production config path");
+
+    assert!(
+        !config.resolved_cli_tools.is_empty(),
+        "A7 containment requires a non-empty --tools value so Claude cannot fall back to its native defaults"
+    );
+    for forbidden in [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ] {
+        assert!(
+            !config
+                .resolved_cli_tools
+                .iter()
+                .any(|tool| tool == forbidden),
+            "persona extractor must exclude native {forbidden}; got {:?}",
+            config.resolved_cli_tools
+        );
+    }
 }
 
 #[test]
@@ -287,6 +340,7 @@ fn test_all_agent_names_are_known() {
         SHORT_DEEP_RESEARCHER,
         SHORT_PROJECT_ANALYZER,
         SHORT_MERGER,
+        SHORT_BRANCH_UPDATER,
         SHORT_MEMORY_MAINTAINER,
         SHORT_MEMORY_CAPTURE,
         // Plan verification critic agents
@@ -316,6 +370,11 @@ fn test_all_agent_names_are_known() {
         "ralphx-ideation-specialist-state-machine",
         // Utility agent used for plan complexity checks.
         "ralphx-utility-plan-complexity",
+        SHORT_AUTOMATION_SETUP,
+        SHORT_AUTOMATION_JUDGE,
+        SHORT_AUTOMATION_PLAN_JUDGE,
+        // Persona extractor (agent persona system, PR-14)
+        "ralphx-persona-extractor",
     ]);
 
     for agent in agent_configs() {
@@ -382,6 +441,73 @@ fn test_runtime_config_dir_path_resolution_uses_bundled_config_dir() {
         config_path_for_runtime_config_dir(None),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/ralphx.yaml")
     );
+}
+
+#[test]
+fn early_file_logging_environment_override_has_highest_precedence() {
+    assert!(resolve_file_logging_from_sources(
+        Some("YES"),
+        None,
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        Some("0"),
+        None,
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_public_resolver_reads_environment_override() {
+    let _env = EnvGuard::set("RALPHX_FILE_LOGGING", "0");
+
+    assert!(!resolve_file_logging_early());
+}
+
+#[test]
+fn early_file_logging_prefers_configured_runtime_file() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_path = temp_dir.path().join("ralphx.yaml");
+    std::fs::write(&config_path, "file_logging: false\n").expect("write runtime config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&config_path),
+        "file_logging: true"
+    ));
+}
+
+#[test]
+fn early_file_logging_uses_embedded_config_before_runtime_setup() {
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        None,
+        "file_logging: false"
+    ));
+}
+
+#[test]
+fn early_file_logging_falls_back_from_missing_or_malformed_runtime_config() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing_path = temp_dir.path().join("missing.yaml");
+    let malformed_path = temp_dir.path().join("malformed.yaml");
+    std::fs::write(&malformed_path, "file_logging: [\n").expect("write malformed config");
+
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&missing_path),
+        "file_logging: false"
+    ));
+    assert!(!resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: false"
+    ));
+    assert!(resolve_file_logging_from_sources(
+        None,
+        Some(&malformed_path),
+        "file_logging: ["
+    ));
 }
 
 #[test]
@@ -631,6 +757,85 @@ agents:
         Some(serde_json::json!({
             "sandbox": { "enabled": false }
         }))
+    );
+}
+
+#[test]
+fn test_automations_config_parses_top_level_block() {
+    let yaml = r#"
+automations:
+  scheduler_poll_secs: 45
+  signal_failure_pause_threshold: 7
+  judge_timeout_secs: 240
+  publish_grace_secs: 90
+  max_run_duration_secs: 7200
+  plan_max_revision_rounds: 5
+  plan_judge_model:
+    claude: claude-sonnet-5
+    codex: gpt-5.4
+"#;
+    let parsed = parse_config_no_env_overrides(yaml).expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+    assert_eq!(parsed.automations.plan_max_revision_rounds, 5);
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("gpt-5.4")
+    );
+}
+
+#[test]
+fn test_automations_config_env_overrides() {
+    let parsed = parse_config_with_lookup("", &|name| match name {
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS" => Some("45".to_string()),
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD" => Some("7".to_string()),
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS" => Some("240".to_string()),
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS" => Some("90".to_string()),
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS" => Some("7200".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS" => Some("6".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE" => Some("claude-sonnet-5".to_string()),
+        "RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX" => Some("gpt-5.4".to_string()),
+        _ => None,
+    })
+    .expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+    assert_eq!(parsed.automations.plan_max_revision_rounds, 6);
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Claude)
+            .map(String::as_str),
+        Some("claude-sonnet-5")
+    );
+    assert_eq!(
+        parsed
+            .automations
+            .plan_judge_model
+            .get(&AgentHarnessKind::Codex)
+            .map(String::as_str),
+        Some("gpt-5.4")
     );
 }
 
@@ -1658,7 +1863,9 @@ fn test_agent_workspace_repair_can_fetch_review_artifacts() {
         "repair agent must be able to signal completion"
     );
     assert!(
-        config.allowed_mcp_tools.contains(&"get_artifact".to_string()),
+        config
+            .allowed_mcp_tools
+            .contains(&"get_artifact".to_string()),
         "repair agent must be able to fetch blocking Review artifacts"
     );
 }
@@ -3277,6 +3484,10 @@ fn test_ui_feature_flags_default_standalone_ideation_hidden() {
         !flags.ideation_page,
         "ideation_page should default to false"
     );
+    assert!(
+        flags.automations_page,
+        "automations_page should default to true"
+    );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
     assert!(
@@ -3306,6 +3517,7 @@ ui:
     activity_page: false
     extensibility_page: true
     ticketing_dashboard: true
+    automations_page: true
     ideation_page: true
 "#;
     let cfg = parse_config_no_env_overrides(yaml).expect("should parse yaml with ui section");
@@ -3325,11 +3537,34 @@ ui:
         cfg.runtime.ui_feature_flags.ticketing_dashboard,
         "ticketing_dashboard should be true from yaml"
     );
+    assert!(
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should be true from yaml"
+    );
+}
+
+#[test]
+fn agent_personas_flag_defaults_false_without_config_key() {
+    let yaml = r#"
+ui:
+  feature_flags:
+    ticketing_dashboard: true
+"#;
+    let cfg = parse_config_no_env_overrides(yaml)
+        .expect("should parse yaml without the agent_personas feature flag");
+
+    assert!(cfg.runtime.ui_feature_flags.ticketing_dashboard);
+    assert!(!cfg.runtime.ui_feature_flags.agent_personas);
+    assert!(
+        !cfg.runtime
+            .ui_feature_flags
+            .persona_switch_forces_fresh_provider_session
+    );
 }
 
 #[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
-    // YAML without ui section: legacy pages default visible, standalone Ideation stays hidden.
+    // YAML without ui section: core pages default visible, standalone Ideation stays hidden.
     let yaml = r#"
 claude:
   mcp_server_name: ralphx
@@ -3353,6 +3588,10 @@ agents: []
     assert!(
         !cfg.runtime.ui_feature_flags.ideation_page,
         "ideation_page should default to false when ui section absent"
+    );
+    assert!(
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should default to true when ui section absent"
     );
     assert!(
         !cfg.runtime.ui_feature_flags.team_mode,
@@ -3417,10 +3656,13 @@ fn test_env_override_true_value_enables_flag() {
             activity_page: false,
             extensibility_page: false,
             ideation_page: false,
+            automations_page: false,
             battle_mode: false,
             team_mode: false,
             atlassian_oauth: false,
             ticketing_dashboard: false,
+            agent_personas: false,
+            persona_switch_forces_fresh_provider_session: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3440,14 +3682,23 @@ fn test_env_override_true_value_enables_flag() {
         !cfg.ui_feature_flags.ideation_page,
         "ideation_page untouched"
     );
+    assert!(
+        !cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
+    );
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
         "RALPHX_UI_IDEATION_PAGE" => Some("true".to_string()),
+        "RALPHX_UI_AUTOMATIONS_PAGE" => Some("1".to_string()),
         _ => None,
     });
     assert!(
         cfg.ui_feature_flags.ideation_page,
         "env 'true' should enable ideation_page"
+    );
+    assert!(
+        cfg.ui_feature_flags.automations_page,
+        "env '1' should enable automations_page"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3494,6 +3745,10 @@ fn test_env_override_battle_mode() {
     assert!(
         !cfg.ui_feature_flags.ideation_page,
         "ideation_page untouched"
+    );
+    assert!(
+        cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3627,6 +3882,7 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     let _ = flags.activity_page;
     let _ = flags.extensibility_page;
     let _ = flags.ideation_page;
+    let _ = flags.automations_page;
     let _ = flags.battle_mode;
     let _ = flags.team_mode;
     let _ = flags.atlassian_oauth;

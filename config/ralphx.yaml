@@ -31,16 +31,36 @@ file_logging: true
 
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
-# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false
+# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false, RALPHX_UI_AGENT_PERSONAS=true|false, RALPHX_UI_PERSONA_SWITCH_FORCES_FRESH_PROVIDER_SESSION=true|false
 ui:
   feature_flags:
     activity_page: false
     extensibility_page: false
     ideation_page: false
+    automations_page: true
     battle_mode: false
     team_mode: false
     atlassian_oauth: false
     ticketing_dashboard: false
+    # Enables experimental agent persona controls.
+    agent_personas: false
+    # A20 escape hatch: skip --resume on the send after a persona switch.
+    persona_switch_forces_fresh_provider_session: false
+
+# Compatibility runtime row for the PersonaBuilder-only extractor. Canonical
+# `agents/ralphx-persona-extractor/agent.yaml` remains authoritative.
+agents:
+  - name: ralphx-persona-extractor
+    system_prompt_file: agents/ralphx-persona-extractor/claude/prompt.md
+    model: sonnet
+    mcp_tools:
+      - fs_read_file
+      - fs_list_dir
+      - fs_grep
+      - fs_glob
+      - ask_user_question
+      - save_persona_draft
+      - get_persona_draft
 
 # ── Execution defaults ────────────────────────────────────────────────────
 # Seed values for the persisted execution settings tables.
@@ -86,6 +106,11 @@ timeouts:
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
     # chat_service_handlers.rs — slack for agent run start recorded before execution status history
     execution_attempt_start_tolerance_secs: 1 # Env: RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS
+    # notification_service.rs — batch eligible desktop notifications before delivery
+    desktop_notification_coalesce_window_secs: 5 # Env: RALPHX_STREAM_DESKTOP_NOTIFICATION_COALESCE_WINDOW_SECS
+    # startup_jobs.rs — durable notification history retention (read rows only)
+    notification_retention_read_days: 30 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_READ_DAYS
+    notification_retention_max_rows: 1000 # Env: RALPHX_STREAM_NOTIFICATION_RETENTION_MAX_ROWS
 
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded
@@ -175,6 +200,10 @@ git:
   workspace_pr_annotations_check_run_fetch_limit: 10 # Env: RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT
   # agent_workspace_external_pr_reconciliation.rs — TTL for external PR lookup attempts on unlinked agent workspaces
   agent_workspace_pr_reconciliation_cache_ttl_ms: 30000 # Env: RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS
+  # pr_startup_recovery.rs — periodic retry cadence for terminal PR local branch/worktree cleanup
+  terminal_pr_local_cleanup_interval_secs: 900 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS
+  # pr_startup_recovery.rs — retry window for retryable terminal PR cleanup markers
+  terminal_pr_local_cleanup_retry_secs: 3600 # Env: RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS
   # orphan_worktree_cleanup.rs — retry window for unchanged dirty/unsafe orphan agent-worktree cleanup markers
   orphan_worktree_cleanup_marker_retry_secs: 86400 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS
   # merge_coordination.rs — settle time after SIGTERM before worktree deletion
@@ -203,6 +232,24 @@ scheduler:
   ready_settle_ms: 300 # Env: RALPHX_SCHEDULER_READY_SETTLE_MS
   # on_enter_states.rs — settle delay before scheduling unblocked tasks after a merge completes (milliseconds)
   merge_settle_ms: 100 # Env: RALPHX_SCHEDULER_MERGE_SETTLE_MS
+
+automations:
+  # automation scheduler — authoritative poll cadence for automation runs and PR completion signals
+  scheduler_poll_secs: 30 # Env: RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS
+  # automation scheduler — consecutive GitHub signal-check failures before pausing an automation
+  signal_failure_pause_threshold: 5 # Env: RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD
+  # automation judge — maximum wall-clock seconds for a judge pass
+  judge_timeout_secs: 180 # Env: RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS
+  # automation scheduler — grace period after agent completion before scheduler-driven publish
+  publish_grace_secs: 120 # Env: RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS
+  # automation scheduler — maximum wall-clock seconds for a running automation run
+  max_run_duration_secs: 14400 # Env: RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS
+  # automation plan judge — provider-keyed model floor for automatic plan approval
+  plan_judge_model:
+    claude: sonnet # Env: RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CLAUDE
+    codex: gpt-5.4 # Env: RALPHX_AUTOMATIONS_PLAN_JUDGE_MODEL_CODEX
+  # automation plan judge — max plan revision rounds before pausing for human review
+  plan_max_revision_rounds: 3 # Env: RALPHX_AUTOMATIONS_PLAN_MAX_REVISION_ROUNDS
 
 supervisor:
   # supervisor_service.rs — wall-clock seconds before supervisor warns agent about time usage

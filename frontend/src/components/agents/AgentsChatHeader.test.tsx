@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
+import { useConversationStats } from "@/hooks/useConversationStats";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import {
@@ -29,6 +30,10 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/hooks/useTicketing", () => ({
   useConversationTicket: vi.fn(),
+}));
+
+vi.mock("@/hooks/useConversationStats", () => ({
+  useConversationStats: vi.fn(),
 }));
 
 function conversationStats(
@@ -92,6 +97,12 @@ describe("AgentsChatHeader", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof useConversationTicket>);
+    vi.mocked(useConversationStats).mockReturnValue({
+      data: conversationStats(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationStats>);
   });
 
   afterEach(() => {
@@ -101,10 +112,12 @@ describe("AgentsChatHeader", () => {
       window.localStorage.clear();
     }
     resetSkillsEnabledForTests(true);
-    useChatStore.setState({ agentStatus: {}, isSending: {} });
-    useTicketingStore.getState().reset();
-    useProjectStore.setState({ activeProjectId: null });
-    useUiStore.setState({ currentView: "agents" });
+    act(() => {
+      useChatStore.setState({ agentStatus: {}, isSending: {} });
+      useTicketingStore.getState().reset();
+      useProjectStore.setState({ activeProjectId: null });
+      useUiStore.setState({ currentView: "agents" });
+    });
   });
 
   it("opens the linked ticket in the artifact sidebar from the header ticket button", () => {
@@ -630,11 +643,19 @@ describe("AgentsChatHeader", () => {
   });
 
   it("marks conversation stats as pending while the active Agents turn has no usage yet", async () => {
-    vi.spyOn(chatApi, "getConversationStats").mockResolvedValue(conversationStats());
-    useChatStore
-      .getState()
-      .setAgentStatus("project:conversation-1", "generating");
+    vi.mocked(useConversationStats).mockReturnValue({
+      data: conversationStats(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationStats>);
+    act(() => {
+      useChatStore
+        .getState()
+        .setAgentStatus("project:conversation-1", "generating");
+    });
 
+    const user = userEvent.setup();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation()}
@@ -648,7 +669,7 @@ describe("AgentsChatHeader", () => {
       />
     );
 
-    fireEvent.click(screen.getByTestId("chat-session-stats-button"));
+    await user.click(screen.getByTestId("chat-session-stats-button"));
 
     expect(
       await screen.findByText(
@@ -656,6 +677,15 @@ describe("AgentsChatHeader", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Pending")).toHaveLength(4);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(
+        screen.queryByText(
+          "Usage totals are pending until the provider reports the current turn.",
+        ),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("shows workspace status in the left header group", () => {
@@ -968,6 +998,41 @@ describe("AgentsChatHeader", () => {
     expect(openButton).not.toBeDisabled();
   });
 
+  it("opens the workspace using the workspace owner conversation id", async () => {
+    vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    const openWorkspace = vi
+      .spyOn(chatApi, "openAgentConversationWorkspace")
+      .mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "selected-conversation" })}
+        workspace={conversationWorkspace({
+          conversationId: "workspace-conversation",
+          mode: "ideation",
+          linkedPlanBranchId: "plan-branch-1",
+        })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-open-workspace"));
+
+    await waitFor(() =>
+      expect(openWorkspace).toHaveBeenCalledWith(
+        "workspace-conversation",
+        "cursor",
+      ),
+    );
+  });
+
   it("clears the workspace opening state immediately when launch fails", async () => {
     vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
       { id: "cursor", label: "Cursor", kind: "editor" },
@@ -1098,21 +1163,25 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
-  it("shows only the skills artifact shortcut for edit-mode conversations", () => {
+  it("shows the Plan and skills shortcuts for edit-mode project conversations", () => {
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "edit" })}
         workspace={conversationWorkspace({ mode: "edit" })}
+        availableArtifactTabs={["plan"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleTerminal={vi.fn()}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
-    expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
@@ -1129,7 +1198,7 @@ describe("AgentsChatHeader", () => {
           mode: "edit",
           linkedIdeationSessionId: "planning-session-1",
         })}
-        availableArtifactTabs={["plan", "verification", "proposal"]}
+        availableArtifactTabs={["plan", "verification"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -1167,12 +1236,12 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
   });
 
-  it("shows ideation artifact shortcuts for ideation-mode conversations", () => {
+  it("shows ideation artifact shortcuts without a standalone Proposals shortcut", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "ideation" })}
         workspace={conversationWorkspace({ mode: "ideation" })}
-        availableArtifactTabs={["plan", "verification", "proposal", "tasks"]}
+        availableArtifactTabs={["plan", "verification", "tasks"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
@@ -1184,7 +1253,7 @@ describe("AgentsChatHeader", () => {
 
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
     expect(screen.getByLabelText("Verification")).toBeInTheDocument();
-    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Tasks")).toBeInTheDocument();
   });
 
@@ -1211,22 +1280,25 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides plan-mode ideation shortcuts until a plan exists", () => {
+  it("shows plan-mode artifact controls before a plan exists", () => {
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "plan" })}
         workspace={conversationWorkspace({ mode: "plan" })}
-        availableArtifactTabs={[]}
+        availableArtifactTabs={["plan"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleTerminal={vi.fn()}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
-    expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Skills")).toBeInTheDocument();
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();

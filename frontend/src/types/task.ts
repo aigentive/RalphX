@@ -322,11 +322,13 @@ export function parseStopMetadata(metadata: string | null | undefined): StopMeta
 export type FailureSource =
   | "transient_timeout"
   | "agent_crash"
+  | "local_tool_failed"
   | "parse_stall"
   | "git_isolation"
   | "wall_clock_timeout"
   | "max_retries_exceeded"
   | "provider_error"
+  | "validation_failed"
   | "unknown";
 
 /** Sources that are transient (auto-retrying, shown as amber badge) */

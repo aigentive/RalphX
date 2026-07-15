@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{AgentRunAttribution, AgentRunUsage};
 
 #[tokio::test]
@@ -132,6 +133,49 @@ async fn test_update_attribution() {
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(retrieved.effective_effort.as_deref(), Some("high"));
     assert_eq!(retrieved.service_tier.as_deref(), Some("fast"));
+}
+
+#[tokio::test]
+async fn persona_run_attribution_round_trips_in_memory_repo() {
+    let repo = MemoryAgentRunRepository::new();
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.set_persona_attribution(
+        &run_id,
+        PersonaRunAttribution {
+            persona_id: "persona-1".to_string(),
+            persona_slug: "design-voice".to_string(),
+            persona_version: 2,
+            persona_content_hash: "content-hash".to_string(),
+            injected: false,
+            skipped_reason: Some("native_agent_flag".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.persona_slug.as_deref(), Some("design-voice"));
+    assert_eq!(persisted.persona_version, Some(2));
+    assert_eq!(persisted.persona_injected, Some(false));
+    assert_eq!(
+        persisted.persona_skipped_reason.as_deref(),
+        Some("native_agent_flag")
+    );
+}
+
+#[tokio::test]
+async fn persona_run_attribution_defaults_to_null_in_memory_repo() {
+    let repo = MemoryAgentRunRepository::new();
+    let run = AgentRun::new(ChatConversationId::new());
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert!(persisted.persona_id.is_none());
+    assert!(persisted.persona_injected.is_none());
 }
 
 #[tokio::test]

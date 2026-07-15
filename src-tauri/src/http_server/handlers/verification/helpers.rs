@@ -1,5 +1,4 @@
 use super::*;
-use crate::application::harness_runtime_registry::default_verification_max_rounds;
 
 /// Emit the verification-started event, build the round-loop description, spawn the verification
 /// child session, and handle any spawn failures.
@@ -12,35 +11,21 @@ pub async fn spawn_verification_agent(
     generation: i32,
     disabled_specialists: &[String],
 ) -> bool {
-    let max_rounds = default_verification_max_rounds();
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_started(app_handle, session_id.as_str(), generation, max_rounds);
-    }
-    let title = format!("Auto-verification (gen {generation})");
-    let description = format!(
-        "Run verification round loop. parent_session_id: {}, generation: {generation}, max_rounds: {}",
-        session_id.as_str(),
-        max_rounds
-    );
-    match crate::http_server::handlers::session_linking::create_verification_child_session(
-        state,
-        session_id.as_str(),
-        &description,
-        &title,
+    crate::application::verification_child_session::spawn_verification_agent(
+        &state.app_state,
+        session_id,
+        generation,
+        None,
         disabled_specialists,
+        |created_session| {
+            crate::http_server::handlers::session_linking::build_ideation_chat_service(
+                state,
+                created_session,
+            )
+        },
     )
     .await
-    {
-        Ok(true) => true,
-        Ok(false) => {
-            handle_verification_spawn_failure(state, session_id, generation, None).await;
-            false
-        }
-        Err(e) => {
-            handle_verification_spawn_failure(state, session_id, generation, Some(&e)).await;
-            false
-        }
-    }
+    .spawned
 }
 
 /// Handle a failed verification agent spawn: reset auto-verify state and emit status-changed event.
@@ -53,39 +38,11 @@ pub async fn handle_verification_spawn_failure(
     generation: i32,
     error: Option<&str>,
 ) {
-    if let Some(msg) = error {
-        error!(
-            "Verifier spawn failed for session {}: {}",
-            session_id.as_str(),
-            msg
-        );
-    } else {
-        tracing::warn!(
-            "Verification agent failed to spawn for session {}",
-            session_id.as_str()
-        );
-    }
-    let sid_str = session_id.as_str().to_string();
-    if let Err(reset_err) = state
-        .app_state
-        .db
-        .run(move |conn| SessionRepo::reset_auto_verify_sync(conn, &sid_str))
-        .await
-    {
-        error!(
-            "Failed to reset auto-verify state for session {} after spawn failure: {}",
-            session_id.as_str(),
-            reset_err
-        );
-    } else if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            session_id.as_str(),
-            VerificationStatus::Unverified,
-            false,
-            None,
-            Some("spawn_failed"),
-            Some(generation),
-        );
-    }
+    crate::application::verification_child_session::handle_verification_spawn_failure(
+        &state.app_state,
+        session_id,
+        generation,
+        error,
+    )
+    .await;
 }

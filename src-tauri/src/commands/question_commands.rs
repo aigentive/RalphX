@@ -10,7 +10,8 @@ use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::{PendingQuestionInfo, QuestionAnswer};
 use crate::commands::unified_chat_commands::{
     create_chat_service, ensure_plan_workspace_planning_session_link_for_send,
-    switch_agent_conversation_mode_for_state_allowing_running, SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state_allowing_running, ModeSwitchInitiator,
+    SwitchAgentConversationModeInput,
 };
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
@@ -262,6 +263,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             base_source_pull_request: None,
         },
         state,
+        ModeSwitchInitiator::User,
     )
     .await?;
     ensure_plan_workspace_planning_session_link_for_send(state, &conversation_id).await?;

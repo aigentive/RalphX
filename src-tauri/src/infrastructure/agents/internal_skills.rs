@@ -8,6 +8,9 @@ use crate::domain::services::learned_skill_adapters::{
     LearnedSkillBucket, LearnedSkillConstraintCitation, LearnedSkillRecord,
     LearnedSkillSelectionRequest, LearnedSkillStage,
 };
+use ralphx_domain::personas::skill_markdown::{
+    split_frontmatter, trusted_slug as trusted_skill_name,
+};
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
 };
@@ -508,17 +511,6 @@ fn validate_allowed_skill_reference(
     Ok(())
 }
 
-fn trusted_skill_name(skill_name: &str) -> Option<&str> {
-    let valid = !skill_name.is_empty()
-        && !skill_name.contains("..")
-        && !skill_name.contains('/')
-        && !skill_name.contains('\\')
-        && skill_name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-    valid.then_some(skill_name)
-}
-
 fn is_safe_learned_skill_id(skill_id: &str) -> bool {
     !skill_id.is_empty()
         && skill_id
@@ -540,7 +532,6 @@ fn escape_prompt_text(value: &str) -> String {
     }
     escaped
 }
-
 fn load_internal_skill(project_root: &Path, skill_name: &str) -> Result<InternalSkill, String> {
     let trusted_name = trusted_skill_name(skill_name)
         .ok_or_else(|| format!("Invalid skill name `{skill_name}`"))?;
@@ -603,20 +594,6 @@ fn read_internal_skill_file(skill_name: &str, skill_file: &Path) -> Result<Inter
         body: body.trim().to_string(),
         file_path: skill_file.to_path_buf(),
     })
-}
-
-fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
-    let rest = raw
-        .strip_prefix("---\n")
-        .or_else(|| raw.strip_prefix("---\r\n"))?;
-    let end = rest.find("\n---").or_else(|| rest.find("\r\n---"))?;
-    let frontmatter = &rest[..end];
-    let closing = &rest[end + 1..];
-    let body = closing
-        .strip_prefix("---\r\n")
-        .or_else(|| closing.strip_prefix("---\n"))
-        .or_else(|| closing.strip_prefix("---"))?;
-    Some((frontmatter, body))
 }
 
 fn extract_internal_skill_directives(text: &str) -> Vec<String> {

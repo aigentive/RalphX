@@ -1,4 +1,9 @@
 use super::*;
+use crate::application::{
+    merge_pipeline_visibility::ArchivedParentMergeVisibility,
+    task_diff_base::read_task_diff_stats_from_resolved_base,
+    task_restart::prepare_terminal_task_for_ready_restart,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +49,9 @@ pub async fn external_task_transition_http(
 
     task.assert_project_scope(&scope).map_err(|e| e.status)?;
 
+    let is_retry_restart =
+        matches!(&req.action, TransitionAction::Retry) && task.internal_status.is_terminal();
+
     // Map action to target status
     let target_status = match req.action {
         TransitionAction::Pause => InternalStatus::Paused,
@@ -56,6 +64,37 @@ pub async fn external_task_transition_http(
             }
         }
     };
+
+    if is_retry_restart && target_status == InternalStatus::Ready {
+        match prepare_terminal_task_for_ready_restart(
+            &state.app_state.task_repo,
+            &state.app_state.task_step_repo,
+            &task,
+            None,
+        )
+        .await
+        {
+            Ok(preparation) => {
+                if task.internal_status == InternalStatus::Failed
+                    && preparation.cleared_failed_steps > 0
+                {
+                    tracing::info!(
+                        task_id = task_id.as_str(),
+                        cleared = preparation.cleared_failed_steps,
+                        "External retry cleared failed steps while preserving completed progress"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    task_id = task_id.as_str(),
+                    error = %e,
+                    "External retry failed to prepare terminal task restart"
+                );
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
 
     let mut transition_service_builder = state
         .app_state
@@ -250,9 +289,6 @@ pub async fn get_task_diff_http(
     scope: ProjectScope,
     Path(id): Path<String>,
 ) -> Result<Json<TaskDiffResponse>, StatusCode> {
-    use crate::application::GitService;
-    use std::path::PathBuf;
-
     let task_id = crate::domain::entities::TaskId::from_string(id);
 
     let task = state
@@ -293,23 +329,21 @@ pub async fn get_task_diff_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    let stats = GitService::get_diff_stats(&working_path, base_branch)
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to get diff stats for task {}: {}",
-                task_id.as_str(),
-                e
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let stats = read_task_diff_stats_from_resolved_base(
+        &state.app_state,
+        &task,
+        &project,
+        "external task diff stats",
+    )
+    .await
+    .map_err(|e| {
+        error!(
+            "Failed to get diff stats for task {}: {}",
+            task_id.as_str(),
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(TaskDiffResponse {
         task_id: task.id.to_string(),
@@ -419,18 +453,49 @@ pub async fn get_merge_pipeline_http(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    let plan_branches = state
+        .app_state
+        .plan_branch_repo
+        .get_by_project_id(&project_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to get plan branches for project {}: {}",
+                project_id.as_str(),
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let agent_workspaces = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&project_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to get agent workspaces for project {}: {}",
+                project_id.as_str(),
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let archived_parent_visibility =
+        ArchivedParentMergeVisibility::from_workspaces(&agent_workspaces);
+
     // Filter to tasks in merge-related states
     let merge_tasks: Vec<MergePipelineTask> = all_tasks
         .into_iter()
         .filter(|t| {
-            matches!(
-                t.internal_status,
-                InternalStatus::PendingMerge
-                    | InternalStatus::Merging
-                    | InternalStatus::MergeIncomplete
-                    | InternalStatus::MergeConflict
-                    | InternalStatus::Merged
-            )
+            t.archived_at.is_none()
+                && matches!(
+                    t.internal_status,
+                    InternalStatus::PendingMerge
+                        | InternalStatus::Merging
+                        | InternalStatus::MergeIncomplete
+                        | InternalStatus::MergeConflict
+                        | InternalStatus::Merged
+                )
+                && !archived_parent_visibility.hides_task(t, &plan_branches)
         })
         .map(|t| MergePipelineTask {
             id: t.id.to_string(),

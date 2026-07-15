@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use rusqlite::Connection;
-use tauri::Emitter;
 use tracing::error;
 
 use super::*;
@@ -13,7 +12,7 @@ use crate::domain::entities::{
     IdeationSession, IdeationSessionFlow, IdeationSessionId, SessionOrigin, VerificationStatus,
 };
 use crate::domain::repositories::IdeationSessionRepository;
-use crate::domain::services::emit_verification_status_changed;
+use crate::application::verification_event_emitters::emit_verification_status_changed;
 use crate::domain::services::running_agent_registry::{RunningAgentKey, RunningAgentRegistry};
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{
@@ -41,5 +40,5 @@ pub use update::update_plan_artifact;
 use events::emit_plan_update_events;
 use shared::{
     attach_plan_approval, finalize_plan_update, map_app_err, plan_approval_view_sync,
-    resolve_caller_session_id, upsert_plan_approval_sync, PlanApprovalView,
+    resolve_caller_session_id, PlanApprovalView,
 };

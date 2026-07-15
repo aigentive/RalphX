@@ -21,10 +21,7 @@ fn parse_symlink_absolute_paths() {
     assert!(result.is_some(), "absolute ln -sfn should be parsed");
     let (source, target) = result.unwrap();
     assert_eq!(source, PathBuf::from("/source/node_modules"));
-    assert_eq!(
-        target,
-        PathBuf::from("/target/packages/web/node_modules")
-    );
+    assert_eq!(target, PathBuf::from("/target/packages/web/node_modules"));
 }
 
 #[test]
@@ -172,18 +169,21 @@ async fn collision_detection_root_wins() {
     ]);
 
     // We'll exercise the logic by running the setup phase inline
-    let entries: Vec<crate::domain::state_machine::transition_handler::merge_validation::MergeAnalysisEntry> =
-        serde_json::from_value(analysis_json).unwrap();
+    let entries: Vec<
+        crate::domain::state_machine::transition_handler::merge_validation::MergeAnalysisEntry,
+    > = serde_json::from_value(analysis_json).unwrap();
 
     let cancel = CancellationToken::new();
     let resolve = |s: &str| s.to_string();
 
-    let (log, _had_failures) = run_setup_phase_for_test(&entries, &worktree_path, &resolve, &cancel).await;
+    let (log, _had_failures) =
+        run_setup_phase_for_test(&entries, &worktree_path, &resolve, &cancel).await;
 
     // Entry A's symlink should be created (root wins)
     assert!(
         collision_target.is_symlink() || collision_target.exists(),
-        "root entry's symlink should be created at {}", collision_target.display()
+        "root entry's symlink should be created at {}",
+        collision_target.display()
     );
 
     // Verify the symlink points to the root node_modules (not sub_pkg)
@@ -196,16 +196,22 @@ async fn collision_detection_root_wins() {
     }
 
     // Entry B should have a "skipped" log entry with "collides" in the message
-    let collides_entry = log.iter().find(|e| {
-        e.status == "skipped" && e.stderr.contains("collides")
-    });
+    let collides_entry = log
+        .iter()
+        .find(|e| e.status == "skipped" && e.stderr.contains("collides"));
     assert!(
         collides_entry.is_some(),
         "should have a skipped/collides log entry for Entry B. Log: {:?}",
-        log.iter().map(|e| format!("status={} stderr={}", e.status, e.stderr)).collect::<Vec<_>>()
+        log.iter()
+            .map(|e| format!("status={} stderr={}", e.status, e.stderr))
+            .collect::<Vec<_>>()
     );
     let collides = collides_entry.unwrap();
-    assert_eq!(collides.path, "sub/pkg", "collides entry should be for sub/pkg, got: {}", collides.path);
+    assert_eq!(
+        collides.path, "sub/pkg",
+        "collides entry should be for sub/pkg, got: {}",
+        collides.path
+    );
 }
 
 // ==================
@@ -252,8 +258,9 @@ async fn no_collision_when_targets_differ() {
         }
     ]);
 
-    let entries: Vec<crate::domain::state_machine::transition_handler::merge_validation::MergeAnalysisEntry> =
-        serde_json::from_value(analysis_json).unwrap();
+    let entries: Vec<
+        crate::domain::state_machine::transition_handler::merge_validation::MergeAnalysisEntry,
+    > = serde_json::from_value(analysis_json).unwrap();
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let resolve = |s: &str| s.to_string();
@@ -298,7 +305,7 @@ async fn run_setup_phase_for_test(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> (Vec<ValidationLogEntry>, bool) {
     use crate::domain::state_machine::transition_handler::merge_validation::{
-        parse_symlink_command, try_handle_symlink_idempotent, spawn_cancellable_command,
+        parse_symlink_command, spawn_cancellable_command, try_handle_symlink_idempotent,
         CancellableCommandResult,
     };
     use std::collections::{HashMap, HashSet};
@@ -355,8 +362,7 @@ async fn run_setup_phase_for_test(
             // Collision check
             if let Some((_src, target)) = parse_symlink_command(&resolved_cmd, &cmd_cwd) {
                 if collision_targets.contains(&target) {
-                    let winner_path =
-                        collision_winners.get(&target).cloned().unwrap_or_default();
+                    let winner_path = collision_winners.get(&target).cloned().unwrap_or_default();
                     let is_winner = resolved_path == winner_path;
                     let already_claimed = claimed_targets.contains(&target);
 
@@ -395,25 +401,22 @@ async fn run_setup_phase_for_test(
             }
 
             // Idempotent symlink handling
-            if let Some(skip_entry) = try_handle_symlink_idempotent(
-                &resolved_cmd,
-                &cmd_cwd,
-                &entry.label,
-                &resolved_path,
-            ) {
+            if let Some(skip_entry) =
+                try_handle_symlink_idempotent(&resolved_cmd, &cmd_cwd, &entry.label, &resolved_path)
+            {
                 log.push(skip_entry);
                 continue;
             }
 
             // Harden symlink command flags
-            let resolved_cmd =
-                if resolved_cmd.contains("ln -s ") && !resolved_cmd.contains("-sfn") {
-                    resolved_cmd
-                        .replace("ln -s ", "ln -sfn ")
-                        .replace("ln -sf ", "ln -sfn ")
-                } else {
-                    resolved_cmd
-                };
+            let resolved_cmd = if resolved_cmd.contains("ln -s ") && !resolved_cmd.contains("-sfn")
+            {
+                resolved_cmd
+                    .replace("ln -s ", "ln -sfn ")
+                    .replace("ln -sf ", "ln -sfn ")
+            } else {
+                resolved_cmd
+            };
 
             let start = std::time::Instant::now();
             let result = spawn_cancellable_command(&resolved_cmd, &cmd_cwd, cancel).await;

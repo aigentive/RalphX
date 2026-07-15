@@ -91,6 +91,7 @@ pub async fn fork_agent_conversation(
                 selection,
                 AgentConversationWorkspaceSetupMode::Deferred,
                 AgentConversationWorkspacePrAutomationDefaults::from(&settings),
+                false,
             )
             .await?,
         )

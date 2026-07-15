@@ -565,6 +565,9 @@ describe("useReviewEvents", () => {
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["reviews", "pending"],
     });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["reviews", "tasksAwaiting"],
+    });
   });
 
   it("should parse wrapped string payloads from backend emit_with_payload", async () => {

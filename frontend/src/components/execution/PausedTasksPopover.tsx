@@ -17,8 +17,11 @@ import {
 } from "@/components/ui/popover";
 import { PausedTaskCard, type PauseReason } from "./PausedTaskCard";
 import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
+import {
+  taskRowNavigationTarget,
+  type ExecutionBarTaskNavigationTarget,
+} from "./executionTaskNavigation";
 import type { Task } from "@/types/task";
-import { useUiStore } from "@/stores/uiStore";
 import { api } from "@/lib/tauri";
 
 interface PausedTasksPopoverProps {
@@ -32,6 +35,8 @@ interface PausedTasksPopoverProps {
   open?: boolean;
   /** Optional controlled open-state handler */
   onOpenChange?: (open: boolean) => void;
+  /** Called when a paused task should open its Agent conversation task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
 }
 
 /** Parse pause_reason from task.metadata JSON string, with legacy fallback */
@@ -92,12 +97,11 @@ export function PausedTasksPopover({
   alignOffset = -24,
   open,
   onOpenChange,
+  onNavigateToTask,
 }: PausedTasksPopoverProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const popoverOpen = open ?? uncontrolledOpen;
   const handleOpenChange = onOpenChange ?? setUncontrolledOpen;
-  const navigateToTask = useUiStore((s) => s.navigateToTask);
-
   const handleResume = async (taskId: string) => {
     try {
       await api.tasks.resume(taskId);
@@ -107,8 +111,11 @@ export function PausedTasksPopover({
   };
 
   const handleViewDetails = (taskId: string) => {
+    const task = pausedTasks.find((item) => item.id === taskId);
     handleOpenChange(false);
-    navigateToTask(taskId);
+    if (task) {
+      onNavigateToTask?.(taskRowNavigationTarget(task, "paused"));
+    }
   };
 
   // Parse all paused tasks with their reasons

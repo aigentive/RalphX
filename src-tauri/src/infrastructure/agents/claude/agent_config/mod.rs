@@ -1,7 +1,9 @@
+pub mod live_flags;
 pub mod runtime_config;
 pub mod team_config;
 mod tool_sets;
 mod ui_config;
+pub use live_flags::agent_personas_enabled;
 pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
@@ -33,9 +35,9 @@ pub use team_config::{
 };
 
 pub use runtime_config::{
-    validate_external_mcp_config, AllRuntimeConfig, ExternalMcpConfig, GitRuntimeConfig,
-    LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, VerificationConfig,
+    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig, ExternalMcpConfig,
+    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
+    StreamTimeoutsConfig, SupervisorRuntimeConfig, VerificationConfig,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -258,6 +260,8 @@ struct RalphxConfig {
     #[serde(default)]
     scheduler: SchedulerConfig,
     #[serde(default)]
+    automations: AutomationsRuntimeConfig,
+    #[serde(default)]
     supervisor: SupervisorRuntimeConfig,
     #[serde(default)]
     limits: LimitsConfig,
@@ -358,6 +362,7 @@ struct LoadedConfig {
     defer_merge_enabled: bool,
     file_logging: bool,
     runtime: AllRuntimeConfig,
+    automations: AutomationsRuntimeConfig,
     execution_defaults: ExecutionDefaultsConfig,
     agent_harness_defaults: AgentHarnessDefaultsConfig,
 }
@@ -649,34 +654,52 @@ fn apply_external_mcp_overlay_or_embedded_from_path(
     }
 }
 
-/// Resolve file_logging setting for early use (before tracing subscriber init).
-/// Priority: RALPHX_FILE_LOGGING env > config/ralphx.yaml `file_logging` field > default (true).
-///
-/// This does a lightweight YAML parse — the full config is loaded lazily later.
-pub fn resolve_file_logging_early() -> bool {
-    if let Ok(val) = std::env::var("RALPHX_FILE_LOGGING") {
-        return matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+#[derive(Deserialize)]
+struct MinimalEarlyConfig {
+    #[serde(default = "default_file_logging")]
+    file_logging: bool,
+}
+
+fn parse_early_file_logging(yaml: &str) -> Option<bool> {
+    serde_yaml::from_str::<MinimalEarlyConfig>(yaml)
+        .ok()
+        .map(|config| config.file_logging)
+}
+
+fn resolve_file_logging_from_sources(
+    environment_value: Option<&str>,
+    runtime_config_path: Option<&Path>,
+    embedded_config: &str,
+) -> bool {
+    if let Some(value) = environment_value {
+        return matches!(value.to_lowercase().as_str(), "true" | "1" | "yes");
     }
 
-    #[derive(Deserialize)]
-    struct MinimalConfig {
-        #[serde(default = "default_file_logging_true")]
-        file_logging: bool,
-    }
-    fn default_file_logging_true() -> bool {
-        true
-    }
-
-    let path = config_path();
-    // Main config path is a RalphX-owned runtime config path.
-    // codeql[rust/path-injection]
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        if let Ok(cfg) = serde_yaml::from_str::<MinimalConfig>(&contents) {
-            return cfg.file_logging;
+    if let Some(path) = runtime_config_path {
+        // Runtime config paths are established from RalphX-owned bundled resources.
+        // codeql[rust/path-injection]
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Some(file_logging) = parse_early_file_logging(&contents) {
+                return file_logging;
+            }
         }
     }
 
-    true
+    parse_early_file_logging(embedded_config).unwrap_or(true)
+}
+
+/// Resolve file logging before tracing initialization.
+///
+/// Priority: environment override, configured bundled runtime file, embedded canonical config,
+/// then the fail-safe default (`true`).
+pub fn resolve_file_logging_early() -> bool {
+    let environment_value = std::env::var("RALPHX_FILE_LOGGING").ok();
+    let runtime_config_path = configured_runtime_config_dir().map(|dir| dir.join("ralphx.yaml"));
+    resolve_file_logging_from_sources(
+        environment_value.as_deref(),
+        runtime_config_path.as_deref(),
+        EMBEDDED_CONFIG,
+    )
 }
 
 fn resolve_tools_from_spec(
@@ -1158,6 +1181,7 @@ fn resolve_loaded_config_with_lookup(
             .child_session_activity_threshold_secs,
         ui_feature_flags,
     };
+    let mut automations = parsed.automations;
     if runtime.external_mcp.max_external_ideation_sessions != 1 {
         tracing::warn!(
             value = runtime.external_mcp.max_external_ideation_sessions,
@@ -1167,6 +1191,7 @@ fn resolve_loaded_config_with_lookup(
         );
     }
     runtime_config::apply_env_overrides_with_lookup(&mut runtime, lookup);
+    runtime_config::apply_automations_env_overrides_with_lookup(&mut automations, lookup);
     let mut agent_harness_defaults = parsed
         .agent_harness_defaults
         .into_iter()
@@ -1186,6 +1211,7 @@ fn resolve_loaded_config_with_lookup(
         defer_merge_enabled: parsed.defer_merge_enabled,
         file_logging: parsed.file_logging,
         runtime,
+        automations,
         execution_defaults: parsed.execution_defaults,
         agent_harness_defaults,
     })
@@ -1261,7 +1287,7 @@ fn normalize_override_value(raw: Option<String>) -> Option<String> {
     })
 }
 
-fn all_agent_lanes() -> [AgentLane; 8] {
+fn all_agent_lanes() -> [AgentLane; 9] {
     [
         AgentLane::IdeationPrimary,
         AgentLane::IdeationVerifier,
@@ -1271,6 +1297,7 @@ fn all_agent_lanes() -> [AgentLane; 8] {
         AgentLane::ExecutionReviewer,
         AgentLane::ExecutionReexecutor,
         AgentLane::ExecutionMerger,
+        AgentLane::ExecutionBranchUpdater,
     ]
 }
 
@@ -1612,6 +1639,11 @@ fn load_config() -> LoadedConfig {
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
             };
             runtime_config::apply_env_overrides(&mut runtime);
+            let mut automations = AutomationsRuntimeConfig::default();
+            runtime_config::apply_automations_env_overrides_with_lookup(
+                &mut automations,
+                &|name| std::env::var(name).ok(),
+            );
             LoadedConfig {
                 agents: Vec::new(),
                 claude: ClaudeRuntimeConfig {
@@ -1632,6 +1664,7 @@ fn load_config() -> LoadedConfig {
                 defer_merge_enabled: true,
                 file_logging: true,
                 runtime,
+                automations,
                 execution_defaults: ExecutionDefaultsConfig::default(),
                 agent_harness_defaults: default_agent_harness_defaults(),
             }
@@ -1796,6 +1829,10 @@ pub fn scheduler_config() -> &'static SchedulerConfig {
         .get_or_init(load_config)
         .runtime
         .scheduler
+}
+
+pub fn automations_config() -> &'static AutomationsRuntimeConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).automations
 }
 
 pub fn supervisor_runtime_config() -> &'static SupervisorRuntimeConfig {

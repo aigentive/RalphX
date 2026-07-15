@@ -46,6 +46,20 @@ export function isPipelineOwnedAgentWorkspace(
   return Boolean(workspace?.linkedPlanBranchId);
 }
 
+function isAgentWorkspacePublishSurfaceMode(
+  workspace: AgentConversationWorkspace,
+): boolean {
+  if (workspace.mode === "edit" || workspace.mode === "plan") {
+    return true;
+  }
+
+  if (workspace.mode === "ideation") {
+    return isPipelineOwnedAgentWorkspace(workspace);
+  }
+
+  return false;
+}
+
 export function getAgentWorkspacePrConflictSummary(
   workspace: AgentConversationWorkspace | null | undefined,
 ): string | null {
@@ -123,19 +137,47 @@ export function isAgentWorkspaceAutoMergeDeferred({
 export function shouldShowAgentWorkspacePublishSurface(
   workspace: AgentConversationWorkspace | null | undefined
 ): boolean {
+  return Boolean(workspace && isAgentWorkspacePublishSurfaceMode(workspace));
+}
+
+export function canInspectAgentWorkspacePublishDiffs(
+  workspace: AgentConversationWorkspace | null | undefined,
+  options: { includeTerminalPublished?: boolean } = {},
+): boolean {
   if (!workspace) {
     return false;
   }
 
-  if (workspace.mode === "edit") {
+  const isInspectableMode = isAgentWorkspacePublishSurfaceMode(workspace);
+
+  if (isInspectableMode && workspace.status !== "missing") {
     return true;
   }
 
-  if (workspace.mode === "ideation") {
-    return isPipelineOwnedAgentWorkspace(workspace);
+  return Boolean(
+    options.includeTerminalPublished &&
+      workspace.mode === "edit" &&
+      hasPublishedWorkspacePr(workspace) &&
+      getAgentWorkspaceTerminalPublicationStatus(workspace),
+  );
+}
+
+export function canInspectAgentWorkspaceBaseFreshness(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  if (!workspace) {
+    return false;
   }
 
-  return false;
+  if (workspace.mode === "plan") {
+    return false;
+  }
+
+  if (isAgentWorkspacePublishSurfaceMode(workspace)) {
+    return true;
+  }
+
+  return hasPublishedWorkspacePr(workspace);
 }
 
 export function isAgentWorkspacePublishCurrent(
@@ -188,6 +230,13 @@ export function getAgentWorkspaceEffectiveBaseLabel(
 ): string {
   if (freshness?.baseStatus === "blocked") {
     return "Base unavailable";
+  }
+  if (workspace?.branchMode === "linked") {
+    const linkedBaseRef =
+      freshness?.effectiveBaseRef ??
+      freshness?.baseRef ??
+      workspace.baseRef;
+    return linkedBaseRef.trim() ? linkedBaseRef : (workspace.baseDisplayName ?? "Base branch");
   }
   return (
     freshness?.effectiveBaseDisplayName ??

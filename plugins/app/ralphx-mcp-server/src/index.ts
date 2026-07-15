@@ -25,7 +25,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { callTauri, callTauriGet, TauriClientError } from "./tauri-client.js";
-import { getTraceLogPath, safeError, safeTrace } from "./redact.js";
+import {
+  getTraceLogPath,
+  redactToolArgsForLog,
+  redactToolResultForLog,
+  safeError,
+  safeTrace,
+} from "./redact.js";
 import {
   getFilteredTools,
   isToolAllowed,
@@ -62,6 +68,11 @@ import {
   callAgentWorkspaceTool,
   isAgentWorkspaceToolName,
 } from "./agent-workspace-tools.js";
+import {
+  callAutomationSetupTool,
+  isAutomationSetupToolName,
+} from "./automation-tools.js";
+import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 import { LEARNED_SKILL_TOOL_NAMES } from "./learned-skill-tools.js";
@@ -180,7 +191,9 @@ const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
 const RALPHX_AGENT_PROFILE = runtimeContext.agentProfile;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
+const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
+const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
 
 function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
   if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
@@ -235,6 +248,10 @@ function validateTaskScope(
     "add_task_note",
     "get_task_details",
     "get_task_context",
+    "run_task_validation",
+    "get_task_validation_summary",
+    "get_task_diff",
+    "get_task_diff_stat",
     "get_review_notes",
     "get_task_steps",
     "add_step",
@@ -244,6 +261,10 @@ function validateTaskScope(
     "report_incomplete",
     "complete_merge",
     "get_merge_target",
+    "get_branch_update_context",
+    "complete_branch_update",
+    "report_branch_update_conflict",
+    "report_branch_update_incomplete",
     // Issue tools (worker + reviewer agents)
     "get_task_issues",
     "get_issue_progress",
@@ -355,7 +376,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  safeTrace("tool.request", { name, args });
+  safeTrace("tool.request", { name, args: redactToolArgsForLog(name, args) });
 
   // Special handling for permission_request tool (always allowed, not scoped by agent type)
   if (name === "permission_request") {
@@ -582,16 +603,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Forward to Tauri backend
     safeError(
       `[RalphX MCP] Calling Tauri: ${name} with args:`,
-      JSON.stringify(args)
+      JSON.stringify(redactToolArgsForLog(name, args))
     );
     safeTrace("tool.dispatch", { name });
 
     let result: unknown;
+    const requestArgs = (args ?? {}) as Record<string, unknown>;
 
     // Special handling for GET endpoints with path parameters
     if (name === "get_task_context") {
       const { task_id } = args as { task_id: string };
       result = await callTauriGet(`task_context/${task_id}`);
+    } else if (name === "run_task_validation") {
+      result = await callTauri("task_validation/run", {
+        ...((args as Record<string, unknown>) ?? {}),
+        caller_agent: AGENT_TYPE,
+        context_type: RALPHX_CONTEXT_TYPE,
+      });
+    } else if (name === "get_task_validation_summary") {
+      const { task_id } = args as { task_id: string };
+      result = await callTauriGet(`task_validation/summary/${task_id}`);
+    } else if (name === "get_task_diff") {
+      result = await callTauri("task_validation/diff", requestArgs);
+    } else if (name === "get_task_diff_stat") {
+      result = await callTauri("task_validation/diff_stat", requestArgs);
     } else if (name === "get_artifact") {
       const { artifact_id } = args as { artifact_id: string };
       result = await callTauriGet(`artifact/${artifact_id}`);
@@ -699,6 +734,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (isAgentWorkspaceToolName(name)) {
       result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
         parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+        agentRunId: RALPHX_AGENT_RUN_ID,
+      });
+    } else if (isAutomationSetupToolName(name)) {
+      result = await callAutomationSetupTool(name, callTauri, args, {
+        conversationId: RALPHX_CONVERSATION_ID,
+      });
+    } else if (isPersonaToolName(name)) {
+      result = await callPersonaTool(name, callTauri, callTauriGet, args, {
+        conversationId: RALPHX_CONVERSATION_ID,
       });
     } else if (name === "report_conflict") {
       // POST /api/git/tasks/:task_id/report-conflict
@@ -719,6 +763,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (name === "get_merge_target") {
       const { task_id } = args as { task_id: string };
       result = await callTauriGet(`git/tasks/${task_id}/merge-target`);
+    } else if (name === "get_branch_update_context") {
+      const { task_id } = args as { task_id: string };
+      result = await callTauriGet(`branch-updates/tasks/${task_id}/context`, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
+    } else if (name === "complete_branch_update") {
+      const { task_id } = args as { task_id: string };
+      result = await callTauri(`branch-updates/tasks/${task_id}/complete`, {}, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
+    } else if (name === "report_branch_update_conflict") {
+      const { task_id, conflict_files, reason, diagnostic_info } = args as {
+        task_id: string;
+        conflict_files: string[];
+        reason: string;
+        diagnostic_info?: string;
+      };
+      result = await callTauri(`branch-updates/tasks/${task_id}/report-conflict`, {
+        conflict_files,
+        reason,
+        diagnostic_info,
+      }, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
+    } else if (name === "report_branch_update_incomplete") {
+      const { task_id, reason, diagnostic_info } = args as {
+        task_id: string;
+        reason: string;
+        diagnostic_info?: string;
+      };
+      result = await callTauri(`branch-updates/tasks/${task_id}/report-incomplete`, {
+        reason,
+        diagnostic_info,
+      }, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
+      });
     } else if (name === "get_task_issues") {
       // GET /api/task_issues/:task_id?status=<filter>
       const { task_id, status_filter } = args as { task_id: string; status_filter?: string };
@@ -880,6 +972,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         evidence,
         recommendation,
         blocker_fingerprint,
+        attach_to_issue_id,
+        confirm_new,
+        new_issue_reason,
+        issue_check_token,
         followup_title,
         followup_prompt,
         auto_followup_eligible,
@@ -905,6 +1001,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         evidence,
         recommendation,
         blocker_fingerprint,
+        attach_to_issue_id,
+        confirm_new,
+        new_issue_reason,
+        issue_check_token,
         followup_title,
         followup_prompt,
         auto_followup_eligible: auto_followup_eligible ?? false,
@@ -917,8 +1017,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`parent_session_context/${session_id}`);
     } else if (name === "delegate_start") {
+      const delegateArgs = args as Record<string, unknown>;
+      const explicitParentConversationId =
+        typeof delegateArgs.parent_conversation_id === "string" &&
+        delegateArgs.parent_conversation_id.trim().length > 0
+          ? delegateArgs.parent_conversation_id
+          : undefined;
+      const parentConversationId =
+        explicitParentConversationId ??
+        RALPHX_PARENT_CONVERSATION_ID ??
+        RALPHX_CONVERSATION_ID;
       result = await callTauri("coordination/delegate/start", {
-        ...(args as Record<string, unknown>),
+        ...delegateArgs,
+        ...(parentConversationId
+          ? { parent_conversation_id: parentConversationId }
+          : {}),
         caller_agent_name: AGENT_TYPE,
         caller_agent_profile: RALPHX_AGENT_PROFILE,
         caller_context_type: RALPHX_CONTEXT_TYPE,
@@ -1244,7 +1357,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     safeError(`[RalphX MCP] Success: ${name}`);
     safeTrace("tool.success", {
       name,
-      result: summarizeResult(result),
+      result: summarizeResult(redactToolResultForLog(name, result)),
     });
 
     // Return result as JSON text
@@ -1257,11 +1370,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ],
     };
   } catch (error) {
-    safeError(`[RalphX MCP] Error calling ${name}:`, error);
+    const rawErrorMessage = error instanceof Error ? error.message : String(error);
+    const errorForLog = redactToolResultForLog(
+      name,
+      rawErrorMessage
+    );
+    safeError(
+      `[RalphX MCP] Error calling ${name}:`,
+      errorForLog === rawErrorMessage ? error : errorForLog
+    );
     safeTrace("tool.error", {
       name,
-      error: error instanceof Error ? error.message : String(error),
-      details: error instanceof TauriClientError ? error.details : undefined,
+      error: errorForLog,
+      details: error instanceof TauriClientError
+        ? redactToolResultForLog(name, error.details)
+        : undefined,
     });
 
     if (error instanceof TauriClientError) {

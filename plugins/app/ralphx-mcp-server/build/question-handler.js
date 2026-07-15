@@ -161,7 +161,16 @@ async function askSingleQuestion(sessionId, prompt, batchIndex, batchTotal, meta
  * 3. Return the answer JSON to the agent
  */
 export async function handleAskUserQuestion(args) {
-    safeError(`[RalphX MCP] ask_user_question for session: ${args.session_id}`);
+    let sessionId;
+    try {
+        sessionId = currentWorkspaceConversationId({
+            conversation_id: args.session_id,
+        });
+    }
+    catch {
+        return errorResponse("ask_user_question requires session_id because RalphX did not provide the current conversation id to the MCP runtime context.");
+    }
+    safeError(`[RalphX MCP] ask_user_question for session: ${sessionId}`);
     const normalized = normalizeQuestionPrompts(args);
     if ("error" in normalized) {
         return errorResponse(normalized.error);
@@ -170,7 +179,7 @@ export async function handleAskUserQuestion(args) {
     const answers = [];
     for (const [index, prompt] of prompts.entries()) {
         try {
-            const result = await askSingleQuestion(args.session_id, prompt, isBatch ? index + 1 : undefined, isBatch ? prompts.length : undefined);
+            const result = await askSingleQuestion(sessionId, prompt, isBatch ? index + 1 : undefined, isBatch ? prompts.length : undefined, args.metadata);
             if (!result.ok) {
                 return result.response;
             }

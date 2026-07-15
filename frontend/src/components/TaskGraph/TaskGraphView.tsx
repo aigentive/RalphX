@@ -53,7 +53,7 @@ import {
   type GraphFilters,
   type LayoutDirection,
   type GroupingState,
-} from "./controls/GraphControls";
+} from "./controls/graph-controls";
 import { GraphSplitLayout } from "@/components/layout/GraphSplitLayout";
 import type { TaskGraphNode, TaskGraphEdge, PlanGroupInfo } from "@/api/task-graph.types";
 import type { InternalStatus } from "@/types/status";
@@ -80,8 +80,8 @@ export interface TaskGraphViewProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
-  /** Hide graph canvas toolbar controls for embedded read-only surfaces. */
-  hideCanvasControls?: boolean;
+  /** Hide the global active-plan selector for a session-scoped host. */
+  hidePlanSelector?: boolean;
   /** Optional footer to render at the bottom of the left section (e.g., ExecutionControlBar) */
   footer?: React.ReactNode;
   /** Optional host-owned task selection handler for embedded task surfaces. */
@@ -272,8 +272,8 @@ interface TaskGraphViewInnerProps {
   projectId: string;
   /** Optional ideation session ID to filter tasks by plan */
   ideationSessionId?: string | null;
-  /** Hide graph canvas toolbar controls for embedded read-only surfaces. */
-  hideCanvasControls?: boolean;
+  /** Hide the global active-plan selector for a session-scoped host. */
+  hidePlanSelector?: boolean;
   /** Optional footer to render at the bottom of the left section (e.g., ExecutionControlBar) */
   footer?: React.ReactNode;
   /** Optional host-owned task selection handler for embedded task surfaces. */
@@ -285,12 +285,12 @@ interface TaskGraphViewInnerProps {
 function TaskGraphViewInner({
   projectId,
   ideationSessionId,
-  hideCanvasControls = false,
+  hidePlanSelector = false,
   footer,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
 }: TaskGraphViewInnerProps) {
-  // GraphControls state (declared early so showArchived is available for useTaskGraph)
+  // Graph filter state (declared early so showArchived is available for useTaskGraph)
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_GRAPH_FILTERS);
 
   // Get active plan ID from plan store (used for empty state check and plan selector)
@@ -1649,23 +1649,21 @@ function TaskGraphViewInner({
         style={initialViewReady ? undefined : { visibility: "hidden" }}
       >
         {/* Floating filter controls - positioned over canvas */}
-        {!hideCanvasControls && (
-          <FloatingGraphFilters
-            filters={filters}
-            onFiltersChange={setFilters}
-            layoutDirection={layoutDirection}
-            onLayoutDirectionChange={setLayoutDirection}
-            nodeMode={effectiveNodeMode}
-            onNodeModeChange={handleNodeModeChange}
-            isAutoCompact={isAutoCompactActive}
-            grouping={grouping}
-            onGroupingChange={setGrouping}
-            isCompact={isNavCompact}
-          />
-        )}
+        <FloatingGraphFilters
+          filters={filters}
+          onFiltersChange={setFilters}
+          layoutDirection={layoutDirection}
+          onLayoutDirectionChange={setLayoutDirection}
+          nodeMode={effectiveNodeMode}
+          onNodeModeChange={handleNodeModeChange}
+          isAutoCompact={isAutoCompactActive}
+          grouping={grouping}
+          onGroupingChange={setGrouping}
+          isCompact={isNavCompact}
+        />
 
         {/* Plan selector control (only when a plan is active) */}
-        {!hideCanvasControls && activePlanId && requiresActivePlan && (
+        {!hidePlanSelector && activePlanId && requiresActivePlan && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
             <PlanSelectorInline
               projectId={projectId}
@@ -1749,7 +1747,7 @@ function TaskGraphViewInner({
 export function TaskGraphView({
   projectId,
   ideationSessionId,
-  hideCanvasControls = false,
+  hidePlanSelector = false,
   footer,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
@@ -1759,7 +1757,7 @@ export function TaskGraphView({
       <TaskGraphViewInner
         projectId={projectId}
         ideationSessionId={ideationSessionId ?? null}
-        hideCanvasControls={hideCanvasControls}
+        hidePlanSelector={hidePlanSelector}
         footer={footer}
         {...(onTaskSelect ? { onTaskSelect } : {})}
         {...(onOpenPlanQuickSwitcher

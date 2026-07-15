@@ -202,12 +202,96 @@ async fn test_merge_missing_source_branch_with_real_repo() {
     );
 }
 
-/// Verify that merge with conflict (diverged branches) transitions to Merging
-/// and spawns a merger agent.
+/// Verify the dedicated update workspace is isolated from an unrelated dirty checkout.
+///
+/// The source branch and target branch exist, but the source branch is checked out
+/// in a dirty worktree. The old implementation reused that checkout and failed.
+/// The dedicated workflow must update through its operation-owned worktree, merge
+/// successfully, and leave the unrelated dirty checkout untouched.
+#[tokio::test]
+async fn test_isolated_source_update_ignores_unrelated_dirty_checkout() {
+    let git_repo = setup_real_git_repo();
+    let path = git_repo.path();
+
+    std::fs::write(path.join("README.md"), "# test repo\nmain update\n").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(path)
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["commit", "-m", "update readme on main"])
+        .current_dir(path)
+        .output();
+
+    let source_wt_dir = tempfile::tempdir().unwrap();
+    let source_wt = source_wt_dir.path().join("dirty-source-worktree");
+    let add_wt = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            &source_wt.to_string_lossy(),
+            &git_repo.task_branch,
+        ])
+        .current_dir(path)
+        .output()
+        .expect("git worktree add source branch");
+    assert!(
+        add_wt.status.success(),
+        "source branch worktree should be created: {}",
+        String::from_utf8_lossy(&add_wt.stderr)
+    );
+    std::fs::write(
+        source_wt.join("README.md"),
+        "# test repo\nlocal dirty source edit\n",
+    )
+    .unwrap();
+
+    let setup = setup_pending_merge_with_real_repo(
+        "Source update error test",
+        &git_repo.task_branch,
+        &git_repo.path_string(),
+        MergeStrategy::Merge,
+    )
+    .await;
+
+    let task_id = setup.task_id.clone();
+    let task_repo = Arc::clone(&setup.task_repo);
+    let (mut machine, _task_repo, _task_id) = setup.into_machine();
+    let handler = TransitionHandler::new(&mut machine);
+
+    let _ = handler.on_enter(&State::PendingMerge).await;
+
+    let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::Merged,
+        "Operation-owned source update should merge despite an unrelated dirty checkout. Got {:?}. Metadata: {:?}",
+        updated_task.internal_status,
+        updated_task.metadata,
+    );
+    assert_eq!(
+        std::fs::read_to_string(source_wt.join("README.md")).unwrap(),
+        "# test repo\nlocal dirty source edit\n",
+        "Dedicated update must not modify the unrelated dirty checkout"
+    );
+
+    let _ = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            &source_wt.to_string_lossy(),
+        ])
+        .current_dir(path)
+        .output();
+}
+
+/// Verify that a conflict discovered while refreshing a stale source branch
+/// routes to the dedicated branch-update workflow before merge dispatch.
 ///
 /// Setup: main and task branch both modify the same file (creating a conflict).
 #[tokio::test]
-async fn test_merge_with_conflict_transitions_to_merging() {
+async fn test_stale_source_conflict_transitions_to_task_branch_update() {
     let git_repo = setup_real_git_repo();
 
     // Create a conflicting commit on main (modify feature.rs on main too)
@@ -237,10 +321,10 @@ async fn test_merge_with_conflict_transitions_to_merging() {
     let _ = handler.on_enter(&State::PendingMerge).await;
 
     let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    assert!(
-        updated_task.internal_status == InternalStatus::Merging
-            || updated_task.internal_status == InternalStatus::MergeIncomplete,
-        "Conflicting merge should transition to Merging (for agent) or MergeIncomplete, got {:?}. Metadata: {:?}",
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::UpdatingTaskBranch,
+        "Stale source conflict should transition to UpdatingTaskBranch, got {:?}. Metadata: {:?}",
         updated_task.internal_status,
         updated_task.metadata,
     );
@@ -325,15 +409,10 @@ async fn test_real_repo_merge_completes_in_bounded_time() {
     );
 }
 
-/// Verify that when branches are identical (trivial merge), the rebase-squash strategy
-/// creates a validation worktree instead of falling back to project root.
-///
-/// Bug: Previously, `try_rebase_squash_merge_in_worktree` would early-return when
-/// `branches_have_same_content` was true, never creating the merge worktree. The
-/// strategy then fell back to `repo_path` (project root), causing validation to run
-/// in the user's working directory.
+/// Verify that a zero-unique identical source branch is blocked instead of treated
+/// as a successful no-op merge.
 #[tokio::test]
-async fn test_trivial_merge_does_not_use_project_root_as_merge_path() {
+async fn test_zero_unique_identical_rebase_squash_routes_merge_incomplete() {
     use crate::application::GitService;
 
     let git_repo = setup_real_git_repo();
@@ -353,10 +432,18 @@ async fn test_trivial_merge_does_not_use_project_root_as_merge_path() {
         same_content,
         "Precondition: branches should be identical after fast-forward"
     );
+    let unique_commits =
+        GitService::count_commits_not_on_branch(repo, &git_repo.task_branch, "main")
+            .await
+            .unwrap();
+    assert_eq!(
+        unique_commits, 0,
+        "Precondition: source branch has no unique commits"
+    );
 
     // Run the merge via TransitionHandler
     let setup = setup_pending_merge_with_real_repo(
-        "Trivial merge test",
+        "Zero-unique identical branch test",
         &git_repo.task_branch,
         &git_repo.path_string(),
         MergeStrategy::RebaseSquash,
@@ -371,23 +458,19 @@ async fn test_trivial_merge_does_not_use_project_root_as_merge_path() {
     let _ = handler.on_enter(&State::PendingMerge).await;
 
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
-    // The key assertion: task should complete successfully even with identical branches.
-    // Previously this would run validation in project root (merge_path == repo_path).
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merged,
-        "Trivial merge (identical branches) should still complete as Merged, got {:?}. Metadata: {:?}",
+        InternalStatus::MergeIncomplete,
+        "Zero-unique identical branches must not be marked Merged, got {:?}. Metadata: {:?}",
         updated.internal_status,
         updated.metadata,
     );
 }
 
-/// Verify that identical branches with Merge strategy complete without creating an empty commit.
-///
-/// With the `branches_have_same_content()` guard added to `try_merge_in_worktree()`,
-/// the merge worktree is never created and git is never asked to merge — no empty commit.
+/// Verify that identical branches with zero unique source commits do not become
+/// ghost-successful with the Merge strategy.
 #[tokio::test]
-async fn test_identical_branches_merge_strategy_no_empty_commit() {
+async fn test_zero_unique_identical_merge_strategy_routes_merge_incomplete() {
     use crate::application::GitService;
 
     let git_repo = setup_real_git_repo();
@@ -405,6 +488,14 @@ async fn test_identical_branches_merge_strategy_no_empty_commit() {
     assert!(
         same_content,
         "Precondition: branches should be identical after fast-forward"
+    );
+    let unique_commits =
+        GitService::count_commits_not_on_branch(repo, &git_repo.task_branch, "main")
+            .await
+            .unwrap();
+    assert_eq!(
+        unique_commits, 0,
+        "Precondition: source branch has no unique commits"
     );
 
     let main_sha_before = GitService::get_branch_sha(repo, "main").await.unwrap();
@@ -427,8 +518,8 @@ async fn test_identical_branches_merge_strategy_no_empty_commit() {
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merged,
-        "Task should reach Merged with identical branches (Merge strategy), got {:?}",
+        InternalStatus::MergeIncomplete,
+        "Task should stop at MergeIncomplete with zero-unique identical branches, got {:?}",
         updated.internal_status,
     );
 
@@ -440,12 +531,10 @@ async fn test_identical_branches_merge_strategy_no_empty_commit() {
     );
 }
 
-/// Verify that identical branches with Rebase strategy complete without creating an empty commit.
-///
-/// With the `branches_have_same_content()` guard added to `try_rebase_and_merge_in_worktree()`,
-/// no worktrees are created and git is never asked to rebase or merge — no empty commit.
+/// Verify that identical branches with zero unique source commits do not become
+/// ghost-successful with the Rebase strategy.
 #[tokio::test]
-async fn test_identical_branches_rebase_strategy_no_empty_commit() {
+async fn test_zero_unique_identical_rebase_strategy_routes_merge_incomplete() {
     use crate::application::GitService;
 
     let git_repo = setup_real_git_repo();
@@ -463,6 +552,14 @@ async fn test_identical_branches_rebase_strategy_no_empty_commit() {
     assert!(
         same_content,
         "Precondition: branches should be identical after fast-forward"
+    );
+    let unique_commits =
+        GitService::count_commits_not_on_branch(repo, &git_repo.task_branch, "main")
+            .await
+            .unwrap();
+    assert_eq!(
+        unique_commits, 0,
+        "Precondition: source branch has no unique commits"
     );
 
     let main_sha_before = GitService::get_branch_sha(repo, "main").await.unwrap();
@@ -485,8 +582,8 @@ async fn test_identical_branches_rebase_strategy_no_empty_commit() {
     let updated = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
         updated.internal_status,
-        InternalStatus::Merged,
-        "Task should reach Merged with identical branches (Rebase strategy), got {:?}",
+        InternalStatus::MergeIncomplete,
+        "Task should stop at MergeIncomplete with zero-unique identical branches, got {:?}",
         updated.internal_status,
     );
 

@@ -47,8 +47,10 @@ export {
   isTaskStepCancelled,
   isTaskStepTerminal,
   isTaskStepActive,
+  getCompletableStepProgressCounts,
+  getStepProgressDisplay,
 } from "./task-step";
-export type { TaskStepStatus, TaskStep, StepProgressSummary } from "./task-step";
+export type { TaskStepStatus, TaskStep, StepProgressSummary, StepProgressDisplay } from "./task-step";
 
 // Event types and schemas
 export {

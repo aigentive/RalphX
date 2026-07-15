@@ -36,9 +36,12 @@ export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
   const mutation = useMutation({
     mutationFn: (input: UpdateAgentProviderSettingsInput) =>
       harnessProvidersApi.update(input),
-    onSuccess: async () => {
+    onSuccess: async (updatedSettings) => {
+      queryClient.setQueriesData<AgentProvidersSettingsResponse>(
+        { queryKey: harnessProviderKeys.all },
+        updatedSettings,
+      );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: harnessProviderKeys.all }),
         queryClient.invalidateQueries({ queryKey: ["provider-cli-management"] }),
         queryClient.invalidateQueries({ queryKey: ["agent", "harness"] }),
       ]);

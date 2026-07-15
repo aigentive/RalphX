@@ -16,6 +16,8 @@ process_mapping:
     history: ralphx-review-history
   merge:
     default: ralphx-execution-merger
+  branch_update:
+    default: ralphx-execution-branch-updater
   qa_prep:
     default: ralphx-qa-prep
   qa_refine:
@@ -67,6 +69,7 @@ team_constraints:
       - get_task_context
       - get_artifact
       - get_project_analysis
+      - run_task_validation
       - create_team_artifact
       - get_team_artifacts
       - start_step
@@ -96,7 +99,19 @@ team_constraints:
       - Read
       - Grep
       - Glob
-      - Bash
+    allowed_mcp_tools:
+      - complete_review
+      - get_task_context
+      - get_task_validation_summary
+      - get_task_diff_stat
+      - get_task_diff
+      - get_artifact
+      - get_project_analysis
+      - get_review_notes
+      - get_task_steps
+      - get_task_issues
+      - get_step_progress
+      - get_issue_progress
     model_cap: sonnet
     mode: constrained
     presets:

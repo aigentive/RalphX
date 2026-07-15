@@ -30,7 +30,7 @@ export function ActivityContext({ taskId, sessionId, role }: ActivityContextProp
   const handleNavigate = useCallback(() => {
     if (taskId) {
       setSelectedTaskId(taskId);
-      setCurrentView("kanban");
+      setCurrentView("agents");
     } else if (sessionId) {
       navigateToIdeationSession(sessionId);
     }

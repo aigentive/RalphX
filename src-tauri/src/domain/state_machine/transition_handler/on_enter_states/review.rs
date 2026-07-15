@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::state_machine::services::ReviewStartResult;
+use crate::domain::state_machine::services::TaskNotification;
 use crate::domain::state_machine::TransitionHandler;
 
 impl<'a> TransitionHandler<'a> {
@@ -41,12 +42,19 @@ impl<'a> TransitionHandler<'a> {
                     .await;
             }
             ReviewStartResult::Error(msg) => {
-                self.machine
-                    .context
-                    .services
-                    .notifier
-                    .notify_with_message("review_error", &self.machine.context.task_id, msg)
-                    .await;
+                if let Some(context) = self.machine.context.services.notification_context.clone() {
+                    self.machine
+                        .context
+                        .services
+                        .notifier
+                        .notify(
+                            context,
+                            TaskNotification::ReviewError {
+                                message: msg.clone(),
+                            },
+                        )
+                        .await;
+                }
             }
         }
 
@@ -88,40 +96,60 @@ impl<'a> TransitionHandler<'a> {
         ) {
             let task_id_typed = TaskId::from_string(task_id_str.to_string());
             let project_id_typed = ProjectId::from_string(project_id_str.to_string());
-            if let (Ok(Some(task)), Ok(Some(project))) = (
-                task_repo.get_by_id(&task_id_typed).await,
-                project_repo.get_by_id(&project_id_typed).await,
-            ) {
+            if let Ok(Some(project)) = project_repo.get_by_id(&project_id_typed).await {
                 let repo_path = Path::new(&project.working_directory);
-                let plan_branch = get_task_plan_branch(
-                    &task,
-                    &project,
-                    &self.machine.context.services.plan_branch_repo,
-                    &self.machine.context.services.task_repo,
-                )
-                .await;
-                let config = reconciliation_config();
-                let app_handle = self.machine.context.services.app_handle.as_ref();
-                let activity_event_repo =
-                    self.machine.context.services.activity_event_repo.as_ref();
-                let freshness_result = freshness::ensure_branches_fresh(
-                    repo_path,
-                    &task,
-                    &project,
-                    task_id_str,
-                    plan_branch
-                        .as_ref()
-                        .map(|branch| branch.branch_name.as_str()),
-                    plan_branch
-                        .as_ref()
-                        .map(|branch| branch.source_branch.as_str()),
-                    app_handle,
-                    activity_event_repo,
-                    "reviewing",
-                    config,
-                )
-                .await;
-                apply_freshness_result(freshness_result, &task, task_id_str, task_repo).await?;
+                for _ in 0..3 {
+                    let Some(task) = task_repo.get_by_id(&task_id_typed).await? else {
+                        return Err(AppError::TaskNotFound(task_id_str.to_string()));
+                    };
+                    let plan_branch = get_task_plan_branch(
+                        &task,
+                        &project,
+                        &self.machine.context.services.plan_branch_repo,
+                        &self.machine.context.services.task_repo,
+                    )
+                    .await;
+                    let freshness_result = freshness::ensure_branches_fresh(
+                        repo_path,
+                        &task,
+                        &project,
+                        task_id_str,
+                        plan_branch
+                            .as_ref()
+                            .map(|branch| branch.branch_name.as_str()),
+                        plan_branch
+                            .as_ref()
+                            .map(|branch| branch.source_branch.as_str()),
+                        self.machine.context.services.event_sink.as_deref(),
+                        self.machine.context.services.activity_event_repo.as_ref(),
+                        "reviewing",
+                        reconciliation_config(),
+                    )
+                    .await;
+                    match apply_freshness_result(
+                        freshness_result,
+                        &task,
+                        task_id_str,
+                        task_repo,
+                        self.machine.context.services.branch_update_repo.as_ref(),
+                        self.machine
+                            .context
+                            .services
+                            .branch_update_workflow
+                            .as_ref(),
+                        &project,
+                        repo_path,
+                        "reviewing",
+                    )
+                    .await?
+                    {
+                        FreshnessApplyOutcome::Ready => return Ok(()),
+                        FreshnessApplyOutcome::Updated(_) => continue,
+                    }
+                }
+                return Err(AppError::ExecutionBlocked(
+                    "Branch freshness checkpoints did not converge".to_string(),
+                ));
             }
         }
 
@@ -196,7 +224,7 @@ impl<'a> TransitionHandler<'a> {
                                 tracing::warn!(
                                     task_id = task_id_str,
                                     worktree = %wt_path.display(),
-                                    "Conflict markers detected in worktree before reviewer spawn — routing to merge pipeline"
+                                    "Conflict markers detected without directional freshness evidence — routing to review-worktree attention"
                                 );
                                 let mut task_metadata: serde_json::Value = task
                                     .metadata
@@ -205,10 +233,6 @@ impl<'a> TransitionHandler<'a> {
                                     .unwrap_or_else(|| serde_json::json!({}));
                                 task_metadata["conflict_markers_detected"] =
                                     serde_json::json!(true);
-                                task_metadata["branch_freshness_conflict"] =
-                                    serde_json::json!(true);
-                                task_metadata["freshness_origin_state"] =
-                                    serde_json::json!("reviewing");
                                 if let Err(e) = task_repo
                                     .update_metadata(
                                         &task_id_typed,
@@ -222,7 +246,7 @@ impl<'a> TransitionHandler<'a> {
                                         "Failed to persist conflict marker metadata"
                                     );
                                 }
-                                return Err(AppError::BranchFreshnessConflict);
+                                return Err(AppError::ReviewWorktreeConflictMarkers);
                             }
                             Ok(false) => {
                                 tracing::debug!(
@@ -278,6 +302,7 @@ impl<'a> TransitionHandler<'a> {
 
     async fn spawn_reviewer_agent(&self, task_id: &str) {
         let prompt = format!("Review task: {}", task_id);
+        let project_id = self.machine.context.project_id.as_str();
 
         tracing::info!(
             task_id = task_id,
@@ -289,11 +314,12 @@ impl<'a> TransitionHandler<'a> {
             .context
             .services
             .chat_service
-            .send_message(
+            .send_task_runtime_bootstrap_message(
                 crate::domain::entities::ChatContextType::Review,
                 task_id,
                 &prompt,
-                Default::default(),
+                "reviewing",
+                project_id,
             )
             .await;
 
@@ -371,17 +397,6 @@ impl<'a> TransitionHandler<'a> {
             .emit("review:ai_approved", &self.machine.context.task_id)
             .await;
 
-        self.machine
-            .context
-            .services
-            .notifier
-            .notify_with_message(
-                "review:ai_approved",
-                &self.machine.context.task_id,
-                "AI review passed. Please review and approve.",
-            )
-            .await;
-
         {
             let payload = serde_json::json!({
                 "task_id": self.machine.context.task_id,
@@ -415,17 +430,6 @@ impl<'a> TransitionHandler<'a> {
             .services
             .event_emitter
             .emit("review:escalated", &self.machine.context.task_id)
-            .await;
-
-        self.machine
-            .context
-            .services
-            .notifier
-            .notify_with_message(
-                "review:escalated",
-                &self.machine.context.task_id,
-                "AI review escalated. Please review and decide.",
-            )
             .await;
 
         {

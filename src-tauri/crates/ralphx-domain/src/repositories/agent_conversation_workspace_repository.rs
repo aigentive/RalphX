@@ -116,6 +116,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(())
     }
 
+    async fn get_local_cleanup_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn clear_local_cleanup_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_active_direct_published_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
@@ -142,6 +156,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    async fn list_active_linked_plan_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
@@ -160,6 +182,23 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         ideation_session_id: Option<&IdeationSessionId>,
         plan_branch_id: Option<&PlanBranchId>,
     ) -> AppResult<()>;
+
+    async fn restore_after_restart(
+        &self,
+        conversation_id: &ChatConversationId,
+        ideation_session_id: &IdeationSessionId,
+        plan_branch_id: &PlanBranchId,
+    ) -> AppResult<()> {
+        self.update_links(
+            conversation_id,
+            Some(ideation_session_id),
+            Some(plan_branch_id),
+        )
+        .await?;
+        self.update_status(conversation_id, AgentConversationWorkspaceStatus::Active)
+            .await?;
+        self.clear_local_cleanup_status(conversation_id).await
+    }
 
     async fn update_publication(
         &self,
@@ -297,6 +336,36 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        conversation_id: &ChatConversationId,
+        enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor>;
+
+    async fn set_pr_review_monitor_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(crate::error::AppError::Infrastructure(
+            "PR review monitor settings are unsupported by this repository".to_string(),
+        ))
+    }
+
+    async fn supersede_pending_pr_review_actions_except_head(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _head_sha: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor>;
+
     async fn list_active_pr_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
@@ -379,6 +448,8 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<()> {
         Ok(())
     }
+
+    async fn claim_pending_pr_review_action(&self, action_id: &str) -> AppResult<bool>;
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 

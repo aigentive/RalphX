@@ -4,7 +4,10 @@ use serde::Serialize;
 use tauri::{Emitter, Runtime};
 
 use super::AgentWorkspaceSourcePullRequestInput;
-use crate::application::agent_conversation_workspace::AgentConversationWorkspacePrAutomationDefaults;
+use crate::application::agent_conversation_workspace::{
+    reject_persona_builder_workspace_mode, AgentConversationWorkspaceBranchNameHint,
+    AgentConversationWorkspacePrAutomationDefaults,
+};
 use crate::application::agent_planning_session_titles::hydrate_agent_conversation_planning_session_title;
 use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
 use crate::application::AppState;
@@ -14,18 +17,54 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project, ProjectId,
+    AgentConversationWorkspaceMode, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, Project, ProjectId,
 };
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::ComposerIntegrationReference;
+
+pub(crate) fn clickup_task_lookup_key_from_references(
+    references: &[ComposerIntegrationReference],
+) -> Result<Option<String>, String> {
+    let mut lookup_keys = references
+        .iter()
+        .filter(|reference| {
+            reference.provider.trim().eq_ignore_ascii_case("clickup")
+                && reference.kind.trim().eq_ignore_ascii_case("clickup")
+        })
+        .filter_map(|reference| {
+            reference
+                .key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    let id = reference.id.trim();
+                    (!id.is_empty()).then_some(id)
+                })
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    lookup_keys.sort_by_key(|key| key.to_ascii_lowercase());
+    lookup_keys.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    match lookup_keys.as_slice() {
+        [] => Ok(None),
+        [lookup_key] => Ok(Some(lookup_key.clone())),
+        _ => Err("A conversation can only start from one ClickUp task at a time".to_string()),
+    }
+}
 
 pub(crate) fn parse_agent_workspace_mode(
     mode: Option<&str>,
 ) -> Result<AgentConversationWorkspaceMode, String> {
-    mode.map(str::trim)
+    let mode = mode
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("edit")
-        .parse::<AgentConversationWorkspaceMode>()
+        .unwrap_or("edit");
+    reject_persona_builder_workspace_mode(mode)?;
+    mode.parse::<AgentConversationWorkspaceMode>()
 }
 
 pub(crate) fn parse_agent_workspace_base_kind(
@@ -91,23 +130,17 @@ pub(crate) fn normalize_agent_workspace_source_pull_request(
     }))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TicketStartBaseReference {
-    pub provider: String,
-    pub issue_key: String,
-}
-
-pub(crate) fn first_ticket_start_base_reference(
+pub(crate) fn first_ticket_branch_name_hint(
     references: &[ComposerIntegrationReference],
-) -> Option<TicketStartBaseReference> {
+) -> Option<AgentConversationWorkspaceBranchNameHint> {
     references
         .iter()
-        .find_map(ticket_start_base_reference_from_composer_reference)
+        .find_map(ticket_branch_name_hint_from_composer_reference)
 }
 
-fn ticket_start_base_reference_from_composer_reference(
+fn ticket_branch_name_hint_from_composer_reference(
     reference: &ComposerIntegrationReference,
-) -> Option<TicketStartBaseReference> {
+) -> Option<AgentConversationWorkspaceBranchNameHint> {
     let provider = match (
         reference.provider.trim().to_ascii_lowercase().as_str(),
         reference.kind.trim().to_ascii_lowercase().as_str(),
@@ -117,42 +150,28 @@ fn ticket_start_base_reference_from_composer_reference(
         ("clickup", "clickup") => "clickup",
         _ => return None,
     };
-    let issue_key = reference
+    let ticket_token = reference
         .key
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| reference.id.trim());
-    if issue_key.is_empty() {
-        return None;
-    }
-    Some(TicketStartBaseReference {
+        .map(str::to_string)
+        .or_else(|| ticket_id_fallback_token(provider, reference.id.trim()))?;
+
+    Some(AgentConversationWorkspaceBranchNameHint {
         provider: provider.to_string(),
-        issue_key: issue_key.to_string(),
+        ticket_token,
     })
 }
 
-pub(crate) fn base_selection_allows_ticket_canonical_branch(
-    base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
-    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
-) -> bool {
-    source_pull_request.is_none()
-        && matches!(
-            base_ref_kind,
-            None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
-        )
-}
-
-pub(crate) fn apply_ticket_canonical_branch_base_selection(
-    base_ref_kind: &mut Option<IdeationAnalysisBaseRefKind>,
-    base_ref: &mut Option<String>,
-    base_display_name: &mut Option<String>,
-    issue_key: &str,
-    canonical_branch_name: &str,
-) {
-    *base_ref_kind = Some(IdeationAnalysisBaseRefKind::LocalBranch);
-    *base_ref = Some(canonical_branch_name.to_string());
-    *base_display_name = Some(format!("Ticket {issue_key} ({canonical_branch_name})"));
+fn ticket_id_fallback_token(provider: &str, id: &str) -> Option<String> {
+    if id.is_empty() {
+        return None;
+    }
+    if provider == "clickup" && !id.to_ascii_uppercase().starts_with("CU-") {
+        return Some(format!("CU-{id}"));
+    }
+    Some(id.to_string())
 }
 
 pub(crate) fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
@@ -168,9 +187,71 @@ pub(crate) fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode
 pub(crate) fn agent_mode_should_create_workspace(
     mode: AgentConversationWorkspaceMode,
     source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+    has_plan_reference: bool,
 ) -> bool {
+    if matches!(
+        mode,
+        AgentConversationWorkspaceMode::Automation | AgentConversationWorkspaceMode::PersonaBuilder
+    ) {
+        return false;
+    }
     agent_mode_requires_workspace(mode)
-        || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+        || (mode == AgentConversationWorkspaceMode::Chat
+            && (source_pull_request.is_some() || has_plan_reference))
+}
+
+pub(crate) fn review_pr_monitor_for_workspace(
+    workspace: &AgentConversationWorkspace,
+) -> Result<Option<AgentWorkspacePrReviewMonitor>, String> {
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
+        return Ok(None);
+    }
+
+    let pr_number = workspace
+        .source_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.number)
+        .or(workspace.publication_pr_number)
+        .ok_or_else(|| "Review PR workspace requires a linked pull request".to_string())?;
+    let head_sha = workspace
+        .source_pull_request
+        .as_ref()
+        .and_then(|pull_request| pull_request.head_ref_oid.clone());
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+        pr_number,
+        head_sha,
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    Ok(Some(monitor))
+}
+
+pub(crate) async fn ensure_review_pr_monitor_for_workspace(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    workspace: Option<&AgentConversationWorkspace>,
+) -> Result<(), String> {
+    let Some(monitor) = workspace
+        .map(review_pr_monitor_for_workspace)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+
+    if workspace_repo
+        .get_pr_review_monitor(&monitor.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn ensure_linked_branch_workspace_available(
@@ -198,9 +279,10 @@ pub(crate) async fn ensure_linked_branch_workspace_available(
         .find_active_by_project_and_branch_name(project_id, branch_name)
         .await
         .map_err(|error| error.to_string())?;
-    if let Some(conflict) = active_workspaces.into_iter().find(|workspace| {
-        current_conversation_id != Some(&workspace.conversation_id)
-    }) {
+    if let Some(conflict) = active_workspaces
+        .into_iter()
+        .find(|workspace| current_conversation_id != Some(&workspace.conversation_id))
+    {
         return Err(format!(
             "Selected branch '{}' is already linked to active conversation {}; choose isolated branch mode or continue in that conversation",
             branch_name, conflict.conversation_id
@@ -208,6 +290,80 @@ pub(crate) async fn ensure_linked_branch_workspace_available(
     }
 
     Ok(())
+}
+
+pub(crate) const LINKED_SETUP_FAILURE_MARKER: &str = "[ralphx:linked_setup_failure]";
+
+pub(crate) fn linked_setup_failure_error(message: impl AsRef<str>) -> String {
+    let message = message.as_ref().trim();
+    if message.contains(LINKED_SETUP_FAILURE_MARKER) {
+        return message.to_string();
+    }
+    if message.is_empty() {
+        LINKED_SETUP_FAILURE_MARKER.to_string()
+    } else {
+        format!("{LINKED_SETUP_FAILURE_MARKER} {message}")
+    }
+}
+
+pub(crate) async fn archive_empty_seeded_draft_after_setup_failure(
+    state: &AppState,
+    conversation: &ChatConversation,
+) -> Result<bool, String> {
+    if conversation.context_type != ChatContextType::Project
+        || conversation.message_count != 0
+        || conversation.archived_at.is_some()
+        || conversation.provider_session_ref().is_some()
+    {
+        return Ok(false);
+    }
+
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if workspace.is_some() {
+        return Ok(false);
+    }
+
+    state
+        .chat_conversation_repo
+        .archive(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub(crate) async fn archive_supplied_seeded_draft_after_setup_failure(
+    state: &AppState,
+    project_id: &str,
+    conversation_id: &ChatConversationId,
+) -> Result<bool, String> {
+    let lookup = state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string());
+
+    archive_seeded_draft_lookup_after_setup_failure(state, project_id, lookup).await
+}
+
+pub(crate) async fn archive_seeded_draft_lookup_after_setup_failure(
+    state: &AppState,
+    project_id: &str,
+    conversation: Result<Option<ChatConversation>, String>,
+) -> Result<bool, String> {
+    let Some(conversation) = conversation? else {
+        return Ok(false);
+    };
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != project_id
+    {
+        return Ok(false);
+    }
+
+    archive_empty_seeded_draft_after_setup_failure(state, &conversation).await
 }
 
 pub(crate) async fn hydrate_linked_branch_source_pull_request(

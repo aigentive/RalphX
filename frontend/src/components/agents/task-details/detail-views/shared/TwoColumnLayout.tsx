@@ -1,10 +1,11 @@
 /**
- * TwoColumnLayout - Consistent layout for task detail views
+ * TwoColumnLayout - Compatibility wrapper for the Agents task detail shell.
  *
- * Left column: Description (fixed)
- * Right column: Main content (varies by view)
+ * The Agents right panel is narrow, so this now renders a single ordered column:
+ * task summary, historical context, stage body, evidence, context, then actions.
  */
 
+import { type ReactNode } from "react";
 import { SectionTitle } from "./SectionTitle";
 import { DescriptionBlock } from "./DescriptionBlock";
 import { useTaskDetailContextModel } from "./TaskDetailContext";
@@ -12,9 +13,12 @@ import { TaskContextRail } from "./TaskDetailContextRail";
 
 interface TwoColumnLayoutProps {
   description: string | null | undefined;
-  children: React.ReactNode;
+  children: ReactNode;
   testId?: string;
-  leftRail?: React.ReactNode;
+  leftRail?: ReactNode;
+  evidence?: ReactNode;
+  context?: ReactNode;
+  actions?: ReactNode;
 }
 
 export function TwoColumnLayout({
@@ -22,14 +26,18 @@ export function TwoColumnLayout({
   children,
   testId,
   leftRail,
+  evidence,
+  context,
+  actions,
 }: TwoColumnLayoutProps) {
   const detailContext = useTaskDetailContextModel();
-  const rail =
+  const summary =
     leftRail ??
     (detailContext ? (
       <TaskContextRail
         model={detailContext}
         fallbackDescription={description}
+        showMerge={false}
       />
     ) : (
       <div className="space-y-2">
@@ -37,17 +45,47 @@ export function TwoColumnLayout({
         <DescriptionBlock description={description} />
       </div>
     ));
+  const defaultContext =
+    detailContext?.merge ? (
+      <TaskContextRail
+        model={detailContext}
+        fallbackDescription={description}
+        showTask={false}
+        showHistorical={false}
+      />
+    ) : null;
+  const contextSection = context ?? defaultContext;
 
   return (
     <div
       data-testid={testId}
-      className="grid min-h-0 grid-cols-1 gap-6 xl:grid-cols-[minmax(320px,360px)_minmax(0,1fr)]"
+      className="min-h-0 space-y-6"
     >
-      {/* Left column - common task context */}
-      <div className="min-w-0">{rail}</div>
+      <div data-testid="task-detail-summary" className="min-w-0">
+        {summary}
+      </div>
 
-      {/* Right column - Main content */}
-      <div className="space-y-6 min-w-0">{children}</div>
+      <div data-testid="task-detail-stage-body" className="min-w-0 space-y-6">
+        {children}
+      </div>
+
+      {evidence && (
+        <div data-testid="task-detail-evidence" className="min-w-0 space-y-6">
+          {evidence}
+        </div>
+      )}
+
+      {contextSection && (
+        <div data-testid="task-detail-context" className="min-w-0">
+          {contextSection}
+        </div>
+      )}
+
+      {actions && (
+        <div data-testid="task-detail-actions" className="min-w-0">
+          {actions}
+        </div>
+      )}
     </div>
   );
 }

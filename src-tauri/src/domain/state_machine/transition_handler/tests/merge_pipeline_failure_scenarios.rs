@@ -39,6 +39,14 @@ fn make_services_with_execution_state(
         Arc::new(MockReviewStarter::new()) as Arc<dyn ReviewStarter>,
         Arc::new(MockChatService::new()) as Arc<dyn ChatService>,
     )
+    .with_branch_update_repo(
+        crate::testing::memory_branch_update_repository_with_task_repository(
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>,
+        ),
+    )
+    .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::new(
+        MockChatService::new(),
+    )))
     .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>)
     .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
     .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
@@ -90,6 +98,15 @@ async fn test_merge_retry_after_incomplete_reaches_merged() {
 
     // Build the state machine context with the updated task
     let services = TaskServices::new_mock()
+        .with_branch_update_repo(
+            crate::testing::memory_branch_update_repository_with_task_repository(Arc::clone(
+                &task_repo,
+            )
+                as Arc<dyn TaskRepository>),
+        )
+        .with_branch_update_workflow(crate::testing::branch_update_workflow(Arc::new(
+            MockChatService::new(),
+        )))
         .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
         .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
         .with_task_scheduler(Arc::new(MockTaskScheduler::new()) as Arc<dyn TaskScheduler>);
@@ -210,15 +227,12 @@ fn test_rc5_log_messages_are_distinct_constants() {
     let auto_transition_msg = "Auto-transition triggered";
 
     assert_ne!(
-        event_driven_msg,
-        auto_transition_msg,
+        event_driven_msg, auto_transition_msg,
         "RC5: event-driven and auto-transition log messages must be distinct for grep-ability"
     );
 
     // Verify the source file contains exactly one occurrence of each
-    let source = include_str!(
-        "../../../../application/task_transition_service.rs"
-    );
+    let source = include_str!("../../../../application/task_transition_service.rs");
 
     let event_count = source.matches(event_driven_msg).count();
     let auto_count = source.matches(auto_transition_msg).count();

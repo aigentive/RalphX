@@ -45,6 +45,11 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "workspace_reviewer",
         "ralphx-workspace-reviewer",
     ),
+    (
+        "ralphx-automation-setup",
+        "automation-setup",
+        "ralphx-automation-setup",
+    ),
 ];
 
 const CODEX_PILOT_AGENTS: &[&str] = &[
@@ -53,6 +58,7 @@ const CODEX_PILOT_AGENTS: &[&str] = &[
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
     "ralphx-workspace-reviewer",
+    "ralphx-automation-setup",
 ];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
@@ -160,6 +166,11 @@ const CROSS_HARNESS_IDEATION_DELEGATE_AGENTS: &[(&str, &str, &str)] = &[
 ];
 
 const CROSS_HARNESS_EXECUTION_AGENTS: &[(&str, &str, &str)] = &[
+    (
+        "ralphx-execution-branch-updater",
+        "branch-updater",
+        "branch-updater",
+    ),
     ("ralphx-execution-reviewer", "reviewer", "reviewer"),
     ("ralphx-execution-merger", "merger", "merger"),
 ];
@@ -176,6 +187,16 @@ const CROSS_HARNESS_CHAT_AGENTS: &[(&str, &str, &str)] = &[
 ];
 
 const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
+    (
+        "ralphx-automation-judge",
+        "automation-judge",
+        "ralphx-automation-judge",
+    ),
+    (
+        "ralphx-automation-plan-judge",
+        "automation-plan-judge",
+        "ralphx-automation-plan-judge",
+    ),
     ("ralphx-review-history", "review_history", "review-history"),
     (
         "ralphx-project-analyzer",
@@ -229,6 +250,12 @@ const CROSS_HARNESS_GENERAL_AGENTS: &[(&str, &str, &str)] = &[
     ("ralphx-qa-executor", "qa_executor", "qa-executor"),
 ];
 
+const PERSONA_EXTRACTOR_AGENTS: &[(&str, &str, &str)] = &[(
+    "ralphx-persona-extractor",
+    "persona_extractor",
+    "ralphx-persona-extractor",
+)];
+
 const CROSS_HARNESS_READONLY_IDEATION_AGENTS: &[(&str, &str, &str)] = &[(
     "ralphx-ideation-readonly",
     "ideation_orchestrator_readonly",
@@ -256,6 +283,9 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
+    "ralphx-automation-judge",
+    "ralphx-automation-plan-judge",
+    "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
     "ralphx-review-chat",
@@ -281,6 +311,9 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
+    "ralphx-automation-judge",
+    "ralphx-automation-plan-judge",
+    "ralphx-automation-setup",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
     "ralphx-plan-verifier",
@@ -324,6 +357,10 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
     ("ralphx-pr-reviewer", &["Write", "Edit", "NotebookEdit"]),
     (
         "ralphx-workspace-reviewer",
+        &["Write", "Edit", "NotebookEdit", "Bash"],
+    ),
+    (
+        "ralphx-automation-setup",
         &["Write", "Edit", "NotebookEdit", "Bash"],
     ),
     ("ralphx-qa-prep", &["Write", "Edit", "Bash", "NotebookEdit"]),
@@ -380,6 +417,9 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-agent-workspace-pr-fixer",
     "ralphx-pr-reviewer",
     "ralphx-workspace-reviewer",
+    "ralphx-automation-setup",
+    "ralphx-automation-judge",
+    "ralphx-automation-plan-judge",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -417,6 +457,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
 ];
 
 const CANONICAL_CLAUDE_PERMISSION_MODE_OWNED_AGENTS: &[(&str, &str)] = &[
+    ("ralphx-automation-setup", "default"),
     ("ralphx-general-worker", "acceptEdits"),
     ("ralphx-agent-workspace-repair", "acceptEdits"),
     ("ralphx-agent-workspace-pr-fixer", "acceptEdits"),
@@ -436,6 +477,8 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-agent-workspace-pr-fixer", "opus"),
     ("ralphx-pr-reviewer", "sonnet"),
     ("ralphx-workspace-reviewer", "sonnet"),
+    ("ralphx-automation-setup", "sonnet"),
+    ("ralphx-automation-judge", "haiku"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -497,6 +540,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ),
     ("ralphx-pr-reviewer", "readonly_tools", &["Bash"], false),
     ("ralphx-workspace-reviewer", "readonly_tools", &[], false),
+    ("ralphx-automation-setup", "readonly_tools", &[], false),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
@@ -534,7 +578,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         &["Write", "Edit", "Task", "LSP"],
         false,
     ),
-    ("ralphx-execution-reviewer", "base_tools", &[], false),
+    ("ralphx-execution-reviewer", "readonly_tools", &[], false),
     ("ralphx-qa-prep", "base_tools", &["Task"], false),
     (
         "ralphx-qa-executor",
@@ -695,6 +739,165 @@ fn codex_runtime_features_load_from_harness_metadata() {
         Some(&false),
         "workspace reviewer should disable Codex shell_tool declaratively"
     );
+
+    let general_worker = load_canonical_codex_metadata(&root, "ralphx-general-worker");
+    assert_eq!(
+        general_worker.runtime_features.get("shell_tool"),
+        Some(&true),
+        "general worker should declare Codex metadata instead of falling back to default"
+    );
+}
+
+#[test]
+fn persona_extractor_canonical_definition_loads() {
+    let definition = load_canonical_agent_definition(&project_root(), "ralphx-persona-extractor")
+        .expect("persona extractor canonical definition should load");
+
+    assert_eq!(definition.role, "persona_extractor");
+    assert_eq!(
+        definition.capabilities.mcp_tools,
+        vec![
+            "fs_read_file",
+            "fs_list_dir",
+            "fs_grep",
+            "fs_glob",
+            "ask_user_question",
+            "save_persona_draft",
+            "get_persona_draft",
+        ]
+    );
+    assert!(
+        definition.delegation.allowed_targets.is_empty(),
+        "persona extractor must remain unspawnable until PersonaBuilder mode owns dispatch"
+    );
+}
+
+#[test]
+fn persona_extractor_prompts_exist_for_claude_and_codex() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        assert!(
+            load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness).is_some(),
+            "persona extractor should provide an explicit {harness:?} prompt"
+        );
+    }
+}
+
+#[test]
+fn persona_extractor_prompts_mention_only_live_tools() {
+    let root = project_root();
+    let granted_tools = [
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_grep",
+        "fs_glob",
+        "ask_user_question",
+        "save_persona_draft",
+        "get_persona_draft",
+        "TaskList",
+    ];
+    let ungranted_tools = [
+        "delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
+        "create_agent_task",
+        "get_agent_task",
+        "list_agent_tasks",
+        "update_agent_task",
+        "claim_agent_task",
+        "complete_agent_task",
+        "get_artifact",
+        "create_plan_artifact",
+        "update_plan_artifact",
+        "edit_plan_artifact",
+        "search_memories",
+        "get_memory",
+        "get_memories_for_paths",
+        "get_session_plan",
+        "get_task_context",
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ];
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for granted in granted_tools {
+            assert!(
+                prompt.contains(granted),
+                "persona extractor {harness:?} prompt should name granted/inert tool {granted}"
+            );
+        }
+        for ungranted in ungranted_tools {
+            assert!(
+                !prompt.contains(ungranted),
+                "persona extractor {harness:?} prompt must not mention off-surface tool {ungranted}"
+            );
+        }
+    }
+}
+
+#[test]
+fn persona_extractor_prompt_requires_distilled_persona_output() {
+    let root = project_root();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-persona-extractor", harness)
+            .expect("persona extractor prompt should exist");
+        for required_contract_text in [
+            "SKILL.md",
+            "name",
+            "kind: persona",
+            "description",
+            "10KB",
+            "150 lines",
+            "archived",
+            "slug-collision",
+        ] {
+            assert!(
+                prompt.contains(required_contract_text),
+                "persona extractor {harness:?} prompt should require {required_contract_text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn persona_extractor_codex_prompt_has_no_claude_syntax() {
+    let prompt = load_harness_agent_prompt(
+        &project_root(),
+        "ralphx-persona-extractor",
+        AgentPromptHarness::Codex,
+    )
+    .expect("persona extractor Codex prompt should exist");
+
+    assert!(!prompt.starts_with("---"));
+    for banned in [
+        "Task(",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskGet",
+        "TaskOutput",
+        "TaskStop",
+        "TeamCreate",
+        "TeamDelete",
+        "SendMessage",
+        "mcpServers",
+        "mcp__ralphx__",
+        "CLAUDE_PLUGIN_ROOT",
+        "--append-system-prompt",
+    ] {
+        assert!(
+            !prompt.contains(banned),
+            "persona extractor Codex prompt must not contain Claude-only syntax `{banned}`"
+        );
+    }
 }
 
 #[test]
@@ -1506,6 +1709,56 @@ fn plan_complexity_codex_surface_uses_shared_prompt_and_submit_tool() {
 }
 
 #[test]
+fn automation_judge_surface_is_output_only_and_zero_tool() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-automation-judge")
+        .expect("expected canonical automation judge definition");
+    let claude_prompt =
+        load_harness_agent_prompt(&root, "ralphx-automation-judge", AgentPromptHarness::Claude)
+            .expect("expected automation judge Claude prompt");
+    let codex_prompt =
+        load_harness_agent_prompt(&root, "ralphx-automation-judge", AgentPromptHarness::Codex)
+            .expect("expected automation judge Codex prompt");
+    let codex_metadata = load_canonical_codex_metadata(&root, "ralphx-automation-judge");
+    let runtime_config = get_agent_config("ralphx-automation-judge")
+        .expect("expected runtime config for automation judge");
+
+    assert_eq!(definition.capabilities.mcp_tools, Vec::<String>::new());
+    assert_eq!(runtime_config.allowed_mcp_tools, Vec::<String>::new());
+    assert!(
+        runtime_config.mcp_only,
+        "automation judge should not receive general Claude tools"
+    );
+    assert_eq!(
+        codex_metadata.runtime_features.get("shell_tool"),
+        Some(&false)
+    );
+
+    for prompt in [&claude_prompt, &codex_prompt] {
+        assert!(
+            prompt.contains("Return only one JSON object"),
+            "judge prompt should require an output-only JSON verdict"
+        );
+        assert!(
+            prompt.contains("\"updatedItemStatuses\""),
+            "judge prompt should declare item status updates"
+        );
+        assert!(
+            prompt.contains("\"nextBaseBranch\""),
+            "judge prompt should declare next base selection"
+        );
+        assert!(
+            !prompt.contains("mcp__ralphx__"),
+            "judge prompt must not mention Claude-style MCP names"
+        );
+        assert!(
+            !prompt.contains("MCP Tools Available"),
+            "judge prompt must not describe an unavailable MCP surface"
+        );
+    }
+}
+
+#[test]
 fn project_analyzer_codex_prompt_uses_harness_neutral_file_inspection_language() {
     let root = project_root();
     let prompt =
@@ -1554,6 +1807,7 @@ fn live_runtime_agents() -> Vec<(&'static str, &'static str, &'static str)> {
     agents.extend_from_slice(CROSS_HARNESS_CHAT_AGENTS);
     agents.extend_from_slice(CROSS_HARNESS_SUPPORT_AGENTS);
     agents.extend_from_slice(CROSS_HARNESS_GENERAL_AGENTS);
+    agents.extend_from_slice(PERSONA_EXTRACTOR_AGENTS);
     agents.extend_from_slice(CROSS_HARNESS_READONLY_IDEATION_AGENTS);
     agents
 }
@@ -1858,6 +2112,34 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
             "expected codex prompt path for {agent_name}"
         );
     }
+}
+
+#[test]
+fn branch_updater_uses_one_shared_prompt_for_both_harnesses() {
+    let root = project_root();
+    let expected_suffix = "agents/ralphx-execution-branch-updater/shared/prompt.md";
+    let mut loaded_prompts = Vec::new();
+
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let path =
+            resolve_harness_agent_prompt_path(&root, "ralphx-execution-branch-updater", harness)
+                .unwrap_or_else(|| panic!("expected branch-updater prompt for {harness:?}"));
+
+        assert!(
+            path.ends_with(expected_suffix),
+            "expected {harness:?} branch-updater prompt to resolve through shared/prompt.md, got {}",
+            path.display()
+        );
+        loaded_prompts.push(
+            load_harness_agent_prompt(&root, "ralphx-execution-branch-updater", harness)
+                .unwrap_or_else(|| panic!("expected loaded branch-updater prompt for {harness:?}")),
+        );
+    }
+
+    assert_eq!(loaded_prompts[0], loaded_prompts[1]);
+    assert!(loaded_prompts[0].contains("get_branch_update_context(task_id)"));
+    assert!(loaded_prompts[0].contains("complete_branch_update(task_id)"));
+    assert!(loaded_prompts[0].contains("backend owns those mutations"));
 }
 
 #[test]
@@ -2551,6 +2833,66 @@ fn codex_execution_prompts_avoid_claude_only_team_and_task_syntax() {
             );
         }
     }
+}
+
+#[test]
+fn execution_prompts_do_not_require_default_baseline_validation() {
+    let root = project_root();
+    let prompt_surfaces = [
+        ("ralphx-execution-worker", AgentPromptHarness::Claude),
+        ("ralphx-execution-worker", AgentPromptHarness::Codex),
+        ("ralphx-execution-coder", AgentPromptHarness::Claude),
+        ("ralphx-execution-coder", AgentPromptHarness::Codex),
+        ("ralphx-execution-team-lead", AgentPromptHarness::Claude),
+    ];
+    let forbidden_normal_flow_phrases = [
+        "baseline/final validation commands",
+        "selected baseline validation commands",
+        "confirm clean baseline",
+        "confirm a clean baseline",
+        "establish clean baseline",
+        "All validate commands must pass before writing code",
+        "all validate commands must pass before writing code",
+    ];
+
+    for (agent_name, harness) in prompt_surfaces {
+        let prompt = load_harness_agent_prompt(&root, agent_name, harness)
+            .unwrap_or_else(|| panic!("missing {harness:?} prompt for {agent_name}"));
+        for forbidden in forbidden_normal_flow_phrases {
+            assert!(
+                !prompt.contains(forbidden),
+                "{agent_name} {harness:?} prompt must not require default baseline validation with `{forbidden}`"
+            );
+        }
+        assert!(
+            prompt.contains("get_project_analysis"),
+            "{agent_name} {harness:?} prompt should still load validation commands"
+        );
+        assert!(
+            prompt.contains("run_task_validation"),
+            "{agent_name} {harness:?} prompt should still use backend-managed validation"
+        );
+        assert!(
+            prompt.contains("final validation"),
+            "{agent_name} {harness:?} prompt should still require final validation"
+        );
+    }
+}
+
+#[test]
+fn task_execution_agent_rule_documents_post_change_validation_policy() {
+    let root = project_root();
+    let rule_doc = fs::read_to_string(root.join(".claude/rules/task-execution-agents.md"))
+        .expect("read task execution agent rule");
+
+    assert!(
+        rule_doc.contains("Execution agents do not run full baseline task validation by default"),
+        "task execution rule should state the default post-change validation policy"
+    );
+    assert!(
+        rule_doc.contains("explicit diagnostic"),
+        "task execution rule should preserve explicit diagnostic baseline use"
+    );
 }
 
 #[cfg(unix)]

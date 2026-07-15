@@ -12,11 +12,12 @@ import {
   createIdeationContext,
   createTaskDetailContext,
   createProjectContext,
+  normalizeMainView,
 } from "./chat";
 
 describe("ViewTypeSchema", () => {
-  it("should have 13 view type values", () => {
-    expect(VIEW_TYPE_VALUES.length).toBe(13);
+  it("should have 14 view type values", () => {
+    expect(VIEW_TYPE_VALUES.length).toBe(14);
   });
 
   it("should parse all valid view types", () => {
@@ -30,6 +31,7 @@ describe("ViewTypeSchema", () => {
     expect(VIEW_TYPE_VALUES).toContain("graph");
     expect(VIEW_TYPE_VALUES).toContain("ideation");
     expect(VIEW_TYPE_VALUES).toContain("agents");
+    expect(VIEW_TYPE_VALUES).toContain("automations");
     expect(VIEW_TYPE_VALUES).toContain("extensibility");
     expect(VIEW_TYPE_VALUES).toContain("activity");
     expect(VIEW_TYPE_VALUES).toContain("skills");
@@ -43,6 +45,13 @@ describe("ViewTypeSchema", () => {
     expect(() => ViewTypeSchema.parse("invalid")).toThrow();
     expect(() => ViewTypeSchema.parse("Kanban")).toThrow();
   });
+
+  it.each(["kanban", "graph", "ideation"] as const)(
+    "normalizes deprecated %s views to Agents",
+    (view) => {
+      expect(normalizeMainView(view)).toBe("agents");
+    },
+  );
 });
 
 describe("ChatContextSchema", () => {

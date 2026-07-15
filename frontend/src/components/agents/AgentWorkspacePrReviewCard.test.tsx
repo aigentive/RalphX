@@ -54,7 +54,9 @@ function monitor(
     prNumber: 411,
     status: "awaiting_user",
     monitorEnabled: true,
+    autoApproveEnabled: true,
     firstReviewCompleted: false,
+    firstActionResolved: false,
     lastSeenHeadSha: "abcdef1234567890",
     lastReviewedHeadSha: null,
     lastReviewRunId: null,
@@ -383,6 +385,33 @@ describe("AgentWorkspacePrReviewCard", () => {
     expect(screen.getByText("Last action: Skipped")).toBeInTheDocument();
     expect(screen.getByText("GitHub review submission failed")).toBeInTheDocument();
   });
+
+  it.each([
+    ["approved", "Approved"],
+    ["superseded", "Superseded"],
+  ] as const)(
+    "shows %s actions as the last resolved action",
+    (status, label) => {
+      renderCard({
+        context: reviewContext({
+          monitor: monitor({ status: "watching" }),
+          pendingAction: null,
+          recentActions: [
+            reviewAction({
+              id: `${status}-action`,
+              status,
+              resolvedAt: now,
+            }),
+          ],
+        }),
+      });
+
+      expect(screen.getByText(`Last action: ${label}`)).toBeInTheDocument();
+      expect(
+        screen.queryByText("Waiting for a reviewer proposal"),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("shows mutation errors from review action submission", async () => {
     const user = userEvent.setup();

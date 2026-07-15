@@ -45,12 +45,23 @@ echo "npm $*" >> "$FAKE_NPM_LOG"
 case "$1" in
   ci|install)
     mkdir -p node_modules/.bin
+    cat > node_modules/.bin/tsc <<'EOF_TSC'
+#!/usr/bin/env bash
+exit 0
+EOF_TSC
+    chmod +x node_modules/.bin/tsc
     cat > node_modules/.bin/eslint <<'EOF_ESLINT'
 #!/usr/bin/env bash
 echo "eslint $*" >> "$FAKE_ESLINT_LOG"
 exit 0
 EOF_ESLINT
     chmod +x node_modules/.bin/eslint
+    ;;
+  run)
+    if [ "$2" = "-s" ] && [ "$3" = "typecheck" ] && [ ! -x node_modules/.bin/tsc ]; then
+      echo "sh: tsc: command not found" >&2
+      exit 127
+    fi
     ;;
 esac
 exit 0
@@ -78,12 +89,23 @@ echo "npm $*" >> "$FAKE_NPM_LOG"
 case "$1" in
   ci|install)
     mkdir -p node_modules/.bin
+    cat > node_modules/.bin/tsc <<'EOF_TSC'
+#!/usr/bin/env bash
+exit 0
+EOF_TSC
+    chmod +x node_modules/.bin/tsc
     cat > node_modules/.bin/eslint <<'EOF_ESLINT'
 #!/usr/bin/env bash
 echo "eslint $*" >> "$FAKE_ESLINT_LOG"
 exit 0
 EOF_ESLINT
     chmod +x node_modules/.bin/eslint
+    ;;
+  run)
+    if [ "$2" = "-s" ] && [ "$3" = "typecheck" ] && [ ! -x node_modules/.bin/tsc ]; then
+      echo "sh: tsc: command not found" >&2
+      exit 127
+    fi
     ;;
 esac
 exit 0
@@ -117,6 +139,12 @@ fi
 exit 0
 EOF
   chmod +x "$dir/frontend/node_modules/.bin/eslint"
+
+  cat > "$dir/frontend/node_modules/.bin/tsc" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$dir/frontend/node_modules/.bin/tsc"
 
   cat > "$dir/frontend/package.json" <<'EOF'
 {
@@ -410,21 +438,24 @@ else
 fi
 rm -rf "$T8"
 
-# ─── Test 9: REJECT — no dependency source available ────────────────────────
+# ─── Test 9: ALLOW — incomplete primary deps install in worktree ────────────
 
 setup_fake_node_tools
 IFS='|' read -r T9 PRIMARY9 WT9 < <(setup_primary_with_worktree)
-rm -rf "$PRIMARY9/frontend/node_modules"
+rm -rf "$PRIMARY9/frontend/node_modules/.bin"
 echo "export const missingDeps = true;" >> "$WT9/frontend/src/index.ts"
 git -C "$WT9" add frontend/src/index.ts
 if PATH="$FAKE_BIN:$PATH" git -C "$WT9" commit -m "test" >/tmp/ralphx-hook-t9.out 2>&1; then
-  fail "Test 9: should fail when no frontend node_modules source exists"
-else
-  if grep -q "frontend/node_modules is missing" /tmp/ralphx-hook-t9.out; then
-    pass "Test 9: missing frontend dependencies fail with clear infrastructure error"
+  if [ -d "$WT9/frontend/node_modules" ] &&
+    [ ! -L "$WT9/frontend/node_modules" ] &&
+    grep -Eq 'npm ci --prefer-offline --no-audit --no-fund$' "$FAKE_NPM_LOG" &&
+    grep -Eq 'eslint --max-warnings=0 src/index.ts$' "$FAKE_ESLINT_LOG"; then
+    pass "Test 9: incomplete primary dependencies install worktree-local node_modules"
   else
-    fail "Test 9: missing dependency failure message was not clear"
+    fail "Test 9: expected npm ci and worktree-local node_modules"
   fi
+else
+  fail "Test 9: commit should have installed worktree-local dependencies"
 fi
 rm -rf "$T9"
 

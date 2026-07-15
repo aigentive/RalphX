@@ -16,6 +16,7 @@ import {
   StatusPill,
   ProgressIndicator,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ValidationProgress } from "./shared/ValidationProgress";
 import { DurationDisplay } from "./shared/DurationDisplay";
@@ -42,7 +43,7 @@ import { buildStoreKey } from "@/lib/chat-context-registry";
 import type { TeammateState } from "@/stores/teamStore";
 import { ReviewFeedbackBody } from "@/components/reviews/ReviewFeedbackBody";
 import { getReviewFeedbackHeading } from "@/lib/review-feedback";
-import { getCompletableStepProgressCounts } from "@/types/task-step";
+import { getStepProgressDisplay } from "@/types/task-step";
 
 interface ExecutionTaskDetailProps {
   task: Task;
@@ -347,13 +348,21 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
       const lastError = metadata.last_agent_error;
       if (!lastError) return null;
       const errorContext: string | undefined = metadata.last_agent_error_context;
+      const failureSource: string | undefined = metadata.failure_source;
       const contextLabel =
-        errorContext === "review" ? "Reviewer"
+        failureSource === "validation_failed" ? "Validation"
+        : failureSource === "local_tool_failed" ? "Local Tool"
+        : errorContext === "review" ? "Reviewer"
         : errorContext === "execution" ? "Worker"
         : "Agent";
+      const title =
+        failureSource === "validation_failed" ? "Validation Failed"
+        : failureSource === "local_tool_failed" ? "Local Tool Failed"
+        : `${contextLabel} Error`;
       return {
         message: lastError as string,
         contextLabel,
+        title,
         errorAt: metadata.last_agent_error_at as string | undefined,
       };
     } catch {
@@ -361,18 +370,31 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
     }
   }, [task.metadata]);
 
-  const percentComplete = progress?.percentComplete ?? 0;
   const rawTotal = progress?.total ?? 0;
-  const completableProgress = progress
-    ? getCompletableStepProgressCounts(progress)
-    : { completed: 0, total: 0 };
-  const completed = completableProgress.completed;
-  const total = completableProgress.total;
+  const progressDisplay = progress
+    ? getStepProgressDisplay(progress)
+    : { completed: 0, total: 0, completedPercent: 0, activePercent: 0 };
+  const completed = progressDisplay.completed;
+  const total = progressDisplay.total;
+  const shouldAnimateActiveProgress =
+    !isHistorical &&
+    (progress?.inProgress ?? 0) > 0 &&
+    progressDisplay.activePercent > progressDisplay.completedPercent;
 
   return (
     <TwoColumnLayout
       description={task.description}
       testId="execution-task-detail"
+      actions={
+        !isHistorical ? (
+          <section data-testid="action-buttons-section">
+            <ActionButtonsCard
+              taskId={task.id}
+              isProcessing={false}
+            />
+          </section>
+        ) : null
+      }
     >
       {/* Status Banner */}
       <StatusBanner
@@ -406,7 +428,7 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
       {/* Agent Error Banner - shows last_agent_error in historical mode */}
       {isHistorical && agentError && (
         <section data-testid="agent-error-section" className="space-y-2">
-          <SectionTitle>{agentError.contextLabel} Error</SectionTitle>
+          <SectionTitle>{agentError.title}</SectionTitle>
           <DetailCard variant="warning">
             <div className="flex items-start gap-2.5">
               <AlertTriangle
@@ -432,12 +454,14 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
       )}
 
       {/* Progress Section */}
-      {rawTotal > 0 && (
+      {rawTotal > 0 && total > 0 && (
         <section data-testid="execution-progress-section">
           <SectionTitle>Progress</SectionTitle>
           <DetailCard>
             <ProgressIndicator
-              percentComplete={percentComplete}
+              percentComplete={progressDisplay.completedPercent}
+              activePercentComplete={progressDisplay.activePercent}
+              animateActiveProgress={shouldAnimateActiveProgress}
               completedSteps={completed}
               totalSteps={total}
               variant={isReExecuting ? "info" : "accent"}
@@ -456,6 +480,11 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
         liveSteps={liveValidationSteps}
         title="Setup & Install"
         metadataLogKey="execution_setup_log"
+      />
+
+      <TaskValidationSection
+        taskId={task.id}
+        isHistorical={isHistorical === true}
       />
 
       {/* Revision Feedback (only for re-executing with feedback or while loading) */}
@@ -496,15 +525,6 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
         </section>
       )}
 
-      {/* Action Buttons (hidden in historical mode) */}
-      {!isHistorical && (
-        <section data-testid="action-buttons-section">
-          <ActionButtonsCard
-            taskId={task.id}
-            isProcessing={false}
-          />
-        </section>
-      )}
     </TwoColumnLayout>
   );
 }

@@ -5,7 +5,8 @@
 // 2. Concurrent update_with_expected_status — optimistic locking on task transitions
 // 3. Double-scheduler scenario — two schedulers both try to execute the same Ready task
 // 4. Service-level concurrent transition_task — optimistic lock prevents double on_enter
-// 5. Service-level double-scheduler — two TaskSchedulerService instances, one agent registered
+// 5. ExecutionState execution-entry guard — direct entry actions dedupe per task
+// 6. Service-level double-scheduler — two TaskSchedulerService instances, one agent registered
 //
 // Pattern: tokio::spawn + join! + XOR assertion ("exactly one wins")
 
@@ -124,6 +125,106 @@ async fn test_concurrent_try_register_many_callers_exactly_one_wins() {
 // ============================================================================
 // Concurrent update_with_expected_status — optimistic locking
 // ============================================================================
+
+#[tokio::test]
+async fn test_concurrent_execution_entry_guard_only_one_wins() {
+    let execution_state = Arc::new(ExecutionState::new());
+
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let state = Arc::clone(&execution_state);
+        handles.push(tokio::spawn(async move {
+            state.try_start_execution_entry("task-entry-race")
+        }));
+    }
+
+    let mut admitted = 0;
+    let mut skipped = 0;
+    for handle in handles {
+        if handle.await.unwrap() {
+            admitted += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+
+    assert_eq!(admitted, 1, "Exactly one entry action should be admitted");
+    assert_eq!(skipped, 9, "Duplicate entry actions should be skipped");
+    assert!(
+        execution_state.is_execution_entry_in_flight("task-entry-race"),
+        "The winning entry action should keep the task marked in flight"
+    );
+
+    execution_state.finish_execution_entry("task-entry-race");
+
+    assert!(
+        !execution_state.is_execution_entry_in_flight("task-entry-race"),
+        "Finishing should release the task entry guard"
+    );
+    assert!(
+        execution_state.try_start_execution_entry("task-entry-race"),
+        "A released task should be claimable again"
+    );
+    execution_state.finish_execution_entry("task-entry-race");
+}
+
+#[test]
+fn test_execution_entry_guard_is_per_task() {
+    let execution_state = ExecutionState::new();
+
+    assert!(execution_state.try_start_execution_entry("task-entry-a"));
+    assert!(execution_state.try_start_execution_entry("task-entry-b"));
+    assert!(!execution_state.try_start_execution_entry("task-entry-a"));
+
+    execution_state.finish_execution_entry("task-entry-a");
+    execution_state.finish_execution_entry("task-entry-b");
+}
+
+#[tokio::test]
+async fn test_execute_entry_actions_skips_when_execution_entry_guard_held() {
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+
+    let project = Project::new(
+        "Entry Guard Project".to_string(),
+        "/tmp/ralphx-entry-guard-missing-repo".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Guarded entry task".to_string());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    assert!(execution_state.try_start_execution_entry(task_id.as_str()));
+
+    let transition_service = build_transition_service(&app_state, &execution_state);
+    transition_service
+        .execute_entry_actions(&task_id, &task, InternalStatus::Executing)
+        .await;
+
+    let final_task = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        final_task.internal_status,
+        InternalStatus::Executing,
+        "A duplicate direct entry action should be a no-op, not a task failure"
+    );
+    assert!(
+        execution_state.is_execution_entry_in_flight(task_id.as_str()),
+        "The duplicate caller must not release another caller's entry guard"
+    );
+
+    execution_state.finish_execution_entry(task_id.as_str());
+}
 
 fn create_ready_task(id_suffix: &str) -> Task {
     let project_id = ProjectId::from_string("proj-concurrent".to_string());
@@ -436,7 +537,7 @@ async fn test_double_scheduler_with_guard_check() {
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -459,7 +560,7 @@ fn build_transition_service(
 fn build_scheduler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskSchedulerService<tauri::Wry> {
+) -> TaskSchedulerService {
     TaskSchedulerService::new(
         Arc::clone(execution_state),
         Arc::clone(&app_state.project_repo),

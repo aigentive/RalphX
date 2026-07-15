@@ -405,6 +405,44 @@ mod v20260701152000_workspace_review_runtime_global_scope_tests;
 mod v20260701174810_workspace_review_hunk_annotations;
 #[cfg(test)]
 mod v20260701174810_workspace_review_hunk_annotations_tests;
+mod v20260703143000_task_validation_runs;
+mod v20260704193000_automations_p1;
+mod v20260706113000_agent_conversation_issue_identity;
+mod v20260707113000_automation_agent_completed_signal;
+mod v20260707120000_automations_spec_artifact_id;
+mod v20260708120000_automation_run_plan_gate;
+mod v20260708130511_workspace_review_autofix_setting;
+mod v20260708131548_chat_conversation_coordination_mode;
+mod v20260710000000_task_branch_base;
+mod v20260710003315_execution_plan_halt_mode;
+mod v20260710134609_notifications_table;
+mod v20260710201548_notification_settings;
+mod v20260711151804_personas;
+mod v20260712090000_validation_run_content_fingerprints;
+mod v20260712153932_agent_workspace_pr_review_auto_approve;
+#[cfg(test)]
+mod v20260712153932_agent_workspace_pr_review_auto_approve_tests;
+mod v20260712155425_ui_feature_flag_overrides;
+mod v20260712162657_persona_builder_agent_mode;
+mod v20260712190416_branch_update_authority;
+#[cfg(test)]
+mod v20260712190416_branch_update_authority_tests;
+mod v20260713063349_persona_run_attribution;
+mod v20260713131052_disable_auto_followup_by_default;
+#[cfg(test)]
+mod v20260713131052_disable_auto_followup_by_default_tests;
+#[cfg(test)]
+mod v20260710134609_notifications_table_tests;
+#[cfg(test)]
+mod v20260710201548_notification_settings_tests;
+#[cfg(test)]
+mod v20260711151804_personas_tests;
+#[cfg(test)]
+mod v20260712155425_ui_feature_flag_overrides_tests;
+#[cfg(test)]
+mod v20260712162657_persona_builder_agent_mode_tests;
+#[cfg(test)]
+mod v20260713063349_persona_run_attribution_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -466,6 +504,24 @@ mod v62_api_key_admin_permissions_tests;
 #[cfg(test)]
 mod v63_auto_verify_generation_tests;
 #[cfg(test)]
+mod v20260704193000_automations_p1_tests;
+#[cfg(test)]
+mod v20260706113000_agent_conversation_issue_identity_tests;
+#[cfg(test)]
+mod v20260707113000_automation_agent_completed_signal_tests;
+#[cfg(test)]
+mod v20260707120000_automations_spec_artifact_id_tests;
+#[cfg(test)]
+mod v20260708120000_automation_run_plan_gate_tests;
+#[cfg(test)]
+mod v20260708130511_workspace_review_autofix_setting_tests;
+#[cfg(test)]
+mod v20260708131548_chat_conversation_coordination_mode_tests;
+#[cfg(test)]
+mod v20260710000000_task_branch_base_tests;
+#[cfg(test)]
+mod v20260710003315_execution_plan_halt_mode_tests;
+#[cfg(test)]
 mod v65_unique_working_directory_tests;
 #[cfg(test)]
 mod v66_cross_project_import_tests;
@@ -495,7 +551,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260701174810;
+pub const SCHEMA_VERSION: i64 = 20260713131052;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1374,6 +1430,106 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260701174810,
         name: "workspace_review_hunk_annotations",
         migrate: v20260701174810_workspace_review_hunk_annotations::migrate,
+    },
+    Migration {
+        version: 20260703143000,
+        name: "task_validation_runs",
+        migrate: v20260703143000_task_validation_runs::migrate,
+    },
+    Migration {
+        version: 20260704193000,
+        name: "automations_p1",
+        migrate: v20260704193000_automations_p1::migrate,
+    },
+    Migration {
+        version: 20260706113000,
+        name: "agent_conversation_issue_identity",
+        migrate: v20260706113000_agent_conversation_issue_identity::migrate,
+    },
+    Migration {
+        version: 20260707113000,
+        name: "automation_agent_completed_signal",
+        migrate: v20260707113000_automation_agent_completed_signal::migrate,
+    },
+    Migration {
+        version: 20260707120000,
+        name: "automations_spec_artifact_id",
+        migrate: v20260707120000_automations_spec_artifact_id::migrate,
+    },
+    Migration {
+        version: 20260708120000,
+        name: "automation_run_plan_gate",
+        migrate: v20260708120000_automation_run_plan_gate::migrate,
+    },
+    Migration {
+        version: 20260708130511,
+        name: "workspace_review_autofix_setting",
+        migrate: v20260708130511_workspace_review_autofix_setting::migrate,
+    },
+    Migration {
+        version: 20260708131548,
+        name: "chat_conversation_coordination_mode",
+        migrate: v20260708131548_chat_conversation_coordination_mode::migrate,
+    },
+    Migration {
+        version: 20260710000000,
+        name: "task_branch_base",
+        migrate: v20260710000000_task_branch_base::migrate,
+    },
+    Migration {
+        version: 20260710003315,
+        name: "execution_plan_halt_mode",
+        migrate: v20260710003315_execution_plan_halt_mode::migrate,
+    },
+    Migration {
+        version: 20260710134609,
+        name: "notifications_table",
+        migrate: v20260710134609_notifications_table::migrate,
+    },
+    Migration {
+        version: 20260710201548,
+        name: "notification_settings",
+        migrate: v20260710201548_notification_settings::migrate,
+    },
+    Migration {
+        version: 20260711151804,
+        name: "personas",
+        migrate: v20260711151804_personas::migrate,
+    },
+    Migration {
+        version: 20260712090000,
+        name: "validation_run_content_fingerprints",
+        migrate: v20260712090000_validation_run_content_fingerprints::migrate,
+    },
+    Migration {
+        version: 20260712153932,
+        name: "agent_workspace_pr_review_auto_approve",
+        migrate: v20260712153932_agent_workspace_pr_review_auto_approve::migrate,
+    },
+    Migration {
+        version: 20260712155425,
+        name: "ui_feature_flag_overrides",
+        migrate: v20260712155425_ui_feature_flag_overrides::migrate,
+    },
+    Migration {
+        version: 20260712162657,
+        name: "persona_builder_agent_mode",
+        migrate: v20260712162657_persona_builder_agent_mode::migrate,
+    },
+    Migration {
+        version: 20260712190416,
+        name: "branch_update_authority",
+        migrate: v20260712190416_branch_update_authority::migrate,
+    },
+    Migration {
+        version: 20260713063349,
+        name: "persona_run_attribution",
+        migrate: v20260713063349_persona_run_attribution::migrate,
+    },
+    Migration {
+        version: 20260713131052,
+        name: "disable_auto_followup_by_default",
+        migrate: v20260713131052_disable_auto_followup_by_default::migrate,
     },
 ];
 

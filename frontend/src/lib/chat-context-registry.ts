@@ -124,6 +124,19 @@ export const CHAT_CONTEXT_REGISTRY: Record<ContextType, ChatContextConfig> = {
     supportsTeamMode: false,
     teamActivityPanelPosition: null,
   },
+  branch_update: {
+    storeKeyPrefix: "branch_update",
+    placeholder: "Message branch updater...",
+    label: "Branch Update",
+    agentType: "reviewer",
+    supportsStreamingText: true,
+    supportsSubagentTasks: false,
+    supportsDiffViews: true,
+    supportsHookEvents: false,
+    supportsQueue: true,
+    supportsTeamMode: false,
+    teamActivityPanelPosition: null,
+  },
   delegation: {
     storeKeyPrefix: "delegation",
     placeholder: "Message delegated agent...",
@@ -218,6 +231,13 @@ export function resolveContextType(
 
   // Task-related contexts — check status to determine specific type
   if (taskId && internalStatus) {
+    if (
+      internalStatus === "updating_plan_branch" ||
+      internalStatus === "updating_task_branch" ||
+      internalStatus === "branch_update_blocked"
+    ) {
+      return "branch_update";
+    }
     if (internalStatus === "waiting_on_pr") {
       return "task";
     }
@@ -266,5 +286,10 @@ export function getContextConfig(contextType: ContextType): ChatContextConfig {
  * Useful for determining if the chat panel should show agent-specific UI.
  */
 export function isAgentContext(contextType: ContextType): boolean {
-  return contextType === "task_execution" || contextType === "review" || contextType === "merge";
+  return (
+    contextType === "task_execution" ||
+    contextType === "review" ||
+    contextType === "merge" ||
+    contextType === "branch_update"
+  );
 }

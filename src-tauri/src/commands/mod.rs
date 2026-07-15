@@ -7,6 +7,9 @@ pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
 pub mod agent_model_commands;
+pub mod agent_plan_commands;
+#[cfg(test)]
+mod agent_plan_commands_tests;
 pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
@@ -17,6 +20,9 @@ mod agent_workspace_auto_review_tests;
 pub mod api_key_commands;
 pub mod artifact_commands;
 pub mod atlassian_commands;
+pub mod automation_commands;
+#[cfg(test)]
+mod automation_commands_tests;
 pub mod branch_helpers;
 pub mod chat_attachment_commands;
 pub mod chat_responses;
@@ -27,6 +33,7 @@ pub mod conversation_stats_commands;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
+pub(crate) mod execution_task_navigation;
 pub mod external_mcp_commands;
 pub mod git_commands;
 pub mod granola_commands;
@@ -47,7 +54,12 @@ pub(crate) mod metrics_queries;
 pub(crate) mod metrics_scope;
 pub(crate) mod metrics_trends;
 pub mod metrics_types;
+pub mod notification_commands;
+#[cfg(test)]
+mod notification_commands_tests;
 pub mod permission_commands;
+pub mod persona_builder_commands;
+pub mod persona_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
@@ -61,6 +73,8 @@ pub mod release_notes_commands;
 pub mod research_commands;
 pub mod review_commands;
 pub mod review_commands_types;
+#[cfg(test)]
+mod review_commands_types_tests;
 pub mod review_helpers;
 pub mod task_commands;
 pub mod task_context_commands;
@@ -71,6 +85,7 @@ pub mod test_data_commands;
 pub mod ticketing_commands;
 pub mod ui_commands;
 pub mod unified_chat_commands;
+pub mod validation_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
 pub mod workspace_review_settings_commands;
@@ -93,6 +108,11 @@ pub use agent_issue_report_commands::{build_agent_issue_report, submit_agent_iss
 pub use agent_model_commands::{
     delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
     UpsertCustomAgentModelInput,
+};
+pub use agent_plan_commands::{
+    copy_agent_conversation_plan, import_agent_conversation_plan,
+    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -125,6 +145,20 @@ pub use atlassian_commands::{
     ExchangeAtlassianOAuthCodeInput, GetAgentConversationJiraIssueInput,
     RefreshAgentConversationJiraIssueInput, SaveAtlassianIntegrationSettingsInput,
     SearchAtlassianResourcesInput, SearchAtlassianResourcesResponse,
+};
+pub use crate::application::automation::api::{
+    AutomationDetailResponse, AutomationResponse, AutomationRunResponse,
+    CreateAutomationDraftResponse,
+};
+pub use automation_commands::{
+    create_automation_draft, get_automation, list_automations, pause_automation, resume_automation,
+    stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
+    ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
+};
+pub use persona_builder_commands::{
+    create_persona_builder_conversation, get_persona_builder_ingest_status,
+    CreatePersonaBuilderConversationInput, PersonaBuilderIngestStatusInput,
+    PersonaBuilderIngestStatusResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
@@ -190,12 +224,14 @@ pub use ideation_commands::{
     reject_task_proposal,
     get_session_messages, get_task_blockers, get_task_messages, get_task_proposal,
     is_orchestrator_available, list_ideation_sessions, list_session_proposals,
-    remove_proposal_dependency, reorder_proposals, send_chat_message, send_orchestrator_message,
-    set_proposal_selection, toggle_proposal_selection, update_agent_lane_settings,
-    update_task_proposal, AgentLaneHarnessAvailabilityResponse, ApplyProposalsResultResponse,
-    DependencyGraphResponse, IdeationLaneHarnessAvailabilityResponse, IdeationSessionResponse,
+    remove_proposal_dependency, reorder_proposals, restart_ideation_implementation,
+    send_chat_message, send_orchestrator_message, set_proposal_selection, toggle_proposal_selection,
+    update_agent_lane_settings, update_task_proposal, AgentLaneHarnessAvailabilityResponse,
+    ApplyProposalsResultResponse, DependencyGraphResponse, IdeationLaneHarnessAvailabilityResponse,
+    IdeationSessionResponse,
     LaneHarnessAvailabilityResponse, OrchestratorMessageResponse, PriorityAssessmentResponse,
-    SessionWithDataResponse, TaskProposalResponse, ToolCallResultResponse,
+    RestartImplementationResultResponse, SessionWithDataResponse, TaskProposalResponse,
+    ToolCallResultResponse,
 };
 pub use linear_commands::{
     assign_agent_conversation_linear_issue, clear_agent_conversation_linear_issue,
@@ -255,8 +291,8 @@ pub use review_commands::{
 pub use task_commands::{
     answer_user_question, archive_task, cancel_tasks_in_group, create_task, emit_queue_changed,
     get_archived_count, get_task, get_task_state_transitions, get_valid_transitions, inject_task,
-    list_tasks, move_task, pause_task, restore_task, search_tasks, stop_task, update_task,
-    StateTransitionResponse,
+    list_tasks, move_task, pause_task, restore_task, retry_branch_update, search_tasks, stop_task,
+    update_task, StateTransitionResponse,
 };
 pub use task_context_commands::{
     get_artifact_full, get_artifact_version, get_related_artifacts, get_task_context,
@@ -307,8 +343,9 @@ pub use agent_sidebar_commands::{
 pub use unified_chat_commands::{
     archive_agent_conversation, create_agent_conversation, delete_queued_agent_message,
     fork_agent_conversation, get_agent_conversation, get_agent_conversation_messages_page,
-    get_agent_conversation_runtime_statuses, get_agent_conversation_summary,
-    get_agent_conversation_timeline_page, get_agent_conversation_workspace,
+    get_agent_conversation_runtime_index, get_agent_conversation_runtime_statuses,
+    get_agent_conversation_summary, get_agent_conversation_timeline_page,
+    get_agent_conversation_workspace,
     get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
     get_agent_run_status_unified, get_agent_running_states,
     get_agent_timeline_item_tool_call_detail, get_queued_agent_messages, is_agent_running,
@@ -319,20 +356,24 @@ pub use unified_chat_commands::{
     reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
     send_agent_message, set_agent_conversation_workspace_auto_publish,
     set_agent_conversation_workspace_pr_supervision, start_agent_conversation, stop_agent,
-    switch_agent_conversation_mode, update_agent_conversation_title,
-    update_agent_conversation_workspace_from_base, AgentConversationListPageResponse,
-    AgentConversationMessagesPageResponse, AgentConversationResponse,
+    switch_agent_conversation_mode, switch_agent_conversation_persona,
+    update_agent_conversation_coordination_mode,
+    update_agent_conversation_title, update_agent_conversation_workspace_from_base,
+    AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
+    AgentConversationResponse, AgentConversationRuntimeIndexResponse,
     AgentConversationTimelinePageResponse, AgentConversationWithMessagesResponse,
-    AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
-    AgentConversationWorkspacePrSupervisionInput,
+    AgentConversationWorkspaceAutoPublishInput,
+    AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AgentMessageResponse, AgentRunStatusResponse, AgentTimelineItemResponse,
     AgentToolCallDetailResponse, CreateAgentConversationInput, ForkAgentConversationInput,
     ForkAgentConversationResponse, PrecomputeAgentConversationWorkspacePrDescriptionResponse,
+    UpdateAgentConversationCoordinationModeInput,
     PublishAgentConversationWorkspaceResponse, QueueAgentMessageInput,
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,
+    SwitchAgentConversationPersonaInput, SwitchAgentConversationPersonaResponse,
     UpdateAgentConversationTitleInput, UpdateAgentConversationWorkspaceFromBaseResponse,
 };
 // Plan branch commands (Phase 85 - Feature branch for plan groups)
@@ -341,7 +382,9 @@ pub use plan_branch_commands::{
     EnableFeatureBranchInput, PlanBranchResponse,
 };
 // UI feature flag commands
-pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
+pub use ui_commands::{
+    get_ui_feature_flags, update_ui_feature_flags, UiFeatureFlagsResponse, UpdateUiFeatureFlagsInput,
+};
 pub use workspace_open_commands::{
     list_workspace_open_targets, open_agent_conversation_workspace,
     open_agent_conversation_workspace_path, WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,

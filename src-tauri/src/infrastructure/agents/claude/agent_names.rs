@@ -17,6 +17,7 @@ pub const SHORT_ORCHESTRATOR_IDEATION: &str = "ralphx-ideation";
 pub const SHORT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx-ideation-readonly";
 pub const SHORT_SESSION_NAMER: &str = "ralphx-utility-session-namer";
 pub const SHORT_PR_DESCRIBER: &str = "ralphx-utility-pr-describer";
+pub const SHORT_PERSONA_EXTRACTOR: &str = "ralphx-persona-extractor";
 pub const SHORT_PLAN_COMPLEXITY_ASSESSOR: &str = "ralphx-utility-plan-complexity";
 pub const SHORT_CHAT_TASK: &str = "ralphx-chat-task";
 pub const SHORT_CHAT_PROJECT: &str = "ralphx-chat-project";
@@ -30,6 +31,9 @@ pub const SHORT_AGENT_WORKSPACE_REPAIR: &str = "ralphx-agent-workspace-repair";
 pub const SHORT_AGENT_WORKSPACE_PR_FIXER: &str = "ralphx-agent-workspace-pr-fixer";
 pub const SHORT_PR_REVIEWER: &str = "ralphx-pr-reviewer";
 pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
+pub const SHORT_AUTOMATION_SETUP: &str = "ralphx-automation-setup";
+pub const SHORT_AUTOMATION_JUDGE: &str = "ralphx-automation-judge";
+pub const SHORT_AUTOMATION_PLAN_JUDGE: &str = "ralphx-automation-plan-judge";
 pub const SHORT_REVIEWER: &str = "ralphx-execution-reviewer";
 pub const SHORT_QA_PREP: &str = "ralphx-qa-prep";
 pub const SHORT_QA_EXECUTOR: &str = "ralphx-qa-executor";
@@ -37,6 +41,7 @@ pub const SHORT_ORCHESTRATOR: &str = "ralphx-execution-orchestrator";
 pub const SHORT_DEEP_RESEARCHER: &str = "ralphx-research-deep-researcher";
 pub const SHORT_PROJECT_ANALYZER: &str = "ralphx-project-analyzer";
 pub const SHORT_MERGER: &str = "ralphx-execution-merger";
+pub const SHORT_BRANCH_UPDATER: &str = "ralphx-execution-branch-updater";
 pub const SHORT_MEMORY_MAINTAINER: &str = "ralphx-memory-maintainer";
 pub const SHORT_MEMORY_CAPTURE: &str = "ralphx-memory-capture";
 
@@ -104,6 +109,15 @@ pub const AGENT_WORKSPACE_PR_FIXER: &str = "ralphx:ralphx-agent-workspace-pr-fix
 /// Agent-workspace local pull request reviewer
 pub const AGENT_PR_REVIEWER: &str = "ralphx:ralphx-pr-reviewer";
 
+/// Automation setup agent for draft automation conversations
+pub const AGENT_AUTOMATION_SETUP: &str = "ralphx:ralphx-automation-setup";
+
+/// Automation judge utility agent for scheduler-owned verdicts
+pub const AGENT_AUTOMATION_JUDGE: &str = "ralphx:ralphx-automation-judge";
+
+/// Automation plan judge utility agent for automatic plan-gate verdicts
+pub const AGENT_AUTOMATION_PLAN_JUDGE: &str = "ralphx:ralphx-automation-plan-judge";
+
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";
 
@@ -118,6 +132,7 @@ pub const AGENT_REVIEWER: &str = "ralphx:ralphx-execution-reviewer";
 
 /// Merger agent (ChatContextType::Merge)
 pub const AGENT_MERGER: &str = "ralphx:ralphx-execution-merger";
+pub const AGENT_BRANCH_UPDATER: &str = "ralphx:ralphx-execution-branch-updater";
 
 /// Review-chat agent (ChatContextType::Review when status = "review_passed")
 pub const AGENT_REVIEW_CHAT: &str = "ralphx:ralphx-review-chat";
@@ -129,6 +144,9 @@ pub const AGENT_REVIEW_HISTORY: &str = "ralphx:ralphx-review-history";
 
 /// Session naming agent (haiku, background)
 pub const AGENT_SESSION_NAMER: &str = "ralphx:ralphx-utility-session-namer";
+
+/// PersonaBuilder-only helper for distilling ingested copies into persona drafts.
+pub const AGENT_PERSONA_EXTRACTOR: &str = "ralphx:ralphx-persona-extractor";
 
 /// Agent workspace PR description writer (background)
 pub const AGENT_PR_DESCRIBER: &str = "ralphx:ralphx-utility-pr-describer";

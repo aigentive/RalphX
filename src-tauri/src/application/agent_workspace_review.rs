@@ -9,14 +9,15 @@ use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+use crate::application::agent_workspace_review_base::resolve_agent_workspace_review_base;
 use crate::application::chat_service::{ChatService, SendCallerContext, SendMessageOptions};
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRun, AgentRunId, AgentRunStatus, Artifact, ArtifactContent,
+    AgentConversationWorkspace, AgentRun, AgentRunId, AgentRunStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ChatContextType,
-    ChatConversation, ChatConversationId, MessageRole, Project,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
+    ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
@@ -49,6 +50,11 @@ const WORKSPACE_REVIEW_INTERRUPTED_ON_STARTUP_ERROR: &str =
     "Workspace reviewer was interrupted when the app restarted";
 const WORKSPACE_REVIEW_COMPLETED_WITHOUT_CURRENT_REVIEW_ERROR: &str =
     "Workspace reviewer completed without writing a current Review";
+const WORKSPACE_REVIEW_FIXER_STATUS_ROUTING: &str = "routing";
+const WORKSPACE_REVIEW_FIXER_STATUS_QUEUED: &str = "queued";
+const WORKSPACE_REVIEW_FIXER_STATUS_RUNNING: &str = "running";
+const WORKSPACE_REVIEW_FIXER_STATUS_FAILED: &str = "failed";
+const WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE: &str = "fixer_already_active";
 const MERGED_PUBLICATION_PR_STATUS: &str = "merged";
 
 fn compact_log_fingerprint(value: Option<&str>) -> String {
@@ -182,6 +188,13 @@ pub struct AgentWorkspaceReviewStart {
     pub was_queued: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewFixerStart {
+    pub context: AgentWorkspaceReviewContext,
+    pub started: bool,
+    pub skipped_reason: Option<String>,
+}
+
 pub async fn reconcile_interrupted_agent_workspace_reviews_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
@@ -309,6 +322,14 @@ fn settle_completed_workspace_review_monitor_on_startup(
             clear_review_blocking_state(monitor);
             true
         }
+        AgentWorkspaceReviewOutcome::RunFailed
+            if workspace_review_monitor_has_current_run_failure(monitor, run) =>
+        {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+            clear_review_blocking_state(monitor);
+            true
+        }
         AgentWorkspaceReviewOutcome::NoChanges => {
             monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
             monitor.review_gate_status = AgentWorkspaceReviewGateStatus::NotRequired;
@@ -318,6 +339,28 @@ fn settle_completed_workspace_review_monitor_on_startup(
         }
         _ => false,
     }
+}
+
+fn workspace_review_monitor_has_current_run_failure(
+    monitor: &AgentWorkspaceReviewMonitor,
+    run: Option<&AgentRun>,
+) -> bool {
+    let Some(run) = run else {
+        return false;
+    };
+    let run_id = run.id.as_str();
+    monitor.review_outcome == AgentWorkspaceReviewOutcome::RunFailed
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Failed
+        && monitor.last_run_id.as_deref() == Some(run_id.as_str())
+        && monitor
+            .last_error
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && monitor.current_target_scope.is_some()
+        && monitor
+            .current_diff_fingerprint
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn workspace_review_monitor_has_current_artifact(monitor: &AgentWorkspaceReviewMonitor) -> bool {
@@ -375,6 +418,7 @@ pub async fn load_agent_workspace_review_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewContext> {
+    ensure_workspace_review_supported_mode(workspace)?;
     let started = Instant::now();
     let project = state
         .project_repo
@@ -433,6 +477,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     force: bool,
     chat_service: &S,
 ) -> AppResult<AgentWorkspaceReviewStart> {
+    ensure_workspace_review_supported_mode(workspace)?;
     let request_started = Instant::now();
     info!(
         target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -678,6 +723,25 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 .agent_conversation_workspace_repo
                 .upsert_workspace_review_monitor(monitor)
                 .await?;
+            // R3 site (c): the reviewer never started, so no waiter will ever fire. Pause the
+            // owning automation and terminalize its run now, else the run false-times-out at the 4h
+            // wall-clock. No-op for non-automation conversations.
+            if let Err(pause_error) =
+                crate::application::automation::review_gate::pause_automation_for_blocked_workspace_review(
+                    state.as_ref(),
+                    &workspace.conversation_id,
+                    Some(error.as_str()),
+                )
+                .await
+            {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "pause_automation_on_reviewer_start_failure_failed",
+                    conversation_id = %workspace.conversation_id,
+                    error = %pause_error,
+                    "Failed to pause automation after workspace reviewer start failure"
+                );
+            }
             return Err(AppError::Infrastructure(error));
         }
     };
@@ -1086,11 +1150,19 @@ fn workspace_review_integration_reference_label(
         reference.kind,
         reference.key.as_deref().unwrap_or(reference.id.as_str())
     );
-    if let Some(title) = reference.title.as_deref().filter(|title| !title.trim().is_empty()) {
+    if let Some(title) = reference
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
         label.push_str(": ");
         label.push_str(title.trim());
     }
-    if let Some(url) = reference.url.as_deref().filter(|url| !url.trim().is_empty()) {
+    if let Some(url) = reference
+        .url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+    {
         label.push_str(" (");
         label.push_str(url.trim());
         label.push(')');
@@ -1100,7 +1172,11 @@ fn workspace_review_integration_reference_label(
 
 fn workspace_review_artifact_reference_label(reference: &ComposerArtifactReference) -> String {
     let mut label = format!("{} {}", reference.kind, reference.artifact_id);
-    if let Some(title) = reference.title.as_deref().filter(|title| !title.trim().is_empty()) {
+    if let Some(title) = reference
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
         label.push_str(": ");
         label.push_str(title.trim());
     }
@@ -1198,10 +1274,12 @@ where
 async fn linked_workspace_plan_artifact_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
-) -> AppResult<Option<(
-    ComposerArtifactReference,
-    Option<AgentWorkspaceReviewResolvedArtifactContext>,
-)>> {
+) -> AppResult<
+    Option<(
+        ComposerArtifactReference,
+        Option<AgentWorkspaceReviewResolvedArtifactContext>,
+    )>,
+> {
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return Ok(None);
     };
@@ -1230,6 +1308,7 @@ async fn linked_workspace_plan_artifact_context(
     Ok(Some((reference, resolved_artifact)))
 }
 
+#[cfg(test)]
 async fn linked_workspace_plan_artifact_reference(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -1251,7 +1330,10 @@ fn workspace_review_resolved_artifact_context(
     Some(AgentWorkspaceReviewResolvedArtifactContext {
         artifact_id: reference.artifact_id.clone(),
         kind: reference.kind.clone(),
-        title: reference.title.clone().or_else(|| Some(artifact.name.clone())),
+        title: reference
+            .title
+            .clone()
+            .or_else(|| Some(artifact.name.clone())),
         session_id: reference.session_id.clone(),
         version: reference.version.or(Some(artifact.metadata.version)),
         content,
@@ -1472,6 +1554,28 @@ fn spawn_workspace_review_waiter(
                         "Verified workspace Review after child chat completion"
                     );
                 }
+                Ok(Some(monitor))
+                    if workspace_review_monitor_has_terminal_run_failure_for_target(
+                        &monitor, &target, &run_id,
+                    ) =>
+                {
+                    warn!(
+                        target: WORKSPACE_REVIEW_LOG_TARGET,
+                        operation = "child_chat_preserved_run_failed_review",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %workspace.project_id,
+                        branch = %workspace.branch_name,
+                        run_id = %run_id,
+                        elapsed_ms = wait_started.elapsed().as_millis(),
+                        monitor_status = %monitor.status,
+                        review_outcome = %monitor.review_outcome,
+                        review_gate_status = %monitor.review_gate_status,
+                        target_scope = %target.scope,
+                        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+                        error = %monitor.last_error.as_deref().unwrap_or("none"),
+                        "Preserved workspace Review run_failed completion from child chat"
+                    );
+                }
                 Ok(_) => {
                     warn!(
                         target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -1564,6 +1668,7 @@ async fn mark_workspace_review_blocked(
             monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
             clear_review_blocking_state(&mut monitor);
             monitor.last_run_id = Some(helper_id.to_string());
+            let block_detail = error.clone();
             monitor.last_error = Some(error);
             if let Err(error) = state
                 .agent_conversation_workspace_repo
@@ -1577,6 +1682,24 @@ async fn mark_workspace_review_blocked(
                     helper_id,
                     error = %error,
                     "Failed to persist blocked workspace Review monitor"
+                );
+            }
+            // R3 site (b): the waiter observed a blocked child chat (gate Failed). Pause the owning
+            // automation and terminalize its run. No-op for non-automation conversations.
+            if let Err(pause_error) =
+                crate::application::automation::review_gate::pause_automation_for_blocked_workspace_review(
+                    state,
+                    &workspace.conversation_id,
+                    Some(block_detail.as_str()),
+                )
+                .await
+            {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "pause_automation_on_review_block_failed",
+                    conversation_id = %workspace.conversation_id,
+                    error = %pause_error,
+                    "Failed to pause automation after blocked workspace Review"
                 );
             }
         }
@@ -1612,6 +1735,43 @@ fn workspace_review_block_matches_active_monitor(
         _ => true,
     };
     run_matches && target_matches
+}
+
+fn workspace_review_monitor_current_target_matches(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) -> bool {
+    if monitor.current_target_scope != Some(target.scope)
+        || monitor.current_diff_fingerprint.as_deref() != Some(target.diff_fingerprint.as_str())
+    {
+        return false;
+    }
+
+    match target.scope {
+        AgentWorkspaceReviewTargetScope::SelectedSource => {
+            monitor.selected_source_head_sha.as_deref() == target.head_sha.as_deref()
+        }
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => target
+            .head_sha
+            .as_deref()
+            .is_none_or(|head_sha| monitor.workspace_head_sha.as_deref() == Some(head_sha)),
+    }
+}
+
+fn workspace_review_monitor_has_terminal_run_failure_for_target(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+) -> bool {
+    monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked
+        && monitor.review_outcome == AgentWorkspaceReviewOutcome::RunFailed
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Failed
+        && monitor.last_run_id.as_deref() == Some(run_id)
+        && monitor
+            .last_error
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && workspace_review_monitor_current_target_matches(monitor, target)
 }
 
 pub async fn complete_agent_workspace_review_run(
@@ -1703,17 +1863,23 @@ pub async fn complete_agent_workspace_review_run(
                 .map(|target| workspace_review_blocking_fingerprint(target, &blocking_summary));
             let is_new_blocking_fingerprint =
                 previous_blocking_fingerprint.as_deref() != blocking_fingerprint.as_deref();
-            let should_route_fixer = blocking_fingerprint.is_some()
+            let autofix_enabled =
+                workspace_review_autofix_blocking_findings_enabled(state, workspace).await;
+            let should_route_fixer = autofix_enabled
+                && blocking_fingerprint.is_some()
                 && (is_new_blocking_fingerprint || previous_fixer_status.is_none());
             monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
             monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
             monitor.review_blocking_fingerprint = blocking_fingerprint;
             monitor.review_blocking_summary = Some(blocking_summary);
             monitor.last_error = None;
+            if is_new_blocking_fingerprint {
+                clear_review_fixer_state(&mut monitor);
+            }
             if should_route_fixer {
-                monitor.review_fixer_status = Some("routing".to_string());
-                monitor.review_fixer_run_id = None;
-                monitor.review_fixer_conversation_id = None;
+                monitor.review_fixer_status =
+                    Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+                clear_review_fixer_linkage(&mut monitor);
             }
         }
         AgentWorkspaceReviewOutcome::NoChanges if target.is_none() => {
@@ -1745,7 +1911,7 @@ pub async fn complete_agent_workspace_review_run(
         .upsert_workspace_review_monitor(monitor)
         .await?;
     if monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking
-        && monitor.review_fixer_status.as_deref() == Some("routing")
+        && monitor.review_fixer_status.as_deref() == Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING)
     {
         monitor =
             route_workspace_review_blocking_fixer(state, workspace, &monitor, target.as_ref())
@@ -1818,6 +1984,123 @@ fn workspace_review_blocking_fingerprint(
     hasher.update(b":");
     hasher.update(blocking_summary.trim().as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+async fn workspace_review_autofix_blocking_findings_enabled(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    match state.review_settings_repo.get_settings().await {
+        Ok(settings) => settings.autofix_workspace_review_blocking_findings,
+        Err(error) => {
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "blocking_fixer_autofix_settings_load_failed",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %error,
+                "Failed to load Review settings; automatic workspace Review fixer routing is disabled for this completion"
+            );
+            false
+        }
+    }
+}
+
+fn workspace_review_fixer_status_is_active(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some(
+            WORKSPACE_REVIEW_FIXER_STATUS_ROUTING
+                | WORKSPACE_REVIEW_FIXER_STATUS_QUEUED
+                | WORKSPACE_REVIEW_FIXER_STATUS_RUNNING
+        )
+    )
+}
+
+pub async fn start_agent_workspace_review_blocking_fixer(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<AgentWorkspaceReviewFixerStart> {
+    let chat_service = state.build_chat_service();
+    start_agent_workspace_review_blocking_fixer_with_chat_service(state, workspace, &chat_service)
+        .await
+}
+
+async fn start_agent_workspace_review_blocking_fixer_with_chat_service<S: ChatService + ?Sized>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    chat_service: &S,
+) -> AppResult<AgentWorkspaceReviewFixerStart> {
+    ensure_workspace_review_supported_mode(workspace)?;
+    let context = load_agent_workspace_review_context(state, workspace).await?;
+    let Some(target) = context.target.as_ref() else {
+        return Err(AppError::Validation(
+            "workspace Review fixer requires a current review target".to_string(),
+        ));
+    };
+    if !context.is_current || context.is_outdated {
+        return Err(AppError::Validation(
+            "workspace Review fixer requires a current blocking Review".to_string(),
+        ));
+    }
+    if context.monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Blocking
+        && context.monitor.review_outcome != AgentWorkspaceReviewOutcome::Blocking
+    {
+        return Err(AppError::Validation(
+            "workspace Review fixer requires blocking Review findings".to_string(),
+        ));
+    }
+    if context
+        .monitor
+        .review_blocking_summary
+        .as_deref()
+        .is_none_or(|summary| summary.trim().is_empty())
+    {
+        return Err(AppError::Validation(
+            "workspace Review fixer requires blocking Review summary".to_string(),
+        ));
+    }
+    if context
+        .monitor
+        .review_blocking_fingerprint
+        .as_deref()
+        .is_none_or(|fingerprint| fingerprint.trim().is_empty())
+    {
+        return Err(AppError::Validation(
+            "workspace Review fixer requires blocking Review fingerprint".to_string(),
+        ));
+    }
+    if workspace_review_fixer_status_is_active(context.monitor.review_fixer_status.as_deref()) {
+        return Ok(AgentWorkspaceReviewFixerStart {
+            context,
+            started: false,
+            skipped_reason: Some(WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE.to_string()),
+        });
+    }
+
+    let mut monitor = context.monitor.clone();
+    monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_ROUTING.to_string());
+    clear_review_fixer_linkage(&mut monitor);
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await?;
+    let routed = route_workspace_review_blocking_fixer_with_chat_service(
+        state,
+        workspace,
+        &monitor,
+        Some(target),
+        chat_service,
+    )
+    .await?;
+    let context = load_agent_workspace_review_context(state, workspace).await?;
+    Ok(AgentWorkspaceReviewFixerStart {
+        context,
+        started: routed.review_fixer_status.as_deref()
+            != Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED),
+        skipped_reason: None,
+    })
 }
 
 async fn route_workspace_review_blocking_fixer(
@@ -1910,9 +2193,9 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
     {
         Ok(result) => {
             next.review_fixer_status = Some(if result.was_queued || result.queued_as_pending {
-                "queued".to_string()
+                WORKSPACE_REVIEW_FIXER_STATUS_QUEUED.to_string()
             } else {
-                "running".to_string()
+                WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string()
             });
             next.review_fixer_run_id = if result.agent_run_id.trim().is_empty() {
                 None
@@ -1937,7 +2220,7 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
             );
         }
         Err(error) => {
-            next.review_fixer_status = Some("failed".to_string());
+            next.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_FAILED.to_string());
             next.last_error = Some(format!("Failed to route Review fixer: {error}"));
             warn!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -1961,12 +2244,12 @@ async fn route_workspace_review_blocking_fixer_with_chat_service<S: ChatService 
 }
 
 fn workspace_review_fixer_request_metadata(blocking_fingerprint: Option<&str>) -> String {
-    let fingerprint_json = blocking_fingerprint
-        .map(|value| format!("\"{}\"", value.replace('"', "\\\"")))
-        .unwrap_or_else(|| "null".to_string());
-    format!(
-        "{{\"source\":\"workspace_review_blocking_fixer\",\"blocking_fingerprint\":{fingerprint_json}}}"
-    )
+    serde_json::json!({
+        "hidden_from_ui": true,
+        "source": "workspace_review_blocking_fixer",
+        "blocking_fingerprint": blocking_fingerprint,
+    })
+    .to_string()
 }
 
 fn build_workspace_review_blocking_repair_message(
@@ -2237,7 +2520,6 @@ fn build_context(
             crate::domain::entities::AgentConversationWorkspaceMode::Edit
                 | crate::domain::entities::AgentConversationWorkspaceMode::Ideation
                 | crate::domain::entities::AgentConversationWorkspaceMode::Plan
-                | crate::domain::entities::AgentConversationWorkspaceMode::ReviewPr
         );
     AgentWorkspaceReviewContext {
         monitor,
@@ -2351,9 +2633,17 @@ fn apply_review_gate_to_monitor(
 fn clear_review_blocking_state(monitor: &mut AgentWorkspaceReviewMonitor) {
     monitor.review_blocking_summary = None;
     monitor.review_blocking_fingerprint = None;
+    clear_review_fixer_state(monitor);
+}
+
+fn clear_review_fixer_state(monitor: &mut AgentWorkspaceReviewMonitor) {
+    clear_review_fixer_linkage(monitor);
+    monitor.review_fixer_status = None;
+}
+
+fn clear_review_fixer_linkage(monitor: &mut AgentWorkspaceReviewMonitor) {
     monitor.review_fixer_run_id = None;
     monitor.review_fixer_conversation_id = None;
-    monitor.review_fixer_status = None;
 }
 
 fn apply_current_target_to_monitor(
@@ -2707,14 +2997,29 @@ fn build_patch_excerpt(patch_sections: &[(&str, &str)], status: Option<&str>) ->
     }
 }
 
-async fn resolve_review_target(
+pub(crate) async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
 ) -> AppResult<Option<AgentWorkspaceReviewTarget>> {
+    ensure_workspace_review_supported_mode(workspace)?;
     if let Some(workspace_target) = resolve_workspace_delta_target(workspace).await? {
         return Ok(Some(workspace_target));
     }
     resolve_selected_source_target(workspace, project).await
+}
+
+fn ensure_workspace_review_supported_mode(workspace: &AgentConversationWorkspace) -> AppResult<()> {
+    if matches!(
+        workspace.mode,
+        crate::domain::entities::AgentConversationWorkspaceMode::Edit
+            | crate::domain::entities::AgentConversationWorkspaceMode::Ideation
+            | crate::domain::entities::AgentConversationWorkspaceMode::Plan
+    ) {
+        return Ok(());
+    }
+    Err(AppError::Validation(
+        "Workspace Review is unavailable in Review PR mode".to_string(),
+    ))
 }
 
 async fn resolve_workspace_delta_target(
@@ -2727,12 +3032,15 @@ async fn resolve_workspace_delta_target(
         return Ok(None);
     }
 
-    let base_ref = workspace
+    let captured_base = workspace
         .base_commit
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| workspace.base_ref.clone());
     let head_ref = "HEAD".to_string();
+    let base_ref =
+        resolve_agent_workspace_review_base(&worktree_path, workspace, &head_ref, &captured_base)
+            .await?;
     let committed_diff = git_stdout_lossy(
         &["diff", "--binary", "--no-ext-diff", &base_ref, &head_ref],
         &worktree_path,
@@ -3085,7 +3393,7 @@ fn build_review_request_message(
          Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
          Do not run shell commands, tests, linters, or validation suites. \
          Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, write hunk descriptions with `write_workspace_review_hunk_annotations`, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. \
-         Use the target scope, head SHA, diff fingerprint, and monitor last_run_id returned by `get_workspace_review_context` as tool arguments only; do not repeat that provenance as artifact body prose. Do not modify files.",
+         Use the target scope, head SHA, and diff fingerprint returned by `get_workspace_review_context` as tool arguments only; do not repeat that provenance as artifact body prose. Do not modify files.",
         scope = target.scope,
         base_ref = target.base_ref,
         base_sha = target.base_sha.as_deref().unwrap_or("unknown"),
@@ -3132,10 +3440,10 @@ mod tests {
         AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewOutcome,
         AgentWorkspaceSourcePullRequest, Artifact, ArtifactId, ArtifactType, ChatConversation,
-        ChatConversationId, ChatMessage,
-        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-        ProjectId, TaskId,
+        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSession,
+        IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
     };
+    use crate::domain::review::ReviewSettings;
     use crate::infrastructure::MockAgenticClient;
     use std::process::Command;
 
@@ -3880,6 +4188,30 @@ x
     }
 
     #[tokio::test]
+    async fn manual_blocking_review_fixer_requires_current_review_target() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let missing_repo = temp.path().join("missing-repo");
+        let state = AppState::new_test();
+        let project = seed_project(&state, &missing_repo).await;
+        let workspace = workspace(
+            &project,
+            &temp.path().join("missing-worktree"),
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            None,
+        );
+
+        let error = start_agent_workspace_review_blocking_fixer(&state, &workspace)
+            .await
+            .expect_err("manual fixer should require a reviewable target");
+
+        assert!(matches!(
+            error,
+            AppError::Validation(message) if message.contains("current review target")
+        ));
+    }
+
+    #[tokio::test]
     async fn existing_review_artifact_marks_context_current_then_outdated() {
         let (_temp, repo, base_sha) = init_repo();
         committed_workspace_delta(&repo);
@@ -4235,8 +4567,10 @@ x
             .goal_context
             .artifact_references
             .iter()
-            .any(|reference| reference.artifact_id == plan_artifact.id.as_str()
-                && reference.kind == "plan"));
+            .any(
+                |reference| reference.artifact_id == plan_artifact.id.as_str()
+                    && reference.kind == "plan"
+            ));
         assert!(start
             .context
             .goal_context
@@ -4244,7 +4578,9 @@ x
             .iter()
             .any(|artifact| artifact.artifact_id == plan_artifact.id.as_str()
                 && artifact.kind == "plan"
-                && artifact.content.contains("Use the backend-owned Review gate.")
+                && artifact
+                    .content
+                    .contains("Use the backend-owned Review gate.")
                 && !artifact.content_truncated));
         assert!(start.context.monitor.last_run_id.is_some());
         let review_conversation_id = start
@@ -4285,8 +4621,9 @@ x
         assert!(review_prompt.contains("RX-42"));
         assert!(!review_prompt
             .contains("Fetch any `kind=&quot;plan&quot;` artifact reference with `get_artifact`"));
-        assert!(review_prompt
-            .contains("Use the target scope, head SHA, diff fingerprint, and monitor last_run_id"));
+        assert!(
+            review_prompt.contains("Use the target scope, head SHA, and diff fingerprint returned")
+        );
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
         assert!(!review_prompt.contains("pass conversation_id"));
 
@@ -4611,7 +4948,7 @@ x
         spawn_workspace_review_waiter(
             Arc::clone(&state),
             workspace.clone(),
-            target,
+            target.clone(),
             completed_run_id.clone(),
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4629,6 +4966,70 @@ x
         );
         assert_eq!(monitor.review_artifact_version, Some(4));
         assert_eq!(monitor.last_error, None);
+
+        let mut run_failed_completion = AgentRun::new(ChatConversationId::new());
+        let run_failed_completion_id = run_failed_completion.id.as_str().to_string();
+        run_failed_completion.complete();
+        state
+            .agent_run_repo
+            .create(run_failed_completion)
+            .await
+            .expect("run_failed completion run should persist");
+        let specific_error =
+            "Workspace review packet requires additional hunk annotations".to_string();
+        let mut run_failed_monitor = monitor;
+        apply_current_target_to_monitor(&mut run_failed_monitor, Some(&target));
+        apply_review_artifact_to_monitor(
+            &mut run_failed_monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(run_failed_completion_id.clone()),
+            ArtifactId::from_string("artifact-run-failed"),
+            5,
+            Utc::now(),
+            None,
+        );
+        run_failed_monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        run_failed_monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        run_failed_monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        run_failed_monitor.last_run_id = Some(run_failed_completion_id.clone());
+        run_failed_monitor.last_error = Some(specific_error.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(run_failed_monitor)
+            .await
+            .expect("run_failed monitor should persist");
+
+        spawn_workspace_review_waiter(
+            Arc::clone(&state),
+            workspace.clone(),
+            target,
+            run_failed_completion_id.clone(),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            monitor.last_run_id.as_deref(),
+            Some(run_failed_completion_id.as_str())
+        );
+        assert_eq!(monitor.review_artifact_version, Some(5));
+        assert_eq!(monitor.last_error.as_deref(), Some(specific_error.as_str()));
     }
 
     #[tokio::test]
@@ -5005,6 +5406,89 @@ x
     }
 
     #[tokio::test]
+    async fn startup_reconciliation_preserves_completed_run_failed_current_artifact_error() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let mut completed_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = completed_run.id.as_str().to_string();
+        completed_run.complete();
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("completed run should persist");
+
+        let mut monitor = context.monitor;
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(run_id.clone()),
+            ArtifactId::from_string("artifact-startup-run-failed"),
+            11,
+            Utc::now(),
+            None,
+        );
+        let specific_error =
+            "Workspace review packet requires additional hunk annotations".to_string();
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        monitor.last_error = Some(specific_error.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 1);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(monitor.review_artifact_version, Some(11));
+        assert_eq!(monitor.last_error.as_deref(), Some(specific_error.as_str()));
+    }
+
+    #[tokio::test]
     async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         let (_temp, repo, base_sha) = init_repo();
         committed_workspace_delta(&repo);
@@ -5112,6 +5596,267 @@ x
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("Failed to route Review fixer")));
+    }
+
+    #[tokio::test]
+    async fn complete_blocking_review_does_not_autoroute_fixer_when_autofix_disabled() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                autofix_workspace_review_blocking_findings: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should persist");
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+        let mut monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-current"),
+            1,
+            Utc::now(),
+            None,
+        );
+        monitor.review_blocking_fingerprint = Some("stale-blocking-fingerprint".to_string());
+        monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string());
+        monitor.review_fixer_run_id = Some("stale-fixer-run".to_string());
+        monitor.review_fixer_conversation_id =
+            Some(ChatConversationId::from_string("stale-fixer-conversation"));
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("ready monitor should persist");
+
+        let completed = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("blocking".to_string()),
+            Some("New blocking issue".to_string()),
+            None,
+            Some("review-run".to_string()),
+        )
+        .await
+        .expect("blocking completion should persist without autorouting");
+
+        assert_eq!(
+            completed.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Blocking
+        );
+        assert_eq!(
+            completed.review_outcome,
+            AgentWorkspaceReviewOutcome::Blocking
+        );
+        assert_eq!(
+            completed.review_blocking_summary.as_deref(),
+            Some("New blocking issue")
+        );
+        assert!(completed.review_blocking_fingerprint.is_some());
+        assert_ne!(
+            completed.review_blocking_fingerprint.as_deref(),
+            Some("stale-blocking-fingerprint")
+        );
+        assert!(completed.review_fixer_status.is_none());
+        assert!(completed.review_fixer_run_id.is_none());
+        assert!(completed.review_fixer_conversation_id.is_none());
+        assert!(completed.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn manual_blocking_review_fixer_routes_hidden_repair_message_when_autofix_disabled() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                autofix_workspace_review_blocking_findings: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should persist");
+        let chat_service = MockChatService::new();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+        let mut monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-current"),
+            1,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("ready monitor should persist");
+
+        let completed = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("blocking".to_string()),
+            Some("Manual fixer should still run.".to_string()),
+            None,
+            Some("review-run".to_string()),
+        )
+        .await
+        .expect("blocking completion should persist");
+        assert!(completed.review_fixer_status.is_none());
+        let blocking_fingerprint = completed
+            .review_blocking_fingerprint
+            .clone()
+            .expect("blocking fingerprint should be recorded");
+
+        let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
+            &state,
+            &workspace,
+            &chat_service,
+        )
+        .await
+        .expect("manual fixer should route");
+
+        assert!(start.started);
+        assert_eq!(start.skipped_reason, None);
+        assert_eq!(
+            start.context.monitor.review_fixer_status.as_deref(),
+            Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING)
+        );
+        assert!(start.context.monitor.review_fixer_run_id.is_some());
+        assert!(start.context.monitor.review_fixer_conversation_id.is_some());
+
+        let sent_options = chat_service.get_sent_options().await;
+        assert_eq!(sent_options.len(), 1);
+        let options = &sent_options[0];
+        assert_eq!(
+            options.conversation_id_override,
+            Some(workspace.conversation_id.clone())
+        );
+        assert_eq!(
+            options.agent_name_override.as_deref(),
+            Some(agent_names::AGENT_WORKSPACE_REPAIR)
+        );
+        let metadata: serde_json::Value = serde_json::from_str(
+            options
+                .metadata
+                .as_deref()
+                .expect("fixer request should carry hidden message metadata"),
+        )
+        .expect("fixer metadata should be valid json");
+        assert_eq!(metadata["hidden_from_ui"], true);
+        assert_eq!(metadata["source"], "workspace_review_blocking_fixer");
+        assert_eq!(
+            metadata["blocking_fingerprint"].as_str(),
+            Some(blocking_fingerprint.as_str())
+        );
+
+        let sent_messages = chat_service.get_sent_messages().await;
+        assert_eq!(sent_messages.len(), 1);
+        assert!(sent_messages[0].contains("Workspace Review found blocking issues"));
+        assert!(sent_messages[0].contains("Manual fixer should still run."));
+    }
+
+    #[tokio::test]
+    async fn manual_blocking_review_fixer_skips_when_fixer_already_active() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let chat_service = MockChatService::new();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+        let mut monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-current"),
+            1,
+            Utc::now(),
+            None,
+        );
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+        monitor.review_blocking_summary = Some("Active fixer duplicate guard.".to_string());
+        monitor.review_blocking_fingerprint = Some(workspace_review_blocking_fingerprint(
+            &target,
+            "Active fixer duplicate guard.",
+        ));
+        monitor.review_fixer_status = Some(WORKSPACE_REVIEW_FIXER_STATUS_RUNNING.to_string());
+        monitor.review_fixer_run_id = Some("active-fixer-run".to_string());
+        monitor.review_fixer_conversation_id = Some(workspace.conversation_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("blocking monitor should persist");
+
+        let start = start_agent_workspace_review_blocking_fixer_with_chat_service(
+            &state,
+            &workspace,
+            &chat_service,
+        )
+        .await
+        .expect("active fixer should be treated as an idempotent skip");
+
+        assert!(!start.started);
+        assert_eq!(
+            start.skipped_reason.as_deref(),
+            Some(WORKSPACE_REVIEW_FIXER_SKIPPED_ALREADY_ACTIVE)
+        );
+        assert_eq!(chat_service.get_sent_messages().await.len(), 0);
     }
 
     #[tokio::test]
@@ -5228,7 +5973,9 @@ x
         assert!(message.contains("Review artifact: review-artifact-1 v7"));
         assert!(message.contains("Review artifact content injected by RalphX"));
         assert!(message.contains("Blocking detail from generated Review."));
-        assert!(message.contains("Call `get_artifact` only if this injected content is truncated or insufficient."));
+        assert!(message.contains(
+            "Call `get_artifact` only if this injected content is truncated or insufficient."
+        ));
         assert!(!message.contains("Fetch the full Review artifact before editing"));
         assert!(message.contains("<workspace_goal_context>"));
         assert!(message.contains("Remove workspace path constraints."));
@@ -5356,10 +6103,25 @@ x
         assert!(options
             .composer_artifact_references
             .iter()
-            .any(|reference| reference.artifact_id == plan_artifact.id.as_str()
-                && reference.kind == "plan"
-                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
-                && reference.version == Some(3)));
+            .any(
+                |reference| reference.artifact_id == plan_artifact.id.as_str()
+                    && reference.kind == "plan"
+                    && reference.session_id.as_deref() == Some(planning_session.id.as_str())
+                    && reference.version == Some(3)
+            ));
+        let metadata: serde_json::Value = serde_json::from_str(
+            options
+                .metadata
+                .as_deref()
+                .expect("fixer request should carry hidden message metadata"),
+        )
+        .expect("fixer metadata should be valid json");
+        assert_eq!(metadata["hidden_from_ui"], true);
+        assert_eq!(metadata["source"], "workspace_review_blocking_fixer");
+        assert_eq!(
+            metadata["blocking_fingerprint"].as_str(),
+            monitor.review_blocking_fingerprint.as_deref()
+        );
 
         let sent_messages = chat_service.get_sent_messages().await;
         assert_eq!(sent_messages.len(), 1);
@@ -5959,6 +6721,150 @@ x
         assert_eq!(
             monitor.current_target_scope,
             Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_workspace_review_blocked_pauses_owning_automation() {
+        use crate::domain::entities::{
+            Automation, AutomationId, AutomationJudgeState, AutomationPlanApprovalMode,
+            AutomationPlanJudgeState, AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun,
+            AutomationRunId, AutomationRunStatus, AutomationStatus,
+        };
+
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+
+        // Seed an automation + run linked to this workspace's conversation.
+        let now = chrono::Utc::now();
+        let automation_id = AutomationId::from_string("automation-1");
+        state
+            .automation_repo
+            .create(Automation {
+                id: automation_id.clone(),
+                project_id: project.id.clone(),
+                name: "Automation".to_string(),
+                status: AutomationStatus::Active,
+                paused_reason_code: None,
+                paused_reason_detail: None,
+                goal_prompt: "Goal".to_string(),
+                setup_conversation_id: None,
+                provider_harness: "claude".to_string(),
+                model_id: "sonnet".to_string(),
+                logical_effort: None,
+                run_mode: "edit".to_string(),
+                base_ref_kind: "project_default".to_string(),
+                base_ref: String::new(),
+                base_display_name: None,
+                base_source_pull_request_json: None,
+                goal_items_json: None,
+                chain_mode: "merged_base".to_string(),
+                completion_signal: "pr_merged".to_string(),
+                plan_approval_mode: AutomationPlanApprovalMode::Manual,
+                pr_merge_mode: AutomationPrMergeMode::Manual,
+                plan_deep_verification: false,
+                max_runs: 25,
+                max_consecutive_failures: 3,
+                first_run_prompt: None,
+                setup_analysis_summary: None,
+                spec_artifact_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        let run_id = AutomationRunId::from_string("run-1");
+        state
+            .automation_run_repo
+            .create_run(AutomationRun {
+                id: run_id.clone(),
+                automation_id: automation_id.clone(),
+                run_index: 1,
+                status: AutomationRunStatus::Running,
+                judge_state: AutomationJudgeState::None,
+                judge_lease_expires_at: None,
+                plan_judge_state: AutomationPlanJudgeState::None,
+                plan_judge_lease_expires_at: None,
+                plan_judge_verdict_json: None,
+                plan_revision_round: 0,
+                plan_reminder_count: 0,
+                plan_pending_instructions: None,
+                plan_last_parked_artifact_id: None,
+                agent_phase_started_at: None,
+                conversation_id: Some(workspace.conversation_id.clone()),
+                run_prompt: "Run".to_string(),
+                prompt_author: AutomationPromptAuthor::SetupAgent,
+                base_ref_kind: "project_default".to_string(),
+                base_ref_used: "main".to_string(),
+                base_from_run_id: None,
+                branch_name: None,
+                pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_head_ref_name: None,
+                pr_base_ref_name: None,
+                pr_merged_at: None,
+                merge_commit_sha: None,
+                diff_stats_json: None,
+                agent_summary: None,
+                judge_verdict_json: None,
+                judge_model_id: None,
+                error_code: None,
+                error_detail: None,
+                signal_check_failures: 0,
+                started_at: Some(now),
+                finished_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        mark_workspace_review_blocked(
+            &state,
+            &workspace,
+            &target,
+            "helper-1",
+            "review failed".to_string(),
+        )
+        .await;
+
+        let paused = state
+            .automation_repo
+            .get_by_id(&automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.status, AutomationStatus::Paused);
+        assert_eq!(
+            paused.paused_reason_code.as_deref(),
+            Some("workspace_review_blocked")
+        );
+        let terminal_run = state
+            .automation_run_repo
+            .get_by_id(&run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal_run.status, AutomationRunStatus::AgentFailed);
+        assert_eq!(
+            terminal_run.error_code.as_deref(),
+            Some("workspace_review_blocked")
         );
     }
 

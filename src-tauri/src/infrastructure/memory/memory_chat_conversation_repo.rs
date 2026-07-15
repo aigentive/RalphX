@@ -7,9 +7,9 @@ use tokio::sync::RwLock;
 
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ConversationAttributionBackfillState,
-    ConversationAttributionBackfillSummary,
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, ChatContextType,
+    ChatConversation, ChatConversationId, ConversationAttributionBackfillState,
+    ConversationAttributionBackfillSummary, CoordinationMode,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
 use crate::error::AppResult;
@@ -59,6 +59,20 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
             })
             .cloned()
             .collect();
+        Ok(filtered)
+    }
+
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let convos = self.conversations.read().await;
+        let mut filtered: Vec<ChatConversation> = convos
+            .values()
+            .filter(|c| c.automation_id.as_ref() == Some(automation_id))
+            .cloned()
+            .collect();
+        filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(filtered)
     }
 
@@ -221,6 +235,31 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         let mut convos = self.conversations.write().await;
         if let Some(conversation) = convos.get_mut(id) {
             conversation.set_agent_mode(mode);
+        }
+        Ok(())
+    }
+
+    async fn update_persona_binding(
+        &self,
+        id: &ChatConversationId,
+        persona_id: Option<&str>,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.persona_id = persona_id.map(str::to_string);
+            conversation.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn update_coordination_mode(
+        &self,
+        id: &ChatConversationId,
+        mode: CoordinationMode,
+    ) -> AppResult<()> {
+        let mut convos = self.conversations.write().await;
+        if let Some(conversation) = convos.get_mut(id) {
+            conversation.set_coordination_mode(mode);
         }
         Ok(())
     }

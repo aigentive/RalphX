@@ -42,6 +42,8 @@ fn parser_skips_protected_runtime_and_model_keys() {
         AgentHarnessKind::Claude,
         r#"
 PATH=/tmp/bin
+RUSTC=/opt/homebrew/bin/rustc
+RUSTUP_TOOLCHAIN=1.85.1
 RALPHX_PROJECT_ID=spoofed
 ANTHROPIC_MODEL=wrong
 ANTHROPIC_BASE_URL=https://anthropic.example
@@ -50,6 +52,8 @@ ANTHROPIC_BASE_URL=https://anthropic.example
     .expect("parse env file");
 
     assert!(!values.contains_key("PATH"));
+    assert!(!values.contains_key("RUSTC"));
+    assert!(!values.contains_key("RUSTUP_TOOLCHAIN"));
     assert!(!values.contains_key("RALPHX_PROJECT_ID"));
     assert!(!values.contains_key("ANTHROPIC_MODEL"));
     assert_eq!(

@@ -15,6 +15,7 @@ export const VIEW_TYPE_VALUES = [
   "graph",
   "ideation",
   "agents",
+  "automations",
   "ticketing",
   "github",
   "granola",
@@ -29,6 +30,19 @@ export const VIEW_TYPE_VALUES = [
 export const ViewTypeSchema = z.enum(VIEW_TYPE_VALUES);
 export type ViewType = z.infer<typeof ViewTypeSchema>;
 export const DEFAULT_PROJECT_VIEW: ViewType = "agents";
+
+const DEPRECATED_STANDALONE_VIEW_VALUES = new Set<ViewType>([
+  "kanban",
+  "graph",
+  "ideation",
+]);
+
+/** Maps persisted and external standalone routes onto the retained Agents surface. */
+export function normalizeMainView(view: ViewType): ViewType {
+  return DEPRECATED_STANDALONE_VIEW_VALUES.has(view)
+    ? DEFAULT_PROJECT_VIEW
+    : view;
+}
 
 // ============================================================================
 // Chat Context

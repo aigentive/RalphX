@@ -12,11 +12,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::commit_messages::{build_plan_merge_commit_msg, build_squash_commit_msg};
-use super::merge_completion::complete_merge_internal_with_pr_sync;
+use super::merge_completion::complete_merge_internal_with_pr_sync_notifier_and_outcome;
 use super::merge_helpers::{
     clear_merge_deferred_metadata, compute_merge_worktree_path, has_merge_deferred_metadata,
     has_prior_rebase_conflict, has_prior_validation_failure, has_source_conflict_resolved,
-    parse_metadata, task_targets_branch,
+    is_pr_branch_publication_conflict_routed_error, parse_metadata,
+    task_has_pr_branch_publication_conflict, task_targets_branch,
 };
 use super::merge_outcome_handler::{MergeContext, MergeHandlerOptions};
 use super::merge_strategies::MergeOutcome;
@@ -32,6 +33,7 @@ use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
 use crate::domain::services::payload_enrichment::{
     emit_external_webhook_event, PresentationKind, WebhookPresentationContext,
 };
+use crate::error::AppError;
 
 /// Result of `fetch_merge_context`: the loaded task and project.
 pub(super) struct MergeInputs {
@@ -48,6 +50,38 @@ pub(super) enum ConcurrentGuardResult {
 }
 
 impl<'a> super::TransitionHandler<'a> {
+    async fn start_pr_publication_conflict_entry_if_routed(
+        &self,
+        task_id: &TaskId,
+        task: &Task,
+        error: &AppError,
+        context: &str,
+    ) -> bool {
+        if !is_pr_branch_publication_conflict_routed_error(error)
+            && !task_has_pr_branch_publication_conflict(task)
+        {
+            return false;
+        }
+
+        tracing::info!(
+            task_id = task_id.as_str(),
+            context,
+            "PR branch publication conflict routed to branch updater"
+        );
+        if let Some(transition_service) = &self.machine.context.services.transition_service {
+            transition_service
+                .execute_entry_actions(task_id, task, task.internal_status)
+                .await;
+        } else {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                context,
+                "PR branch publication conflict routed but transition_service is unavailable to start branch updater"
+            );
+        }
+        true
+    }
+
     /// Load task and project from repositories for the merge workflow.
     ///
     /// Returns `None` if repos are unavailable or records not found (caller should return early).
@@ -195,27 +229,39 @@ impl<'a> super::TransitionHandler<'a> {
                                             .await
                                             .unwrap_or_else(|_| source_sha.clone());
 
-                                    if let Err(e) = complete_merge_internal_with_pr_sync(
+                                    if let Err(e) = complete_merge_internal_with_pr_sync_notifier_and_outcome(
                                         task,
                                         project,
                                         &plan_sha,
                                         source_branch,
                                         &pb.branch_name,
                                         task_repo,
+                                        self.machine.context.services.task_outcome_repo.as_ref(),
                                         self.machine.context.services.external_events_repo.as_ref(),
                                         self.machine.context.services.webhook_publisher.as_ref(),
-                                        self.machine.context.services.app_handle.as_ref(),
+                                        self.machine.context.services.event_sink.as_deref(),
                                         session_title.clone(),
                                         Some(super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                                             &self.machine.context.services,
                                         )),
+                                        Some(&self.machine.context.services.notifier),
                                     )
                                     .await
                                     {
-                                        tracing::error!(
-                                            error = %e,
-                                            "Failed to complete already-merged task (plan branch)"
-                                        );
+                                        if !self
+                                            .start_pr_publication_conflict_entry_if_routed(
+                                                task_id,
+                                                task,
+                                                &e,
+                                                "already_merged_plan_branch",
+                                            )
+                                            .await
+                                        {
+                                            tracing::error!(
+                                                error = %e,
+                                                "Failed to complete already-merged task (plan branch)"
+                                            );
+                                        }
                                     } else {
                                         self.post_merge_cleanup(
                                             task_id_str,
@@ -351,26 +397,38 @@ impl<'a> super::TransitionHandler<'a> {
             .await
             .unwrap_or_else(|_| source_sha.clone());
 
-        if let Err(e) = complete_merge_internal_with_pr_sync(
+        if let Err(e) = complete_merge_internal_with_pr_sync_notifier_and_outcome(
             task,
             project,
             &target_sha,
             source_branch,
             target_branch,
             task_repo,
+            self.machine.context.services.task_outcome_repo.as_ref(),
             self.machine.context.services.external_events_repo.as_ref(),
             self.machine.context.services.webhook_publisher.as_ref(),
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
             session_title.clone(),
             Some(
                 super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                     &self.machine.context.services,
                 ),
             ),
+            Some(&self.machine.context.services.notifier),
         )
         .await
         {
-            tracing::error!(error = %e, "Failed to complete already-merged task");
+            if !self
+                .start_pr_publication_conflict_entry_if_routed(
+                    task_id,
+                    task,
+                    &e,
+                    "already_merged_target_branch",
+                )
+                .await
+            {
+                tracing::error!(error = %e, "Failed to complete already-merged task");
+            }
         } else {
             self.post_merge_cleanup(task_id_str, task_id, repo_path, plan_branch_repo)
                 .await;
@@ -498,27 +556,39 @@ impl<'a> super::TransitionHandler<'a> {
                                         .await
                                         .unwrap_or_else(|_| found_sha.clone());
 
-                                if let Err(e) = complete_merge_internal_with_pr_sync(
+                                if let Err(e) = complete_merge_internal_with_pr_sync_notifier_and_outcome(
                                     task,
                                     project,
                                     &plan_sha,
                                     source_branch,
                                     &pb.branch_name,
                                     task_repo,
+                                    self.machine.context.services.task_outcome_repo.as_ref(),
                                     self.machine.context.services.external_events_repo.as_ref(),
                                     self.machine.context.services.webhook_publisher.as_ref(),
-                                    self.machine.context.services.app_handle.as_ref(),
+                                    self.machine.context.services.event_sink.as_deref(),
                                     session_title.clone(),
                                     Some(super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                                         &self.machine.context.services,
                                     )),
+                                    Some(&self.machine.context.services.notifier),
                                 )
                                 .await
                                 {
-                                    tracing::error!(
-                                        error = %e,
-                                        "Failed to complete recovered task (plan branch)"
-                                    );
+                                    if !self
+                                        .start_pr_publication_conflict_entry_if_routed(
+                                            task_id,
+                                            task,
+                                            &e,
+                                            "deleted_source_plan_branch",
+                                        )
+                                        .await
+                                    {
+                                        tracing::error!(
+                                            error = %e,
+                                            "Failed to complete recovered task (plan branch)"
+                                        );
+                                    }
                                 } else {
                                     self.post_merge_cleanup(
                                         task_id_str,
@@ -606,26 +676,38 @@ impl<'a> super::TransitionHandler<'a> {
                     .await
                     .unwrap_or_else(|_| found_sha.clone());
 
-                if let Err(e) = complete_merge_internal_with_pr_sync(
+                if let Err(e) = complete_merge_internal_with_pr_sync_notifier_and_outcome(
                     task,
                     project,
                     &target_sha,
                     source_branch,
                     target_branch,
                     task_repo,
+                    self.machine.context.services.task_outcome_repo.as_ref(),
                     self.machine.context.services.external_events_repo.as_ref(),
                     self.machine.context.services.webhook_publisher.as_ref(),
-                    self.machine.context.services.app_handle.as_ref(),
+                    self.machine.context.services.event_sink.as_deref(),
                     session_title,
                     Some(
                         super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                             &self.machine.context.services,
                         ),
                     ),
+                    Some(&self.machine.context.services.notifier),
                 )
                 .await
                 {
-                    tracing::error!(error = %e, "Failed to complete merge for recovered task");
+                    if !self
+                        .start_pr_publication_conflict_entry_if_routed(
+                            task_id,
+                            task,
+                            &e,
+                            "deleted_source_target_branch",
+                        )
+                        .await
+                    {
+                        tracing::error!(error = %e, "Failed to complete merge for recovered task");
+                    }
                 } else {
                     self.post_merge_cleanup(task_id_str, task_id, repo_path, plan_branch_repo)
                         .await;
@@ -1095,6 +1177,7 @@ impl<'a> super::TransitionHandler<'a> {
         pc: super::ProjectCtx<'_>,
         squash_commit_msg: &str,
         plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+        source_updated_from_target: bool,
         remaining: std::time::Duration,
         deadline_secs: u64,
     ) {
@@ -1131,6 +1214,21 @@ impl<'a> super::TransitionHandler<'a> {
             deadline_secs,
             "Dispatching merge strategy"
         );
+
+        let plan_scoped_zero_unique_noop_allowed = if task.category == TaskCategory::PlanMerge {
+            true
+        } else if let (Some(session_id), Some(pb_repo)) =
+            (task.ideation_session_id.as_ref(), plan_branch_repo.as_ref())
+        {
+            pb_repo
+                .get_by_session_id(session_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|pb| pb.branch_name == target_branch)
+        } else {
+            false
+        };
 
         // Emit merge:ready via both channels: external_events (SSE/poll) + webhook publisher.
         {
@@ -1175,12 +1273,101 @@ impl<'a> super::TransitionHandler<'a> {
 
         // Phase 1: Run git strategy under merge deadline (fast, seconds only)
         let git_result = tokio::time::timeout(remaining, async {
+            let identical_branch_opts = match project.merge_strategy {
+                MergeStrategy::Merge => MergeHandlerOptions::merge(),
+                MergeStrategy::Rebase => MergeHandlerOptions::rebase(),
+                MergeStrategy::Squash | MergeStrategy::RebaseSquash => {
+                    MergeHandlerOptions::squash()
+                }
+            };
+
             // Early return: if branches are already identical, skip merge entirely (prevents empty
             // commits on main). Covers all strategies including plan merge path.
             if GitService::branches_have_same_content(repo_path, source_branch, target_branch)
                 .await
                 .unwrap_or(false)
             {
+                match GitService::count_commits_not_on_branch(
+                    repo_path,
+                    source_branch,
+                    target_branch,
+                )
+                .await
+                {
+                    Ok(0) => {
+                        if plan_scoped_zero_unique_noop_allowed || source_updated_from_target {
+                            tracing::info!(
+                                task_id = task_id_str,
+                                source_branch = %source_branch,
+                                target_branch = %target_branch,
+                                category = %task.category,
+                                source_updated_from_target,
+                                "branches are identical and source has zero unique commits; \
+                                 accepting no-op completion with current merge proof"
+                            );
+                        } else {
+                            let source_sha =
+                                match GitService::get_branch_sha(repo_path, source_branch).await {
+                                    Ok(sha) => sha,
+                                    Err(e) => return (MergeOutcome::GitError(e), identical_branch_opts),
+                                };
+                            let target_sha =
+                                match GitService::get_branch_sha(repo_path, target_branch).await {
+                                    Ok(sha) => sha,
+                                    Err(e) => return (MergeOutcome::GitError(e), identical_branch_opts),
+                                };
+                            if source_sha != target_sha {
+                                tracing::info!(
+                                    task_id = task_id_str,
+                                    source_branch = %source_branch,
+                                    target_branch = %target_branch,
+                                    source_sha = %source_sha,
+                                    target_sha = %target_sha,
+                                    "branches are identical and source has zero unique commits, \
+                                     but target has advanced beyond source; accepting prior-merge completion"
+                                );
+                            } else {
+                                tracing::error!(
+                                    task_id = task_id_str,
+                                    source_branch = %source_branch,
+                                    target_branch = %target_branch,
+                                    source_sha = %source_sha,
+                                    "branches are identical but source has zero unique commits — \
+                                     refusing no-op merge success to prevent ghost completion"
+                                );
+                                return (
+                                    MergeOutcome::GitError(AppError::GitOperation(format!(
+                                        "Source branch '{}' has no commits not already on '{}' and \
+                                         cannot be marked merged without committed source work \
+                                         (source_sha={}, target_sha={})",
+                                        source_branch, target_branch, source_sha, target_sha
+                                    ))),
+                                    identical_branch_opts,
+                                );
+                            }
+                        }
+                    }
+                    Ok(unique_commits) => {
+                        tracing::debug!(
+                            task_id = task_id_str,
+                            source_branch = %source_branch,
+                            target_branch = %target_branch,
+                            unique_commits,
+                            "branches have identical content but source still has unique commits; \
+                             treating as content-equivalent merge success"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            task_id = task_id_str,
+                            source_branch = %source_branch,
+                            target_branch = %target_branch,
+                            error = %e,
+                            "failed to prove identical branch merge is safe"
+                        );
+                        return (MergeOutcome::GitError(e), identical_branch_opts);
+                    }
+                }
                 tracing::debug!(
                     task_id = task_id_str,
                     source_branch = %source_branch,
@@ -1189,19 +1376,18 @@ impl<'a> super::TransitionHandler<'a> {
                 );
                 let commit_sha = match GitService::get_branch_sha(repo_path, target_branch).await {
                     Ok(sha) => sha,
-                    Err(e) => return (MergeOutcome::GitError(e), MergeHandlerOptions::merge()),
-                };
-                let opts = match project.merge_strategy {
-                    MergeStrategy::Merge => MergeHandlerOptions::merge(),
-                    MergeStrategy::Rebase => MergeHandlerOptions::rebase(),
-                    MergeStrategy::Squash | MergeStrategy::RebaseSquash => {
-                        MergeHandlerOptions::squash()
-                    }
+                    Err(e) => return (MergeOutcome::GitError(e), identical_branch_opts),
                 };
                 // Branches are identical — no merge performed, no worktree needed.
                 // Validation (if any) runs in the project root; this is safe because no code
                 // changed and the repo state is identical to what a worktree would contain.
-                return (MergeOutcome::Success { commit_sha, merge_path: repo_path.to_path_buf() }, opts);
+                return (
+                    MergeOutcome::Success {
+                        commit_sha,
+                        merge_path: repo_path.to_path_buf(),
+                    },
+                    identical_branch_opts,
+                );
             }
 
             match project.merge_strategy {

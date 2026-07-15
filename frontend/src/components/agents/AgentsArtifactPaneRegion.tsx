@@ -22,6 +22,11 @@ import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
+import type {
+  AgentsChatFocus,
+  AutomationRunFocusOptions,
+} from "./agentChatFocus";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -48,6 +53,10 @@ interface AgentsArtifactPaneRegionProps {
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch: string | null;
   focusedIdeationSessionId: string | null;
+  automationRunFocusTarget: Extract<
+    AgentsChatFocus,
+    { type: "automation_run" }
+  > | null;
   hasAutoOpenArtifacts: boolean;
   artifactWidthCss: string;
   isArtifactResizing: boolean;
@@ -55,13 +64,36 @@ interface AgentsArtifactPaneRegionProps {
   onResizeReset: (event: ReactMouseEvent) => void;
   onTabChange: (tab: AgentArtifactTab) => void;
   onOpenPublish: () => void;
+  onOpenAutomation?: (automationId: string) => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
   taskFocusRequest: AgentTaskArtifactFocusRequest | null;
-  onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
+  onConversationModeSwitched: (
+    conversationId: string,
+    mode: AgentConversationWorkspace["mode"],
+    workspace: AgentConversationWorkspace | null
+  ) => void;
+  onFocusIdeationSessionForConversation: (
+    conversationId: string,
+    sessionId: string
+  ) => void;
+  onFocusVerificationSession: (
+    parentSessionId: string,
+    childSessionId: string
+  ) => void;
+  onFocusAutomationRun: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+    options?: AutomationRunFocusOptions,
+  ) => void;
   onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
   onTaskArtifactSelectionChange: (taskId: string | null) => void;
   onClose: () => void;
   terminalArchivedReason: string | null;
@@ -76,6 +108,7 @@ export function AgentsArtifactPaneRegion({
   activeWorkspaceFreshness,
   projectBaseBranch,
   focusedIdeationSessionId,
+  automationRunFocusTarget,
   hasAutoOpenArtifacts,
   artifactWidthCss,
   isArtifactResizing,
@@ -83,13 +116,18 @@ export function AgentsArtifactPaneRegion({
   onResizeReset,
   onTabChange,
   onOpenPublish,
+  onOpenAutomation,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
   taskFocusRequest,
+  onConversationModeSwitched,
+  onFocusIdeationSessionForConversation,
+  onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
+  onFocusTaskRuntime,
   onTaskArtifactSelectionChange,
   onClose,
   terminalArchivedReason,
@@ -102,6 +140,7 @@ export function AgentsArtifactPaneRegion({
   );
   const contentMounted = useAfterPaintMounted(artifactPaneOpen);
   const shouldRenderArtifactContent = artifactPaneOpen || contentMounted;
+  const workspaceConversationId = workspace?.conversationId ?? conversationId;
 
   return (
     <>
@@ -144,17 +183,25 @@ export function AgentsArtifactPaneRegion({
                     activeWorkspaceFreshness={activeWorkspaceFreshness}
                     projectBaseBranch={projectBaseBranch}
                     focusedIdeationSessionId={focusedIdeationSessionId}
+                    automationRunFocusTarget={automationRunFocusTarget}
                     activeTab={artifactState.activeTab}
                     taskMode={artifactState.taskMode}
                     onTabChange={onTabChange}
                     onOpenPublish={onOpenPublish}
+                    {...(onOpenAutomation ? { onOpenAutomation } : {})}
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
                     publishFocusRequest={publishFocusRequest}
                     taskFocusRequest={taskFocusRequest}
+                    onConversationModeSwitched={onConversationModeSwitched}
+                    onFocusIdeationSessionForConversation={
+                      onFocusIdeationSessionForConversation
+                    }
+                    onFocusAutomationRun={onFocusAutomationRun}
                     onFocusVerificationSession={onFocusVerificationSession}
                     onFocusWorkspaceReview={onFocusWorkspaceReview}
+                    onFocusTaskRuntime={onFocusTaskRuntime}
                     onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
                     onClose={onClose}
                   />
@@ -166,7 +213,7 @@ export function AgentsArtifactPaneRegion({
           ) : null}
           <AgentsTerminalDockHost
             dock="panel"
-            conversationId={conversationId}
+            conversationId={workspaceConversationId}
             workspace={workspace}
             terminalArchivedReason={terminalArchivedReason}
             terminalUnavailableReason={terminalUnavailableReason}

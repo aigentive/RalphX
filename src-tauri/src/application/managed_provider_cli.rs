@@ -199,15 +199,19 @@ fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             };
             let supports_fast_mode = capabilities.supports_fast_mode();
             let fast_mode_supported_models = capabilities.fast_mode_supported_models();
+            let supported_model_aliases =
+                non_empty_capability_values(capabilities.supported_model_aliases.clone());
+            let supported_efforts =
+                non_empty_capability_values(capabilities.supported_effort_labels());
             HarnessRuntimeProbe {
                 binary_path: Some(path.to_string_lossy().into_owned()),
                 binary_found: true,
                 probe_succeeded: true,
                 available,
                 missing_core_exec_features,
-                cli_version: capabilities.version,
-                supported_model_aliases: None,
-                supported_efforts: None,
+                cli_version: capabilities.version.clone(),
+                supported_model_aliases,
+                supported_efforts,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -248,15 +252,19 @@ fn custom_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             };
             let supports_fast_mode = capabilities.supports_fast_mode();
             let fast_mode_supported_models = capabilities.fast_mode_supported_models();
+            let supported_model_aliases =
+                non_empty_capability_values(capabilities.supported_model_aliases.clone());
+            let supported_efforts =
+                non_empty_capability_values(capabilities.supported_effort_labels());
             HarnessRuntimeProbe {
                 binary_path: Some(path.to_string_lossy().into_owned()),
                 binary_found: true,
                 probe_succeeded: true,
                 available,
                 missing_core_exec_features,
-                cli_version: capabilities.version,
-                supported_model_aliases: None,
-                supported_efforts: None,
+                cli_version: capabilities.version.clone(),
+                supported_model_aliases,
+                supported_efforts,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -275,6 +283,14 @@ fn custom_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             fast_mode_supported_models: Vec::new(),
             error: Some(error),
         },
+    }
+}
+
+fn non_empty_capability_values(values: Vec<String>) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
     }
 }
 

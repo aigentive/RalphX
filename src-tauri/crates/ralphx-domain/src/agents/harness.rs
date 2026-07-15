@@ -63,8 +63,17 @@ pub enum HarnessStreamMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarnessTeamCapabilities {
+    pub rx_native_team: bool,
+    pub legacy_native_team_tools: bool,
+    pub interactive_delivery: bool,
+    pub resume_delivery: bool,
+    pub stream_projection: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessBehavior {
-    pub honors_team_mode: bool,
+    pub team: HarnessTeamCapabilities,
     pub supports_merge_completion_watcher: bool,
     pub model_label_strategy: HarnessModelLabelStrategy,
     pub effort_strategy: HarnessEffortStrategy,
@@ -74,14 +83,26 @@ pub struct HarnessBehavior {
 pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
     match harness {
         AgentHarnessKind::Claude => HarnessBehavior {
-            honors_team_mode: true,
+            team: HarnessTeamCapabilities {
+                rx_native_team: true,
+                legacy_native_team_tools: true,
+                interactive_delivery: true,
+                resume_delivery: true,
+                stream_projection: true,
+            },
             supports_merge_completion_watcher: true,
             model_label_strategy: HarnessModelLabelStrategy::ClaudeMapped,
             effort_strategy: HarnessEffortStrategy::ClaudeEffortFirst,
             stream_mode: HarnessStreamMode::ClaudeEvents,
         },
         AgentHarnessKind::Codex => HarnessBehavior {
-            honors_team_mode: false,
+            team: HarnessTeamCapabilities {
+                rx_native_team: true,
+                legacy_native_team_tools: false,
+                interactive_delivery: false,
+                resume_delivery: true,
+                stream_projection: true,
+            },
             supports_merge_completion_watcher: false,
             model_label_strategy: HarnessModelLabelStrategy::RawModelId,
             effort_strategy: HarnessEffortStrategy::LogicalOnly,
@@ -162,6 +183,7 @@ pub enum LogicalEffort {
     #[serde(rename = "xhigh")]
     XHigh,
     Max,
+    Ultra,
 }
 
 impl fmt::Display for LogicalEffort {
@@ -172,6 +194,7 @@ impl fmt::Display for LogicalEffort {
             Self::High => write!(f, "high"),
             Self::XHigh => write!(f, "xhigh"),
             Self::Max => write!(f, "max"),
+            Self::Ultra => write!(f, "ultra"),
         }
     }
 }
@@ -186,8 +209,9 @@ impl FromStr for LogicalEffort {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             other => Err(format!(
-                "Invalid logical effort '{}'. Valid values: low, medium, high, xhigh, max",
+                "Invalid logical effort '{}'. Valid values: low, medium, high, xhigh, max, ultra",
                 other
             )),
         }
@@ -203,6 +227,7 @@ impl LogicalEffort {
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 }
@@ -219,6 +244,7 @@ pub enum AgentLane {
     ExecutionReviewer,
     ExecutionReexecutor,
     ExecutionMerger,
+    ExecutionBranchUpdater,
 }
 
 impl fmt::Display for AgentLane {
@@ -232,6 +258,7 @@ impl fmt::Display for AgentLane {
             Self::ExecutionReviewer => write!(f, "execution_reviewer"),
             Self::ExecutionReexecutor => write!(f, "execution_reexecutor"),
             Self::ExecutionMerger => write!(f, "execution_merger"),
+            Self::ExecutionBranchUpdater => write!(f, "execution_branch_updater"),
         }
     }
 }
@@ -249,6 +276,7 @@ impl FromStr for AgentLane {
             "execution_reviewer" => Ok(Self::ExecutionReviewer),
             "execution_reexecutor" => Ok(Self::ExecutionReexecutor),
             "execution_merger" => Ok(Self::ExecutionMerger),
+            "execution_branch_updater" => Ok(Self::ExecutionBranchUpdater),
             other => Err(format!("Invalid agent lane '{}'", other)),
         }
     }
@@ -372,7 +400,8 @@ pub fn generic_harness_lane_defaults(
                 AgentLane::ExecutionWorker
                 | AgentLane::ExecutionReviewer
                 | AgentLane::ExecutionReexecutor
-                | AgentLane::ExecutionMerger => {
+                | AgentLane::ExecutionMerger
+                | AgentLane::ExecutionBranchUpdater => {
                     settings.model = Some(
                         super::model_registry::default_model_for_provider(harness).to_string(),
                     );
@@ -422,6 +451,10 @@ pub fn standard_agent_lane_defaults() -> HashMap<AgentLane, AgentLaneSettings> {
         ),
         (
             AgentLane::ExecutionMerger,
+            AgentLaneSettings::new(DEFAULT_AGENT_HARNESS),
+        ),
+        (
+            AgentLane::ExecutionBranchUpdater,
             AgentLaneSettings::new(DEFAULT_AGENT_HARNESS),
         ),
     ])

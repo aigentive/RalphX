@@ -87,9 +87,7 @@ impl RecoveryPolicy {
                     if evidence.can_start {
                         return RecoveryDecision {
                             action: RecoveryActionKind::ExecuteEntryActions,
-                            reason: Some(
-                                "Agent run cancelled/failed — re-executing.".to_string(),
-                            ),
+                            reason: Some("Agent run cancelled/failed — re-executing.".to_string()),
                         };
                     }
                     return RecoveryDecision {
@@ -313,6 +311,7 @@ pub(crate) struct RecoveryPromptAction {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RecoveryPromptEvent {
+    pub(crate) instance_id: String,
     pub(crate) task_id: String,
     pub(crate) status: InternalStatus,
     pub(crate) context_type: String,

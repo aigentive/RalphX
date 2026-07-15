@@ -5,11 +5,11 @@
 
 use super::helpers::*;
 use crate::domain::entities::{ProjectId, Task};
-use crate::domain::state_machine::{
-    State, TaskEvent, TaskStateMachine, TransitionHandler, TransitionResult,
-};
 use crate::domain::state_machine::transition_handler::{
     has_no_code_changes_metadata, set_no_code_changes_metadata,
+};
+use crate::domain::state_machine::{
+    State, TaskEvent, TaskStateMachine, TransitionHandler, TransitionResult,
 };
 
 #[tokio::test]
@@ -24,8 +24,8 @@ async fn test_branchless_task_approved_skips_merge_pipeline() {
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let mut handler = TransitionHandler::new(&mut machine);
@@ -42,10 +42,7 @@ async fn test_branchless_task_approved_skips_merge_pipeline() {
             "Branchless task should skip merge pipeline and go to Merged"
         );
     } else {
-        panic!(
-            "Expected AutoTransition to Merged, got {:?}",
-            result
-        );
+        panic!("Expected AutoTransition to Merged, got {:?}", result);
     }
 }
 
@@ -61,8 +58,8 @@ async fn test_branched_task_approved_enters_merge_pipeline() {
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let mut handler = TransitionHandler::new(&mut machine);
@@ -79,10 +76,7 @@ async fn test_branched_task_approved_enters_merge_pipeline() {
             "Branched task should enter merge pipeline"
         );
     } else {
-        panic!(
-            "Expected AutoTransition to PendingMerge, got {:?}",
-            result
-        );
+        panic!("Expected AutoTransition to PendingMerge, got {:?}", result);
     }
 }
 
@@ -107,10 +101,7 @@ async fn test_no_task_repo_defaults_to_merge_pipeline() {
             "Without task_repo, should default to merge pipeline"
         );
     } else {
-        panic!(
-            "Expected AutoTransition to PendingMerge, got {:?}",
-            result
-        );
+        panic!("Expected AutoTransition to PendingMerge, got {:?}", result);
     }
 }
 
@@ -201,7 +192,9 @@ async fn test_branchless_merged_unblocks_dependent_task() {
 
     // Sanity: B is blocked before A merges
     assert!(
-        dep_manager.has_unresolved_blockers(task_b_id.as_str()).await,
+        dep_manager
+            .has_unresolved_blockers(task_b_id.as_str())
+            .await,
         "Task B should be blocked by A before A merges"
     );
 
@@ -226,7 +219,9 @@ async fn test_branchless_merged_unblocks_dependent_task() {
 
     // After A reaches Merged, B's blocker should be cleared
     assert!(
-        !dep_manager.has_unresolved_blockers(task_b_id.as_str()).await,
+        !dep_manager
+            .has_unresolved_blockers(task_b_id.as_str())
+            .await,
         "Task B should be unblocked after branchless Task A reaches Merged"
     );
 }
@@ -249,8 +244,8 @@ async fn test_branched_task_with_deleted_branch_enters_merge_pipeline() {
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let mut handler = TransitionHandler::new(&mut machine);
@@ -269,10 +264,7 @@ async fn test_branched_task_with_deleted_branch_enters_merge_pipeline() {
             state
         );
     } else {
-        panic!(
-            "Expected AutoTransition to PendingMerge, got {:?}",
-            result
-        );
+        panic!("Expected AutoTransition to PendingMerge, got {:?}", result);
     }
 }
 
@@ -298,13 +290,16 @@ async fn test_no_code_changes_task_skips_merge_pipeline() {
     task.worktree_path = Some("/tmp/research-worktree".to_string());
     // Set the no_code_changes metadata flag (normally set by complete_review handler)
     set_no_code_changes_metadata(&mut task);
-    assert!(has_no_code_changes_metadata(&task), "metadata must be set before test");
+    assert!(
+        has_no_code_changes_metadata(&task),
+        "metadata must be set before test"
+    );
 
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let mut handler = TransitionHandler::new(&mut machine);
@@ -334,13 +329,16 @@ async fn test_task_without_no_code_changes_metadata_enters_merge_pipeline() {
     );
     task.task_branch = Some("ralphx/task/impl-456".to_string());
     // NO no_code_changes metadata — must go through normal merge pipeline
-    assert!(!has_no_code_changes_metadata(&task), "no metadata must be set");
+    assert!(
+        !has_no_code_changes_metadata(&task),
+        "no metadata must be set"
+    );
 
     let task_id = task.id.clone();
     task_repo.create(task).await.unwrap();
 
-    let services = TaskServices::new_mock()
-        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
+    let services =
+        TaskServices::new_mock().with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>);
     let context = TaskContext::new(task_id.as_str(), "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let mut handler = TransitionHandler::new(&mut machine);
@@ -351,7 +349,10 @@ async fn test_task_without_no_code_changes_metadata_enters_merge_pipeline() {
 
     // Should enter merge pipeline (PendingMerge), NOT skip to Merged
     assert!(
-        matches!(&result, TransitionResult::AutoTransition(State::PendingMerge)),
+        matches!(
+            &result,
+            TransitionResult::AutoTransition(State::PendingMerge)
+        ),
         "Task without no_code_changes metadata must enter merge pipeline. \
          Got: {:?}",
         result

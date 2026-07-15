@@ -4,15 +4,23 @@ pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
+#[cfg(test)]
+mod agent_conversation_workspace_tests;
 pub mod agent_run;
 pub mod agent_task;
 pub mod api_key;
 pub mod app_state;
 pub mod artifact;
 pub mod artifact_flow;
+pub mod automation;
+#[cfg(test)]
+mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
 pub mod chat_timeline;
+pub mod branch_update;
+#[cfg(test)]
+mod branch_update_tests;
 pub mod delegated_session;
 pub mod event_type;
 pub mod execution_plan;
@@ -24,8 +32,10 @@ pub mod memory_event;
 pub mod memory_rule_binding;
 pub mod merge_progress_event;
 pub mod methodology;
+pub mod notification;
 pub mod plan_branch;
 pub mod plan_selection_stats;
+pub mod persona;
 pub mod project;
 pub mod project_memory_settings;
 pub mod project_skill_settings;
@@ -33,6 +43,8 @@ pub mod research;
 pub mod review;
 pub mod review_issue;
 pub mod status;
+#[cfg(test)]
+mod status_tests;
 pub mod task;
 pub mod task_context;
 pub mod task_metadata;
@@ -41,6 +53,7 @@ pub mod task_step;
 pub mod team;
 pub mod ticket_canonical_branch;
 pub mod types;
+pub mod validation_run;
 pub mod workflow;
 
 pub use activity_event::{
@@ -51,7 +64,11 @@ pub use agent_conversation_granola_note::{
     AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,
 };
 pub use agent_conversation_issue::{
-    AgentConversationIssue, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
+    canonicalize_agent_conversation_issue, AgentConversationIssue,
+    AgentConversationIssueCanonicalIdentity, AgentConversationIssueCanonicalInput,
+    AgentConversationIssueOccurrence, AGENT_CONVERSATION_ISSUE_DEDUPE_CANDIDATE_ATTACHED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW, AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
     AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 pub use agent_conversation_jira_issue::{
@@ -63,17 +80,16 @@ pub use agent_conversation_linear_issue::{
 pub use agent_conversation_workspace::{
     is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewGateStatus,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope,
-    AgentWorkspaceSourcePullRequest, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use agent_run::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
@@ -100,6 +116,14 @@ pub use artifact_flow::{
     ArtifactFlowEngine, ArtifactFlowEvaluation, ArtifactFlowEvent, ArtifactFlowFilter,
     ArtifactFlowId, ArtifactFlowStep, ArtifactFlowTrigger, ParseArtifactFlowEventError,
 };
+pub use automation::{
+    automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
+    judge_is_transition_allowed, judge_transition_clears_verdict, plan_judge_is_transition_allowed,
+    Automation, AutomationAttachment, AutomationContextRef, AutomationContextRefKind, AutomationId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus,
+};
 pub use chat_attachment::{ChatAttachment, ChatAttachmentId};
 pub use chat_conversation::{
     legacy_claude_session_alias, normalize_provider_session_compatibility,
@@ -110,9 +134,19 @@ pub use chat_timeline::{
     ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
     ChatTimelinePage,
 };
+pub use branch_update::{
+    BranchUpdateCapacityOwnership, BranchUpdateContinuation, BranchUpdateDirection,
+    BranchUpdateFailureKind, BranchUpdateFailurePolicy, BranchUpdateOperation,
+    BranchUpdateOperationId, BranchUpdatePhase, BranchUpdateWorkspaceOwnership,
+    GitMutationClaim, GitMutationKind, GitTargetIdentity, GitTargetIdentityError,
+    GitTargetLease, GitTargetLeaseError, GitTargetLeaseOwner, GitTargetLeaseOwnerKind,
+};
 pub use delegated_session::{DelegatedSession, DelegatedSessionId};
 pub use event_type::{EventType, ParseEventTypeError};
-pub use execution_plan::{ExecutionPlan, ExecutionPlanStatus, ParseExecutionPlanStatusError};
+pub use execution_plan::{
+    ExecutionPlan, ExecutionPlanHaltMode, ExecutionPlanStatus, ParseExecutionPlanHaltModeError,
+    ParseExecutionPlanStatusError,
+};
 pub use ideation::{
     build_child_session, matching_blocker_followup_session, AcceptanceStatus, BusinessValueFactor,
     ChatMessage, ChatMessageAttribution, ChatMessageUsage, ChildSessionDraftInput, Complexity,
@@ -143,8 +177,14 @@ pub use methodology::{
     MethodologyExtension, MethodologyId, MethodologyPhase, MethodologyPlanArtifactConfig,
     MethodologyPlanTemplate, MethodologyStatus, MethodologyTemplate, ParseMethodologyStatusError,
 };
+pub use notification::{
+    notification_category_group, AttentionItem, NewNotification, Notification, NotificationCategory,
+    NotificationCategoryGroup, NotificationSettings, NotificationSeverity, NotificationTarget,
+    NotificationTargetKind,
+};
 pub use plan_branch::{ParsePlanBranchStatusError, PlanBranch, PlanBranchId, PlanBranchStatus};
 pub use plan_selection_stats::{PlanSelectionStats, SelectionSource};
+pub use persona::{Persona, PersonaDirective, PersonaId, PersonaStatus};
 pub use project::{GitMode, MergeStrategy, MergeValidationMode, Project};
 pub use project_memory_settings::ProjectMemorySettings;
 pub use project_skill_settings::ProjectSkillSettings;
@@ -180,12 +220,19 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    TeamMessageId, TeamMessageRecord, TeamSession, TeamSessionId, TeammateCost, TeammateSnapshot,
+    CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId, TeamMessageRecord,
+    TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
+    TeammateSnapshot,
 };
 pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{
     ApiKeyId, ChatMessageId, ExecutionPlanId, IdeationSessionId, ProjectId, ReviewIssueId,
     SessionLinkId, TaskId, TaskProposalId, TaskQAId, TaskStepId,
+};
+pub use validation_run::{
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus, ValidationRunWithResults,
 };
 pub use workflow::{
     ColumnBehavior, ConflictResolution, ExternalStatusMapping, ExternalSyncConfig,

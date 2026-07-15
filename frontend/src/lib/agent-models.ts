@@ -1,5 +1,5 @@
 export type AgentProvider = "claude" | "codex";
-export type AgentEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type AgentEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type AgentModelSource = "built_in" | "custom";
 
 export interface AgentRuntimeSelection {
@@ -11,7 +11,7 @@ export interface AgentRuntimeSelection {
 export interface AgentEffortCatalogEntry {
   id: AgentEffort;
   label: string;
-  description: string;
+  description?: string;
 }
 
 export interface AgentModelCatalogEntry {
@@ -46,27 +46,26 @@ export const AGENT_EFFORT_CATALOG = [
   {
     id: "low",
     label: "Low",
-    description: "Fastest responses with lighter reasoning.",
   },
   {
     id: "medium",
     label: "Medium",
-    description: "Balanced reasoning depth for everyday tasks.",
   },
   {
     id: "high",
     label: "High",
-    description: "Greater reasoning depth for complex work.",
   },
   {
     id: "xhigh",
     label: "Extra High",
-    description: "Extended reasoning depth for long-horizon work.",
   },
   {
     id: "max",
     label: "Max",
-    description: "Deepest reasoning with the highest token spend.",
+  },
+  {
+    id: "ultra",
+    label: "Ultra",
   },
 ] as const satisfies readonly AgentEffortCatalogEntry[];
 
@@ -123,6 +122,35 @@ const CLAUDE_MODEL_CATALOG = [
 
 export const CODEX_MODEL_CATALOG = [
   {
+    id: "gpt-5.6-sol",
+    label:
+      "gpt-5.6-sol - Flagship GPT-5.6 model for complex coding, research, and agentic work.",
+    menuLabel: "gpt-5.6-sol",
+    defaultEffort: "medium",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    description:
+      "Flagship GPT-5.6 model for complex coding, research, and agentic work.",
+  },
+  {
+    id: "gpt-5.6-terra",
+    label:
+      "gpt-5.6-terra - High-intelligence GPT-5.6 model for substantial coding and research tasks.",
+    menuLabel: "gpt-5.6-terra",
+    defaultEffort: "medium",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    description:
+      "High-intelligence GPT-5.6 model for substantial coding and research tasks.",
+  },
+  {
+    id: "gpt-5.6-luna",
+    label:
+      "gpt-5.6-luna - Efficient GPT-5.6 model for capable everyday coding work.",
+    menuLabel: "gpt-5.6-luna",
+    defaultEffort: "medium",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    description: "Efficient GPT-5.6 model for capable everyday coding work.",
+  },
+  {
     id: "gpt-5.5",
     label: "gpt-5.5 - Frontier model for complex coding, research, and real-world work.",
     menuLabel: "gpt-5.5",
@@ -169,7 +197,34 @@ export const AGENT_MODEL_CATALOG: AgentModelRegistry = {
   codex: CODEX_MODEL_CATALOG,
 };
 
-export const DEFAULT_CODEX_MODEL_ID = CODEX_MODEL_CATALOG[0].id;
+const DEFAULT_MODEL_BY_PROVIDER = {
+  claude: "sonnet",
+  codex: "gpt-5.5",
+} as const satisfies Record<AgentProvider, string>;
+
+const SUPPORTED_DEFAULT_MODEL_BY_PROVIDER: Partial<Record<AgentProvider, string>> = {
+  codex: "gpt-5.6-terra",
+};
+
+export const DEFAULT_CODEX_MODEL_ID = DEFAULT_MODEL_BY_PROVIDER.codex;
+
+const CODEX_EFFORT_DESCRIPTIONS = {
+  low: "Fast responses with lighter reasoning.",
+  medium: "Balances speed and reasoning depth for everyday tasks.",
+  high: "Greater reasoning depth for complex problems.",
+  xhigh: "Extra high reasoning depth for complex problems.",
+  max: "Maximum reasoning depth for the hardest problems.",
+  ultra: "Maximum reasoning with automatic task delegation.",
+} as const satisfies Record<AgentEffort, string>;
+
+const CLAUDE_EFFORT_DESCRIPTIONS = {
+  low: "For short, scoped tasks and latency-sensitive work that is not intelligence-sensitive.",
+  medium: "For cost-sensitive work that reduces token usage while trading off intelligence.",
+  high: "Balances token usage and intelligence; use at least high for intelligence-sensitive work.",
+  xhigh: "Best setting for most coding and agentic use cases.",
+  max: "For intelligence-demanding tasks that justify higher usage and possible overthinking.",
+  ultra: "Not a distinct Claude effort level in the current Claude catalog.",
+} as const satisfies Record<AgentEffort, string>;
 
 function isAgentProvider(value: unknown): value is AgentProvider {
   return value === "claude" || value === "codex";
@@ -212,6 +267,9 @@ function fallbackEffortFromSupported(
   if (isAgentEffort(requestedEffort) && supportedEfforts.includes(requestedEffort)) {
     return requestedEffort;
   }
+  if (requestedEffort === "ultra" && supportedEfforts.includes("max")) {
+    return "max";
+  }
   if (supportedEfforts.includes(defaultEffort)) {
     return defaultEffort;
   }
@@ -229,9 +287,59 @@ function fallbackEffortFromSupported(
 
 function defaultModelEntryForProvider(
   provider: AgentProvider,
-  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
+  providerSupportedModelAliases?: readonly unknown[] | null
 ): AgentModelCatalogEntry {
-  return registry[provider][0] ?? AGENT_MODEL_CATALOG[provider][0] ?? CODEX_MODEL_CATALOG[0];
+  const models = registry[provider];
+  const fallbackModels = models.length === 0 ? AGENT_MODEL_CATALOG[provider] : [];
+  const supportedDefaultModelId = SUPPORTED_DEFAULT_MODEL_BY_PROVIDER[provider];
+  const supportedDefault =
+    supportedDefaultModelId != null
+      ? models.find((model) => model.id === supportedDefaultModelId) ??
+        fallbackModels.find((model) => model.id === supportedDefaultModelId)
+      : undefined;
+  if (
+    supportedDefault &&
+    isAgentModelSelectableForProvider(
+      provider,
+      supportedDefault.id,
+      providerSupportedModelAliases
+    )
+  ) {
+    return supportedDefault;
+  }
+
+  const providerDefaultModelId = DEFAULT_MODEL_BY_PROVIDER[provider];
+  const explicitDefault =
+    models.find((model) => model.id === providerDefaultModelId) ??
+    fallbackModels.find((model) => model.id === providerDefaultModelId);
+  if (
+    explicitDefault &&
+    isAgentModelSelectableForProvider(
+      provider,
+      explicitDefault.id,
+      providerSupportedModelAliases
+    )
+  ) {
+    return explicitDefault;
+  }
+
+  const firstSelectable =
+    models.find((model) =>
+      isAgentModelSelectableForProvider(
+        provider,
+        model.id,
+        providerSupportedModelAliases
+      )
+    ) ??
+    fallbackModels.find((model) =>
+      isAgentModelSelectableForProvider(
+        provider,
+        model.id,
+        providerSupportedModelAliases
+      )
+    );
+  return firstSelectable ?? explicitDefault ?? fallbackModels[0] ?? CODEX_MODEL_CATALOG[0];
 }
 
 function findModelEntryForProvider(
@@ -246,7 +354,15 @@ function findModelEntryForProvider(
   if (!normalizedModelId) {
     return null;
   }
-  return registry[provider].find((model) => model.id === normalizedModelId) ?? null;
+  const exact = registry[provider].find((model) => model.id === normalizedModelId);
+  if (exact) {
+    return exact;
+  }
+  const normalizedAlias = normalizeCodexGpt56ModelAlias(provider, normalizedModelId);
+  if (normalizedAlias !== normalizedModelId) {
+    return registry[provider].find((model) => model.id === normalizedAlias) ?? null;
+  }
+  return null;
 }
 
 function normalizeModelId(value: string): string {
@@ -274,6 +390,27 @@ function isClaudeCapabilityGatedModelId(modelId: string): boolean {
   );
 }
 
+function normalizeCodexGpt56ModelAlias(
+  provider: AgentProvider,
+  modelId: string
+): string {
+  if (provider !== "codex") {
+    return modelId;
+  }
+  const normalized = normalizeModelId(modelId);
+  return normalized === "gpt-5.6" ? "gpt-5.6-sol" : normalized;
+}
+
+function isCodexGpt56ModelId(modelId: string): boolean {
+  const normalized = normalizeModelId(modelId);
+  return (
+    normalized === "gpt-5.6" ||
+    normalized === "gpt-5.6-sol" ||
+    normalized === "gpt-5.6-terra" ||
+    normalized === "gpt-5.6-luna"
+  );
+}
+
 function isClaudeGatedModelSupportedByAlias(modelId: string, alias: string): boolean {
   if (isClaudeFableModelId(modelId)) {
     return isClaudeFableModelId(alias);
@@ -287,11 +424,44 @@ function isClaudeGatedModelSupportedByAlias(modelId: string, alias: string): boo
   return false;
 }
 
+function isCodexGpt56ModelSupportedByAlias(modelId: string, alias: string): boolean {
+  return (
+    normalizeCodexGpt56ModelAlias("codex", modelId) ===
+    normalizeCodexGpt56ModelAlias("codex", alias)
+  );
+}
+
+function shouldValidateProviderModelAliases(
+  provider: AgentProvider,
+  modelId: string,
+  providerSupportedModelAliases?: readonly unknown[] | null
+): boolean {
+  if (provider === "codex" && isCodexGpt56ModelId(modelId)) {
+    return true;
+  }
+  return (
+    provider === "claude" &&
+    isClaudeCapabilityGatedModelId(modelId) &&
+    providerSupportedModelAliases !== undefined
+  );
+}
+
 export function isAgentModelSelectableForProvider(
   provider: AgentProvider,
   modelId: string,
   providerSupportedModelAliases?: readonly unknown[] | null
 ): boolean {
+  if (provider === "codex" && isCodexGpt56ModelId(modelId)) {
+    if (providerSupportedModelAliases == null) {
+      return false;
+    }
+    return providerSupportedModelAliases.some(
+      (alias) =>
+        typeof alias === "string" &&
+        isCodexGpt56ModelSupportedByAlias(modelId, alias)
+    );
+  }
+
   if (provider !== "claude" || !isClaudeCapabilityGatedModelId(modelId)) {
     return true;
   }
@@ -362,9 +532,14 @@ export function buildAgentModelRegistry(
 
 export function defaultModelForProvider(
   provider: AgentProvider,
-  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
+  providerSupportedModelAliases?: readonly unknown[] | null
 ): string {
-  return defaultModelEntryForProvider(provider, registry).id;
+  return defaultModelEntryForProvider(
+    provider,
+    registry,
+    providerSupportedModelAliases
+  ).id;
 }
 
 export function defaultEffortForModel(
@@ -411,13 +586,26 @@ export function agentEffortOptionsForModel(
   );
   return AGENT_EFFORT_CATALOG.filter((effort) =>
     supportedEfforts.includes(effort.id)
-  );
+  ).map((effort) => ({
+    ...effort,
+    description: effortDescriptionForProvider(provider, effort.id),
+  }));
 }
 
 function defaultEffortsForProvider(provider: AgentProvider): readonly AgentEffort[] {
   return provider === "codex"
-    ? ["low", "medium", "high", "xhigh"]
+    ? ["low", "medium", "high", "xhigh", "max", "ultra"]
     : ["low", "medium", "high"];
+}
+
+function effortDescriptionForProvider(
+  provider: AgentProvider,
+  effort: AgentEffort
+): string {
+  if (provider === "codex") {
+    return CODEX_EFFORT_DESCRIPTIONS[effort];
+  }
+  return CLAUDE_EFFORT_DESCRIPTIONS[effort];
 }
 
 export function normalizeAgentRuntimeSelection(
@@ -426,7 +614,11 @@ export function normalizeAgentRuntimeSelection(
   providerSupportedEfforts?: readonly unknown[] | null,
   providerSupportedModelAliases?: readonly unknown[] | null
 ): AgentRuntimeSelection {
-  const defaultEntry = defaultModelEntryForProvider("codex", registry);
+  const defaultEntry = defaultModelEntryForProvider(
+    "codex",
+    registry,
+    providerSupportedModelAliases
+  );
   const defaultRuntime: AgentRuntimeSelection = {
     provider: "codex",
     modelId: defaultEntry.id,
@@ -448,14 +640,22 @@ export function normalizeAgentRuntimeSelection(
   const knownModel = findModelEntryForProvider(provider, requestedModelId, registry);
   if (
     requestedModelId &&
-    providerSupportedModelAliases !== undefined &&
+    shouldValidateProviderModelAliases(
+      provider,
+      requestedModelId,
+      providerSupportedModelAliases
+    ) &&
     !isAgentModelSelectableForProvider(
       provider,
       requestedModelId,
       providerSupportedModelAliases
     )
   ) {
-    const model = defaultModelEntryForProvider(provider, registry);
+    const model = defaultModelEntryForProvider(
+      provider,
+      registry,
+      providerSupportedModelAliases
+    );
     const supportedEfforts = intersectSupportedEfforts(
       model.supportedEfforts,
       providerSupportedEfforts
@@ -493,7 +693,9 @@ export function normalizeAgentRuntimeSelection(
     };
   }
 
-  const model = knownModel ?? defaultModelEntryForProvider(provider, registry);
+  const model =
+    knownModel ??
+    defaultModelEntryForProvider(provider, registry, providerSupportedModelAliases);
   const supportedEfforts = intersectSupportedEfforts(
     model.supportedEfforts,
     providerSupportedEfforts
@@ -502,6 +704,58 @@ export function normalizeAgentRuntimeSelection(
     candidate.effort,
     model.defaultEffort,
     supportedEfforts
+  );
+
+  return {
+    provider,
+    modelId: model.id,
+    effort,
+  };
+}
+
+export function normalizeAgentRuntimeForPersistence(
+  runtime: unknown,
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+): AgentRuntimeSelection {
+  const defaultEntry = defaultModelEntryForProvider("codex", registry);
+  const defaultRuntime: AgentRuntimeSelection = {
+    provider: "codex",
+    modelId: defaultEntry.id,
+    effort: defaultEntry.defaultEffort,
+  };
+
+  if (!runtime || typeof runtime !== "object") {
+    return defaultRuntime;
+  }
+
+  const candidate = runtime as Partial<Record<keyof AgentRuntimeSelection, unknown>>;
+  if (!isAgentProvider(candidate.provider)) {
+    return defaultRuntime;
+  }
+
+  const provider = candidate.provider;
+  const requestedModelId =
+    typeof candidate.modelId === "string" ? candidate.modelId.trim() : "";
+  const knownModel = findModelEntryForProvider(provider, requestedModelId, registry);
+
+  if (!knownModel && requestedModelId) {
+    const effort = fallbackEffortFromSupported(
+      candidate.effort,
+      providerDefaultEffort(provider, registry),
+      defaultEffortsForProvider(provider)
+    );
+    return {
+      provider,
+      modelId: requestedModelId,
+      effort,
+    };
+  }
+
+  const model = knownModel ?? defaultModelEntryForProvider(provider, registry);
+  const effort = fallbackEffortFromSupported(
+    candidate.effort,
+    model.defaultEffort,
+    model.supportedEfforts
   );
 
   return {

@@ -8,11 +8,11 @@ You own one task. Execute it safely, validate it, and finish the task lifecycle 
 ## Core Rules
 
 1. Treat the current task as your full scope. Do not expand into other plan tasks or redo already-merged dependencies.
-2. Start with `get_task_context(task_id)`. If `blocked_by` is non-empty, stop and report the blocker.
+2. Use `<task_runtime_context>` when present as bootstrap context for task id/state/project/worktree. It is not final authority; call `get_task_context(task_id)` when that context is absent, blocked, stale/incomplete, or when full task/proposal/plan/scope details are needed. If `blocked_by` is non-empty, stop and report the blocker.
 3. Re-execution requires `get_review_notes(task_id)` and `get_task_issues(task_id, status_filter: "open")` before code changes.
-4. Use `get_project_analysis(project_id, task_id)` for baseline and final validation. Backend worktree setup has already run before you start, regardless of validation mode; do not rerun it.
-5. Prefer targeted tests when the changed surface is small, but always run non-test validation for modified paths.
-6. If an unrelated blocker exists outside task scope, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation.
+4. Use `get_project_analysis(project_id, task_id)` to discover validation commands and constraints before implementation, then call `run_task_validation` for wave, final validation, or re-execution evidence after relevant changes exist. Backend worktree setup has already run before you start; do not rerun it.
+5. Prefer targeted tests when the changed surface is small, but always include non-test validation for modified paths in `run_task_validation`.
+6. If an unrelated blocker exists outside task scope, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation. If the tool reports candidate issues, retry with `attach_to_issue_id` when it is the same underlying issue, or with `confirm_new`, `new_issue_reason`, and the returned `issue_check_token` when it is genuinely separate.
 7. If the Codex runtime exposes native task-scoped delegation with the correct worktree/CWD, use it only for bounded sub-scopes with non-overlapping file ownership. You still own step tracking, validation, commits, and `execution_complete`.
 8. On repeated non-transient failure, call `fail_step` and stop instead of retrying blindly.
 9. Treat `.artifacts/specs/**/tracker.md` as ignored local notes. Missing or ignored tracker files are not task blockers; create parent dirs/files when needed. For Git probes, use `git status --short -- <path>` or `git check-ignore -v -- <path> || true`; if ignored status output is required, use `git status --short --ignored=matching -- <path>`. Never pass tracker paths as `--ignored=<path>`.
@@ -21,18 +21,20 @@ You own one task. Execute it safely, validate it, and finish the task lifecycle 
 <workflow>
 ## Re-Execution
 
-If `RALPHX_TASK_STATE=re_executing`:
-1. `get_task_context(task_id)`
+If `<task_runtime_context><task_state>` or backend-owned `RALPHX_TASK_STATE` is `re_executing`:
+1. Read `<task_runtime_context>` if present; use it as bootstrap context, not final authority.
 2. `get_review_notes(task_id)`
 3. `get_task_issues(task_id, status_filter: "open")`
-4. Address issues by severity and mark issue progress explicitly.
+4. `get_task_context(task_id)` before code changes to refresh blockers, scope, and plan details.
+5. Address issues by severity and mark issue progress explicitly.
 
 ## Fresh Execution
 
-1. `get_task_context(task_id)`
-2. If a plan artifact exists, load only this task's section.
-3. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
-4. `get_project_analysis(project_id, task_id)` and run the baseline validation commands.
+1. Read `<task_runtime_context>` if present and capture task id, project id, task state, and working directory. Use backend-injected context and MCP reads as task identity sources.
+2. Call `get_task_context(task_id)` when bootstrap context is absent, blocked, stale/incomplete, or full task/proposal/plan/scope details are needed before edits or lifecycle calls.
+3. If a plan artifact exists, load only this task's section.
+4. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
+5. `get_project_analysis(project_id, task_id)` and select likely validation commands without running full task validation as a default baseline. Use pre-change `run_task_validation` only for explicit precondition checks, cheap smoke diagnostics, `dry_run` selection records, or suspected environment/toolchain blockers.
 
 ## Plan The Work
 
@@ -51,12 +53,13 @@ If `RALPHX_TASK_STATE=re_executing`:
 ## Validate And Complete
 
 1. Re-run `get_project_analysis(project_id, task_id)` for current validation commands.
-2. Run targeted tests when justified; otherwise run the relevant test commands from the validation set.
-3. Run non-test validation commands for every modified path.
+2. Select targeted tests when justified; otherwise select the relevant test commands from the validation set.
+3. Call `run_task_validation` with selected test and non-test validation commands for every modified path, including command category, reason, and related files.
 4. Fix task-scoped failures before finishing. Note pre-existing failures without broadening scope.
-5. Before completion, verify all required steps are completed or skipped with reason, validation evidence comes from this run, no unrelated blocker was converted into success, and the final payload matches the live tool schema.
-6. Summarize files changed, tests run, and issues resolved.
-7. Call `execution_complete` with the final `test_result` payload before exiting; if no tests were run, omit `test_result` entirely.
+5. Commit the task-scoped work before finishing. `git status --short` must be clean or ignored-only; uncommitted tracked or untracked source files are not completion.
+6. Before completion, verify all required steps are completed or skipped with reason, validation evidence comes from this run, no unrelated blocker was converted into success, and the final payload matches the live tool schema.
+7. Summarize files changed, tests run, and issues resolved.
+8. Call `execution_complete` with the final `test_result` payload derived from `run_task_validation` output before exiting; if no tests were run, omit `test_result` entirely.
 </workflow>
 
 <output_contract>

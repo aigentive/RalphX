@@ -127,7 +127,9 @@ fn make_merge_commit(repo_path: &Path) -> String {
         .current_dir(repo_path)
         .output()
         .unwrap();
-    let _feature_sha = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    let _feature_sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
 
     // Switch back to main and merge
     let _ = std::process::Command::new("git")
@@ -135,7 +137,13 @@ fn make_merge_commit(repo_path: &Path) -> String {
         .current_dir(repo_path)
         .output();
     let _ = std::process::Command::new("git")
-        .args(["merge", "feature/test-merge", "--no-ff", "-m", "merge feature"])
+        .args([
+            "merge",
+            "feature/test-merge",
+            "--no-ff",
+            "-m",
+            "merge feature",
+        ])
         .current_dir(repo_path)
         .output();
 
@@ -153,7 +161,7 @@ fn make_merge_commit(repo_path: &Path) -> String {
 /// Phase 2: complete_merge_internal sets pending_cleanup metadata.
 #[tokio::test]
 async fn complete_merge_sets_pending_cleanup_metadata() {
-    use crate::domain::state_machine::transition_handler::complete_merge_internal;
+    use crate::domain::state_machine::transition_handler::merge_completion::complete_merge_internal_with_outcome;
 
     let (_dir, repo_path_str) = make_test_repo();
     let repo_path = Path::new(&repo_path_str);
@@ -180,16 +188,17 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
 
-    let result = complete_merge_internal::<MockRuntime>(
+    let result = complete_merge_internal_with_outcome(
         &mut task,
         &project,
         &commit_sha,
         "",
         "main",
         &task_repo,
+        Some(&state.task_outcome_repo),
         None,
         None,
-        Some(&handle),
+        Some(state.events.as_ref()),
         None,
     )
     .await;
@@ -258,7 +267,7 @@ async fn complete_merge_returns_quickly_without_cleanup_blocking() {
     project.merge_strategy = MergeStrategy::Merge;
 
     let start = std::time::Instant::now();
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,

@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
 
 use super::*;
 use crate::domain::entities::{InternalStatus, Project, ProjectId, TaskId};
@@ -235,17 +234,15 @@ pub async fn save_project_analysis(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Emit event for real-time UI update
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "project:analysis_complete",
-            serde_json::json!({
-                "project_id": project_id.as_str(),
-                "detected_analysis": project.detected_analysis,
-                "analyzed_at": project.analyzed_at,
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "project:analysis_complete",
+        serde_json::json!({
+            "project_id": project_id.as_str(),
+            "detected_analysis": project.detected_analysis,
+            "analyzed_at": project.analyzed_at,
+        }),
+    );
 
     Ok(Json(SuccessResponse {
         success: true,

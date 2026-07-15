@@ -603,6 +603,7 @@ async fn status_labels_include_draft_and_merged() {
         "feature/merged",
         PrStatus::Merged {
             merge_commit_sha: Some("abc123".to_string()),
+            merged_at: None,
         },
         false,
     ));

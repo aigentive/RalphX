@@ -4,10 +4,18 @@
 use serde::{Deserialize, Serialize};
 
 fn default_auto_create_followup_agent_conversation() -> bool {
-    true
+    false
 }
 
 fn default_require_workspace_review() -> bool {
+    true
+}
+
+fn default_autofix_workspace_review_blocking_findings() -> bool {
+    true
+}
+
+fn default_run_task_validations() -> bool {
     true
 }
 
@@ -43,6 +51,16 @@ pub struct ReviewSettings {
     #[serde(default = "default_require_workspace_review")]
     pub require_workspace_review: bool,
 
+    /// Automatically spawn the workspace repair agent when Workspace Review blocks publishing
+    /// Default: true
+    #[serde(default = "default_autofix_workspace_review_blocking_findings")]
+    pub autofix_workspace_review_blocking_findings: bool,
+
+    /// Allow task execution pipeline agents to run/cache backend task validation
+    /// Default: true
+    #[serde(default = "default_run_task_validations")]
+    pub run_task_validations: bool,
+
     /// Maximum fix attempts before giving up and moving to backlog
     /// Default: 3
     pub max_fix_attempts: u32,
@@ -52,7 +70,7 @@ pub struct ReviewSettings {
     pub max_revision_cycles: u32,
 
     /// Automatically create visible follow-up Agent conversations for eligible drift/issues
-    /// Default: true
+    /// Default: false
     #[serde(default = "default_auto_create_followup_agent_conversation")]
     pub auto_create_followup_agent_conversation: bool,
 }
@@ -65,9 +83,11 @@ impl Default for ReviewSettings {
             require_fix_approval: false,
             require_human_review: false,
             require_workspace_review: true,
+            autofix_workspace_review_blocking_findings: true,
+            run_task_validations: true,
             max_fix_attempts: 3,
             max_revision_cycles: 5,
-            auto_create_followup_agent_conversation: true,
+            auto_create_followup_agent_conversation: false,
         }
     }
 }

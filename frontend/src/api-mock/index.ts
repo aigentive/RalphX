@@ -26,6 +26,7 @@ import { mockTestDataApi } from "./test-data";
 import { mockPlanBranchApi } from "./plan-branch";
 import { mockPlanApi } from "./plan";
 import { mockAgentIssueReportApi } from "./agent-issue-report";
+import { mockAutomationsApi } from "./automations";
 
 // Re-export for direct imports
 export { mockTasksApi, mockStepsApi } from "./tasks";
@@ -48,7 +49,9 @@ export { mockTestDataApi } from "./test-data";
 export { mockPlanBranchApi } from "./plan-branch";
 export { mockPlanApi } from "./plan";
 export { mockAgentIssueReportApi } from "./agent-issue-report";
-export { getStore, resetStore } from "./store";
+export { mockAutomationsApi } from "./automations";
+export { clearMockNotifications, getStore, resetStore, seedMockNotifications } from "./store";
+export type { MockNotification } from "./store";
 
 /**
  * Aggregate mock API object matching the structure of the real API
@@ -79,6 +82,7 @@ export const mockApi = {
   planBranches: mockPlanBranchApi,
   plan: mockPlanApi,
   agentIssueReport: mockAgentIssueReportApi,
+  automations: mockAutomationsApi,
 } as const;
 
 /**

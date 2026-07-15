@@ -59,41 +59,10 @@ for (const theme of THEMES) {
       await waitForApp(page);
     });
 
-    test("ideation", async ({ page }) => {
-      await openView(page, "ideation");
-      await page.waitForTimeout(600);
-      const path = await saveScreenshot(page, theme, "ideation");
-      expect(path).toContain(".png");
-    });
-
     test("agents", async ({ page }) => {
       await openView(page, "agents");
       await page.waitForTimeout(600);
       const path = await saveScreenshot(page, theme, "agents");
-      expect(path).toContain(".png");
-    });
-
-    test("graph", async ({ page }) => {
-      await openView(page, "graph");
-      await page.waitForTimeout(600);
-      const path = await saveScreenshot(page, theme, "graph");
-      expect(path).toContain(".png");
-    });
-
-    test("kanban", async ({ page }) => {
-      await page.evaluate(async () => {
-        const { useProjectStore } = await import("/src/stores/projectStore");
-        const { planApi } = await import("/src/api/plan");
-        const win = window as Window & {
-          __planStore?: { getState(): { loadActivePlan(pid: string): Promise<void> } };
-        };
-        useProjectStore.getState().selectProject("project-mock-1");
-        await planApi.setActivePlan("project-mock-1", "plan-mock-2", "kanban_inline");
-        await win.__planStore?.getState().loadActivePlan("project-mock-1");
-      });
-      await openView(page, "kanban");
-      await page.waitForSelector('[data-testid^="task-card-"]', { timeout: 10000 });
-      const path = await saveScreenshot(page, theme, "kanban");
       expect(path).toContain(".png");
     });
 
@@ -133,30 +102,10 @@ for (const theme of THEMES) {
 
     test("reviews panel", async ({ page }) => {
       await page.click('[data-testid="reviews-toggle"]');
-      await page.waitForSelector('[data-testid="reviews-panel"]', { timeout: 10000 });
+      await page.waitForSelector('[data-testid="notifications-panel"]', { timeout: 10000 });
       const path = await saveScreenshot(page, theme, "reviews");
       expect(path).toContain(".png");
     });
 
-    test("task detail overlay", async ({ page }) => {
-      await page.evaluate(async () => {
-        const { useProjectStore } = await import("/src/stores/projectStore");
-        const { planApi } = await import("/src/api/plan");
-        const win = window as Window & {
-          __planStore?: { getState(): { loadActivePlan(pid: string): Promise<void> } };
-        };
-        useProjectStore.getState().selectProject("project-mock-1");
-        await planApi.setActivePlan("project-mock-1", "plan-mock-2", "kanban_inline");
-        await win.__planStore?.getState().loadActivePlan("project-mock-1");
-      });
-      await openView(page, "kanban");
-      const firstCard = page.locator('[data-testid^="task-card-"]').first();
-      await firstCard.waitFor({ timeout: 10000 });
-      await firstCard.click();
-      await page.waitForSelector('[data-testid="task-detail-overlay"]', { timeout: 10000 });
-      await page.waitForTimeout(500);
-      const path = await saveScreenshot(page, theme, "task-detail");
-      expect(path).toContain(".png");
-    });
   });
 }

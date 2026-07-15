@@ -9,6 +9,7 @@ use crate::application::{
         resolve_valid_agent_conversation_workspace_path,
     },
     agent_workspace_review::load_agent_workspace_review_context,
+    agent_workspace_review_base::resolve_agent_workspace_review_base,
     AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, FileDiffPage,
     GitService, RangeLine,
 };
@@ -619,14 +620,23 @@ async fn get_agent_workspace_context(
         ))
     })?;
     match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
-        Ok(worktree_path) => Ok(AgentWorkspaceContext {
-            working_path: worktree_path,
-            base_ref: base_commit,
-            diff_target: None,
-            patch_diff: None,
-            supports_worktree_modes: true,
-            repair_state: None,
-        }),
+        Ok(worktree_path) => {
+            let review_base = resolve_agent_workspace_review_base(
+                &worktree_path,
+                &workspace,
+                "HEAD",
+                &base_commit,
+            )
+            .await?;
+            Ok(AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: review_base,
+                diff_target: None,
+                patch_diff: None,
+                supports_worktree_modes: true,
+                repair_state: None,
+            })
+        }
         Err(worktree_error) => {
             if let Some(context) =
                 resolve_agent_workspace_local_branch_context(&project, &workspace, &base_commit)
@@ -670,10 +680,17 @@ async fn resolve_agent_workspace_local_branch_context(
     if !GitService::branch_exists(&project_path, &workspace.branch_name).await? {
         return Ok(None);
     }
+    let review_base = resolve_agent_workspace_review_base(
+        &project_path,
+        workspace,
+        &workspace.branch_name,
+        base_commit,
+    )
+    .await?;
 
     Ok(Some(AgentWorkspaceContext {
         working_path: project_path,
-        base_ref: base_commit.to_string(),
+        base_ref: review_base,
         diff_target: Some(workspace.branch_name.clone()),
         patch_diff: None,
         supports_worktree_modes: false,
@@ -702,10 +719,13 @@ async fn resolve_agent_workspace_pr_head_context(
     else {
         return Ok(None);
     };
+    let review_base =
+        resolve_agent_workspace_review_base(&project_path, workspace, &pr_head_ref, base_commit)
+            .await?;
 
     Ok(Some(AgentWorkspaceContext {
         working_path: project_path,
-        base_ref: base_commit.to_string(),
+        base_ref: review_base,
         diff_target: Some(pr_head_ref),
         patch_diff: None,
         supports_worktree_modes: false,

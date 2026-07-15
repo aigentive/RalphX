@@ -20,6 +20,7 @@ use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
+use crate::application::task_notification_producer::TaskPipelineNotificationProducer;
 use crate::application::task_scheduler_service::TaskSchedulerService;
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::application::AppState;
@@ -34,9 +35,11 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::resolve_merge_branches;
-use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::services::{Notifier, TaskScheduler};
 use crate::domain::state_machine::transition_handler::{
-    complete_merge_internal_with_pr_sync, PlanBranchPrSyncServices,
+    complete_merge_internal_with_pr_sync_notifier_and_outcome,
+    is_pr_branch_publication_conflict_routed_error, task_has_pr_branch_publication_conflict,
+    PlanBranchPrSyncServices,
 };
 use crate::domain::state_machine::transition_handler::{
     format_validation_error_metadata, merge_metadata_into, parse_metadata, run_validation_commands,
@@ -124,9 +127,14 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
             self.plan_branch_repo.clone(),
             self.interactive_process_registry.clone(),
         )
+        .with_agent_conversation_workspace_repo(self.app_handle.and_then(|handle| {
+            handle
+                .try_state::<AppState>()
+                .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo))
+        }))
     }
 
-    fn build_transition_service(&self) -> Arc<TaskTransitionService<R>> {
+    fn build_transition_service(&self) -> Arc<TaskTransitionService> {
         let deps = self.build_runtime_factory_deps();
         build_transition_service_with_fallback(
             &self.app_handle.cloned(),
@@ -136,7 +144,7 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
         .into_arc()
     }
 
-    fn build_scheduler_service(&self) -> TaskSchedulerService<R> {
+    fn build_scheduler_service(&self) -> TaskSchedulerService {
         let deps = self.build_runtime_factory_deps();
         build_task_scheduler_with_fallback(
             &self.app_handle.cloned(),
@@ -185,19 +193,21 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
 
     async fn retry_pending_merge(&self, reason: &str) {
         let transition_service = self.build_transition_service();
-        match transition_service
-            .transition_task_corrective_with_exit(
-                &self.task_id,
-                InternalStatus::PendingMerge,
-                None,
-                "merge_auto_complete",
-            )
-            .await
+        match Box::pin(transition_service.transition_task_corrective_with_exit(
+            &self.task_id,
+            InternalStatus::PendingMerge,
+            None,
+            "merge_auto_complete",
+        ))
+        .await
         {
             Ok(updated) => {
-                transition_service
-                    .execute_entry_actions(&self.task_id, &updated, InternalStatus::PendingMerge)
-                    .await;
+                Box::pin(transition_service.execute_entry_actions(
+                    &self.task_id,
+                    &updated,
+                    InternalStatus::PendingMerge,
+                ))
+                .await;
             }
             Err(e) => {
                 tracing::error!(
@@ -208,6 +218,40 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
                 );
             }
         }
+    }
+}
+
+fn build_pr_sync_services_for_auto_complete(
+    task_repo: &Arc<dyn TaskRepository>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    app_state: Option<&AppState>,
+) -> PlanBranchPrSyncServices {
+    PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(task_repo)),
+        branch_update_repo: app_state.map(|state| Arc::clone(&state.branch_update_repo)),
+        branch_update_workflow: app_state.map(|state| {
+            Arc::new(
+                crate::application::branch_update_workflow::ApplicationBranchUpdateWorkflow::new(
+                    Arc::new(state.build_chat_service()),
+                ),
+            ) as Arc<dyn crate::domain::state_machine::services::BranchUpdateWorkflow>
+        }),
+        plan_branch_repo: plan_branch_repo.clone(),
+        pr_creation_guard: app_state
+            .map(|state| Arc::clone(&state.pr_poller_registry.pr_creation_guard)),
+        github_service: app_state.and_then(|state| state.github_service.clone()),
+        ideation_session_repo: Some(Arc::clone(ideation_session_repo)),
+        artifact_repo: Some(Arc::clone(artifact_repo)),
+        plan_pr_description_drafter: app_state.map(|state| {
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.chat_conversation_repo),
+                Arc::clone(&state.agent_provider_settings_repo),
+                state.agent_clients.clone(),
+            )
+        }),
     }
 }
 
@@ -253,10 +297,14 @@ async fn get_task_in_merging_state<R: Runtime + 'static>(
             use crate::application::task_transition_service::RepoBackedDependencyManager;
             use crate::domain::state_machine::services::DependencyManager;
 
+            let event_sink = ctx
+                .app_handle
+                .and_then(|handle| handle.try_state::<AppState>())
+                .map(|state| Arc::clone(&state.events));
             let dependency_manager = RepoBackedDependencyManager::new(
                 Arc::clone(ctx.task_dependency_repo),
                 Arc::clone(ctx.task_repo),
-                ctx.app_handle.cloned(),
+                event_sink,
             );
             dependency_manager.unblock_dependents(ctx.task_id_str).await;
         }
@@ -743,8 +791,20 @@ async fn handle_validation_recovery<R: Runtime + 'static>(
         let _ = ctx.task_repo.update(task).await;
     }
 
+    let event_sink = ctx
+        .app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.events));
+
     // Emit validation_start event so the frontend clears stale live steps
-    if let Some(handle) = ctx.app_handle {
+    if let Some(sink) = event_sink.as_deref() {
+        sink.emit(
+            "merge:validation_start",
+            serde_json::json!({
+                "task_id": ctx.task_id_str,
+            }),
+        );
+    } else if let Some(handle) = ctx.app_handle {
         let _ = handle.emit(
             "merge:validation_start",
             serde_json::json!({
@@ -753,14 +813,6 @@ async fn handle_validation_recovery<R: Runtime + 'static>(
         );
     }
 
-    // Downcast generic app_handle to Wry for run_validation_commands
-    let wry_handle: Option<tauri::AppHandle<tauri::Wry>> = ctx.app_handle.and_then(|h| {
-        let any: Box<dyn std::any::Any> = Box::new(h.clone());
-        any.downcast::<tauri::AppHandle<tauri::Wry>>()
-            .ok()
-            .map(|b| *b)
-    });
-
     // Re-run validation commands on the merge path
     let validation_cancel = tokio_util::sync::CancellationToken::new();
     match run_validation_commands(
@@ -768,7 +820,7 @@ async fn handle_validation_recovery<R: Runtime + 'static>(
         task,
         worktree,
         ctx.task_id_str,
-        wry_handle.as_ref(),
+        event_sink.as_deref(),
         None,
         &project.merge_validation_mode,
         &validation_cancel,
@@ -1057,41 +1109,49 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
     let app_state = ctx
         .app_handle
         .and_then(|handle| handle.try_state::<AppState>());
-    let pr_sync_services = PlanBranchPrSyncServices {
-        task_repo: Some(Arc::clone(ctx.task_repo)),
-        plan_branch_repo: ctx.plan_branch_repo.clone(),
-        pr_creation_guard: app_state
-            .as_ref()
-            .map(|state| Arc::clone(&state.pr_poller_registry.pr_creation_guard)),
-        github_service: app_state
-            .as_ref()
-            .and_then(|state| state.github_service.clone()),
-        ideation_session_repo: Some(Arc::clone(ctx.ideation_session_repo)),
-        artifact_repo: Some(Arc::clone(ctx.artifact_repo)),
-        plan_pr_description_drafter: app_state.as_ref().map(|state| {
-            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
-                Arc::clone(&state.agent_conversation_workspace_repo),
-                Arc::clone(&state.agent_provider_settings_repo),
-                state.agent_clients.clone(),
-            )
-        }),
-    };
+    let event_sink = app_state.as_deref().map(|state| Arc::clone(&state.events));
+    let pr_sync_services = build_pr_sync_services_for_auto_complete(
+        ctx.task_repo,
+        ctx.plan_branch_repo,
+        ctx.ideation_session_repo,
+        ctx.artifact_repo,
+        app_state.as_deref(),
+    );
+    let notifier: Option<Arc<dyn Notifier>> = app_state.as_deref().map(|state| {
+        Arc::new(TaskPipelineNotificationProducer::new(
+            state.notification_service(),
+        )) as Arc<dyn Notifier>
+    });
 
-    if let Err(e) = complete_merge_internal_with_pr_sync(
+    if let Err(e) = complete_merge_internal_with_pr_sync_notifier_and_outcome(
         task,
         project,
         commit_sha,
         source_branch,
         target_branch,
         ctx.task_repo,
+        app_state.as_deref().map(|state| &state.task_outcome_repo),
         None,
         None,
-        ctx.app_handle,
+        event_sink.as_deref(),
         None,
         Some(pr_sync_services),
+        notifier.as_ref(),
     )
     .await
     {
+        if is_pr_branch_publication_conflict_routed_error(&e)
+            || task_has_pr_branch_publication_conflict(task)
+        {
+            tracing::info!(
+                task_id = ctx.task_id_str,
+                "attempt_merge_auto_complete: PR branch publication conflict routed to branch updater"
+            );
+            let ts = ctx.build_transition_service();
+            ts.execute_entry_actions(&ctx.task_id, task, task.internal_status)
+                .await;
+            return;
+        }
         tracing::error!(
             task_id = ctx.task_id_str,
             error = %e,
@@ -1140,10 +1200,14 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         use crate::application::task_transition_service::RepoBackedDependencyManager;
         use crate::domain::state_machine::services::DependencyManager;
 
+        let event_sink = ctx
+            .app_handle
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|state| Arc::clone(&state.events));
         let dependency_manager = RepoBackedDependencyManager::new(
             Arc::clone(ctx.task_dependency_repo),
             Arc::clone(ctx.task_repo),
-            ctx.app_handle.cloned(),
+            event_sink,
         );
         dependency_manager.unblock_dependents(ctx.task_id_str).await;
 
@@ -1197,6 +1261,14 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
         task_id: ctx.task_id_str.to_string(),
     };
 
+    // Heap-allocate the large merge auto-complete future to avoid overflowing
+    // debug/test worker stacks as the merge recovery graph grows.
+    Box::pin(attempt_merge_auto_complete_body(ctx)).await;
+}
+
+async fn attempt_merge_auto_complete_body<R: Runtime + 'static>(
+    ctx: &MergeAutoCompleteContext<'_, R>,
+) {
     // 1. Get task — verify it is still in Merging state
     let mut task = match get_task_in_merging_state(ctx).await {
         Some(t) => t,
@@ -1232,6 +1304,16 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
             Some(v) => v,
             None => return,
         };
+    let app_state = ctx
+        .app_handle
+        .and_then(|handle| handle.try_state::<AppState>());
+    let pr_sync_services = build_pr_sync_services_for_auto_complete(
+        ctx.task_repo,
+        ctx.plan_branch_repo,
+        ctx.ideation_session_repo,
+        ctx.artifact_repo,
+        app_state.as_deref(),
+    );
 
     // 5. Handle freshness conflict return routing.
     // Uses shared freshness_return_route() which checks plan_update_conflict (more robust
@@ -1245,6 +1327,8 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
         ctx.interactive_process_registry
             .as_ref()
             .map(|arc| arc.as_ref()),
+        Some(&pr_sync_services),
+        None,
     )
     .await
     {
@@ -1626,8 +1710,73 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+    #[test]
+    fn build_pr_sync_services_includes_app_state_bound_pr_helpers() {
+        let app_state = AppState::new_test();
+        let plan_branch_repo = Some(Arc::clone(&app_state.plan_branch_repo));
+
+        let services = build_pr_sync_services_for_auto_complete(
+            &app_state.task_repo,
+            &plan_branch_repo,
+            &app_state.ideation_session_repo,
+            &app_state.artifact_repo,
+            Some(&app_state),
+        );
+
+        assert!(services.task_repo.is_some());
+        assert!(services.plan_branch_repo.is_some());
+        assert!(services.pr_creation_guard.is_some());
+        assert!(services.ideation_session_repo.is_some());
+        assert!(services.artifact_repo.is_some());
+        assert!(services.plan_pr_description_drafter.is_some());
+    }
+
+    #[test]
+    fn build_pr_sync_services_without_app_state_keeps_repo_helpers_only() {
+        let app_state = AppState::new_test();
+        let plan_branch_repo = Some(Arc::clone(&app_state.plan_branch_repo));
+
+        let services = build_pr_sync_services_for_auto_complete(
+            &app_state.task_repo,
+            &plan_branch_repo,
+            &app_state.ideation_session_repo,
+            &app_state.artifact_repo,
+            None,
+        );
+
+        assert!(services.task_repo.is_some());
+        assert!(services.plan_branch_repo.is_some());
+        assert!(services.pr_creation_guard.is_none());
+        assert!(services.github_service.is_none());
+        assert!(services.ideation_session_repo.is_some());
+        assert!(services.artifact_repo.is_some());
+        assert!(services.plan_pr_description_drafter.is_none());
+    }
+
+    #[test]
+    fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+        // Linux coverage shards run this deep merge-retry regression on a
+        // smaller worker stack than local macOS nextest runs.
+        let handle = std::thread::Builder::new()
+            .name("source-update-scope-drift-auto-complete".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build test runtime");
+                runtime.block_on(
+                    source_update_conflict_auto_complete_scope_drift_routes_to_reexecution_body(),
+                );
+            })
+            .expect("spawn stack-sized test thread");
+
+        if let Err(payload) = handle.join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution_body() {
         let repo = setup_source_update_scope_drift_repo();
         let repo_path = repo.path();
         let app_state = AppState::new_test();
@@ -1694,7 +1843,7 @@ mod tests {
             execution_state: &execution_state,
             execution_settings_repo: Some(&app_state.execution_settings_repo),
             plan_branch_repo: &plan_branch_repo,
-            app_handle: None::<&AppHandle<tauri::Wry>>,
+            app_handle: None::<&AppHandle>,
             interactive_process_registry: &interactive_process_registry,
         };
 

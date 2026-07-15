@@ -15,20 +15,25 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
-use super::{cleanup_terminal_agent_workspace_after_pr, PrPollerRegistry, RateLimitState};
+use super::{
+    cleanup_terminal_agent_workspace_after_pr, terminalize_agent_workspace_after_pr,
+    PrPollerRegistry, RateLimitState,
+};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentRunStatus, AgentWorkspacePrDescription, AgentWorkspacePrReviewAction,
+    AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, Project, TaskId,
+    AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::domain::services::github_service::{
@@ -165,6 +170,50 @@ fn supervised_workspace(
     workspace.publication_push_status = Some("pushed".to_string());
     workspace.pr_autofix_enabled = true;
     workspace
+}
+
+fn ideation_plan_workspace(
+    conversation_id: &str,
+    project_id: &str,
+    session_id: IdeationSessionId,
+    plan_branch_id: PlanBranchId,
+    plan_branch_name: &str,
+    worktree_path: &std::path::Path,
+) -> AgentConversationWorkspace {
+    let mut workspace = supervised_workspace(conversation_id, project_id, worktree_path);
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_ideation_session_id = Some(session_id);
+    workspace.linked_plan_branch_id = Some(plan_branch_id);
+    workspace.branch_name = plan_branch_name.to_string();
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.publication_push_status = None;
+    workspace
+}
+
+fn active_plan_pr_branch(
+    session_id: IdeationSessionId,
+    project_id: &str,
+    branch_id: PlanBranchId,
+    branch_name: &str,
+    pr_number: i64,
+) -> PlanBranch {
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("plan-artifact-autofix"),
+        session_id,
+        crate::domain::entities::ProjectId::from_string(project_id.to_string()),
+        branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = branch_id;
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_polling_active = true;
+    plan_branch.pr_number = Some(pr_number);
+    plan_branch.pr_url = Some(format!("https://github.com/owner/repo/pull/{pr_number}"));
+    plan_branch.pr_status = Some(DbPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    plan_branch
 }
 
 fn review_pr_workspace(
@@ -382,8 +431,9 @@ async fn agent_workspace_pr_conflict_marks_supervision_blocked_without_autofix()
     workspace.pr_autofix_enabled = false;
     workspace.pr_auto_merge_desired = false;
     let conversation_id = workspace.conversation_id.clone();
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -660,6 +710,7 @@ async fn agent_workspace_pr_conflict_ignores_guarded_workspaces() {
             .create_or_update(workspace)
             .await
             .expect("workspace should persist");
+        let github = Arc::new(MockGithubService::new());
         let chat = Arc::new(MockChatService::new());
 
         assert!(
@@ -675,6 +726,8 @@ async fn agent_workspace_pr_conflict_ignores_guarded_workspaces() {
         );
         assert!(
             !super::route_agent_workspace_pr_conflict_repair_if_needed(
+                github as Arc<dyn GithubServiceTrait>,
+                worktree.path(),
                 101,
                 &health,
                 &conversation_id,
@@ -712,9 +765,12 @@ async fn agent_workspace_pr_conflict_auto_publish_routes_update_only_repair_once
     let mut health = open_pr_health("auto-conflict-head");
     health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
     health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+    let github = Arc::new(MockGithubService::new());
     let chat = Arc::new(MockChatService::new());
 
     let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &health,
         &conversation_id,
@@ -783,6 +839,8 @@ async fn agent_workspace_pr_conflict_auto_publish_routes_update_only_repair_once
     }));
 
     let duplicate = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &health,
         &conversation_id,
@@ -794,6 +852,118 @@ async fn agent_workspace_pr_conflict_auto_publish_routes_update_only_repair_once
     .expect("duplicate conflict repair routing should succeed");
     assert!(!duplicate);
     assert_eq!(chat.get_sent_messages().await.len(), 1);
+}
+
+#[tokio::test]
+async fn agent_workspace_pr_conflict_repair_disables_auto_merge_before_repair_agent() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "conflicting-disarm-auto-merge-conversation",
+        "project-conflicting-disarm",
+        worktree.path(),
+    );
+    workspace.auto_publish_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = conflicting_pr_health("conflict-disarm-head");
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("conflict repair should route after disarm");
+
+    assert!(routed);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_auto_merge_current, Some(false));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+}
+
+#[tokio::test]
+async fn agent_workspace_pr_conflict_repair_waits_when_auto_merge_disable_fails() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "conflicting-disarm-failure-conversation",
+        "project-conflicting-disarm-failure",
+        worktree.path(),
+    );
+    workspace.auto_publish_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = conflicting_pr_health("conflict-disarm-failure-head");
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+        "permission denied".to_string(),
+    )));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &health,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("conflict repair should handle disarm failure");
+
+    assert!(!routed);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.pr_auto_merge_current, Some(true));
+    assert_eq!(
+        updated.pr_supervision_status.as_deref(),
+        Some(super::AUTO_MERGE_SUPERVISION_STATUS_WAITING)
+    );
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
 }
 
 #[tokio::test]
@@ -818,9 +988,12 @@ async fn agent_workspace_pr_conflict_repair_waits_when_auto_publish_is_paused() 
     let mut health = open_pr_health("paused-conflict-head");
     health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
     health.sync_state.mergeable = Some(PrMergeableState::Conflicting);
+    let github = Arc::new(MockGithubService::new());
     let chat = Arc::new(MockChatService::new());
 
     let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &health,
         &conversation_id,
@@ -872,9 +1045,12 @@ async fn agent_workspace_pr_conflict_repair_ignores_duplicate_routing_event() {
         ))
         .await
         .expect("duplicate routing event should persist");
+    let github = Arc::new(MockGithubService::new());
     let chat = Arc::new(MockChatService::new());
 
     let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &health,
         &conversation_id,
@@ -897,10 +1073,14 @@ async fn agent_workspace_pr_conflict_repair_ignores_duplicate_routing_event() {
 
 #[tokio::test]
 async fn agent_workspace_pr_conflict_repair_skips_clean_health_before_workspace_lookup() {
+    let worktree = tempfile::tempdir().expect("worktree path");
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let github = Arc::new(MockGithubService::new());
     let chat = Arc::new(MockChatService::new());
     let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &open_pr_health("clean-head"),
         &ChatConversationId::from_string("missing-clean-conversation"),
@@ -917,10 +1097,14 @@ async fn agent_workspace_pr_conflict_repair_skips_clean_health_before_workspace_
 
 #[tokio::test]
 async fn agent_workspace_pr_conflict_repair_errors_for_missing_conflicting_workspace() {
+    let worktree = tempfile::tempdir().expect("worktree path");
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let github = Arc::new(MockGithubService::new());
     let chat = Arc::new(MockChatService::new());
     let error = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &conflicting_pr_health("missing-repair-head"),
         &ChatConversationId::from_string("missing-repair-conversation"),
@@ -966,8 +1150,11 @@ async fn agent_workspace_pr_conflict_repair_records_failed_handoff_with_latest_r
         .expect("latest run should persist");
     let chat = Arc::new(MockChatService::new());
     chat.set_available(false).await;
+    let github = Arc::new(MockGithubService::new());
 
     let routed = super::route_agent_workspace_pr_conflict_repair_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
         101,
         &conflicting_pr_health("failed-handoff-head"),
         &conversation_id,
@@ -1056,7 +1243,13 @@ fn supervised_agent_workspace_pr_message_includes_fix_context_entrypoint() {
         classification: "github_pr_autofix:101:head:fingerprint".to_string(),
     };
 
-    let message = super::build_agent_workspace_pr_autofix_message(101, &workspace, &issue);
+    let message = super::build_agent_workspace_pr_autofix_message(
+        101,
+        workspace.publication_pr_url.as_deref(),
+        "agent workspace",
+        &workspace,
+        &issue,
+    );
     assert!(message.contains("RalphX PR supervision detected"));
     assert!(message.contains("complete_agent_workspace_pr_fix"));
     assert!(message.contains("get_agent_workspace_pr_fix_context"));
@@ -1145,6 +1338,254 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
                 .as_deref()
                 .unwrap_or_default()
                 .starts_with("github_pr_autofix:101:routehead")
+    }));
+}
+
+#[tokio::test]
+async fn ideation_plan_pr_autofix_routes_failure_without_workspace_publication_pr() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let project_id = "project-plan-autofix";
+    let session_id = IdeationSessionId::from_string("session-plan-autofix");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix");
+    let plan_branch_name = "ralphx/test/plan-autofix";
+    let workspace = ideation_plan_workspace(
+        "plan-autofix-route-conversation",
+        project_id,
+        session_id.clone(),
+        plan_branch_id.clone(),
+        plan_branch_name,
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let plan_branch = active_plan_pr_branch(
+        session_id,
+        project_id,
+        plan_branch_id,
+        plan_branch_name,
+        602,
+    );
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("plan-route-head");
+    health.checks.push(PrHealthCheck {
+        name: "Frontend Tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/602".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_ideation_plan_pr_autofix_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        &plan_branch,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("plan PR autofix routing should succeed");
+
+    assert!(routed);
+    let messages = chat.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Frontend Tests (failure)"));
+    assert!(messages[0].contains("Pull request: https://github.com/owner/repo/pull/602"));
+    let options = chat.get_sent_options().await;
+    assert_eq!(
+        options[0].agent_name_override.as_deref(),
+        Some(crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER)
+    );
+    assert_eq!(
+        options[0].working_directory_override.as_deref(),
+        Some(worktree.path())
+    );
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failing check"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_autofix"
+            && event.status == "needs_agent"
+            && event
+                .classification
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("github_pr_autofix:602:planroutehea")
+    }));
+}
+
+#[tokio::test]
+async fn ideation_plan_pr_autofix_skips_non_current_workspace_or_plan_shapes() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let project_id = "project-plan-autofix-skips";
+    let session_id = IdeationSessionId::from_string("session-plan-autofix-skips");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-skips");
+    let plan_branch_name = "ralphx/test/plan-autofix-skips";
+    let base_workspace = ideation_plan_workspace(
+        "plan-autofix-skip-conversation",
+        project_id,
+        session_id.clone(),
+        plan_branch_id.clone(),
+        plan_branch_name,
+        worktree.path(),
+    );
+    let conversation_id = base_workspace.conversation_id.clone();
+    let base_plan_branch = active_plan_pr_branch(
+        session_id.clone(),
+        project_id,
+        plan_branch_id.clone(),
+        plan_branch_name,
+        603,
+    );
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("unused")));
+    let chat = Arc::new(MockChatService::new());
+
+    let mut cases: Vec<(AgentConversationWorkspace, PlanBranch)> = Vec::new();
+
+    let mut missing_pr = base_plan_branch.clone();
+    missing_pr.pr_number = None;
+    cases.push((base_workspace.clone(), missing_pr));
+
+    let mut archived = base_workspace.clone();
+    archived.status = AgentConversationWorkspaceStatus::Archived;
+    cases.push((archived, base_plan_branch.clone()));
+
+    let mut edit_mode = base_workspace.clone();
+    edit_mode.mode = AgentConversationWorkspaceMode::Edit;
+    cases.push((edit_mode, base_plan_branch.clone()));
+
+    let mut plan_mismatch = base_workspace.clone();
+    plan_mismatch.linked_plan_branch_id = Some(PlanBranchId::from_string("other-plan"));
+    cases.push((plan_mismatch, base_plan_branch.clone()));
+
+    let mut session_mismatch = base_workspace.clone();
+    session_mismatch.linked_ideation_session_id =
+        Some(IdeationSessionId::from_string("other-session"));
+    cases.push((session_mismatch, base_plan_branch.clone()));
+
+    let mut branch_mismatch = base_workspace.clone();
+    branch_mismatch.branch_name = "ralphx/test/other-plan-branch".to_string();
+    cases.push((branch_mismatch, base_plan_branch.clone()));
+
+    let mut terminal_plan = base_plan_branch.clone();
+    terminal_plan.pr_status = Some(DbPrStatus::Closed);
+    cases.push((base_workspace.clone(), terminal_plan));
+
+    for (workspace, plan_branch) in cases {
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        let routed = super::route_ideation_plan_pr_autofix_if_needed(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            &plan_branch,
+            &conversation_id,
+            Arc::clone(&workspace_repo),
+            None,
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        )
+        .await
+        .expect("skip routing should succeed");
+
+        assert!(!routed);
+    }
+
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
+async fn ideation_plan_pr_autofix_records_terminal_status_without_workspace_publication_update() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let project_id = "project-plan-autofix-terminal";
+    let session_id = IdeationSessionId::from_string("session-plan-autofix-terminal");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-terminal");
+    let plan_branch_name = "ralphx/test/plan-autofix-terminal";
+    let workspace = ideation_plan_workspace(
+        "plan-autofix-terminal-conversation",
+        project_id,
+        session_id.clone(),
+        plan_branch_id.clone(),
+        plan_branch_name,
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let plan_branch = active_plan_pr_branch(
+        session_id,
+        project_id,
+        plan_branch_id,
+        plan_branch_name,
+        604,
+    );
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("terminal-plan-head");
+    health.sync_state.status = PrStatus::Closed;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_ideation_plan_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        &plan_branch,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("terminal linked plan status should be handled");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.publication_pr_url, None);
+    assert_eq!(updated.publication_push_status, None);
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_terminal"
+            && event.status == "closed"
+            && event.classification.as_deref() == Some("github_pr_terminal:604:closed")
     }));
 }
 
@@ -1347,7 +1788,7 @@ async fn review_pr_monitor_skips_when_monitor_missing_or_disabled() {
 }
 
 #[tokio::test]
-async fn review_pr_monitor_skips_terminal_and_submitting_without_fetching_health() {
+async fn review_pr_monitor_skips_paused_terminal_and_submitting_without_fetching_health() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
         "review-monitor-terminal-skip-conversation",
@@ -1400,6 +1841,26 @@ async fn review_pr_monitor_skips_terminal_and_submitting_without_fetching_health
     )
     .await
     .expect("submitting monitor should skip cleanly");
+    assert!(!routed);
+
+    let mut paused = watching_review_monitor(&workspace, "old-head");
+    paused.monitor_enabled = false;
+    paused.status = AgentWorkspacePrReviewMonitorStatus::Paused;
+    workspace_repo
+        .upsert_pr_review_monitor(paused)
+        .await
+        .expect("paused monitor should persist");
+    let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("paused monitor should skip cleanly");
     assert!(!routed);
     assert_eq!(github.state().fetch_pr_health_calls, 0);
     assert!(chat.get_sent_messages().await.is_empty());
@@ -1689,7 +2150,7 @@ async fn review_pr_monitor_skips_same_head_and_active_runs() {
 }
 
 #[tokio::test]
-async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
+async fn review_pr_monitor_routes_new_head_after_awaiting_user_decision() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
         "review-monitor-awaiting-conversation",
@@ -1710,7 +2171,23 @@ async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
         .await
         .expect("monitor should persist");
 
+    let stale_action = AgentWorkspacePrReviewAction::new(
+        conversation_id.clone(),
+        101,
+        "old-head".to_string(),
+        AgentWorkspacePrReviewActionKind::RequestChanges,
+        "Old review requires a decision".to_string(),
+        "This action belongs to the superseded head.".to_string(),
+        None,
+        Some("old-review-run".to_string()),
+    );
+    workspace_repo
+        .create_or_update_pr_review_action(stale_action.clone())
+        .await
+        .expect("stale action should persist");
+
     let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("new-head")));
     let chat = Arc::new(MockChatService::new());
     let routed = super::route_agent_workspace_pr_review_monitor_if_needed(
         github.clone() as Arc<dyn GithubServiceTrait>,
@@ -1722,10 +2199,19 @@ async fn review_pr_monitor_skips_awaiting_user_without_fetching_health() {
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
-    .expect("awaiting-user route should skip cleanly");
-    assert!(!routed);
-    assert_eq!(github.state().fetch_pr_health_calls, 0);
-    assert!(chat.get_sent_messages().await.is_empty());
+    .expect("awaiting-user route should dispatch a new-head re-review");
+    assert!(routed);
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let stale_action = workspace_repo
+        .get_pr_review_action(&stale_action.id)
+        .await
+        .expect("stale action lookup should succeed")
+        .expect("stale action should remain available for history");
+    assert_eq!(
+        stale_action.status,
+        AgentWorkspacePrReviewActionStatus::Superseded
+    );
 }
 
 #[tokio::test]
@@ -1961,6 +2447,7 @@ async fn supervised_agent_workspace_pr_autofix_records_terminal_health_without_r
         (
             PrStatus::Merged {
                 merge_commit_sha: Some("a".repeat(40)),
+                merged_at: None,
             },
             "merged",
             "Pull request merged",
@@ -2217,6 +2704,138 @@ async fn supervised_agent_workspace_pr_autofix_skips_when_supervision_status_is_
         assert!(!routed, "status {status} should not route another fixer");
         assert!(chat.get_sent_messages().await.is_empty());
     }
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_disables_auto_merge_before_fixer() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-disarm-auto-merge-conversation",
+        "project-autofix-disarm",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("autofix-disarm-head");
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "CI".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("autofix route should succeed");
+
+    assert!(routed);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_auto_merge_current, Some(false));
+    assert_eq!(
+        updated.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_waits_when_auto_merge_disable_fails() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-disarm-failure-conversation",
+        "project-autofix-disarm-failure",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("autofix-disarm-failure-head");
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    health.checks.push(PrHealthCheck {
+        name: "CI".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: None,
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+        "permission denied".to_string(),
+    )));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("autofix guard should handle disable failure");
+
+    assert!(!routed);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.pr_auto_merge_current, Some(true));
+    assert_eq!(
+        updated.pr_supervision_status.as_deref(),
+        Some(super::AUTO_MERGE_SUPERVISION_STATUS_WAITING)
+    );
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("GitHub auto-merge could not be disabled yet"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
 }
 
 #[tokio::test]
@@ -2510,6 +3129,7 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
     };
     let github = Arc::new(MockGithubService::new());
     github.will_return_review_feedback(feedback);
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("review-feedback-head")));
     let chat = Arc::new(MockChatService::new());
 
     let routed = super::route_agent_workspace_review_feedback_if_present(
@@ -2569,6 +3189,130 @@ async fn agent_workspace_review_feedback_uses_pr_fixer_when_autofix_enabled() {
             && event.status == "needs_agent"
             && event.classification.as_deref() == Some("github_pr_review:review-123")
     }));
+}
+
+#[tokio::test]
+async fn agent_workspace_review_feedback_disables_auto_merge_before_pr_fixer() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "review-feedback-disarm-conversation",
+        "project-review-feedback-disarm",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let feedback = PrReviewFeedback {
+        review_id: "review-disarm".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-05-17T12:00:00Z".to_string()),
+        body: Some("Please handle the edge case.".to_string()),
+        comments: Vec::new(),
+    };
+    let mut health = open_pr_health("review-feedback-disarm-head");
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_review_feedback(feedback);
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_review_feedback_if_present(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("review feedback should route after disarm");
+
+    assert!(routed);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(chat.get_sent_messages().await.len(), 1);
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(updated.pr_auto_merge_current, Some(false));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+}
+
+#[tokio::test]
+async fn agent_workspace_review_feedback_waits_when_auto_merge_disable_fails() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "review-feedback-disarm-failure-conversation",
+        "project-review-feedback-disarm-failure",
+        worktree.path(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let feedback = PrReviewFeedback {
+        review_id: "review-disarm-failure".to_string(),
+        author: "reviewer".to_string(),
+        submitted_at: Some("2026-05-17T12:00:00Z".to_string()),
+        body: Some("Please handle the edge case.".to_string()),
+        comments: Vec::new(),
+    };
+    let mut health = open_pr_health("review-feedback-disarm-failure-head");
+    health.auto_merge_request = Some(PrAutoMergeRequest {
+        enabled_by: Some("octocat".to_string()),
+        merge_method: Some("squash".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_review_feedback(feedback);
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+        "permission denied".to_string(),
+    )));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_review_feedback_if_present(
+        Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("review feedback should handle disarm failure");
+
+    assert!(!routed);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.pr_auto_merge_current, Some(true));
+    assert_eq!(
+        updated.pr_supervision_status.as_deref(),
+        Some(super::AUTO_MERGE_SUPERVISION_STATUS_WAITING)
+    );
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
 }
 
 #[tokio::test]
@@ -2814,6 +3558,58 @@ fn pr_creation_guard_is_shared_arc() {
 }
 
 #[tokio::test]
+async fn terminal_agent_workspace_pr_terminalization_stops_active_project_run() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-terminal-active-run-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("active run should persist");
+    let chat = Arc::new(MockChatService::new());
+
+    terminalize_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        Some(Arc::clone(&chat) as Arc<dyn crate::application::chat_service::ChatService>),
+        &conversation_id,
+        &project,
+        None,
+        false,
+        true,
+        "closed",
+    )
+    .await;
+
+    assert_eq!(
+        chat.get_stop_agent_calls().await,
+        vec![(ChatContextType::Project, conversation_id.as_str())]
+    );
+    let updated_run = agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("run lookup should succeed")
+        .expect("run should still exist");
+    assert_eq!(updated_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        updated_run.error_message.as_deref(),
+        Some("Agent stopped because the workspace pull request was closed")
+    );
+}
+
+#[tokio::test]
 async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_artifacts() {
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -2823,8 +3619,9 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -2853,9 +3650,22 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
 
     assert!(!worktree_path.exists());
     assert!(!branch_exists(repo.path(), &branch));
-    let state = github.state();
-    assert_eq!(state.fetch_remote_calls, 1);
-    assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+    let (fetch_remote_calls, last_fetch_remote_branch_name) = {
+        let state = github.state();
+        (
+            state.fetch_remote_calls,
+            state.last_fetch_remote_branch_name.clone(),
+        )
+    };
+    assert_eq!(fetch_remote_calls, 1);
+    assert_eq!(last_fetch_remote_branch_name.as_deref(), Some("main"));
+    assert_eq!(
+        memory_workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("cleaned")
+    );
 }
 
 #[tokio::test]
@@ -2868,8 +3678,9 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -2902,6 +3713,51 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     assert!(!worktree_path.exists());
     assert!(!branch_exists(repo.path(), &branch));
     assert_eq!(github.state().fetch_remote_calls, 1);
+    assert_eq!(
+        memory_workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("cleaned")
+    );
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_preserves_non_owned_branch_marker() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = "feature/user-owned-agent-workspace";
+    run_git(repo.path(), &["branch", branch, "main"]);
+
+    let workspace =
+        cleanup_workspace_with_conversation(&project, branch, "poller-non-owned-cleanup");
+    let conversation_id = workspace.conversation_id.clone();
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        memory_workspace_repo.clone();
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    cleanup_terminal_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        &conversation_id,
+        &project,
+        None,
+        true,
+    )
+    .await;
+
+    assert!(branch_exists(repo.path(), branch));
+    assert_eq!(
+        memory_workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("branch_preserved_non_owned")
+    );
 }
 
 #[tokio::test]
@@ -2909,8 +3765,9 @@ async fn terminal_agent_workspace_pr_cleanup_returns_when_workspace_missing() {
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let project = cleanup_project(repo.path(), worktrees.path());
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     let conversation_id = ChatConversationId::new();
 
     cleanup_terminal_agent_workspace_after_pr(
@@ -2979,8 +3836,9 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
     workspace.publication_pr_status = Some("open".to_string());
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -3028,6 +3886,21 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
     assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
     assert!(branch_exists(repo.path(), branch));
     assert_eq!(github.state().fetch_remote_calls, 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if memory_workspace_repo
+                .local_cleanup_status_for_test(&conversation_id)
+                .await
+                .as_deref()
+                == Some("cleaned")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("poller should mark closed PR local cleanup as cleaned");
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -3161,6 +4034,25 @@ impl AgentConversationWorkspaceRepository for ReviewMonitorLookupErrorRepository
         Err(repo_error())
     }
 
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
+    async fn claim_pending_pr_review_action(&self, _action_id: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
     }
@@ -3272,6 +4164,25 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
         _conversation_id: &ChatConversationId,
     ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
         Err(repo_error())
+    }
+
+    async fn set_pr_review_auto_approve_enabled(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
+    async fn mark_pr_review_first_action_resolved(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Err(repo_error())
+    }
+
+    async fn claim_pending_pr_review_action(&self, _action_id: &str) -> AppResult<bool> {
+        Ok(false)
     }
 
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {

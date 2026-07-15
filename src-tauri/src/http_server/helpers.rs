@@ -15,7 +15,7 @@ use crate::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
     IdeationSession, IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority,
     ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId,
-    ValidationCacheData, ValidationCacheMetadata,
+    ValidationCacheData, ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::{
@@ -191,15 +191,14 @@ pub fn assert_session_mutable(session: &IdeationSession) -> AppResult<()> {
 /// contexts don't fail. Payload matches `DependencyEventSchema` in `useIdeationEvents.ts`:
 /// `{ proposalId: String, dependsOnId: String }`.
 pub fn emit_dependency_added(state: &AppState, proposal_id: &str, depends_on_id: &str) {
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "dependency:added",
-            serde_json::json!({
-                "proposalId": proposal_id,
-                "dependsOnId": depends_on_id
-            }),
-        );
-    }
+    crate::http_server::emit_app_event(
+        state,
+        "dependency:added",
+        serde_json::json!({
+            "proposalId": proposal_id,
+            "dependsOnId": depends_on_id
+        }),
+    );
 }
 
 // ============================================================================
@@ -358,13 +357,12 @@ pub async fn create_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskProposalResponse::from(proposal.clone());
-        let _ = app_handle.emit(
-            "proposal:created",
-            serde_json::json!({ "proposal": response }),
-        );
-    }
+    let response = TaskProposalResponse::from(proposal.clone());
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:created",
+        serde_json::json!({ "proposal": response }),
+    );
 
     // Process depends_on deps in separate db.run() calls (AD5: deadlock avoidance)
     // Each dep: validate session membership + cycle check + insert + emit
@@ -630,13 +628,12 @@ pub async fn update_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskProposalResponse::from(updated.clone());
-        let _ = app_handle.emit(
-            "proposal:updated",
-            serde_json::json!({ "proposal": response }),
-        );
-    }
+    let response = TaskProposalResponse::from(updated.clone());
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:updated",
+        serde_json::json!({ "proposal": response }),
+    );
 
     // Process add_depends_on and add_blocks deps in separate db.run() calls (AD5: deadlock avoidance)
     let mut dep_errors: Vec<String> = Vec::new();
@@ -910,12 +907,11 @@ pub async fn archive_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "proposal:archived",
-            serde_json::json!({ "proposalId": proposal_id.as_str() }),
-        );
-    }
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:archived",
+        serde_json::json!({ "proposalId": proposal_id.as_str() }),
+    );
 
     Ok(session_id)
 }
@@ -1108,16 +1104,14 @@ pub async fn finalize_proposals_impl(
                 .update_acceptance_status(&session_id_typed, None, Some(AcceptanceStatus::Pending))
                 .await?;
 
-            // Emit Tauri event to notify frontend
-            if let Some(ref handle) = state.app_handle {
-                let _ = handle.emit(
-                    "ideation:finalize_pending_confirmation",
-                    serde_json::json!({
-                        "sessionId": session_id,
-                        "sessionTitle": session.title,
-                    }),
-                );
-            }
+            crate::http_server::emit_app_event(
+                state,
+                "ideation:finalize_pending_confirmation",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "sessionTitle": session.title,
+                }),
+            );
 
             return Ok(crate::http_server::types::FinalizeProposalsResponse {
                 created_task_ids: vec![],
@@ -1498,8 +1492,12 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
         context_hints.push("No additional context artifacts found - proceed with task description and acceptance criteria".to_string());
     }
 
-    // 10. Compute validation cache hint (if cache present in metadata)
-    let validation_cache = compute_validation_cache(&task, state, &mut context_hints).await;
+    // 10. Compute validation cache hint. Prefer first-class validation runs, then legacy metadata.
+    let validation_cache =
+        match compute_first_class_validation_cache(&task, state, &mut context_hints).await {
+            Some(cache) => Some(cache),
+            None => compute_validation_cache(&task, state, &mut context_hints).await,
+        };
     let out_of_scope_blocker_fingerprint =
         compute_out_of_scope_blocker_fingerprint(&task.id, &out_of_scope_files);
     let followup_sessions = load_task_followup_sessions(state, &task).await?;
@@ -1688,6 +1686,96 @@ pub fn compute_validation_hint(
             ),
         )
     }
+}
+
+async fn compute_first_class_validation_cache(
+    task: &crate::domain::entities::Task,
+    state: &AppState,
+    context_hints: &mut Vec<String>,
+) -> Option<ValidationCacheData> {
+    let latest = state
+        .validation_run_repo
+        .latest_non_baseline_run_with_results_for_task(&task.id)
+        .await
+        .ok()
+        .flatten()?;
+    if latest.run.status != ValidationRunStatus::Passed {
+        return None;
+    }
+
+    let worktree_path = task.worktree_path.as_deref()?;
+    let current_sha = GitService::get_head_sha(std::path::Path::new(worktree_path))
+        .await
+        .ok()?;
+    if latest.run.head_sha.as_deref() != Some(current_sha.as_str()) {
+        return None;
+    }
+
+    let episode_entered_at = latest_execution_episode_entered_at(state, &task.id).await?;
+    if latest
+        .run
+        .status_episode_entered_at
+        .map(|captured_episode| captured_episode < episode_entered_at)
+        .unwrap_or(true)
+    {
+        return None;
+    }
+
+    let test_commands = latest
+        .commands
+        .iter()
+        .filter(|command| command.category == ValidationCommandCategory::Test)
+        .collect::<Vec<_>>();
+    let tests_ran = !test_commands.is_empty();
+    let tests_passed = test_commands
+        .iter()
+        .all(|command| command.status.is_success_like());
+    let captured_at = latest.run.completed_at.unwrap_or(latest.run.started_at);
+    let passed_count = latest
+        .commands
+        .iter()
+        .filter(|command| command.status.is_success_like())
+        .count();
+    let total_count = latest.commands.len();
+    let test_summary = Some(format!(
+        "{passed_count}/{total_count} validation command{} passed or reused",
+        if total_count == 1 { "" } else { "s" }
+    ));
+
+    let (validation_hint, hint_message) = if tests_ran && tests_passed {
+        (
+            "skip_tests".to_string(),
+            format!(
+                "Task validation passed on commit {}. Reuse backend validation evidence.",
+                &current_sha[..8.min(current_sha.len())]
+            ),
+        )
+    } else if !tests_ran {
+        (
+            "skip_test_validation".to_string(),
+            format!(
+                "Task validation recorded no test commands on commit {}.",
+                &current_sha[..8.min(current_sha.len())]
+            ),
+        )
+    } else {
+        return None;
+    };
+
+    context_hints.push(format!(
+        "VALIDATION SUMMARY: {} - {}",
+        validation_hint, hint_message
+    ));
+
+    Some(ValidationCacheData {
+        commit_sha: current_sha,
+        tests_ran,
+        tests_passed,
+        test_summary,
+        captured_at,
+        validation_hint,
+        hint_message,
+    })
 }
 
 /// Parse validation cache from task metadata, compute hint by comparing HEAD SHA.

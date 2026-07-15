@@ -63,6 +63,7 @@ function createConversation(
     claudeSessionId: null,
     providerSessionId: null,
     providerHarness: null,
+    coordinationMode: "solo",
     upstreamProvider: null,
     providerProfile: null,
     logicalModel: null,

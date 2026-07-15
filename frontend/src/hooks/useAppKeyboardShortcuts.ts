@@ -4,6 +4,7 @@
 
 import { useEffect, useRef } from "react";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { ALL_NAV_ITEMS } from "@/components/layout/nav-items";
 import type { ViewType } from "@/types/chat";
 import type { FeatureFlags } from "@/types/feature-flags";
 
@@ -11,6 +12,7 @@ const ALL_ENABLED_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: true,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -20,16 +22,13 @@ const ALL_ENABLED_FLAGS: FeatureFlags = {
 interface UseAppKeyboardShortcutsProps {
   currentView: ViewType;
   setCurrentView: (view: ViewType) => void;
-  toggleReviewsPanel?: () => void;
-  toggleGraphRightPanel?: () => void;
+  toggleNotificationsPanel?: () => void;
   openProjectWizard?: () => void;
   hasProjects?: boolean;
   showWelcomeOverlay?: boolean;
   openWelcomeOverlay?: () => void;
   closeWelcomeOverlay?: () => void;
   welcomeOverlayReturnView?: ViewType | null;
-  openPlanQuickSwitcher?: () => void;
-  onBattleModeToggle?: () => void;
   openSettings?: () => void;
   openNewAgent?: () => void;
   featureFlags?: FeatureFlags;
@@ -38,16 +37,13 @@ interface UseAppKeyboardShortcutsProps {
 export function useAppKeyboardShortcuts({
   currentView,
   setCurrentView,
-  toggleReviewsPanel,
-  toggleGraphRightPanel,
+  toggleNotificationsPanel,
   openProjectWizard,
   hasProjects,
   showWelcomeOverlay,
   openWelcomeOverlay,
   closeWelcomeOverlay,
   welcomeOverlayReturnView,
-  openPlanQuickSwitcher,
-  onBattleModeToggle,
   openSettings,
   openNewAgent,
   featureFlags = ALL_ENABLED_FLAGS,
@@ -66,30 +62,16 @@ export function useAppKeyboardShortcuts({
       }
 
       if (e.metaKey || e.ctrlKey) {
-        // Main navigation order: Agents → Ideation → Graph → Kanban → Insights
+        const navigationItem = ALL_NAV_ITEMS.find(
+          (item) => item.shortcut === `⌘${e.key}` && item.visible(featureFlags),
+        );
+        if (navigationItem) {
+          e.preventDefault();
+          setCurrentView(navigationItem.view);
+          return;
+        }
+
         switch (e.key) {
-          case "1":
-            e.preventDefault();
-            setCurrentView("agents");
-            break;
-          case "2":
-            e.preventDefault();
-            if (featureFlags.ideationPage) {
-              setCurrentView("ideation");
-            }
-            break;
-          case "3":
-            e.preventDefault();
-            setCurrentView("graph");
-            break;
-          case "4":
-            e.preventDefault();
-            setCurrentView("kanban");
-            break;
-          case "5":
-            e.preventDefault();
-            setCurrentView("insights");
-            break;
           case "6":
           case ".":
           case ",":
@@ -170,7 +152,7 @@ export function useAppKeyboardShortcuts({
           case "r":
           case "R": {
             // Cmd+Shift+R: Toggle reviews panel
-            if (!e.shiftKey || !toggleReviewsPanel) {
+            if (!e.shiftKey || !toggleNotificationsPanel) {
               return;
             }
             const activeEl = document.activeElement;
@@ -181,60 +163,7 @@ export function useAppKeyboardShortcuts({
               return;
             }
             e.preventDefault();
-            toggleReviewsPanel();
-            break;
-          }
-          case "l":
-          case "L": {
-            if (!toggleGraphRightPanel || currentView !== "graph") {
-              return;
-            }
-            const activeEl = document.activeElement;
-            if (
-              activeEl instanceof HTMLInputElement ||
-              activeEl instanceof HTMLTextAreaElement
-            ) {
-              return;
-            }
-            e.preventDefault();
-            toggleGraphRightPanel();
-            break;
-          }
-          case "p":
-          case "P": {
-            // Cmd+Shift+P: Open plan quick switcher
-            if (!e.shiftKey || !openPlanQuickSwitcher) {
-              return;
-            }
-            const activeEl = document.activeElement;
-            if (
-              activeEl instanceof HTMLInputElement ||
-              activeEl instanceof HTMLTextAreaElement
-            ) {
-              return;
-            }
-            e.preventDefault();
-            openPlanQuickSwitcher();
-            break;
-          }
-          case "b":
-          case "B": {
-            // Cmd+Shift+B: Toggle Battle Mode (graph view only, feature flag gated)
-            if (!e.shiftKey || !onBattleModeToggle) {
-              return;
-            }
-            if (currentView !== "graph" || !featureFlags.battleMode) {
-              return;
-            }
-            const activeEl = document.activeElement;
-            if (
-              activeEl instanceof HTMLInputElement ||
-              activeEl instanceof HTMLTextAreaElement
-            ) {
-              return;
-            }
-            e.preventDefault();
-            onBattleModeToggle();
+            toggleNotificationsPanel();
             break;
           }
         }
@@ -243,7 +172,7 @@ export function useAppKeyboardShortcuts({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setCurrentView, toggleReviewsPanel, toggleGraphRightPanel, currentView, openProjectWizard, hasProjects, showWelcomeOverlay, openWelcomeOverlay, closeWelcomeOverlay, welcomeOverlayReturnView, openPlanQuickSwitcher, onBattleModeToggle, openSettings, openNewAgent, featureFlags]);
+  }, [setCurrentView, toggleNotificationsPanel, currentView, openProjectWizard, hasProjects, showWelcomeOverlay, openWelcomeOverlay, closeWelcomeOverlay, welcomeOverlayReturnView, openSettings, openNewAgent, featureFlags]);
 
   // Global shortcut for Cmd+, (registered at OS level to bypass DevTools interception)
   const setCurrentViewRef = useRef(setCurrentView);

@@ -2,6 +2,7 @@ type RuntimeContextKey =
   | "agentType"
   | "agentProfile"
   | "taskId"
+  | "taskState"
   | "projectId"
   | "workingDirectory"
   | "filesystemReadRoots"
@@ -9,6 +10,7 @@ type RuntimeContextKey =
   | "contextId"
   | "conversationId"
   | "parentConversationId"
+  | "agentRunId"
   | "leadSessionId"
   | "tauriApiUrl"
   | "traceDir";
@@ -23,6 +25,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   { key: "agentType", argName: "agent-type", envName: "RALPHX_AGENT_TYPE" },
   { key: "agentProfile", argName: "agent-profile", envName: "RALPHX_AGENT_PROFILE" },
   { key: "taskId", argName: "task-id", envName: "RALPHX_TASK_ID" },
+  { key: "taskState", argName: "task-state", envName: "RALPHX_TASK_STATE" },
   { key: "projectId", argName: "project-id", envName: "RALPHX_PROJECT_ID" },
   { key: "workingDirectory", argName: "working-directory", envName: "RALPHX_WORKING_DIRECTORY" },
   { key: "contextType", argName: "context-type", envName: "RALPHX_CONTEXT_TYPE" },
@@ -33,6 +36,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
     argName: "parent-conversation-id",
     envName: "RALPHX_PARENT_CONVERSATION_ID",
   },
+  { key: "agentRunId", argName: "agent-run-id", envName: "RALPHX_AGENT_RUN_ID" },
   { key: "leadSessionId", argName: "lead-session-id", envName: "RALPHX_LEAD_SESSION_ID" },
   { key: "tauriApiUrl", argName: "tauri-api-url", envName: "TAURI_API_URL" },
   { key: "traceDir", argName: "trace-dir", envName: "RALPHX_MCP_TRACE_DIR" },

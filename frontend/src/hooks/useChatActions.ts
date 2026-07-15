@@ -24,6 +24,7 @@ import { ideationApi } from "@/api/ideation";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
@@ -31,6 +32,7 @@ import type {
   ComposerProjectReference,
   SendAgentMessageOptions,
   SendAgentMessageResult,
+  TeamIntent,
 } from "@/api/chat";
 
 // ============================================================================
@@ -60,6 +62,7 @@ interface UseChatActionsProps {
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
+      teamIntent?: TeamIntent | null;
     }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
@@ -74,6 +77,8 @@ interface UseChatActionsProps {
     result: SendAgentMessageResult;
     composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>) | undefined;
+  /** Receives persona binding failures for inline, recoverable composer UI. */
+  onPersonaUnavailable?: ((message: string) => void) | undefined;
 }
 
 // ============================================================================
@@ -92,6 +97,7 @@ export function useChatActions({
   messageCount = 0,
   sendOptions,
   onUserMessageSent,
+  onPersonaUnavailable,
 }: UseChatActionsProps) {
   const queryClient = useQueryClient();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -103,11 +109,16 @@ export function useChatActions({
   const backendQueueContextId = queueContextId ?? contextId;
 
   const reportSendFailure = useCallback((err: unknown) => {
+    const message = extractErrorMessage(err, "The agent runtime could not start.");
+    if (isPersonaUnavailableError(message)) {
+      onPersonaUnavailable?.(message);
+      return;
+    }
     toast.error("Failed to send message", {
-      description: extractErrorMessage(err, "The agent runtime could not start."),
+      description: message,
       duration: 10000,
     });
-  }, []);
+  }, [onPersonaUnavailable]);
 
   const queueAcceptedMessage = useCallback(
     (content: string, queuedMessageId: string, attachmentIds?: string[]) => {
@@ -130,6 +141,7 @@ export function useChatActions({
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        teamIntent?: TeamIntent | null;
       },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
@@ -145,7 +157,11 @@ export function useChatActions({
         // Agent side-panels use context-specific conversations. Review and merge must
         // bypass the generic task-detail mutation so steering messages reach the
         // active reviewer/merger process instead of a plain task chat.
-        if (contextType === "review" || contextType === "merge") {
+        if (
+          contextType === "review" ||
+          contextType === "merge" ||
+          contextType === "branch_update"
+        ) {
           const agentContextId = selectedTaskId ?? contextId;
           setSending(storeContextKey, true);
           try {
@@ -172,16 +188,15 @@ export function useChatActions({
                 messageId: message.id,
               };
             }
-            const result = await chatApi.sendAgentMessage(
-              contextType,
-              agentContextId,
-              content,
-              attachmentIds,
-              target,
+            const directSendOptions =
               composerOptions?.projectReferences?.length ||
-                composerOptions?.integrationReferences?.length ||
-                composerOptions?.artifactReferences?.length
+              composerOptions?.integrationReferences?.length ||
+              composerOptions?.artifactReferences?.length ||
+              composerOptions?.teamIntent
                 ? {
+                    ...(composerOptions?.teamIntent
+                      ? { teamIntent: composerOptions.teamIntent }
+                      : {}),
                     ...(composerOptions?.projectReferences?.length
                       ? {
                           composerProjectReferences:
@@ -201,7 +216,14 @@ export function useChatActions({
                         }
                       : {}),
                   }
-                : undefined,
+                : undefined;
+            const result = await chatApi.sendAgentMessage(
+              contextType,
+              agentContextId,
+              content,
+              attachmentIds,
+              target,
+              directSendOptions,
             );
             sentResult = result;
 
@@ -232,6 +254,7 @@ export function useChatActions({
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
+            teamIntent?: TeamIntent | null;
           } = { content };
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
@@ -249,6 +272,9 @@ export function useChatActions({
           if (composerOptions?.artifactReferences?.length) {
             params.composerArtifactReferences =
               composerOptions.artifactReferences;
+          }
+          if (composerOptions?.teamIntent) {
+            params.teamIntent = composerOptions.teamIntent;
           }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;

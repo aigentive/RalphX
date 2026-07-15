@@ -32,11 +32,7 @@ async fn test_exit_signal_channel_resolves_on_send() {
     exit_tx.send(()).unwrap();
 
     // Using tokio::time::timeout to ensure the future resolves
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        exit_rx,
-    )
-    .await;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), exit_rx).await;
 
     assert!(result.is_ok(), "exit_rx should resolve when exit_tx sends");
     assert!(result.unwrap().is_ok(), "exit_rx value should be Ok(())");
@@ -52,15 +48,79 @@ async fn test_kill_tx_dropped_fires_kill_rx() {
     // which the select! pattern `_ = kill_rx` also matches — triggering cleanup.
     drop(kill_tx);
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        kill_rx,
-    )
-    .await;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), kill_rx).await;
 
-    assert!(result.is_ok(), "kill_rx should resolve when kill_tx is dropped");
+    assert!(
+        result.is_ok(),
+        "kill_rx should resolve when kill_tx is dropped"
+    );
     // Err(RecvError) is expected — sender dropped without sending
-    assert!(result.unwrap().is_err(), "kill_rx should get RecvError when kill_tx dropped");
+    assert!(
+        result.unwrap().is_err(),
+        "kill_rx should get RecvError when kill_tx dropped"
+    );
+}
+
+#[tokio::test]
+async fn teammate_stream_creates_solo_teammate_conversation() {
+    use std::process::Stdio;
+
+    let app = crate::testing::create_mock_app();
+    let team_tracker = Arc::new(TeamStateTracker::new());
+    team_tracker
+        .create_team("team-a", "project-1", "project")
+        .await
+        .expect("team should be created");
+    team_tracker
+        .add_teammate("team-a", "worker", "#ff6b35", "sonnet", "worker")
+        .await
+        .expect("teammate should be added");
+    let repo = Arc::new(crate::infrastructure::memory::MemoryChatConversationRepository::new());
+    let conversation_repo: Arc<dyn ChatConversationRepository> = repo.clone();
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("cat should spawn");
+    let stdout = child.stdout.take().expect("stdout should be piped");
+    let (exit_tx, exit_rx) = oneshot::channel::<()>();
+    let stream_task = start_teammate_stream::<tauri::test::MockRuntime>(
+        stdout,
+        exit_rx,
+        "team-a".to_string(),
+        "worker".to_string(),
+        "project".to_string(),
+        "project-1".to_string(),
+        app.handle().clone(),
+        team_tracker,
+        None,
+        Some(conversation_repo),
+        None,
+        None,
+        None,
+    );
+
+    let mut created = None;
+    for _ in 0..20 {
+        created = repo
+            .get_active_for_context(ChatContextType::Project, "teammate:team-a:worker")
+            .await
+            .expect("conversation lookup should succeed");
+        if created.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let _ = exit_tx.send(());
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    stream_task.await.expect("stream task should join");
+
+    let conversation = created.expect("teammate conversation should be created");
+    assert_eq!(conversation.context_type, ChatContextType::Project);
+    assert_eq!(conversation.context_id, "teammate:team-a:worker");
+    assert_eq!(conversation.coordination_mode, CoordinationMode::Solo);
 }
 
 #[test]
@@ -188,7 +248,10 @@ fn test_extract_assistant_usage_partial_increase() {
 
     let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
 
-    assert!(updated, "Should return true when at least one total increases");
+    assert!(
+        updated,
+        "Should return true when at least one total increases"
+    );
     assert_eq!(total_input, 2000, "Input should update to higher value");
     assert_eq!(total_output, 500, "Output should stay at higher value");
 }
@@ -244,7 +307,10 @@ fn test_extract_assistant_usage_zero_initial_values() {
 
     let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
 
-    assert!(!updated, "Should return false when values are equal (both zero)");
+    assert!(
+        !updated,
+        "Should return false when values are equal (both zero)"
+    );
 }
 
 // ============================================================================
@@ -283,7 +349,11 @@ fn test_truncate_str_multibyte_at_boundary() {
     let mut s = "a".repeat(199);
     s.push('→');
     let result = truncate_str(&s, 200);
-    assert_eq!(result.len(), 199, "must not split multi-byte char at boundary");
+    assert_eq!(
+        result.len(),
+        199,
+        "must not split multi-byte char at boundary"
+    );
     assert_eq!(result, "a".repeat(199).as_str());
 }
 
@@ -293,7 +363,11 @@ fn test_truncate_str_only_multibyte_chars() {
     // truncate at 10 bytes: 3 chars fit (9 bytes), 4th would overflow
     let s = "→".repeat(5);
     let result = truncate_str(&s, 10);
-    assert_eq!(result.len(), 9, "3 × 3-byte chars = 9 bytes fit in 10-byte limit");
+    assert_eq!(
+        result.len(),
+        9,
+        "3 × 3-byte chars = 9 bytes fit in 10-byte limit"
+    );
     assert_eq!(result, "→".repeat(3).as_str());
 }
 

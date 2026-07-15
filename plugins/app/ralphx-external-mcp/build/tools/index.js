@@ -324,7 +324,8 @@ export function registerTools(server, getKeyContext) {
             {
                 name: "v1_append_task_to_plan",
                 description: "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
-                    "Use this for small follow-ups after plan acceptance; start a new ideation instead once the PR/plan is closed, merged, terminal, or actively merging.",
+                    "Use this for small follow-ups after plan acceptance; the backend infers the default graph placement and blocks the plan merge on the new task. " +
+                    "Start a new ideation instead once the PR/plan is closed, merged, terminal, or actively merging.",
                 inputSchema: {
                     type: "object",
                     properties: {
@@ -344,7 +345,7 @@ export function registerTools(server, getKeyContext) {
                         depends_on_task_ids: {
                             type: "array",
                             items: { type: "string" },
-                            description: "Optional existing task IDs that must complete first",
+                            description: "Optional advanced backend-validated task IDs to use instead of inferred placement blockers",
                         },
                         priority: { type: "number", description: "Optional numeric priority" },
                     },

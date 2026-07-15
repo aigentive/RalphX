@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
+use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{AgentRunAttribution, AgentRunUsage, IdeationSessionId};
 use crate::testing::SqliteTestDb;
 use std::collections::HashSet;
@@ -64,6 +65,38 @@ async fn test_get_interrupted_conversations_returns_orphaned_conversation() {
     assert_eq!(
         result[0].last_run.error_message,
         Some("Orphaned on app restart".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_get_interrupted_conversations_preserves_automation_ownership_markers() {
+    let (db, agent_run_repo) = setup_repo();
+    let automation_id = AutomationId::new();
+    let automation_run_id = AutomationRunId::new();
+    let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
+    conversation.claude_session_id = Some("automation-session".to_string());
+    conversation.automation_id = Some(automation_id.clone());
+    conversation.automation_run_id = Some(automation_run_id.clone());
+    let conversation = db.insert_conversation(conversation);
+    let mut run = AgentRun::new(conversation.id);
+    run.status = AgentRunStatus::Cancelled;
+    run.completed_at = Some(Utc::now());
+    run.error_message = Some("Orphaned on app restart".to_string());
+    agent_run_repo.create(run).await.unwrap();
+
+    let interrupted = agent_run_repo
+        .get_interrupted_conversations()
+        .await
+        .unwrap();
+
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(
+        interrupted[0].conversation.automation_id,
+        Some(automation_id)
+    );
+    assert_eq!(
+        interrupted[0].conversation.automation_run_id,
+        Some(automation_run_id)
     );
 }
 
@@ -273,6 +306,76 @@ async fn test_update_attribution_updates_agent_run_metadata_fields() {
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(retrieved.effective_effort.as_deref(), Some("high"));
     assert_eq!(retrieved.service_tier.as_deref(), Some("fast"));
+}
+
+#[tokio::test]
+async fn persona_run_attribution_round_trips_without_body_content() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    repo.set_persona_attribution(
+        &run_id,
+        PersonaRunAttribution {
+            persona_id: "persona-design-voice".to_string(),
+            persona_slug: "design-voice".to_string(),
+            persona_version: 2,
+            persona_content_hash: "sha256:body-free-hash".to_string(),
+            injected: true,
+            skipped_reason: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.persona_id.as_deref(),
+        Some("persona-design-voice")
+    );
+    assert_eq!(persisted.persona_slug.as_deref(), Some("design-voice"));
+    assert_eq!(persisted.persona_version, Some(2));
+    assert_eq!(
+        persisted.persona_content_hash.as_deref(),
+        Some("sha256:body-free-hash")
+    );
+    assert_eq!(persisted.persona_injected, Some(true));
+    assert_eq!(persisted.persona_skipped_reason, None);
+    let encoded = serde_json::to_string(&persisted).unwrap();
+    assert!(!encoded.contains("secret persona body"));
+}
+
+#[tokio::test]
+async fn persona_run_attribution_defaults_to_null_for_new_run() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.persona_id, None);
+    assert_eq!(persisted.persona_slug, None);
+    assert_eq!(persisted.persona_version, None);
+    assert_eq!(persisted.persona_content_hash, None);
+    assert_eq!(persisted.persona_injected, None);
+    assert_eq!(persisted.persona_skipped_reason, None);
+}
+
+#[tokio::test]
+async fn persona_run_attribution_stays_null_when_no_persona_is_set() {
+    let (db, repo) = setup_repo();
+    let conversation = db.seed_ideation_conversation();
+    let run = AgentRun::new(conversation.id);
+    let run_id = run.id;
+    repo.create(run).await.unwrap();
+    repo.complete(&run_id).await.unwrap();
+
+    let persisted = repo.get_by_id(&run_id).await.unwrap().unwrap();
+    assert!(persisted.persona_id.is_none());
+    assert!(persisted.persona_injected.is_none());
 }
 
 #[tokio::test]

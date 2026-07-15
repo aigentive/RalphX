@@ -3,14 +3,18 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
-use crate::application::chat_attachment_storage::chat_attachment_storage_path;
+use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
+use crate::application::notification_service::{
+    NoopDesktopNotifier, NoopNotificationEventEmitter, NotificationEventEmitter,
+    NotificationService, TauriDesktopNotifier, TauriNotificationEventEmitter, WindowFocusState,
+};
 use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
@@ -53,20 +57,23 @@ use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
     AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
+    AutomationRepository, AutomationRunRepository, BranchUpdateRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
     ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
-    MemoryEventRepository, MethodologyRepository, OrphanWorktreeCleanupMarkerRepository,
-    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository,
-    ProjectMemorySettingsRepository, ProjectRepository, ProjectSkillRepository,
+    MemoryEventRepository, MethodologyRepository, NotificationRepository,
+    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
+    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectMemorySettingsRepository, ProjectRepository, ProjectSkillRepository,
     ProjectSkillSettingsRepository, ProposalDependencyRepository, QueuedMessageRepository,
     ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, SkillUsageEventRepository,
     TaskDependencyRepository, TaskOutcomeRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
-    TicketCanonicalBranchRepository, WebhookRegistrationRepository, WorkflowRepository,
-    WorkspaceReviewRuntimeSettingsRepository,
+    TaskRepository, TaskStepRepository,
+    TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
+    UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
+    WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -81,7 +88,8 @@ use crate::infrastructure::memory::{
     MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
     MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
     MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
-    MemoryAtlassianIntegrationSettingsRepository, MemoryChatAttachmentRepository,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryAutomationRepository,
+    MemoryAutomationRunRepository, MemoryBranchUpdateRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryClickUpIntegrationSettingsRepository, MemoryDelegatedSessionRepository,
     MemoryExecutionPlanRepository, MemoryExecutionSettingsRepository,
@@ -90,24 +98,26 @@ use crate::infrastructure::memory::{
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
+    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
+    MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
+    MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectMemorySettingsRepository, MemoryProjectRepository, MemoryProjectSkillRepository,
     MemoryProjectSkillSettingsRepository, MemoryProposalDependencyRepository,
     MemoryQuestionRepository, MemoryQueuedMessageRepository, MemoryReviewIssueRepository,
     MemoryReviewRepository, MemoryReviewSettingsRepository, MemorySecretStore,
     MemorySessionLinkRepository, MemorySkillUsageEventRepository, MemoryTaskDependencyRepository,
-    MemoryTaskOutcomeRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
-    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
-    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
-    MemoryTicketingStatusCatalogRepository, MemoryWebhookRegistrationRepository,
-    MemoryWorkflowRepository, MemoryWorkspaceReviewRuntimeSettingsRepository,
+    MemoryTaskOutcomeRepository, MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
+    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
-    get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
-    SqliteActivePlanRepository, SqliteActivityEventRepository,
+    open_connection, run_migrations, SqliteActivePlanRepository, SqliteActivityEventRepository,
     SqliteAgentConversationGranolaNoteRepository, SqliteAgentConversationIssueRepository,
     SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationLinearIssueRepository,
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
@@ -115,7 +125,8 @@ use crate::infrastructure::sqlite::{
     SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
     SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
     SqliteArtifactFlowRepository, SqliteArtifactRepository,
-    SqliteAtlassianIntegrationSettingsRepository, SqliteChatAttachmentRepository,
+    SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
+    SqliteAutomationRunRepository, SqliteBranchUpdateRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteClickUpIntegrationSettingsRepository, SqliteDelegatedSessionRepository,
     SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
@@ -125,23 +136,27 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
+    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
+    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
+    SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
     SqliteProjectMemorySettingsRepository, SqliteProjectRepository, SqliteProjectSkillRepository,
     SqliteProjectSkillSettingsRepository, SqliteProposalDependencyRepository,
     SqliteQuestionRepository, SqliteQueuedMessageRepository, SqliteReviewIssueRepository,
     SqliteReviewRepository, SqliteReviewSettingsRepository, SqliteRunningAgentRegistry,
     SqliteSessionLinkRepository, SqliteSkillUsageEventRepository, SqliteTaskDependencyRepository,
-    SqliteTaskOutcomeRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
-    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
-    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
-    SqliteTicketingStatusCatalogRepository, SqliteWebhookRegistrationRepository,
-    SqliteWorkflowRepository, SqliteWorkspaceReviewRuntimeSettingsRepository,
+    SqliteTaskOutcomeRepository, SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
+    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
+    SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
+    SqliteUiFeatureFlagOverridesRepository, SqliteValidationRunRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
 use crate::infrastructure::HyperLinearApiClient;
 use crate::infrastructure::{GhCliGithubService, HyperGranolaApiClient};
+use ralphx_events::{EventSink, InternalEventBus, NullEventSink};
 
 #[derive(Clone)]
 pub(crate) struct ResolvedBackgroundAgentRuntime {
@@ -173,6 +188,8 @@ impl ResolvedBackgroundAgentRuntime {
 pub struct AppState {
     /// Task repository (SQLite in production, in-memory for tests)
     pub task_repo: Arc<dyn TaskRepository>,
+    /// Durable branch-update operation and canonical Git target authority.
+    pub branch_update_repo: Arc<dyn BranchUpdateRepository>,
     /// Task step repository for tracking execution progress
     pub task_step_repo: Arc<dyn TaskStepRepository>,
     /// Project repository (SQLite in production, in-memory for tests)
@@ -199,6 +216,10 @@ pub struct AppState {
     pub review_repo: Arc<dyn ReviewRepository>,
     /// Review settings repository
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
+    /// Persisted UI feature flag overrides.
+    pub ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    /// Durable task validation run/result repository
+    pub validation_run_repo: Arc<dyn ValidationRunRepository>,
     /// Provider-keyed Workspace Review runtime defaults repository
     pub workspace_review_runtime_settings_repo: Arc<dyn WorkspaceReviewRuntimeSettingsRepository>,
     /// Review issue repository for tracking structured issues from reviews
@@ -214,6 +235,8 @@ pub struct AppState {
     pub global_execution_settings_repo: Arc<dyn GlobalExecutionSettingsRepository>,
     /// Ideation session repository
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    /// Native plan artifact approval repository
+    pub plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     /// Ideation settings repository
     pub ideation_settings_repo: Arc<dyn IdeationSettingsRepository>,
     /// Delegated specialist session repository
@@ -244,6 +267,8 @@ pub struct AppState {
     pub chat_timeline_repo: Arc<dyn ChatTimelineRepository>,
     /// Chat conversation repository (for context-aware chat)
     pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    /// Persona repository for persisted agent personas.
+    pub persona_repo: Arc<dyn PersonaRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     /// Conversation-owned primary Jira assignment/cache repository
@@ -256,12 +281,25 @@ pub struct AppState {
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    /// Automation configuration repository
+    pub automation_repo: Arc<dyn AutomationRepository>,
+    /// Automation run repository
+    pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
     pub agent_terminal_service: Arc<AgentTerminalService>,
     /// Agent run repository (for tracking Claude agent executions)
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     /// Activity event repository (for activity stream persistence)
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
+    /// Durable notification history repository.
+    pub notification_repo: Arc<dyn NotificationRepository>,
+    /// Global desktop and focused-toast notification preferences.
+    pub notification_settings_repo: Arc<dyn NotificationSettingsRepository>,
+    /// Shared native window-focus signal used by desktop notification delivery.
+    pub window_focus_state: Arc<WindowFocusState>,
+    /// Shared lazily initialized desktop dispatch service for paired AppStates.
+    /// Pre-AppHandle calls intentionally do not populate this cache, so later calls can use Tauri.
+    pub(crate) notification_service_cache: Arc<OnceLock<Arc<NotificationService>>>,
     /// Task dependency repository
     pub task_dependency_repo: Arc<dyn TaskDependencyRepository>,
     // Extensibility repositories
@@ -328,6 +366,12 @@ pub struct AppState {
     pub interactive_process_registry: Arc<crate::application::InteractiveProcessRegistry>,
     /// Tauri app handle for emitting events to frontend (None in tests)
     pub app_handle: Option<AppHandle>,
+    /// Provider-neutral event sink for backend UI/runtime events.
+    pub events: Arc<dyn EventSink>,
+    /// Shared backend event bus used by the event sink and later internal subscribers.
+    pub internal_event_bus: InternalEventBus,
+    /// Process-owned app paths resolved once at the shell boundary.
+    pub app_paths: AppPaths,
     /// Shared database connection for raw SQL queries (e.g. external_events table).
     /// All accesses MUST go through `db.run(|conn| { ... })` for non-blocking operation.
     pub db: crate::infrastructure::sqlite::DbConnection,
@@ -356,6 +400,65 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Returns this AppState's shared notification service when an AppHandle is available.
+    /// A pre-AppHandle call returns a transient Noop-backed service and is never cached.
+    pub fn notification_service(&self) -> Arc<NotificationService> {
+        if let Some(service) = self.notification_service_cache.get() {
+            return Arc::clone(service);
+        }
+
+        let Some(app_handle) = self.app_handle.as_ref() else {
+            return Arc::new(self.build_notification_service(None));
+        };
+
+        Arc::clone(
+            self.notification_service_cache.get_or_init(|| {
+                Arc::new(self.build_notification_service(Some(app_handle.clone())))
+            }),
+        )
+    }
+
+    fn build_notification_service(&self, app_handle: Option<AppHandle>) -> NotificationService {
+        let emitter: Arc<dyn NotificationEventEmitter> = match app_handle.as_ref() {
+            Some(app_handle) => Arc::new(TauriNotificationEventEmitter::new(app_handle.clone())),
+            None => Arc::new(NoopNotificationEventEmitter),
+        };
+        let desktop_notifier: Arc<dyn crate::application::notification_service::DesktopNotifier> =
+            match app_handle {
+                Some(app_handle) => Arc::new(TauriDesktopNotifier::new(app_handle)),
+                None => Arc::new(NoopDesktopNotifier),
+            };
+        NotificationService::new_with_desktop_dispatch(
+            Arc::clone(&self.notification_repo),
+            emitter,
+            Arc::clone(&self.notification_settings_repo),
+            Arc::clone(&self.window_focus_state),
+            desktop_notifier,
+            std::time::Duration::from_secs(
+                crate::infrastructure::agents::claude::stream_timeouts()
+                    .desktop_notification_coalesce_window_secs,
+            ),
+            Some(Arc::clone(&self.project_repo)),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_notification_service_for_test(&self, service: Arc<NotificationService>) {
+        assert!(
+            self.notification_service_cache.set(service).is_ok(),
+            "test notification service cache must be empty"
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_cached_notification_service_for_test(&self) -> bool {
+        self.notification_service_cache.get().is_some()
+    }
+
+    fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
+        (Arc::new(NullEventSink), InternalEventBus::new())
+    }
+
     fn production_agent_clients() -> AgentClientBundle {
         AgentClientBundle::standard_production_runtime_clients()
     }
@@ -792,11 +895,11 @@ impl AppState {
         self.build_transition_service_for_runtime(execution_state, self.app_handle.clone())
     }
 
-    pub fn build_transition_service_for_runtime<R: Runtime>(
+    pub fn build_transition_service_for_runtime(
         &self,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
-    ) -> TaskTransitionService<R> {
+        app_handle: Option<AppHandle>,
+    ) -> TaskTransitionService {
         let started_at = Instant::now();
         let deps = RuntimeFactoryDeps::from_app_state(self);
         tracing::info!(
@@ -805,7 +908,13 @@ impl AppState {
         );
 
         let started_at = Instant::now();
-        let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps);
+        let mut service = build_transition_service_from_deps(app_handle, execution_state, &deps)
+            .with_event_sink(Arc::clone(&self.events))
+            .with_notifier(Arc::new(
+                crate::application::task_notification_producer::TaskPipelineNotificationProducer::new(
+                    self.notification_service(),
+                ),
+            ));
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),
             "AppState transition service built"
@@ -814,6 +923,7 @@ impl AppState {
         let drafter =
             crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
                 Arc::clone(&self.agent_conversation_workspace_repo),
+                Arc::clone(&self.chat_conversation_repo),
                 Arc::clone(&self.agent_provider_settings_repo),
                 self.agent_clients.clone(),
             );
@@ -822,11 +932,11 @@ impl AppState {
         service
     }
 
-    pub fn build_task_scheduler_for_runtime<R: Runtime>(
+    pub fn build_task_scheduler_for_runtime(
         &self,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
-    ) -> TaskSchedulerService<R> {
+        app_handle: Option<AppHandle>,
+    ) -> TaskSchedulerService {
         let deps = RuntimeFactoryDeps::from_app_state(self);
 
         build_task_scheduler_from_deps(app_handle, execution_state, &deps)
@@ -1155,16 +1265,34 @@ impl AppState {
     /// Create AppState for production use with SQLite repositories.
     /// Opens the database at the default path and runs migrations.
     pub fn new_production(app_handle: AppHandle) -> AppResult<Self> {
-        let path = if cfg!(debug_assertions) {
-            get_default_db_path()
-        } else {
-            get_app_data_db_path(&app_handle)?
-        };
+        let app_paths = AppPaths::from_app_handle(&app_handle)?;
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        Self::new_production_with_paths_and_events(
+            app_handle,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
+    }
+
+    pub fn new_production_with_paths_and_events(
+        app_handle: AppHandle,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
+    ) -> AppResult<Self> {
+        let path = app_paths.database_path()?;
         let conn = open_connection(&path)?;
         run_migrations(&conn)?;
 
         let shared_conn = Arc::new(Mutex::new(conn));
-        Self::build_from_shared_conn(app_handle, shared_conn)
+        Self::build_from_shared_conn(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
     }
 
     /// Create AppState sharing an existing DB connection (no new connection or migrations).
@@ -1173,13 +1301,40 @@ impl AppState {
         app_handle: AppHandle,
         shared_conn: Arc<Mutex<rusqlite::Connection>>,
     ) -> AppResult<Self> {
-        Self::build_from_shared_conn(app_handle, shared_conn)
+        let app_paths = AppPaths::from_app_handle(&app_handle)?;
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        Self::new_production_shared_with_paths_and_events(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
+    }
+
+    pub fn new_production_shared_with_paths_and_events(
+        app_handle: AppHandle,
+        shared_conn: Arc<Mutex<rusqlite::Connection>>,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
+    ) -> AppResult<Self> {
+        Self::build_from_shared_conn(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
     }
 
     /// Internal helper: build all SQLite repositories from a pre-existing shared connection.
     fn build_from_shared_conn(
         app_handle: AppHandle,
         shared_conn: Arc<Mutex<rusqlite::Connection>>,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
     ) -> AppResult<Self> {
         // Create repositories that are used by services
         let task_repo: Arc<dyn TaskRepository> =
@@ -1195,12 +1350,15 @@ impl AppState {
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> = Arc::new(
             SqliteChatAttachmentRepository::from_shared(Arc::clone(&shared_conn)),
         );
-        let attachment_storage_path = chat_attachment_storage_path(&app_handle)?;
+        let attachment_storage_path = app_paths.attachment_storage_path();
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
 
         Ok(Self {
             task_repo: Arc::clone(&task_repo),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1232,6 +1390,17 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            ui_feature_flag_overrides_repo: Arc::new(
+                SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            notification_settings_repo: Arc::new(
+                SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
+            validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             workspace_review_runtime_settings_repo: Arc::new(
                 SqliteWorkspaceReviewRuntimeSettingsRepository::from_shared(Arc::clone(
                     &shared_conn,
@@ -1250,6 +1419,9 @@ impl AppState {
             ),
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
+            )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1294,6 +1466,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(SqliteChatConversationRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            persona_repo: Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1312,11 +1487,20 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            automation_repo: Arc::new(SqliteAutomationRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            automation_run_repo: Arc::new(SqliteAutomationRunRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             activity_event_repo: Arc::new(SqliteActivityEventRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            notification_repo: Arc::new(SqliteNotificationRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
@@ -1425,16 +1609,27 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: Some(app_handle),
+            events,
+            internal_event_bus,
+            app_paths,
         })
     }
 
     /// Create AppState with a specific database path
     pub fn with_db_path(db_path: &str, app_handle: AppHandle) -> AppResult<Self> {
+        let app_paths = AppPaths::from_app_handle(&app_handle)?;
+        let (events, internal_event_bus) = Self::null_event_runtime();
         let path = PathBuf::from(db_path);
         let conn = open_connection(&path)?;
         run_migrations(&conn)?;
         let shared_conn = Arc::new(Mutex::new(conn));
-        Self::build_from_shared_conn(app_handle, shared_conn)
+        Self::build_from_shared_conn(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
     }
 
     /// Create AppState for testing with in-memory repositories
@@ -1467,10 +1662,16 @@ impl AppState {
 
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        let automation_state = MemoryAutomationRepository::new_shared_state();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1486,6 +1687,11 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1496,6 +1702,9 @@ impl AppState {
             global_execution_settings_repo: Arc::new(MemoryGlobalExecutionSettingsRepository::new()),
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
+            )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1524,6 +1733,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -1540,9 +1750,14 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
+            automation_repo: Arc::new(MemoryAutomationRepository::with_shared_state(Arc::clone(
+                &automation_state,
+            ))),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
             artifact_repo: Arc::new(SqliteArtifactRepository::from_shared(Arc::clone(
@@ -1596,6 +1811,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,
@@ -1621,10 +1839,16 @@ impl AppState {
 
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        let automation_state = MemoryAutomationRepository::new_shared_state();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1640,6 +1864,11 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1650,6 +1879,9 @@ impl AppState {
             global_execution_settings_repo: Arc::new(MemoryGlobalExecutionSettingsRepository::new()),
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
+            )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1678,6 +1910,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -1694,9 +1927,14 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
+            automation_repo: Arc::new(MemoryAutomationRepository::with_shared_state(Arc::clone(
+                &automation_state,
+            ))),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
             artifact_repo: Arc::new(SqliteArtifactRepository::from_shared(Arc::clone(
@@ -1750,6 +1988,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,
@@ -1781,10 +2022,15 @@ impl AppState {
 
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
 
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
+            branch_update_repo: Arc::new(SqliteBranchUpdateRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             task_step_repo: Arc::new(SqliteTaskStepRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1804,6 +2050,11 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1814,6 +2065,9 @@ impl AppState {
             global_execution_settings_repo: Arc::new(MemoryGlobalExecutionSettingsRepository::new()),
             ideation_session_repo: Arc::new(SqliteIdeationSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
+            )),
+            plan_approval_repo: Arc::new(SqlitePlanArtifactApprovalRepository::new(
+                crate::infrastructure::sqlite::DbConnection::from_shared(Arc::clone(&shared_conn)),
             )),
             delegated_session_repo: Arc::new(SqliteDelegatedSessionRepository::from_shared(
                 Arc::clone(&shared_conn),
@@ -1844,6 +2098,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1862,9 +2117,16 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            automation_repo: Arc::new(SqliteAutomationRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            automation_run_repo: Arc::new(SqliteAutomationRunRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(SqliteTaskDependencyRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -1924,6 +2186,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,
@@ -1945,10 +2210,14 @@ impl AppState {
         // Chat attachment repository for tests
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        let automation_state = MemoryAutomationRepository::new_shared_state();
 
         Self {
             task_repo: Arc::clone(&task_repo),
+            branch_update_repo: Arc::new(MemoryBranchUpdateRepository::new()),
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
@@ -1962,6 +2231,11 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
+            window_focus_state: Arc::new(WindowFocusState::default()),
+            notification_service_cache: Arc::new(OnceLock::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1971,6 +2245,7 @@ impl AppState {
             execution_settings_repo: Arc::new(MemoryExecutionSettingsRepository::new()),
             global_execution_settings_repo: Arc::new(MemoryGlobalExecutionSettingsRepository::new()),
             ideation_session_repo: Arc::new(MemoryIdeationSessionRepository::new()),
+            plan_approval_repo: Arc::new(MemoryPlanArtifactApprovalRepository::new()),
             delegated_session_repo: Arc::new(MemoryDelegatedSessionRepository::new()),
             agent_task_repo: Arc::new(MemoryAgentTaskRepository::new()),
             agent_conversation_issue_repo: Arc::new(MemoryAgentConversationIssueRepository::new()),
@@ -1990,6 +2265,7 @@ impl AppState {
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
             chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
+            persona_repo: Arc::new(MemoryPersonaRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
@@ -2006,9 +2282,14 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
+            automation_repo: Arc::new(MemoryAutomationRepository::with_shared_state(Arc::clone(
+                &automation_state,
+            ))),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new(automation_state)),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
+            notification_repo: Arc::new(MemoryNotificationRepository::new()),
             task_dependency_repo: Arc::new(MemoryTaskDependencyRepository::new()),
             // Extensibility repositories
             workflow_repo: Arc::new(MemoryWorkflowRepository::new()),
@@ -2062,6 +2343,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,

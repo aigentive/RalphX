@@ -4,7 +4,9 @@ use crate::commands::execution_commands::lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
 use crate::domain::entities::{
-    AgentRun, ChatConversation, ChatConversationId, GitMode, IdeationSession,
+    artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
+    ChatConversation, ChatConversationId, GitMode, IdeationAnalysisBaseRefKind, IdeationSession,
+    PlanBranch, PlanBranchId, PlanBranchStatus,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use std::sync::Arc;
@@ -1183,7 +1185,7 @@ async fn test_stop_cancels_multiple_agent_active_tasks() {
     app_state.task_repo.create(task4.clone()).await.unwrap();
 
     // Build transition service (same as stop_execution does)
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -1365,7 +1367,7 @@ async fn test_pause_transitions_agent_active_tasks_to_paused() {
     app_state.task_repo.create(task4.clone()).await.unwrap();
 
     // Build transition service (same as pause_execution does)
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -2253,7 +2255,10 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
         response.workspace_sessions[0].conversation_id,
         conversation.id.as_str()
     );
-    assert_eq!(response.workspace_sessions[0].project_id, project.id.as_str());
+    assert_eq!(
+        response.workspace_sessions[0].project_id,
+        project.id.as_str()
+    );
     assert_eq!(response.workspace_sessions[0].title, "Feature workspace");
     assert_eq!(
         response.workspace_sessions[0].model.as_deref(),
@@ -2342,23 +2347,163 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     assert_eq!(aggregate_response.capacity.total_active, 6);
 }
 
+#[tokio::test]
+async fn test_get_running_processes_includes_agent_workspace_target_for_task() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Target Project".to_string(),
+            "/test/workspace-target-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    active_project_state.set(Some(project.id.clone())).await;
+
+    let session_id = IdeationSessionId::from_string("workspace-target-session");
+    let mut running_task = Task::new(project.id.clone(), "Running linked task".to_string());
+    running_task.internal_status = InternalStatus::Executing;
+    running_task.ideation_session_id = Some(session_id.clone());
+    let running_task = app_state.task_repo.create(running_task).await.unwrap();
+
+    let branch_id = PlanBranchId::from_string("workspace-target-plan-branch");
+    app_state
+        .plan_branch_repo
+        .create(PlanBranch {
+            id: branch_id.clone(),
+            plan_artifact_id: ArtifactId::from_string("workspace-target-artifact"),
+            session_id: session_id.clone(),
+            project_id: project.id.clone(),
+            branch_name: "feature/workspace-target".to_string(),
+            source_branch: "main".to_string(),
+            status: PlanBranchStatus::Active,
+            execution_plan_id: None,
+            merge_task_id: None,
+            created_at: chrono::Utc::now(),
+            merged_at: None,
+            pr_number: None,
+            pr_url: None,
+            pr_status: None,
+            pr_polling_active: false,
+            pr_eligible: false,
+            last_polled_at: None,
+            pr_push_status: Default::default(),
+            merge_commit_sha: None,
+            pr_draft: None,
+            base_branch_override: None,
+        })
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.title = Some("Linked Agent Workspace".to_string());
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/workspace-target".to_string(),
+        "/tmp/ralphx-workspace-target".to_string(),
+    );
+    workspace.linked_plan_branch_id = Some(branch_id);
+    workspace.linked_ideation_session_id = Some(session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let mut live_process = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn disposable process for live registry row");
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", running_task.id.as_str()),
+            live_process.id(),
+            "task-conversation".to_string(),
+            task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = get_running_processes(
+        None,
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("running processes should load");
+
+    let _ = live_process.kill();
+    let _ = live_process.wait();
+
+    assert_eq!(response.processes.len(), 1);
+    let process = &response.processes[0];
+    assert_eq!(process.task_id, running_task.id.as_str());
+    let agent_workspace = process
+        .agent_workspace
+        .as_ref()
+        .expect("agent workspace target should be present");
+    assert_eq!(agent_workspace.conversation_id, conversation.id.as_str());
+    assert_eq!(agent_workspace.project_id, project.id.as_str());
+    assert_eq!(agent_workspace.title, "Linked Agent Workspace");
+}
+
 #[test]
 fn test_workspace_capacity_available_respects_all_global_guards() {
-    assert!(crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, false, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, true, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, false, true
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        3, 3, 0, 10, false, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        2, 3, 3, 5, false, false
-    ));
+    assert!(
+        crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, false, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, true, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, false, true
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            3, 3, 0, 10, false, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            2, 3, 3, 5, false, false
+        )
+    );
 }
 
 #[tokio::test]
@@ -2392,7 +2537,10 @@ async fn test_workspace_capacity_resolves_conversation_backed_queues_and_session
         .unwrap();
     let task = app_state
         .task_repo
-        .create(Task::new(project.id.clone(), "Non-workspace chat".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Non-workspace chat".to_string(),
+        ))
         .await
         .unwrap();
     let task_conversation = app_state
@@ -4274,7 +4422,7 @@ async fn test_pause_resets_running_count() {
     assert_eq!(execution_state.running_count(), 3);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4432,7 +4580,7 @@ async fn test_stop_resets_running_count() {
     assert_eq!(execution_state.running_count(), 3);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4501,7 +4649,7 @@ async fn test_running_count_decrements_on_task_completion() {
     assert_eq!(execution_state.running_count(), 1);
 
     // Build transition service with execution state
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4590,7 +4738,7 @@ async fn test_running_count_decrements_for_all_agent_active_states() {
     assert_eq!(execution_state.running_count(), 5);
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4792,7 +4940,7 @@ async fn test_resume_restores_paused_tasks_to_previous_status() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -4872,7 +5020,7 @@ async fn test_determine_paused_restore_status_falls_back_to_history_when_metadat
     let task_id = task.id.clone();
     app_state.task_repo.create(task).await.unwrap();
 
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5019,7 +5167,7 @@ async fn test_resume_does_not_restore_stopped_tasks() {
     app_state.task_repo.create(task.clone()).await.unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5084,7 +5232,7 @@ async fn test_resume_restores_multiple_paused_tasks() {
         .unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5198,7 +5346,7 @@ async fn test_resume_with_mixed_paused_and_stopped_tasks() {
         .unwrap();
 
     // Build transition service
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -5569,7 +5717,10 @@ async fn test_stop_execution_persists_stopped_and_clears_project_queues() {
 
     let task = app_state
         .task_repo
-        .create(Task::new(project.id.clone(), "Queued task chat".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Queued task chat".to_string(),
+        ))
         .await
         .unwrap();
     let other_task = app_state
@@ -5815,7 +5966,7 @@ async fn test_project_switch_prevents_other_projects_from_scheduling() {
     active_project_state.set(Some(project1.id.clone())).await;
 
     // Build scheduler with active project 1
-    let scheduler = Arc::new(TaskSchedulerService::<tauri::Wry>::new(
+    let scheduler = Arc::new(TaskSchedulerService::new(
         Arc::clone(&execution_state),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.task_repo),
@@ -5870,7 +6021,7 @@ async fn test_project_switch_prevents_other_projects_from_scheduling() {
     active_project_state.set(Some(project2.id.clone())).await;
 
     // Create new scheduler instance for project 2
-    let scheduler2 = Arc::new(TaskSchedulerService::<tauri::Wry>::new(
+    let scheduler2 = Arc::new(TaskSchedulerService::new(
         Arc::clone(&execution_state),
         Arc::clone(&app_state.project_repo),
         Arc::clone(&app_state.task_repo),
@@ -5929,6 +6080,180 @@ fn test_categorize_direct_resume_states() {
         assert_eq!(result.category, ResumeCategory::Direct);
         assert_eq!(result.target_status, status);
     }
+}
+
+#[test]
+fn test_restart_transition_routes_execution_states_through_ready() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::Executing),
+        InternalStatus::Ready
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::ReExecuting),
+        InternalStatus::Ready
+    );
+}
+
+#[test]
+fn test_restart_transition_preserves_non_execution_categorized_target() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::QaPassed),
+        InternalStatus::PendingReview
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::Merging),
+        InternalStatus::Merging
+    );
+}
+
+#[test]
+fn test_restart_transition_only_ready_route_is_legal_from_stopped() {
+    assert!(InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Executing)));
+    assert!(!InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Merging)));
+}
+
+fn stopped_task_metadata(from_status: InternalStatus) -> String {
+    crate::domain::state_machine::transition_handler::metadata_builder::build_stop_metadata(
+        from_status,
+        Some("stopped for restart".to_string()),
+    )
+    .merge_into(None)
+}
+
+#[tokio::test]
+async fn restart_task_from_stopped_execution_routes_through_ready_and_clears_stale_refs() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    execution_state.pause();
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Restart Command Project".to_string(),
+        "/tmp/restart-command-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let missing_worktree_parent = tempfile::tempdir().expect("temp dir");
+    let missing_worktree = missing_worktree_parent.path().join("missing-worktree");
+    let mut task = Task::new(project.id.clone(), "Stopped execution".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.task_branch = Some("task/stale-execution".to_string());
+    task.worktree_path = Some(missing_worktree.to_string_lossy().into_owned());
+    task.merge_commit_sha = Some("deadbeef".to_string());
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Executing));
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        false,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("restart command should complete");
+
+    match result {
+        RestartResult::Success {
+            category,
+            resumed_to_status,
+            ..
+        } => {
+            assert_eq!(category, ResumeCategory::Direct);
+            assert_eq!(resumed_to_status, InternalStatus::Ready.as_str());
+        }
+        other => panic!("expected successful ready restart, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
+    assert!(stored.task_branch.is_none());
+    assert!(stored.worktree_path.is_none());
+    assert!(stored.merge_commit_sha.is_none());
+    let metadata: serde_json::Value =
+        serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert!(metadata.get("stop_metadata").is_none());
+}
+
+#[tokio::test]
+async fn restart_task_from_stopped_merge_returns_validation_warning_before_transition() {
+    let execution_state = Arc::new(ExecutionState::with_max_concurrent(5));
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Unsupported Restart Project".to_string(),
+        "/tmp/unsupported-restart-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Stopped merge".to_string());
+    task.internal_status = InternalStatus::Stopped;
+    task.metadata = Some(stopped_task_metadata(InternalStatus::Merging));
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let result = restart_task(
+        task_id.as_str().to_string(),
+        true,
+        None,
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("restart command should return validation result");
+
+    match result {
+        RestartResult::ValidationFailed {
+            warnings,
+            stopped_from_status,
+        } => {
+            assert_eq!(stopped_from_status, InternalStatus::Merging.as_str());
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].code, "unsupported_restart_target");
+            assert!(warnings[0].message.contains("cannot safely restart"));
+        }
+        other => panic!("expected unsupported restart validation, got {other:?}"),
+    }
+
+    let stored = app
+        .state::<AppState>()
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Stopped);
+    assert!(stored
+        .metadata
+        .as_deref()
+        .unwrap()
+        .contains("stop_metadata"));
 }
 
 #[test]
@@ -6097,7 +6422,7 @@ async fn test_resume_restores_paused_before_scheduling_ordering() {
         .await
         .unwrap();
 
-    let transition_service: TaskTransitionService<tauri::Wry> = TaskTransitionService::new(
+    let transition_service: TaskTransitionService = TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),

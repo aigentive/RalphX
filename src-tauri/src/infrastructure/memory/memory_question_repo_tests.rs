@@ -17,6 +17,7 @@ fn sample_question(request_id: &str) -> PendingQuestionInfo {
         batch_index: None,
         batch_total: None,
         metadata: None,
+        created_at: "2026-07-10T00:00:00+00:00".to_string(),
     }
 }
 
