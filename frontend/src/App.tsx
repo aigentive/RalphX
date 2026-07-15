@@ -83,6 +83,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
+import { ChatActivityVisualTestPage } from "@/test-pages/ChatActivityVisualTest";
 import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
 const queryClient = getQueryClient();
@@ -121,6 +122,10 @@ function getTestPage(): React.ReactElement | null {
       fourColumns: <ScreenshotGalleryTestPage columns={4} />,
     };
     return scenarios[scenario] ?? scenarios.default ?? null;
+  }
+
+  if (testPage === "chat-activity") {
+    return <ChatActivityVisualTestPage />;
   }
 
   return null;

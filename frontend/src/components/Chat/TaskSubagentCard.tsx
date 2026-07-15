@@ -4,10 +4,10 @@
  *
  * Features:
  * - Header: subagent type badge, description, model badge, running timer / completed duration
- * - Body (running): numbered list of child tool calls (StreamingToolIndicator-style)
+ * - Body (running): numbered list of child tool calls
  *   with Edit/Write calls rendered as inline DiffToolCallViews
  * - Body (completed): collapsed summary with duration, token count, tool use count
- * - Styling matches StreamingToolIndicator aesthetic (bg-elevated, border-subtle, orange accent)
+ * - Styling uses the shared task-card surface (bg-elevated, border-subtle, orange accent)
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
