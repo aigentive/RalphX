@@ -27,7 +27,7 @@ import type { ToolCall } from "./ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
 import type { ContentBlockItem } from "./MessageItem";
 import type { HookEvent, HookStartedEvent } from "@/types/hook-event";
-import { isDiffToolCall } from "./DiffToolCallView.utils";
+import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { DiffToolCallView } from "./DiffToolCallView";
 import { TaskSubagentCard } from "./TaskSubagentCard";
 import { shouldUseWebkitSafeScrollBehavior } from "@/lib/platform-quirks";
@@ -57,6 +57,12 @@ import {
   type StreamingToolUseBlock,
 } from "./ChatMessageList.liveRows";
 import type { AgentRun } from "@/types/chat-conversation";
+import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import {
+  summarizeToolActivity,
+  type ToolActivitySummary,
+  type ToolActivityTask,
+} from "./tool-activity-summary";
 
 // ============================================================================
 // Constants
@@ -233,6 +239,8 @@ export interface ChatMessageData {
 type ToolCallGroupMarker = {
   key: string;
   count: number;
+  summary: ToolActivitySummary;
+  promoted: boolean;
   position: "toggle" | "covered";
 };
 
@@ -383,6 +391,27 @@ function collectToolCallGroupRun(
   return group.length >= 1 ? group : null;
 }
 
+function persistedTimelineToolCall(message: ChatMessageData): ToolCall | null {
+  const block = message.contentBlocks?.[0];
+  if (!block || block.type !== "tool_use" || !block.name) {
+    return null;
+  }
+  const matching = block.id
+    ? message.toolCalls?.find((toolCall) => toolCall.id === block.id)
+    : undefined;
+  const toolCall: ToolCall = {
+    id: block.id || matching?.id || message.id,
+    name: block.name || matching?.name || "unknown",
+    arguments: block.arguments ?? matching?.arguments ?? {},
+    result: block.result ?? matching?.result,
+  };
+  const diffContext = block.diffContext ?? matching?.diffContext;
+  if (diffContext) {
+    toolCall.diffContext = diffContext;
+  }
+  return toolCall;
+}
+
 function toolCallGroupKey(messages: ChatMessageData[]): string {
   const first = messages[0];
   const last = messages[messages.length - 1];
@@ -406,6 +435,7 @@ function isCollapsedToolCallGroupCoveredItem(
 ): boolean {
   return item.kind === "message"
     && item.toolCallGroup?.position === "covered"
+    && !item.toolCallGroup.promoted
     && !expandedToolGroupKeys.has(item.toolCallGroup.key);
 }
 
@@ -414,37 +444,6 @@ function isVisibleTimelineItem(
   expandedToolGroupKeys: Set<string>,
 ): boolean {
   return !isCollapsedToolCallGroupCoveredItem(item, expandedToolGroupKeys);
-}
-
-function ToolCallGroupToggle({
-  groupKey,
-  count,
-  isExpanded,
-  onToggle,
-}: {
-  groupKey: string;
-  count: number;
-  isExpanded: boolean;
-  onToggle: React.MouseEventHandler<HTMLButtonElement>;
-}) {
-  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
-  return (
-    <button
-      type="button"
-      data-testid="tool-call-group-toggle"
-      data-chat-tool-call-group-key={groupKey}
-      aria-expanded={isExpanded}
-      aria-label={label}
-      onClick={onToggle}
-      className="inline-flex max-w-full items-center rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
-      style={{
-        backgroundColor: "var(--bg-elevated)",
-        color: "var(--text-secondary)",
-      }}
-    >
-      {label}
-    </button>
-  );
 }
 
 function senderGroupPart(value: string | null | undefined) {
@@ -605,9 +604,9 @@ function ToolCallGroupToggleRow({
           showProviderMeta={senderGroupState.showSenderHeader}
           hideMeta
         >
-          <ToolCallGroupToggle
+          <ToolActivityGroupToggle
             groupKey={marker.key}
-            count={marker.count}
+            summary={marker.summary}
             isExpanded={isExpanded}
             onToggle={onToggle}
           />
@@ -668,21 +667,44 @@ function LiveTranscriptRowItem({
       return renderStreamingToolCallBlock(row.block, row.index);
     }
 
-    const groupKey = liveToolGroupKey(row.entries);
+    const groupKey = liveToolGroupKey(row.entries, row.taskEntries);
     const isExpanded = expandedToolGroupKeys.has(groupKey);
+    const tasks = row.taskEntries
+      .map((entry) => ({ entry, task: streamingTasks?.get(entry.toolUseId) }))
+      .filter((item): item is { entry: typeof row.taskEntries[number]; task: StreamingTask } => (
+        item.task != null
+      ));
+    const activityTasks: ToolActivityTask[] = tasks.map(({ task }) => ({
+      toolUseId: task.toolUseId,
+      toolName: task.toolName,
+      ...(task.delegatedJobId ? { delegatedJobId: task.delegatedJobId } : {}),
+    }));
+    const summary = summarizeToolActivity({
+      toolCalls: row.entries.map((entry) => entry.block.toolCall),
+      tasks: activityTasks,
+    });
+    const activityEntries = [
+      ...row.entries.map((entry) => ({ kind: "tool" as const, index: entry.index, entry })),
+      ...tasks.map(({ entry, task }) => ({ kind: "task" as const, index: entry.index, task })),
+    ].sort((left, right) => left.index - right.index);
     return (
       <>
         <div className="mb-2">
-          <ToolCallGroupToggle
+          <ToolActivityGroupToggle
             groupKey={groupKey}
-            count={row.count}
+            summary={summary}
             isExpanded={isExpanded}
             onToggle={(event) => onToggleToolCallGroup(groupKey, event.currentTarget)}
           />
         </div>
-        {isExpanded
-          ? row.entries.map((entry) => renderStreamingToolCallBlock(entry.block, entry.index))
-          : null}
+        {activityEntries.map((activity) => {
+          if (activity.kind === "task") {
+            return <TaskSubagentCard key={`task-${activity.task.toolUseId}`} task={activity.task} />;
+          }
+          return isExpanded
+            ? renderStreamingToolCallBlock(activity.entry.block, activity.entry.index)
+            : null;
+        })}
       </>
     );
   })();
@@ -1276,10 +1298,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         const toolCallGroup = collectToolCallGroupRun(teamFilteredMessages, index);
         if (toolCallGroup) {
           const key = toolCallGroupKey(toolCallGroup);
+          const groupedToolCalls = toolCallGroup.map(persistedTimelineToolCall);
+          const summary = summarizeToolActivity({
+            toolCalls: groupedToolCalls.filter(
+              (toolCall): toolCall is ToolCall => toolCall != null,
+            ),
+          });
           toolCallGroup.forEach((msg, groupIndex) => {
+            const toolCall = groupedToolCalls[groupIndex];
             pushMessageItem(msg, {
               key,
               count: toolCallGroup.length,
+              summary,
+              promoted: toolCall != null && isTaskToolCall(toolCall.name),
               position: groupIndex === 0 ? "toggle" : "covered",
             });
           });
@@ -1696,6 +1727,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         : null;
       const isFallbackToolGroupExpanded =
         fallbackToolGroupKey != null && expandedToolGroupKeys.has(fallbackToolGroupKey);
+      const fallbackSummary = summarizeToolActivity({
+        toolCalls: visibleFallbackToolCalls.map(({ toolCall }) => toolCall),
+      });
       return (
         <>
           {shouldRenderStreamingContentGroup && (
@@ -1718,9 +1752,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               {fallbackToolGroupKey != null && (
                 <>
                   <div className="mb-2">
-                    <ToolCallGroupToggle
+                    <ToolActivityGroupToggle
                       groupKey={fallbackToolGroupKey}
-                      count={visibleFallbackToolCalls.length}
+                      summary={fallbackSummary}
                       isExpanded={isFallbackToolGroupExpanded}
                       onToggle={(event) => toggleToolCallGroup(fallbackToolGroupKey, event.currentTarget)}
                     />
@@ -1899,7 +1933,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         )
         : null;
 
-      if (groupToggleRow && !isExpandedToolCallGroup) {
+      if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
         return groupToggleRow;
       }
 
@@ -2119,7 +2153,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               )
               : null;
 
-            if (groupToggleRow && !isExpandedToolCallGroup) {
+            if (groupToggleRow && !isExpandedToolCallGroup && !toolCallGroup?.promoted) {
               return groupToggleRow;
             }
 

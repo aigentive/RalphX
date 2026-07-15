@@ -8,6 +8,12 @@ export interface LiveTranscriptToolEntry {
   index: number;
 }
 
+export interface LiveTranscriptTaskEntry {
+  toolUseId: string;
+  index: number;
+  receivedAt?: number;
+}
+
 export type LiveTranscriptRow =
   | {
       kind: "text";
@@ -35,6 +41,7 @@ export type LiveTranscriptRow =
       kind: "tool_group";
       key: string;
       entries: LiveTranscriptToolEntry[];
+      taskEntries: LiveTranscriptTaskEntry[];
       count: number;
       sourceIndex: number;
       receivedAt?: number;
@@ -51,18 +58,21 @@ function textRowKey(block: StreamingContentBlock, index: number): string {
   return `streaming-text:${blockKeyPart(block, index)}`;
 }
 
-function taskRowKey(toolUseId: string): string {
-  return `streaming-task:${toolUseId}`;
-}
-
-export function liveToolGroupKey(entries: LiveTranscriptToolEntry[]): string {
-  const first = entries[0];
-  if (!first) {
+export function liveToolGroupKey(
+  entries: LiveTranscriptToolEntry[],
+  taskEntries: LiveTranscriptTaskEntry[] = [],
+): string {
+  const firstTool = entries[0];
+  const firstTask = taskEntries[0];
+  if (!firstTool && !firstTask) {
     return "streaming-tool-group:empty";
   }
+  const firstKey = firstTool
+    ? firstTool.block.toolCall.id || firstTool.block.seq || firstTool.index
+    : firstTask!.toolUseId || firstTask!.index;
   return [
     "streaming-tool-group",
-    first.block.toolCall.id || first.block.seq || first.index,
+    firstKey,
   ].join(":");
 }
 
@@ -98,43 +108,39 @@ export function buildLiveTranscriptRows(
       continue;
     }
 
-    if (block.type === "task") {
-      if (streamingTasks?.has(block.toolUseId)) {
-        rows.push({
-          kind: "task",
-          key: taskRowKey(block.toolUseId),
-          toolUseId: block.toolUseId,
-          sourceIndex: index,
-          ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
-        });
-      }
-      index += 1;
-      continue;
-    }
-
     const entries: LiveTranscriptToolEntry[] = [];
+    const taskEntries: LiveTranscriptTaskEntry[] = [];
     let endIndex = index;
     while (endIndex < contentBlocks.length) {
       const nextBlock = contentBlocks[endIndex];
-      if (!nextBlock || nextBlock.type !== "tool_use") {
+      if (!nextBlock || nextBlock.type === "text") {
         break;
       }
-      if (!shouldHideToolCall(nextBlock.toolCall)) {
+      if (nextBlock.type === "tool_use" && !shouldHideToolCall(nextBlock.toolCall)) {
         entries.push({ block: nextBlock, index: endIndex });
+      } else if (nextBlock.type === "task" && streamingTasks?.has(nextBlock.toolUseId)) {
+        taskEntries.push({
+          toolUseId: nextBlock.toolUseId,
+          index: endIndex,
+          ...(nextBlock.receivedAt != null ? { receivedAt: nextBlock.receivedAt } : {}),
+        });
       }
       endIndex += 1;
     }
 
-    if (entries.length > 0) {
+    if (entries.length > 0 || taskEntries.length > 0) {
+      const firstEntry = [...entries, ...taskEntries].sort((left, right) => left.index - right.index)[0]!;
+      const receivedAt = "block" in firstEntry
+        ? firstEntry.block.receivedAt
+        : firstEntry.receivedAt;
       rows.push({
         kind: "tool_group",
-        key: liveToolGroupKey(entries),
+        key: liveToolGroupKey(entries, taskEntries),
         entries,
-        count: entries.length,
-        sourceIndex: entries[0]!.index,
-        ...(entries[0]!.block.receivedAt != null
-          ? { receivedAt: entries[0]!.block.receivedAt }
-          : {}),
+        taskEntries,
+        count: entries.length + taskEntries.length,
+        sourceIndex: firstEntry.index,
+        ...(receivedAt != null ? { receivedAt } : {}),
       });
     }
 

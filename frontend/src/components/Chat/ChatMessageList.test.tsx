@@ -898,6 +898,126 @@ describe("ChatMessageList controller integration", () => {
     );
   });
 
+  it("keeps persisted delegated cards promoted while generic tool details are collapsed", () => {
+    const activityMessages: ChatMessageData[] = [
+      {
+        id: "generic-tool",
+        role: "assistant",
+        content: "Generic tool detail",
+        createdAt: "2026-07-15T10:00:00Z",
+        contentBlocks: [{
+          type: "tool_use",
+          id: "read-1",
+          name: "Read",
+          arguments: { file_path: "src/app.ts" },
+        }],
+        timelineSequence: 20,
+      },
+      {
+        id: "delegated-tool",
+        role: "assistant",
+        content: "Delegated task card",
+        createdAt: "2026-07-15T10:00:01Z",
+        contentBlocks: [{
+          type: "tool_use",
+          id: "delegate-1",
+          name: "ralphx::delegate_start",
+          arguments: { agent_name: "ralphx-general-explorer" },
+          result: { job_id: "job-1", status: "running" },
+        }],
+        timelineSequence: 21,
+      },
+    ];
+
+    renderList({ messages: activityMessages });
+
+    const toggle = screen.getByRole("button", {
+      name: "Agent called 2 tools and delegated 1 agent. Expand tool details.",
+    });
+    expect(screen.queryByText("Generic tool detail")).not.toBeInTheDocument();
+    expect(screen.getByText("Delegated task card")).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText("Generic tool detail")).toBeInTheDocument();
+    expect(screen.getAllByText("Delegated task card")).toHaveLength(1);
+  });
+
+  it("keeps a delegated card promoted when an earlier persisted tool block is malformed", () => {
+    const activityMessages: ChatMessageData[] = [
+      {
+        id: "malformed-tool",
+        role: "assistant",
+        content: "Malformed tool detail",
+        createdAt: "2026-07-15T10:00:00Z",
+        contentBlocks: [{
+          type: "tool_use",
+          id: "missing-name",
+          arguments: {},
+        }],
+        timelineSequence: 20,
+      },
+      {
+        id: "delegated-after-malformed",
+        role: "assistant",
+        content: "Delegated task after malformed tool",
+        createdAt: "2026-07-15T10:00:01Z",
+        contentBlocks: [{
+          type: "tool_use",
+          id: "delegate-after-malformed",
+          name: "ralphx::delegate_start",
+          arguments: { agent_name: "ralphx-general-explorer" },
+          result: { job_id: "job-after-malformed", status: "running" },
+        }],
+        timelineSequence: 21,
+      },
+    ];
+
+    renderList({ messages: activityMessages });
+
+    expect(screen.getByRole("button", {
+      name: "Agent called 1 tool and delegated 1 agent. Expand tool details.",
+    })).toBeInTheDocument();
+    expect(screen.getByText("Delegated task after malformed tool")).toBeInTheDocument();
+    expect(screen.queryByText("Malformed tool detail")).not.toBeInTheDocument();
+  });
+
+  it("summarizes mixed live file activity while keeping the delegated task visible", () => {
+    const delegatedTask = {
+      toolUseId: "delegate-live",
+      toolName: "mcp__ralphx__delegate_start",
+      description: "Inspect the chat pipeline",
+      subagentType: "delegated",
+      model: "gpt-5.5",
+      status: "running" as const,
+      startedAt: 1,
+      childToolCalls: [],
+      delegatedJobId: "job-live",
+    };
+
+    renderList({
+      messages: [],
+      isAgentRunning: true,
+      streamingContentBlocks: [
+        {
+          type: "tool_use",
+          toolCall: {
+            id: "write-live",
+            name: "Write",
+            arguments: { file_path: "src/new.ts" },
+            diffContext: { filePath: "src/new.ts", oldFileExists: false },
+          },
+        },
+        { type: "task", toolUseId: delegatedTask.toolUseId },
+      ],
+      streamingTasks: new Map([[delegatedTask.toolUseId, delegatedTask]]),
+    });
+
+    expect(screen.getByRole("button", {
+      name: "Agent called 2 tools, created 1 file, and delegated 1 agent. Expand tool details.",
+    })).toBeInTheDocument();
+    expect(screen.getByText("task")).toBeInTheDocument();
+  });
+
   it("renders applied persona attribution on the matching transcript run boundary", async () => {
     renderList({
       messages: [
