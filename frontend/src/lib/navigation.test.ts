@@ -44,7 +44,8 @@ vi.mock("@/stores/ideationStore", () => ({
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: { getState: mockProjectGetState },
 }));
-vi.mock("@/stores/agentSessionStore", () => ({
+vi.mock("@/stores/agentSessionStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/agentSessionStore")>()),
   useAgentSessionStore: {
     getState: () => ({
       artifactByConversationId: {},
@@ -177,6 +178,7 @@ describe("navigateToAgentPlan", () => {
       isOpen: true,
       activeTab: "plan",
       taskMode: "kanban",
+      hiddenTabs: [],
     });
     expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
     expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
