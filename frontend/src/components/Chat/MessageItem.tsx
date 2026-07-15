@@ -38,6 +38,8 @@ import {
   normalizeToolCallTranscriptPayload,
 } from "./tool-call-transcript";
 import { PersonaRunBadge } from "./PersonaRunBadge";
+import { ToolActivityGroupToggle } from "./ToolActivityGroupToggle";
+import { summarizeToolActivity } from "./tool-activity-summary";
 
 // ============================================================================
 // Types
@@ -185,37 +187,6 @@ export function MessageMeta({
   );
 }
 
-function ContentToolCallGroupToggle({
-  groupKey,
-  count,
-  isExpanded,
-  onToggle,
-}: {
-  groupKey: string;
-  count: number;
-  isExpanded: boolean;
-  onToggle: React.MouseEventHandler<HTMLButtonElement>;
-}) {
-  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
-  return (
-    <button
-      type="button"
-      data-testid="tool-call-group-toggle"
-      data-chat-tool-call-group-key={groupKey}
-      aria-expanded={isExpanded}
-      aria-label={label}
-      onClick={onToggle}
-      className="inline-flex max-w-full items-center rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
-      style={{
-        backgroundColor: "var(--bg-elevated)",
-        color: "var(--text-secondary)",
-      }}
-    >
-      {label}
-    </button>
-  );
-}
-
 const GROUPABLE_WIDGET_TOOL_NAMES = new Set([
   "bash",
   "read",
@@ -224,9 +195,9 @@ const GROUPABLE_WIDGET_TOOL_NAMES = new Set([
   "list_dir",
 ]);
 
-function shouldGroupContentBlockToolCall(toolCall: ToolCall): boolean {
+function shouldIncludeInContentActivityGroup(toolCall: ToolCall): boolean {
   if (isDiffToolCall(toolCall.name) || isTaskToolCall(toolCall.name)) {
-    return false;
+    return true;
   }
   if (
     getToolCallWidget(toolCall.name) &&
@@ -486,7 +457,7 @@ export const MessageItem = React.memo(function MessageItem({
           continue;
         }
 
-        if (!groupContentBlockToolCalls || !shouldGroupContentBlockToolCall(firstToolCall)) {
+        if (!groupContentBlockToolCalls || !shouldIncludeInContentActivityGroup(firstToolCall)) {
           renderedBlocks.push(
             <ToolCallIndicator key={`block-${index}`} toolCall={firstToolCall} />,
           );
@@ -501,7 +472,7 @@ export const MessageItem = React.memo(function MessageItem({
           const groupBlock = parsedContentBlocks[groupEndIndex];
           if (groupBlock) {
             const toolCall = buildContentBlockToolCall(groupBlock, groupEndIndex);
-            if (toolCall && shouldGroupContentBlockToolCall(toolCall)) {
+            if (toolCall && shouldIncludeInContentActivityGroup(toolCall)) {
               toolCallGroup.push({ index: groupEndIndex, toolCall });
             } else if (toolCall) {
               break;
@@ -514,16 +485,21 @@ export const MessageItem = React.memo(function MessageItem({
           const groupIds = toolCallGroup.map(({ toolCall }) => toolCall.id).join("\u0000");
           const groupKey = `content-tool-group:${index}:${groupIds || "anonymous"}`;
           const isExpanded = expandedContentToolGroupKeys.has(groupKey);
+          const summary = summarizeToolActivity({
+            toolCalls: toolCallGroup.map(({ toolCall }) => toolCall),
+          });
           renderedBlocks.push(
             <div key={groupKey} className="space-y-1.5 overflow-hidden">
-              <ContentToolCallGroupToggle
+              <ToolActivityGroupToggle
                 groupKey={groupKey}
-                count={toolCallGroup.length}
+                summary={summary}
                 isExpanded={isExpanded}
                 onToggle={() => toggleContentToolGroup(groupKey)}
               />
-              {isExpanded && toolCallGroup.map(({ index: toolCallIndex, toolCall }) => (
-                <ToolCallIndicator key={`block-${toolCallIndex}`} toolCall={toolCall} />
+              {toolCallGroup.map(({ index: toolCallIndex, toolCall }) => (
+                isTaskToolCall(toolCall.name) || isExpanded
+                  ? <ToolCallIndicator key={`block-${toolCallIndex}`} toolCall={toolCall} />
+                  : null
               ))}
             </div>,
           );
