@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::{
     extract::{Path, State},
@@ -17,6 +17,9 @@ use ralphx_lib::http_server::handlers::{
     get_persona_draft, save_persona_draft, SavePersonaDraftRequest,
 };
 use ralphx_lib::http_server::types::HttpServerState;
+use ralphx_lib::infrastructure::agents::claude::{
+    reset_agent_personas_override_for_test, set_agent_personas_override,
+};
 use ralphx_lib::infrastructure::sqlite::{
     DbConnection, SqliteChatConversationRepository, SqlitePersonaRepository,
 };
@@ -26,11 +29,25 @@ fn persona_content(slug: &str, body: &str) -> String {
     format!("---\nname: {slug}\nkind: persona\ndescription: Handler test persona\n---\n{body}")
 }
 
-fn enable_personas(enabled: bool) {
-    std::env::set_var(
-        "RALPHX_UI_AGENT_PERSONAS",
-        if enabled { "true" } else { "false" },
-    );
+struct PersonaFlagGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for PersonaFlagGuard {
+    fn drop(&mut self) {
+        reset_agent_personas_override_for_test();
+    }
+}
+
+fn persona_flag_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+async fn enable_personas(enabled: bool) -> PersonaFlagGuard {
+    let lock = persona_flag_lock().lock().await;
+    set_agent_personas_override(Some(enabled));
+    PersonaFlagGuard { _lock: lock }
 }
 
 fn setup_state(event_sink: Option<RecordingEventSink>) -> HttpServerState {
@@ -85,7 +102,7 @@ async fn persona_builder_headers(state: &HttpServerState) -> (ChatConversation, 
 
 #[tokio::test]
 async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let (conversation, headers) = persona_builder_headers(&state).await;
     let created = save_persona_draft(
@@ -128,7 +145,7 @@ async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
 
 #[tokio::test]
 async fn builder_save_rejects_a_draft_id_outside_its_binding() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let (_conversation, headers) = persona_builder_headers(&state).await;
     let bound = save_persona_draft(
@@ -193,7 +210,7 @@ async fn builder_save_rejects_a_draft_id_outside_its_binding() {
 
 #[tokio::test]
 async fn save_draft_handler_rejects_when_flag_off() {
-    enable_personas(false);
+    let _persona_flag = enable_personas(false).await;
     let state = setup_state(None);
 
     let error = save_persona_draft(
@@ -220,7 +237,7 @@ async fn save_draft_handler_rejects_when_flag_off() {
 
 #[tokio::test]
 async fn get_persona_draft_handler_round_trips() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let draft = save_persona_draft(
         State(state.clone()),
@@ -242,7 +259,7 @@ async fn get_persona_draft_handler_round_trips() {
 
 #[tokio::test]
 async fn save_draft_handler_updates_draft_and_bumps_version() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let draft = save_persona_draft(
         State(state.clone()),
@@ -277,7 +294,7 @@ async fn save_draft_handler_updates_draft_and_bumps_version() {
 
 #[tokio::test]
 async fn save_draft_handler_allows_archived_slug_reuse_but_not_live_collision() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let first = save_persona_draft(
         State(state.clone()),
@@ -324,7 +341,7 @@ async fn save_draft_handler_allows_archived_slug_reuse_but_not_live_collision() 
 
 #[tokio::test]
 async fn save_draft_handler_cannot_mutate_active_persona() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
     let draft = save_persona_draft(
         State(state.clone()),
@@ -362,7 +379,7 @@ async fn save_draft_handler_cannot_mutate_active_persona() {
 
 #[tokio::test]
 async fn save_draft_handler_emits_body_free_event_payload() {
-    enable_personas(true);
+    let _persona_flag = enable_personas(true).await;
     let event_sink = RecordingEventSink::new();
     let state = setup_state(Some(event_sink.clone()));
 
