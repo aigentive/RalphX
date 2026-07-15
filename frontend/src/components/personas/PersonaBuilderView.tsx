@@ -154,7 +154,7 @@ export function PersonaBuilderView({
       if (typeof pickedPath !== "string") {
         return;
       }
-      await ingestContext.mutateAsync({ conversationId, pickedPath });
+      await ingestContext.mutateAsync({ conversationId, pickedPaths: [pickedPath] });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }

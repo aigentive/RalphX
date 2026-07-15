@@ -65,6 +65,15 @@ export const PersonaIngestManifestSchema = z.object({
 
 export type PersonaIngestManifest = z.infer<typeof PersonaIngestManifestSchema>;
 
+export const IngestPersonaContextInputSchema = z.object({
+  conversationId: z.string().min(1),
+  pickedPaths: z.array(z.string().min(1)).min(1),
+});
+
+export type IngestPersonaContextInput = z.infer<
+  typeof IngestPersonaContextInputSchema
+>;
+
 export const PersonaBuilderIngestStatusSchema = z.object({
   live: z.boolean(),
 });

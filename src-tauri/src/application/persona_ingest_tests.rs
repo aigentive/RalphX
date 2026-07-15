@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::persona_ingest::{
-    build_persona_ingest_file_path, ingest_picked_root, persona_ingest_conversation_path,
-    persona_ingest_storage_path, PersonaIngestManifest, MAX_INGEST_FILES, MAX_INGEST_FILE_BYTES,
-    MAX_INGEST_TOTAL_BYTES,
+    build_persona_ingest_file_path, ingest_picked_root, ingest_picked_roots,
+    persona_ingest_conversation_path, persona_ingest_storage_path, PersonaIngestManifest,
+    MAX_INGEST_FILES, MAX_INGEST_FILE_BYTES, MAX_INGEST_TOTAL_BYTES,
 };
 
 fn temp_dir() -> tempfile::TempDir {
@@ -45,18 +45,44 @@ fn ingest_fixture(root: &Path, destination: &Path) -> PersonaIngestManifest {
     ingest_picked_root(root, destination).expect("fixture ingestion")
 }
 
+fn copied_path(destination: &Path, picked_root: &Path, relative: &str) -> PathBuf {
+    let canonical_root = picked_root.canonicalize().expect("canonical picked root");
+    build_persona_ingest_file_path(destination, &canonical_root, Path::new(relative))
+        .expect("hashed destination")
+}
+
+fn stored_content_files(destination: &Path) -> Vec<PathBuf> {
+    // codeql[rust/path-injection]
+    fs::read_dir(destination)
+        .expect("ingest destination")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("content"))
+        .filter(|path| path.is_file())
+        .collect()
+}
+
 #[test]
 fn rejects_parent_dir_entries() {
     let temp = temp_dir();
     let destination = fixture_path(temp.path(), "destination");
-    assert!(build_persona_ingest_file_path(&destination, Path::new("../escape.txt")).is_err());
+    assert!(build_persona_ingest_file_path(
+        &destination,
+        temp.path(),
+        Path::new("../escape.txt")
+    )
+    .is_err());
 }
 
 #[test]
 fn rejects_absolute_path_entries() {
     let temp = temp_dir();
     let destination = fixture_path(temp.path(), "destination");
-    assert!(build_persona_ingest_file_path(&destination, Path::new("/escape.txt")).is_err());
+    assert!(build_persona_ingest_file_path(
+        &destination,
+        temp.path(),
+        Path::new("/escape.txt")
+    )
+    .is_err());
 }
 
 #[cfg(unix)]
@@ -118,14 +144,30 @@ fn skips_oversized_file_before_read_with_manifest_reason() {
                 .as_deref()
                 .is_some_and(|reason| reason.contains("file size"))
     }));
-    let oversized_destination =
-        build_persona_ingest_file_path(&destination, Path::new("large.txt"))
-            .expect("oversized hashed destination");
+    let oversized_destination = copied_path(&destination, &source, "large.txt");
     assert!(!oversized_destination.exists());
 }
 
 #[test]
-fn skips_binary_file_via_type_allowlist() {
+fn copies_extensionless_and_unknown_extension_utf8_files() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "source");
+    let destination = fixture_path(temp.path(), "destination");
+    write_fixture(&source, "STYLEGUIDE", b"Concise and direct.\n");
+    write_fixture(&source, "persona.custom-format", b"Use terse review notes.\n");
+
+    let manifest = ingest_fixture(&source, &destination);
+
+    assert_eq!(manifest.copied.len(), 2);
+    assert!(manifest.copied.iter().any(|entry| entry.path == "STYLEGUIDE"));
+    assert!(manifest
+        .copied
+        .iter()
+        .any(|entry| entry.path == "persona.custom-format"));
+}
+
+#[test]
+fn skips_known_binary_extensions_and_dotfiles_before_content_read() {
     let temp = temp_dir();
     let source = fixture_path(temp.path(), "source");
     let destination = fixture_path(temp.path(), "destination");
@@ -134,14 +176,13 @@ fn skips_binary_file_via_type_allowlist() {
         "image.png",
         b"not inspected because extension is disallowed",
     );
+    write_fixture(&source, ".DS_Store", b"otherwise valid UTF-8");
     let manifest = ingest_fixture(&source, &destination);
-    assert!(manifest.skipped.iter().any(|entry| {
-        entry.path == "image.png"
-            && entry
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("file type"))
-    }));
+    for name in ["image.png", ".DS_Store"] {
+        assert!(manifest.skipped.iter().any(|entry| {
+            entry.path == name && entry.reason.as_deref() == Some("binary file type")
+        }));
+    }
 }
 
 #[test]
@@ -209,14 +250,12 @@ fn accepts_normal_tree_writes_hashed_destinations() {
     let manifest = ingest_fixture(&source, &destination);
     assert_eq!(manifest.copied.len(), 2);
     for entry in &manifest.copied {
-        let copied_path = build_persona_ingest_file_path(&destination, Path::new(&entry.path))
-            .expect("hashed destination");
+        let copied_path = copied_path(&destination, &source, &entry.path);
         assert!(copied_path.exists());
         assert!(copied_path.to_string_lossy().contains("file-"));
         assert!(!copied_path.to_string_lossy().contains(&entry.path));
     }
-    let readme = build_persona_ingest_file_path(&destination, Path::new("notes/readme.md"))
-        .expect("readme destination");
+    let readme = copied_path(&destination, &source, "notes/readme.md");
     // codeql[rust/path-injection]
     assert_eq!(
         fs::read(readme).expect("copied readme"),
@@ -287,13 +326,143 @@ fn ingesting_a_single_file_uses_its_filename_as_manifest_path() {
 
     assert_eq!(manifest.copied.len(), 1);
     assert_eq!(manifest.copied[0].path, "single.md");
-    let copied = build_persona_ingest_file_path(&destination, Path::new("single.md"))
-        .expect("single file destination");
+    let copied = copied_path(&destination, &source, "single.md");
     // codeql[rust/path-injection]
     assert_eq!(
         fs::read(copied).expect("single file copy"),
         b"single file source"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_picked_file_that_is_itself_a_symlink() {
+    let temp = temp_dir();
+    let source = fixture_path(temp.path(), "actual.md");
+    let picked = fixture_path(temp.path(), "picked.md");
+    let destination = fixture_path(temp.path(), "destination");
+    // codeql[rust/path-injection]
+    fs::write(&source, b"source").expect("source file");
+    std::os::unix::fs::symlink(&source, &picked).expect("picked symlink");
+
+    let error = ingest_picked_root(&picked, &destination).expect_err("root symlink must reject");
+
+    assert!(error.to_string().contains("symlink"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn batch_ingests_files_and_directories_and_rejects_vanished_entries_by_basename() {
+    let temp = temp_dir();
+    let picked_file = fixture_path(temp.path(), "single.md");
+    let picked_dir = fixture_path(temp.path(), "folder");
+    let missing = fixture_path(temp.path(), "vanished.secret.md");
+    let destination = fixture_path(temp.path(), "destination");
+    // codeql[rust/path-injection]
+    fs::write(&picked_file, b"single").expect("single file");
+    write_fixture(&picked_dir, "nested.md", b"nested");
+
+    let manifest = ingest_picked_roots(
+        &[picked_file, picked_dir, missing.clone()],
+        &destination,
+    )
+    .expect("valid batch entries should continue after a vanished path");
+
+    assert_eq!(manifest.copied.len(), 2);
+    assert!(manifest.rejected.iter().any(|entry| {
+        entry.path == "vanished.secret.md" && !entry.path.contains(temp.path().to_string_lossy().as_ref())
+    }));
+}
+
+#[test]
+fn same_name_sources_use_distinct_destinations_and_repicks_refresh_in_place() {
+    let temp = temp_dir();
+    let source_a = fixture_path(temp.path(), "a");
+    let source_b = fixture_path(temp.path(), "b");
+    let file_a = fixture_path(&source_a, "README.md");
+    let file_b = fixture_path(&source_b, "README.md");
+    let destination = fixture_path(temp.path(), "destination");
+    write_fixture(&source_a, "README.md", b"alpha");
+    write_fixture(&source_b, "README.md", b"beta");
+
+    let batch = ingest_picked_roots(&[file_a.clone(), file_b.clone()], &destination)
+        .expect("same-name batch");
+    assert_eq!(batch.copied.len(), 2);
+    let stored = stored_content_files(&destination);
+    assert_eq!(stored.len(), 2);
+    let mut contents = stored
+        .iter()
+        .map(|path| fs::read_to_string(path).expect("stored content"))
+        .collect::<Vec<_>>();
+    contents.sort();
+    assert_eq!(contents, ["alpha", "beta"]);
+
+    // codeql[rust/path-injection]
+    fs::write(&file_a, b"alpha revised").expect("revised source");
+    let refreshed = ingest_picked_roots(&[file_a], &destination).expect("refreshed re-pick");
+    assert_eq!(refreshed.copied[0].reason.as_deref(), Some("updated"));
+    assert_eq!(stored_content_files(&destination).len(), 2);
+    assert!(stored_content_files(&destination).iter().any(|path| {
+        fs::read_to_string(path).as_deref() == Ok("alpha revised")
+    }));
+}
+
+#[test]
+fn repeat_ingests_merge_manifest_and_seed_cumulative_file_usage() {
+    let temp = temp_dir();
+    let first = fixture_path(temp.path(), "first");
+    let second = fixture_path(temp.path(), "second");
+    let destination = fixture_path(temp.path(), "destination");
+    for index in 0..(MAX_INGEST_FILES - 1) {
+        write_fixture(&first, &format!("first-{index}.txt"), b"x");
+    }
+    write_fixture(&second, "allowed.txt", b"y");
+    write_fixture(&second, "overflow.txt", b"z");
+
+    ingest_picked_roots(&[first], &destination).expect("first ingest");
+    let second_batch = ingest_picked_roots(&[second], &destination).expect("second ingest");
+
+    assert_eq!(second_batch.copied.len(), 1);
+    assert!(second_batch.skipped.iter().any(|entry| {
+        entry.reason.as_deref() == Some("file count exceeds ingest limit")
+    }));
+    assert_eq!(stored_content_files(&destination).len(), MAX_INGEST_FILES as usize);
+    let persisted: PersonaIngestManifest = serde_json::from_slice(
+        &fs::read(destination.join("manifest.json")).expect("cumulative manifest"),
+    )
+    .expect("valid cumulative manifest");
+    assert!(persisted.copied.iter().any(|entry| entry.path == "first-0.txt"));
+    assert!(persisted.copied.iter().any(|entry| entry.path == "allowed.txt"));
+}
+
+#[test]
+fn batch_and_repeat_ingests_enforce_cumulative_total_bytes_without_repick_drift() {
+    let temp = temp_dir();
+    let first = fixture_path(temp.path(), "first");
+    let second = fixture_path(temp.path(), "second");
+    let third = fixture_path(temp.path(), "third");
+    let destination = fixture_path(temp.path(), "destination");
+    for (root, range) in [(&first, 0..11), (&second, 11..22), (&third, 22..33)] {
+        for index in range {
+            write_fixture(
+                root,
+                &format!("chunk-{index}.txt"),
+                &vec![b'a'; MAX_INGEST_FILE_BYTES as usize],
+            );
+        }
+    }
+
+    let batch = ingest_picked_roots(&[first.clone(), second, third], &destination)
+        .expect("three-root batch");
+    assert_eq!(batch.copied.len(), (MAX_INGEST_TOTAL_BYTES / MAX_INGEST_FILE_BYTES) as usize);
+    assert!(batch.skipped.iter().any(|entry| {
+        entry.reason.as_deref() == Some("total byte limit exceeded")
+    }));
+
+    let repick = ingest_picked_roots(&[first], &destination).expect("idempotent re-pick");
+    assert_eq!(repick.copied.len(), 11);
+    assert!(repick.copied.iter().all(|entry| entry.reason.is_none()));
+    assert_eq!(stored_content_files(&destination).len(), 32);
 }
 
 #[cfg(unix)]

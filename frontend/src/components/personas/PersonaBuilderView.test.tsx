@@ -169,7 +169,7 @@ describe("PersonaBuilderView", () => {
       expect(invoke).toHaveBeenCalledWith("ingest_persona_context", {
         input: {
           conversationId: "builder-conversation",
-          pickedPath: "/tmp/context",
+          pickedPaths: ["/tmp/context"],
         },
       }),
     );

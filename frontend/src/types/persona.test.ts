@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  IngestPersonaContextInputSchema,
   PersonaDraftUpdatedEventSchema,
   PersonaBuilderIngestStatusSchema,
   PersonaIngestEntrySchema,
@@ -57,6 +58,24 @@ describe("persona support schemas", () => {
         reason: "unsupported type",
       }),
     ).toEqual({ path: "image.png", reason: "unsupported type" });
+  });
+
+  it("round-trips the batched persona ingest input", () => {
+    expect(
+      IngestPersonaContextInputSchema.parse({
+        conversationId: "conversation-1",
+        pickedPaths: ["/tmp/one.md", "/tmp/context"],
+      }),
+    ).toEqual({
+      conversationId: "conversation-1",
+      pickedPaths: ["/tmp/one.md", "/tmp/context"],
+    });
+    expect(
+      IngestPersonaContextInputSchema.safeParse({
+        conversationId: "conversation-1",
+        pickedPaths: [],
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects the legacy persona ingest entry name field", () => {

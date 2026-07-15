@@ -73,11 +73,14 @@ fn persona_builder_command_input_uses_camel_case_project_id() {
     assert_eq!(input.project_id, "project-persona-builder-input");
 
     let ingest: IngestPersonaContextInput = serde_json::from_str(
-        r#"{"conversationId":"conversation-persona-builder-input","pickedPath":"/tmp/context.md"}"#,
+        r#"{"conversationId":"conversation-persona-builder-input","pickedPaths":["/tmp/context.md","/tmp/context-dir"]}"#,
     )
     .expect("camelCase ingestion input should deserialize");
     assert_eq!(ingest.conversation_id, "conversation-persona-builder-input");
-    assert_eq!(ingest.picked_path, "/tmp/context.md");
+    assert_eq!(
+        ingest.picked_paths,
+        ["/tmp/context.md", "/tmp/context-dir"]
+    );
 
     let status: PersonaBuilderIngestStatusInput =
         serde_json::from_str(r#"{"conversationId":"conversation-persona-builder-input"}"#)
@@ -135,7 +138,7 @@ async fn persona_builder_command_adapters_use_mock_app_state_and_live_feature_fl
     let ingest_error = ingest_persona_context(
         IngestPersonaContextInput {
             conversation_id: "missing-persona-builder-wrapper".to_string(),
-            picked_path: "not-inspected-while-disabled".to_string(),
+            picked_paths: vec!["not-inspected-while-disabled".to_string()],
         },
         app.state(),
         app.handle().clone(),
@@ -150,7 +153,7 @@ async fn ingest_command_rejects_flag_off() {
     let state = AppState::new_test();
     let input = IngestPersonaContextInput {
         conversation_id: "missing-persona-builder".to_string(),
-        picked_path: "not-inspected-while-disabled".to_string(),
+        picked_paths: vec!["not-inspected-while-disabled".to_string()],
     };
 
     let error = ingest_persona_context_for_state(input, &state, false, std::path::Path::new("."))
@@ -172,7 +175,7 @@ async fn ingest_command_rejects_non_persona_builder_conversation() {
         .expect("non-PersonaBuilder fixture conversation");
     let input = IngestPersonaContextInput {
         conversation_id: conversation.id.as_str().to_string(),
-        picked_path: "not-inspected-for-wrong-mode".to_string(),
+        picked_paths: vec!["not-inspected-for-wrong-mode".to_string()],
     };
 
     let error = ingest_persona_context_for_state(input, &state, true, std::path::Path::new("."))
@@ -180,6 +183,35 @@ async fn ingest_command_rejects_non_persona_builder_conversation() {
         .expect_err("non-PersonaBuilder conversation must reject before filesystem access");
 
     assert!(error.contains("PersonaBuilder"));
+}
+
+#[tokio::test]
+async fn ingest_command_rejects_an_empty_path_batch() {
+    let state = AppState::new_test();
+    let conversation = create_persona_builder_conversation_for_state(
+        CreatePersonaBuilderConversationInput {
+            project_id: "project-persona-builder-empty-ingest".to_string(),
+        },
+        &state,
+        true,
+    )
+    .await
+    .expect("PersonaBuilder conversation");
+    let temp = tempfile::tempdir().expect("ingest temp directory");
+
+    let error = ingest_persona_context_for_state(
+        IngestPersonaContextInput {
+            conversation_id: conversation.id,
+            picked_paths: Vec::new(),
+        },
+        &state,
+        true,
+        temp.path(),
+    )
+    .await
+    .expect_err("an empty path batch must reject");
+
+    assert!(error.contains("at least one"));
 }
 
 #[tokio::test]
@@ -202,7 +234,7 @@ async fn ingest_command_copies_context_for_a_persona_builder_conversation() {
     let manifest = ingest_persona_context_for_state(
         IngestPersonaContextInput {
             conversation_id: conversation.id.clone(),
-            picked_path: picked_path.to_string_lossy().to_string(),
+            picked_paths: vec![picked_path.to_string_lossy().to_string()],
         },
         &state,
         true,
@@ -220,9 +252,13 @@ async fn ingest_command_copies_context_for_a_persona_builder_conversation() {
         &persona_ingest_storage_path(&app_data_dir),
         &conversation.id,
     );
-    let copied_path =
-        build_persona_ingest_file_path(&destination_root, std::path::Path::new("context.md"))
-            .expect("ingest destination is derived from the approved relative path");
+    let canonical_picked_path = picked_path.canonicalize().expect("canonical picked path");
+    let copied_path = build_persona_ingest_file_path(
+        &destination_root,
+        &canonical_picked_path,
+        std::path::Path::new("context.md"),
+    )
+    .expect("ingest destination is derived from the approved relative path");
     assert_eq!(
         fs::read_to_string(copied_path).expect("app-owned copy should be readable"),
         "Persona context\n"
@@ -239,7 +275,11 @@ async fn ingest_command_maps_absent_persona_builder_conversation_to_not_found() 
     let error = ingest_persona_context_for_state(
         IngestPersonaContextInput {
             conversation_id: "missing-persona-builder".to_string(),
-            picked_path: temp.path().join("context.md").to_string_lossy().to_string(),
+            picked_paths: vec![temp
+                .path()
+                .join("context.md")
+                .to_string_lossy()
+                .to_string()],
         },
         &state,
         true,
