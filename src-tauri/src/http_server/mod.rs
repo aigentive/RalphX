@@ -204,23 +204,7 @@ pub async fn start_http_server(
         // Plan verification tools (ralphx-ideation + worker agents)
         .route(
             "/api/ideation/sessions/:id/verification",
-            post(post_verification_status),
-        )
-        .route(
-            "/api/ideation/sessions/:id/verification",
             get(get_plan_verification),
-        )
-        .route(
-            "/api/ideation/sessions/:id/verification/infra-failure",
-            post(mark_verification_infra_failure),
-        )
-        .route(
-            "/api/ideation/sessions/:id/revert-and-skip",
-            post(revert_and_skip),
-        )
-        .route(
-            "/api/ideation/sessions/:id/stop-verification",
-            post(stop_verification),
         )
         // Acceptance gate tools (user confirmation for require_accept_for_finalize)
         .route(
@@ -241,24 +225,11 @@ pub async fn start_http_server(
         )
         // Verification confirmation endpoints (UI-session gate)
         .route("/api/verification/confirm", post(confirm_verification))
-        .route("/api/verification/dismiss", post(dismiss_verification))
         .route(
-            "/api/verification/auto-accept",
-            post(set_auto_accept_verification),
+            "/api/plan-verification/complete",
+            post(complete_plan_verification_http),
         )
-        .route(
-            "/api/verification/specialists",
-            get(get_verification_specialists),
-        )
-        .route(
-            "/api/verification/confirmation-status/:session_id",
-            get(get_confirmation_status),
-        )
-        .route(
-            "/api/verification/pending-confirmations",
-            get(get_pending_verification_confirmations),
-        )
-        // Child session tools (ralphx-ideation + ralphx-ideation-team-lead + ralphx-plan-verifier agents)
+        // Child session tools (ralphx-ideation + ralphx-ideation-team-lead agents)
         .route(
             "/api/ideation/sessions/:id/child-status",
             get(get_child_session_status_handler),
@@ -661,15 +632,7 @@ pub async fn start_http_server(
         .route("/api/team/plan/reject", post(reject_team_plan))
         .route("/api/team/spawn", post(request_teammate_spawn))
         .route("/api/team/artifact", post(create_team_artifact))
-        .route(
-            "/api/team/verification_finding",
-            post(publish_verification_finding),
-        )
         .route("/api/team/artifacts/:session_id", get(get_team_artifacts))
-        .route(
-            "/api/team/verification-findings/:session_id",
-            get(get_verification_findings),
-        )
         .route(
             "/api/team/session_state/:session_id",
             get(get_team_session_state),

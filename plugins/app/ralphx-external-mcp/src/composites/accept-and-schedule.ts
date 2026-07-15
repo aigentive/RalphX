@@ -37,6 +37,12 @@ export interface AcceptAndScheduleResult {
   success: boolean;
   taskIds: string[];
   progress: AcceptAndScheduleProgress;
+  verification?: {
+    status: "queued" | "in_progress";
+    sessionId: string;
+    pollTool: "v1_get_plan_verification";
+    retryTool: "v1_accept_plan_and_schedule";
+  };
 }
 
 interface ProposalListBody {
@@ -47,6 +53,11 @@ interface ApplyProposalsBody {
   created_task_ids?: string[];
   session_converted?: boolean;
   [key: string]: unknown;
+}
+
+interface ApplyProposalsErrorBody {
+  error?: string;
+  message?: string;
 }
 
 /**
@@ -96,7 +107,9 @@ export async function acceptAndSchedule(
   // Step 2: apply proposals (POST /api/external/apply_proposals)
   let taskIds: string[] = [];
   try {
-    const applyResp = await getBackendClient().post<ApplyProposalsBody>(
+    const applyResp = await getBackendClient().post<
+      ApplyProposalsBody | ApplyProposalsErrorBody
+    >(
       "/api/external/apply_proposals",
       context,
       {
@@ -107,14 +120,21 @@ export async function acceptAndSchedule(
     );
 
     if (applyResp.status < 200 || applyResp.status >= 300) {
-      throw new BackendError(applyResp.status, `apply_proposals returned HTTP ${applyResp.status}`);
+      const errorBody = applyResp.body as ApplyProposalsErrorBody;
+      throw new BackendError(
+        applyResp.status,
+        errorBody.error ??
+          errorBody.message ??
+          `apply_proposals returned HTTP ${applyResp.status}`,
+      );
     }
 
-    taskIds = applyResp.body.created_task_ids ?? [];
+    const successBody = applyResp.body as ApplyProposalsBody;
+    taskIds = successBody.created_task_ids ?? [];
 
     // Fallback: session was already accepted (session_converted === false, no new tasks created).
     // Fetch existing tasks via the session tasks endpoint instead of returning empty.
-    if (taskIds.length === 0 && applyResp.body.session_converted === false) {
+    if (taskIds.length === 0 && successBody.session_converted === false) {
       try {
         const tasksResp = await getBackendClient().get<SessionTasksBody>(
           `/api/external/sessions/${encodeURIComponent(input.sessionId)}/tasks`,
@@ -130,6 +150,29 @@ export async function acceptAndSchedule(
     progress.step = "create_tasks";
   } catch (err) {
     const errMessage = err instanceof Error ? err.message : String(err);
+    const verificationStatus = errMessage.includes("verification was queued")
+      ? "queued"
+      : errMessage.includes("verification is already queued") ||
+          errMessage.includes("verification is in progress")
+        ? "in_progress"
+        : null;
+    if (verificationStatus) {
+      progress.failed = {
+        step: "apply_proposals",
+        error: errMessage,
+      };
+      return {
+        success: false,
+        taskIds: [],
+        progress,
+        verification: {
+          status: verificationStatus,
+          sessionId: input.sessionId,
+          pollTool: "v1_get_plan_verification",
+          retryTool: "v1_accept_plan_and_schedule",
+        },
+      };
+    }
     const isAlreadyAccepted =
       errMessage.includes("Cannot apply proposals from") ||
       (err instanceof BackendError && err.statusCode === 422);

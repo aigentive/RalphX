@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::application::plan_verification_service::PlanVerificationStatusKind;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AutomationPlanJudgeState, AutomationRun, ChatConversationId,
@@ -73,6 +74,11 @@ pub trait AutomationPlanVerificationStarter: Send + Sync {
         &self,
         request: AutomationPlanVerificationStartRequest,
     ) -> AppResult<AutomationPlanVerificationStartOutcome>;
+
+    async fn verification_status(
+        &self,
+        request: &AutomationPlanVerificationStartRequest,
+    ) -> AppResult<PlanVerificationStatusKind>;
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +93,13 @@ impl AutomationPlanVerificationStarter for NoopAutomationPlanVerificationStarter
         Ok(AutomationPlanVerificationStartOutcome::Unavailable {
             detail: "automation plan verification starter is not configured".to_string(),
         })
+    }
+
+    async fn verification_status(
+        &self,
+        _request: &AutomationPlanVerificationStartRequest,
+    ) -> AppResult<PlanVerificationStatusKind> {
+        Ok(PlanVerificationStatusKind::Unverified)
     }
 }
 

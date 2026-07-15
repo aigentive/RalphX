@@ -425,6 +425,9 @@ mod v20260713063349_persona_run_attribution;
 mod v20260713131052_disable_auto_followup_by_default;
 #[cfg(test)]
 mod v20260713131052_disable_auto_followup_by_default_tests;
+mod v20260715013854_model_native_plan_verification;
+#[cfg(test)]
+mod v20260715013854_model_native_plan_verification_tests;
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]
@@ -545,7 +548,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260713131052;
+pub const SCHEMA_VERSION: i64 = 20260715013854;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1514,6 +1517,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260713131052,
         name: "disable_auto_followup_by_default",
         migrate: v20260713131052_disable_auto_followup_by_default::migrate,
+    },
+    Migration {
+        version: 20260715013854,
+        name: "model_native_plan_verification",
+        migrate: v20260715013854_model_native_plan_verification::migrate,
     },
 ];
 

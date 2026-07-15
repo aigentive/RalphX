@@ -179,14 +179,6 @@ function GlobalEffortSubsection() {
     );
   };
 
-  const handleVerifierChange = (value: string) => {
-    setShowError(false);
-    updateSettings(
-      { verifierEffort: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
   return (
     <div>
       {showError && saveError && (
@@ -206,18 +198,6 @@ function GlobalEffortSubsection() {
           effectiveValue={settings.effectivePrimary}
           effectiveSource={settings.primarySource}
           isPlaceholderData={isPlaceholderData}
-        />
-        <EffortRow
-          id="global-verifier-effort"
-          label="Verification Effort"
-          description="Effort level for ralphx-plan-verifier agent"
-          value={settings.verifierEffort}
-          disabled={false}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifier}
-          effectiveSource={settings.verifierSource}
-          isPlaceholderData={isPlaceholderData}
-          isLast
         />
       </div>
     </div>
@@ -246,15 +226,6 @@ function ProjectEffortSubsection({
     setShowError(false);
     updateSettings(
       { primaryEffort: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierChange = (value: string) => {
-    if (isDisabled) return;
-    setShowError(false);
-    updateSettings(
-      { verifierEffort: value },
       { onError: () => setShowError(true) }
     );
   };
@@ -288,18 +259,6 @@ function ProjectEffortSubsection({
           effectiveValue={settings.effectivePrimary}
           effectiveSource={settings.primarySource}
           isPlaceholderData={isPlaceholderData}
-        />
-        <EffortRow
-          id="project-verifier-effort"
-          label="Verification Effort"
-          description="Override for this project's ralphx-plan-verifier agent"
-          value={settings.verifierEffort}
-          disabled={isDisabled}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifier}
-          effectiveSource={settings.verifierSource}
-          isPlaceholderData={isPlaceholderData}
-          isLast
         />
       </div>
     </div>

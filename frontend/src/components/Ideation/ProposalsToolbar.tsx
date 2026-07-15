@@ -18,13 +18,10 @@ import {
   Network,
   Check,
   AlertCircle,
-  ShieldAlert,
 } from "lucide-react";
 import { useDependencyGraphValidation } from "@/hooks/useDependencyGraphComplete";
-import { useVerificationGate } from "@/hooks/useVerificationGate";
 import type { TaskProposal } from "@/types/ideation";
 import type { DependencyGraphResponse } from "@/api/ideation.types";
-import type { IdeationSessionResponse } from "@/api/ideation";
 
 // ============================================================================
 // Types
@@ -41,11 +38,6 @@ interface ProposalsToolbarProps {
    *  When true, the accept button label changes to "Accept without dependencies" to
    *  signal that the plan can be accepted despite incomplete dependency analysis. */
   analysisTimedOut?: boolean;
-  /** Session for verification gate — blocks accept when verification is required */
-  session?: Pick<
-    IdeationSessionResponse,
-    "id" | "planArtifactId" | "sessionPurpose" | "verificationStatus" | "verificationInProgress"
-  > | null;
   /** True when agent-initiated finalization is pending user confirmation */
   isPendingAcceptance?: boolean;
 }
@@ -62,21 +54,17 @@ export function ProposalsToolbar({
   onAcceptPlan,
   onAnalyzeDependencies,
   analysisTimedOut = false,
-  session = null,
   isPendingAcceptance = false,
 }: ProposalsToolbarProps) {
   const totalCount = proposals.length;
   const validation = useDependencyGraphValidation(proposals, graph);
-  const verificationGate = useVerificationGate(session);
   const canAccept =
     totalCount > 0 &&
     !isReadOnly &&
     validation.isComplete &&
-    verificationGate.canAccept &&
     !isPendingAcceptance;
   const showAnalyzeButton = totalCount >= 2 && onAnalyzeDependencies && !isReadOnly;
   const acceptLabel = analysisTimedOut ? "Accept without dependencies" : `Accept Plan (${totalCount})`;
-  const verificationBlocked = !isReadOnly && !verificationGate.canAccept && totalCount > 0;
 
   return (
     <div
@@ -202,22 +190,6 @@ export function ProposalsToolbar({
             </Tooltip>
           )}
 
-          {/* Verification gate warning */}
-          {verificationBlocked && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center px-1">
-                  <ShieldAlert
-                    className="w-4 h-4"
-                    style={{ color: "var(--status-error)" }}
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs">
-                {verificationGate.reason}
-              </TooltipContent>
-            </Tooltip>
-          )}
         </TooltipProvider>
 
         {/* Accept Plan button (only when not read-only) */}
