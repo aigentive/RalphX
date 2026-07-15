@@ -204,6 +204,14 @@ impl ChatConversationRepository for MockChatConversationRepository {
         Ok(())
     }
 
+    async fn update_builder_draft_binding(
+        &self,
+        _id: &ChatConversationId,
+        _builder_draft_id: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_coordination_mode(
         &self,
         _id: &ChatConversationId,

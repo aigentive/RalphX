@@ -9,7 +9,9 @@ use serde_json::json;
 use crate::application::personas::{
     draft_updated_payload, PersonaService, SavePersonaDraftInput, PERSONA_FEATURE_DISABLED_PREFIX,
 };
-use crate::domain::entities::{Persona, PersonaId};
+use crate::domain::entities::{
+    AgentConversationWorkspaceMode, ChatConversationId, Persona, PersonaId,
+};
 use crate::error::AppError;
 use crate::http_server::handlers::automations::CALLER_SESSION_ID_HEADER;
 use crate::http_server::types::{HttpError, HttpServerState};
@@ -33,25 +35,79 @@ pub async fn save_persona_draft(
 ) -> Result<Json<Persona>, HttpError> {
     ensure_enabled()?;
     let service = service(&state);
-    let persona = match request.draft_id {
-        Some(id) => {
-            service
-                .update_draft(true, &persona_id(id)?, &request.content)
-                .await
+    let caller_conversation_id = caller_session_id(&headers);
+    let builder_conversation = if let Some(id) = caller_conversation_id.as_deref() {
+        state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(&ChatConversationId::from_string(id.to_string()))
+            .await
+            .map_err(map_app_error)?
+            .filter(|conversation| {
+                conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+            })
+    } else {
+        None
+    };
+    let persona = if let Some(conversation) = builder_conversation {
+        match conversation.builder_draft_id.as_deref() {
+            Some(bound_id) => {
+                if request
+                    .draft_id
+                    .as_deref()
+                    .is_some_and(|requested_id| requested_id != bound_id)
+                {
+                    return Err(HttpError::validation(
+                        "PersonaBuilder conversation cannot write outside its bound draft"
+                            .to_string(),
+                    ));
+                }
+                service
+                    .update_draft(true, &PersonaId::from(bound_id), &request.content)
+                    .await
+            }
+            None => {
+                if request.draft_id.is_some() {
+                    return Err(HttpError::validation(
+                        "PersonaBuilder conversation has no bound draft".to_string(),
+                    ));
+                }
+                service
+                    .create_bound_draft(
+                        true,
+                        &conversation.id,
+                        SavePersonaDraftInput {
+                            slug: request.slug,
+                            content: request.content,
+                            source_session_id: Some(conversation.id.as_str()),
+                            source_persona_id: None,
+                            source_content_hash: None,
+                        },
+                    )
+                    .await
+            }
         }
-        None => {
-            service
-                .create_draft(
-                    true,
-                    SavePersonaDraftInput {
-                        slug: request.slug,
-                        content: request.content,
-                        source_session_id: request
-                            .source_session_id
-                            .or_else(|| caller_session_id(&headers)),
-                    },
-                )
-                .await
+    } else {
+        match request.draft_id {
+            Some(id) => {
+                service
+                    .update_draft(true, &persona_id(id)?, &request.content)
+                    .await
+            }
+            None => {
+                service
+                    .create_draft(
+                        true,
+                        SavePersonaDraftInput {
+                            slug: request.slug,
+                            content: request.content,
+                            source_session_id: request.source_session_id.or(caller_conversation_id),
+                            source_persona_id: None,
+                            source_content_hash: None,
+                        },
+                    )
+                    .await
+            }
         }
     }
     .map_err(map_app_error)?;
