@@ -1510,6 +1510,39 @@ impl<R: Runtime> AppChatService<R> {
                 })
     }
 
+    async fn ensure_persona_builder_has_live_context(
+        &self,
+        conversation: &ChatConversation,
+    ) -> Result<(), ChatServiceError> {
+        if !is_persona_builder_conversation(conversation.agent_mode) {
+            return Ok(());
+        }
+        let has_live_context = if let Some(draft_id) = conversation.builder_draft_id.as_deref() {
+            let persona_repo = self.persona_repo.as_ref().ok_or_else(|| {
+                ChatServiceError::RepositoryError(
+                    "Persona repository unavailable for bound PersonaBuilder draft".to_string(),
+                )
+            })?;
+            persona_repo
+                .get_by_id(&PersonaId::from(draft_id))
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                .is_some_and(|draft| draft.status == PersonaStatus::Draft)
+        } else {
+            self.has_live_persona_builder_ingest_session(
+                conversation.agent_mode,
+                &conversation.id.as_str(),
+            )
+        };
+        if persona_builder_requires_live_draft_session(conversation.agent_mode, has_live_context) {
+            return Err(ChatServiceError::PersonaUnavailable(
+                "[Persona unavailable: PersonaBuilder requires ingested context or a live bound draft]"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn persona_feature_enabled_for_test(&self) -> bool {
         self.persona_feature_enabled()
@@ -4396,18 +4429,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         Some(&conversation.id),
                     )
                     .await?;
-                if persona_builder_requires_live_draft_session(
-                    conversation.agent_mode,
-                    self.has_live_persona_builder_ingest_session(
-                        conversation.agent_mode,
-                        &conversation.id.as_str(),
-                    ),
-                ) {
-                    return Err(ChatServiceError::PersonaUnavailable(
-                        "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                            .to_string(),
-                    ));
-                }
+                self.ensure_persona_builder_has_live_context(conversation)
+                    .await?;
                 self.resolve_persona_for_send(
                     conversation,
                     &options,
@@ -4863,19 +4886,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             agent_conversation_mode,
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
-        if self.persona_feature_enabled()
-            && persona_builder_requires_live_draft_session(
-                conversation.agent_mode,
-                self.has_live_persona_builder_ingest_session(
-                    conversation.agent_mode,
-                    &conversation.id.as_str(),
-                ),
-            )
-        {
-            return Err(ChatServiceError::PersonaUnavailable(
-                "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                    .to_string(),
-            ));
+        if self.persona_feature_enabled() {
+            self.ensure_persona_builder_has_live_context(&conversation)
+                .await?;
         }
         let resolved_persona = self
             .resolve_persona_for_send(
@@ -6288,18 +6301,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             Some(&conversation.id),
                         )
                         .await?;
-                    if persona_builder_requires_live_draft_session(
-                        conversation.agent_mode,
-                        self.has_live_persona_builder_ingest_session(
-                            conversation.agent_mode,
-                            &conversation.id.as_str(),
-                        ),
-                    ) {
-                        return Err(ChatServiceError::PersonaUnavailable(
-                            "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                                .to_string(),
-                        ));
-                    }
+                    self.ensure_persona_builder_has_live_context(conversation)
+                        .await?;
                     self.resolve_persona_for_send(
                         conversation,
                         &SendMessageOptions::default(),

@@ -15,7 +15,7 @@ use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, AgentConversationResponse,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatConversation, PersonaId, ProjectId,
+    AgentConversationWorkspaceMode, ChatConversation, PersonaId, PersonaStatus, ProjectId,
 };
 use crate::infrastructure::agents::claude::agent_personas_enabled;
 
@@ -257,7 +257,15 @@ pub async fn get_persona_builder_ingest_status_for_state(
         return Err("Persona context ingestion requires a PersonaBuilder conversation".to_string());
     }
 
-    Ok(PersonaBuilderIngestStatusResponse {
-        live: persona_builder_ingest_session_is_live(Some(app_data_dir), &input.conversation_id),
-    })
+    let live = if let Some(draft_id) = conversation.builder_draft_id.as_deref() {
+        state
+            .persona_repo
+            .get_by_id(&PersonaId::from(draft_id))
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some_and(|draft| draft.status == PersonaStatus::Draft)
+    } else {
+        persona_builder_ingest_session_is_live(Some(app_data_dir), &input.conversation_id)
+    };
+    Ok(PersonaBuilderIngestStatusResponse { live })
 }

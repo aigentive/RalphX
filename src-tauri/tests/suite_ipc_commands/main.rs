@@ -24,4 +24,5 @@ mod persona_commands;
 mod persona_update_approval_commands;
 mod persona_runtime_attribution;
 mod persona_builder_commands;
+mod persona_builder_liveness_commands;
 mod ui_commands;
