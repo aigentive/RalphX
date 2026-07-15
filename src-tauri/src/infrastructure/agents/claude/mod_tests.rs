@@ -1141,7 +1141,7 @@ harnesses:
             .is_some_and(|url| url.contains("conversation_id=conversation%20current")
                 && url.contains("parent_conversation_id=conversation%20456")
                 && url.contains("agent_run_id=run%20789")),
-        "external MCP URL should carry encoded runtime context: {server:?}"
+        "external MCP URL should carry encoded runtime context"
     );
     assert!(
         server["headers"]["Authorization"]
@@ -1185,7 +1185,7 @@ harnesses:
     assert_eq!(external_server["type"].as_str(), Some("http"));
     assert!(
         external_server.get("args").is_none(),
-        "external MCP server should remain HTTP-only: {external_server:?}"
+        "external MCP server should remain HTTP-only"
     );
     assert_eq!(internal_server["type"].as_str(), Some("stdio"));
     let args = internal_server["args"]
@@ -1196,7 +1196,7 @@ harnesses:
         .collect::<Vec<_>>();
     assert!(
         args.contains(&"--allowed-tools=create_agent_task,list_agent_tasks"),
-        "internal sidecar should be narrowed to declared internal tools: {args:?}"
+        "internal sidecar should be narrowed to declared internal tools"
     );
 }
 
