@@ -942,6 +942,40 @@ describe("ChatMessageList controller integration", () => {
     expect(screen.getAllByText("Delegated task card")).toHaveLength(1);
   });
 
+  it("summarizes persisted tool-call groups from hydrated diff metadata", () => {
+    renderList({
+      messages: [
+        {
+          id: "hydrated-edit-message",
+          role: "assistant",
+          content: "Hydrated edit detail",
+          createdAt: "2026-07-15T10:00:00Z",
+          contentBlocks: [{
+            type: "tool_use",
+            id: "hydrated-edit",
+            name: "Edit",
+            arguments: {},
+          }],
+          toolCalls: [{
+            id: "hydrated-edit",
+            name: "Edit",
+            arguments: {},
+            diffContext: {
+              filePath: "src/hydrated.ts",
+              oldFileExists: true,
+            },
+          }],
+          timelineSequence: 20,
+        },
+      ],
+    });
+
+    expect(screen.getByRole("button", {
+      name: "Agent called 1 tool and edited 1 file. Expand tool details.",
+    })).toBeInTheDocument();
+    expect(screen.queryByText("Hydrated edit detail")).not.toBeInTheDocument();
+  });
+
   it("keeps a delegated card promoted when an earlier persisted tool block is malformed", () => {
     const activityMessages: ChatMessageData[] = [
       {

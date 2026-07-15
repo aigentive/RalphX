@@ -88,6 +88,26 @@ describe("tool activity summaries", () => {
     );
   });
 
+  it("dedupes matching streaming task metadata against persisted tool calls", () => {
+    const summary = summarizeToolActivity({
+      toolCalls: [
+        call("delegate-1", "ralphx::delegate_start", {
+          result: { job_id: "job-1", status: "running" },
+        }),
+      ],
+      tasks: [
+        {
+          toolUseId: "delegate-1",
+          toolName: "ralphx::delegate_start",
+          delegatedJobId: "job-1",
+        },
+      ],
+    });
+
+    expect(summary.totalTools).toBe(1);
+    expect(summary.delegatedJobKeys).toEqual(["job-1"]);
+  });
+
   it("falls back to an inclusive generic count when metadata is incomplete", () => {
     const summary = summarizeToolActivity({
       toolCalls: [call("one", "custom_tool"), call("two", "write")],
