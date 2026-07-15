@@ -1414,7 +1414,7 @@ async fn reconciliation_cancels_guard_when_guarded_publication_pr_is_terminal() 
 }
 
 #[tokio::test]
-async fn reconciliation_restores_awaiting_publish_guard_with_existing_publication_proof() {
+async fn reconciliation_accepts_refreshed_workspace_delta_publication_proof() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let mut state = AppState::new_test();
     let github = Arc::new(MockGithubService::new());
@@ -1433,13 +1433,19 @@ async fn reconciliation_restores_awaiting_publish_guard_with_existing_publicatio
     let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
         .expect("workspace path should resolve");
     init_repo(&worktree_path, "ralphx/test/workspace-review");
-    awaiting_workspace_delta_restore_context(
+    let mut workspace = awaiting_workspace_delta_restore_context(
         &state,
         conversation_id.clone(),
         project.id,
         &worktree_path,
     )
     .await;
+    workspace.publication_push_status = Some("refreshed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("refreshed publication status should persist");
     append_workspace_delta_review_deferred_event(&state, conversation_id.clone()).await;
     append_successful_workspace_publish_event(&state, conversation_id.clone()).await;
 
@@ -1519,6 +1525,159 @@ async fn cancelling_supervision_guard_keeps_auto_merge_disabled() {
             .expect("workspace should exist")
             .pr_auto_merge_current,
         Some(false)
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_restoring_guard_disables_remote_before_clearing_it() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health(
+        "ralphx/test/workspace-review",
+        "head",
+    )));
+    state.github_service = Some(github.clone());
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("workspace-review-restoring-cancel");
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path should resolve");
+    init_repo(&worktree_path, "ralphx/test/workspace-review");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/test/workspace-review".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    workspace.pr_auto_merge_desired = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
+    monitor.auto_merge_guard = Some(guard.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(cancel_workspace_review_auto_merge_guard(&state, &workspace)
+        .await
+        .expect("guard cancellation should succeed"));
+
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .expect("monitor should load")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn cancelling_a_restoring_guard_retains_it_when_remote_disable_fails() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    {
+        let mut github_state = github.state();
+        github_state.fetch_pr_health_result = Some(Ok(auto_merge_health(
+            "ralphx/test/workspace-review",
+            "head",
+        )));
+        github_state.disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+            "remote disable failed".to_string(),
+        )));
+    }
+    state.github_service = Some(github.clone());
+    let project = Project::new(
+        "Workspace Review".to_string(),
+        temp.path().to_string_lossy().to_string(),
+    );
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("workspace-review-cancel-disable-fails");
+    let worktree_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("workspace path should resolve");
+    init_repo(&worktree_path, "ralphx/test/workspace-review");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/test/workspace-review".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    workspace.pr_auto_merge_desired = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
+    monitor.auto_merge_guard = Some(guard.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    let error = cancel_workspace_review_auto_merge_guard(&state, &workspace)
+        .await
+        .expect_err("failed remote disable must fail closed");
+
+    assert!(error.to_string().contains("remote disable failed"));
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor should load")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
     );
 }
 

@@ -421,6 +421,23 @@ pub async fn cancel_workspace_review_auto_merge_guard(
     let Some(guard) = monitor.auto_merge_guard else {
         return Ok(false);
     };
+    if guard_status_may_have_remote_auto_merge_enabled(guard.status) {
+        let working_directory = resolve_workspace_working_directory(state, workspace).await?;
+        let github = state.github_service.as_ref().ok_or_else(|| {
+            AppError::Infrastructure(
+                "GitHub integration is unavailable while cancelling auto-merge restoration"
+                    .to_string(),
+            )
+        })?;
+        let health = github
+            .fetch_pr_health(&working_directory, guard.pr_number)
+            .await?;
+        if health.auto_merge_request.is_some() {
+            github
+                .disable_pr_auto_merge(&working_directory, guard.pr_number)
+                .await?;
+        }
+    }
     let cancelled = state
         .agent_conversation_workspace_repo
         .compare_and_set_workspace_review_auto_merge_guard(
@@ -452,6 +469,17 @@ pub async fn cancel_workspace_review_auto_merge_guard(
         .await;
     }
     Ok(cancelled)
+}
+
+fn guard_status_may_have_remote_auto_merge_enabled(
+    status: AgentWorkspaceReviewAutoMergeGuardStatus,
+) -> bool {
+    matches!(
+        status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::Pausing
+            | AgentWorkspaceReviewAutoMergeGuardStatus::Restoring
+            | AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    )
 }
 
 /// Reconciles durable guards after startup. This intentionally works from the monitor rows rather
@@ -739,7 +767,7 @@ async fn workspace_delta_publish_proves_guard(
         && monitor.reviewed_target_scope == Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
         && monitor.reviewed_diff_fingerprint.as_deref() == Some(guard.diff_fingerprint.as_str())
         && workspace.publication_pr_number == Some(guard.pr_number)
-        && workspace.publication_push_status.as_deref() == Some("pushed")
+        && workspace.has_pr_status_pollable_push_status()
         && !workspace.has_terminal_publication_pr_status())
     {
         return Ok(false);
