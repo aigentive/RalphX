@@ -71,7 +71,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
-    IdeationSessionId, InternalStatus, MessageRole, PersonaDirective, ProjectId, TaskId,
+    IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, PersonaId,
+    PersonaStatus, ProjectId, TaskId,
     TeamIntent, TeamMessageTarget,
 };
 use crate::domain::repositories::{
@@ -844,6 +845,47 @@ fn plan_mode_runtime_message(
          <user_request>{}</user_request>",
         workspace.conversation_id.as_str(),
         planning_session_id.as_str(),
+        message
+    )
+}
+
+fn persona_builder_runtime_message(
+    message: String,
+    conversation: Option<&ChatConversation>,
+    draft: Option<&Persona>,
+) -> String {
+    let Some(conversation) = conversation.filter(|conversation| {
+        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    }) else {
+        return message;
+    };
+    let Some(draft) = draft.filter(|draft| {
+        draft.status == PersonaStatus::Draft
+            && conversation.builder_draft_id.as_deref() == Some(draft.id.as_str())
+    }) else {
+        return message;
+    };
+    let source_persona = draft
+        .source_persona_id
+        .as_ref()
+        .map(|id| format!("<source_persona_id>{id}</source_persona_id>\n"))
+        .unwrap_or_default();
+
+    format!(
+        "<persona_builder_context>\n\
+         <agent_conversation_id>{}</agent_conversation_id>\n\
+         <builder_draft_id>{}</builder_draft_id>\n\
+         {}\
+         <draft_version>{}</draft_version>\n\
+         <draft_content_hash>{}</draft_content_hash>\n\
+         <contract>This conversation owns exactly this draft. Read it with get_persona_draft and persist revisions with save_persona_draft. The conversation binding is authoritative; do not create or edit another draft.</contract>\n\
+         </persona_builder_context>\n\
+         <user_request>{}</user_request>",
+        conversation.id.as_str(),
+        draft.id,
+        source_persona,
+        draft.version,
+        draft.content_hash,
         message
     )
 }
@@ -3805,7 +3847,41 @@ impl<R: Runtime> AppChatService<R> {
         artifact_references: &[ComposerArtifactReference],
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
-    ) -> String {
+    ) -> Result<String, ChatServiceError> {
+        let builder_conversation = if let Some(conversation_id) = conversation_id_override {
+            self.conversation_repo
+                .get_by_id(conversation_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        } else {
+            None
+        };
+        let builder_draft_id = builder_conversation
+            .as_ref()
+            .filter(|conversation| {
+                conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+            })
+            .and_then(|conversation| conversation.builder_draft_id.as_deref());
+        let builder_draft = if let Some(draft_id) = builder_draft_id {
+            let persona_repo = self.persona_repo.as_ref().ok_or_else(|| {
+                ChatServiceError::RepositoryError(
+                    "PersonaBuilder draft repository is unavailable".to_string(),
+                )
+            })?;
+            Some(
+                persona_repo
+                    .get_by_id(&PersonaId::from(draft_id))
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                    .ok_or_else(|| {
+                        ChatServiceError::PersonaUnavailable(format!(
+                            "[Persona unavailable: bound PersonaBuilder draft {draft_id} was not found]"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let agent_workspace = self
             .load_agent_conversation_workspace(context_type, context_id, conversation_id_override)
             .await
@@ -3897,13 +3973,18 @@ impl<R: Runtime> AppChatService<R> {
                 artifact_references,
             );
 
+        let with_persona_builder = persona_builder_runtime_message(
+            with_artifact_references,
+            builder_conversation.as_ref(),
+            builder_draft.as_ref(),
+        );
         let with_plan_mode =
-            plan_mode_runtime_message(with_artifact_references, agent_workspace.as_ref());
-        edit_mode_plan_handoff_runtime_message(
+            plan_mode_runtime_message(with_persona_builder, agent_workspace.as_ref());
+        Ok(edit_mode_plan_handoff_runtime_message(
             with_plan_mode,
             agent_workspace.as_ref(),
             edit_plan_handoff_artifact.as_ref(),
-        )
+        ))
     }
 
     async fn load_edit_mode_plan_handoff_artifact(
@@ -4523,7 +4604,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                 )
-                .await;
+                .await?;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
                 context_id,
@@ -5969,7 +6050,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Some(&conversation_id),
                 Some(&working_directory),
             )
-            .await;
+            .await?;
         let (selected_cli_path, child, interactive_process_registry, interactive_process_token) =
             match self
                 .spawn_process_for_harness(

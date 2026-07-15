@@ -6,7 +6,9 @@ use ralphx_domain::personas::validation::compute_content_hash;
 
 use super::{PersonaService, SavePersonaDraftInput, PERSONA_UNAVAILABLE_PREFIX};
 use crate::application::AppState;
-use crate::domain::entities::{ChatConversation, IdeationSessionId, PersonaId, PersonaStatus};
+use crate::domain::entities::{
+    ChatConversation, ChatConversationId, IdeationSessionId, PersonaId, PersonaStatus,
+};
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{
     sqlite_chat_conversation_repo::clear_persona_bindings_sync,
@@ -51,6 +53,24 @@ fn draft_input(slug: &str, body: &str) -> SavePersonaDraftInput {
         source_persona_id: None,
         source_content_hash: None,
     }
+}
+
+#[tokio::test]
+async fn bound_draft_creation_rolls_back_when_the_conversation_is_missing() {
+    let db = SqliteTestDb::new("bound_draft_creation_rollback");
+    let service = sqlite_service(&db);
+
+    let error = service
+        .create_bound_draft(
+            true,
+            &ChatConversationId::from_string("missing-conversation".to_string()),
+            draft_input("transactional-draft", "Must roll back"),
+        )
+        .await
+        .expect_err("binding failure must roll back the inserted draft");
+
+    assert!(matches!(error, AppError::NotFound(_)));
+    assert!(service.list_personas(true).await.unwrap().is_empty());
 }
 
 #[tokio::test]

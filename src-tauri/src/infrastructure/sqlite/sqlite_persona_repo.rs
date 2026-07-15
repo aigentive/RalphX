@@ -80,7 +80,7 @@ fn persona_from_row(row: &rusqlite::Row) -> rusqlite::Result<Persona> {
     })
 }
 
-fn map_live_slug_unique_error(error: AppError, slug: &str) -> AppError {
+pub(crate) fn map_live_slug_unique_error(error: AppError, slug: &str) -> AppError {
     match error {
         AppError::Database(message)
             if message.contains("UNIQUE constraint failed: personas.slug")
@@ -90,6 +90,36 @@ fn map_live_slug_unique_error(error: AppError, slug: &str) -> AppError {
         }
         other => other,
     }
+}
+
+pub(crate) fn persona_create_sync(
+    conn: &rusqlite::Connection,
+    persona: Persona,
+) -> AppResult<Persona> {
+    conn.execute(
+        "INSERT INTO personas (
+            id, slug, name, description, content, status, version, content_hash,
+            source_session_id, source_persona_id, source_content_hash, source_json,
+            created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        rusqlite::params![
+            persona.id.as_str(),
+            persona.slug,
+            persona.name,
+            persona.description,
+            persona.content,
+            persona.status.to_string(),
+            persona.version,
+            persona.content_hash,
+            persona.source_session_id,
+            persona.source_persona_id.as_ref().map(ToString::to_string),
+            persona.source_content_hash,
+            persona.source_json,
+            persona.created_at.to_rfc3339(),
+            persona.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(persona)
 }
 
 pub(crate) fn persona_set_status_sync(
@@ -107,52 +137,10 @@ pub(crate) fn persona_set_status_sync(
 #[async_trait]
 impl PersonaRepository for SqlitePersonaRepository {
     async fn create(&self, persona: Persona) -> AppResult<Persona> {
-        let id = persona.id.as_str().to_string();
-        let slug = persona.slug.clone();
-        let name = persona.name.clone();
-        let description = persona.description.clone();
-        let content = persona.content.clone();
-        let status = persona.status.to_string();
-        let version = persona.version;
-        let content_hash = persona.content_hash.clone();
-        let source_session_id = persona.source_session_id.clone();
-        let source_persona_id = persona
-            .source_persona_id
-            .as_ref()
-            .map(|id| id.as_str().to_string());
-        let source_content_hash = persona.source_content_hash.clone();
-        let source_json = persona.source_json.clone();
-        let created_at = persona.created_at.to_rfc3339();
-        let updated_at = persona.updated_at.to_rfc3339();
-        let collision_slug = slug.clone();
+        let collision_slug = persona.slug.clone();
 
         self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT INTO personas (
-                        id, slug, name, description, content, status, version, content_hash,
-                        source_session_id, source_persona_id, source_content_hash, source_json,
-                        created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                    rusqlite::params![
-                        id,
-                        slug,
-                        name,
-                        description,
-                        content,
-                        status,
-                        version,
-                        content_hash,
-                        source_session_id,
-                        source_persona_id,
-                        source_content_hash,
-                        source_json,
-                        created_at,
-                        updated_at,
-                    ],
-                )?;
-                Ok(persona)
-            })
+            .run(move |conn| persona_create_sync(conn, persona))
             .await
             .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
     }
@@ -190,6 +178,22 @@ impl PersonaRepository for SqlitePersonaRepository {
                 conn.query_row(
                     &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE slug = ?1 AND status = 'active' LIMIT 1"),
                     [slug],
+                    persona_from_row,
+                )
+            })
+            .await
+    }
+
+    async fn get_draft_by_source_persona_id(
+        &self,
+        source_persona_id: &PersonaId,
+    ) -> AppResult<Option<Persona>> {
+        let source_persona_id = source_persona_id.as_str().to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    &format!("SELECT {PERSONA_COLUMNS} FROM personas WHERE source_persona_id = ?1 AND status = 'draft' ORDER BY created_at DESC, id DESC LIMIT 1"),
+                    [source_persona_id],
                     persona_from_row,
                 )
             })

@@ -150,6 +150,23 @@ pub(crate) fn clear_persona_bindings_sync(
     )? as u64)
 }
 
+pub(crate) fn update_builder_draft_binding_sync(
+    conn: &rusqlite::Connection,
+    conversation_id: &str,
+    builder_draft_id: Option<&str>,
+) -> AppResult<()> {
+    let changed = conn.execute(
+        "UPDATE chat_conversations SET builder_draft_id = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![builder_draft_id, Utc::now().to_rfc3339(), conversation_id],
+    )?;
+    if changed == 0 {
+        return Err(crate::error::AppError::NotFound(format!(
+            "Chat conversation not found: {conversation_id}"
+        )));
+    }
+    Ok(())
+}
+
 /// SQLite implementation of ChatConversationRepository
 pub struct SqliteChatConversationRepository {
     db: DbConnection,
@@ -260,6 +277,32 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 row_to_conversation,
             )
         }).await
+    }
+
+    async fn get_by_builder_draft_id(
+        &self,
+        builder_draft_id: &str,
+    ) -> AppResult<Option<ChatConversation>> {
+        let builder_draft_id = builder_draft_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                            provider_harness, upstream_provider, provider_profile, agent_mode,
+                            persona_id, builder_draft_id, coordination_mode, automation_id,
+                            automation_run_id, title, message_count, last_message_at, created_at,
+                            updated_at, archived_at, parent_conversation_id,
+                            attribution_backfill_status, attribution_backfill_source,
+                            attribution_backfill_source_path, attribution_backfill_last_attempted_at,
+                            attribution_backfill_completed_at, attribution_backfill_error_summary
+                     FROM chat_conversations
+                     WHERE builder_draft_id = ?1 AND archived_at IS NULL
+                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                    [builder_draft_id],
+                    row_to_conversation,
+                )
+            })
+            .await
     }
 
     async fn get_by_context(
@@ -630,13 +673,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         let builder_draft_id = builder_draft_id.map(str::to_string);
         self.db
             .run(move |conn| {
-                conn.execute(
-                    "UPDATE chat_conversations
-                     SET builder_draft_id = ?1, updated_at = ?2
-                     WHERE id = ?3",
-                    rusqlite::params![builder_draft_id, Utc::now().to_rfc3339(), id_str],
-                )?;
-                Ok(())
+                update_builder_draft_binding_sync(conn, &id_str, builder_draft_id.as_deref())
             })
             .await
     }

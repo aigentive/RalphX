@@ -69,6 +69,27 @@ impl PersonaRepository for MemoryPersonaRepository {
             .cloned())
     }
 
+    async fn get_draft_by_source_persona_id(
+        &self,
+        source_persona_id: &PersonaId,
+    ) -> AppResult<Option<Persona>> {
+        Ok(self
+            .personas
+            .read()
+            .await
+            .values()
+            .filter(|persona| {
+                persona.status == PersonaStatus::Draft
+                    && persona.source_persona_id.as_ref() == Some(source_persona_id)
+            })
+            .max_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+            })
+            .cloned())
+    }
+
     async fn list(&self) -> AppResult<Vec<Persona>> {
         let mut personas = self
             .personas

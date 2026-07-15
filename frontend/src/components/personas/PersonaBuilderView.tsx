@@ -46,7 +46,10 @@ const LazyPersonaMarkdown = lazy(async () => {
   };
 });
 
-const BuilderConversationSchema = z.object({ id: z.string().min(1) });
+const BuilderConversationSchema = z.object({
+  id: z.string().min(1),
+  builder_draft_id: z.string().nullable().optional(),
+});
 
 function ErrorNotice({ message }: { message: string }) {
   return (

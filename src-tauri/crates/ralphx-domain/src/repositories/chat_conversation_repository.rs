@@ -37,6 +37,15 @@ pub trait ChatConversationRepository: Send + Sync {
     /// Get conversation by ID
     async fn get_by_id(&self, id: &ChatConversationId) -> AppResult<Option<ChatConversation>>;
 
+    /// Find the newest active conversation bound to a persona builder draft.
+    async fn get_by_builder_draft_id(
+        &self,
+        builder_draft_id: &str,
+    ) -> AppResult<Option<ChatConversation>> {
+        let _ = builder_draft_id;
+        Ok(None)
+    }
+
     /// Get all conversations for a specific context
     async fn get_by_context(
         &self,

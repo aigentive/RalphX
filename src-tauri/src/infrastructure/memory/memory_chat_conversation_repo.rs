@@ -46,6 +46,27 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(convos.get(id).cloned())
     }
 
+    async fn get_by_builder_draft_id(
+        &self,
+        builder_draft_id: &str,
+    ) -> AppResult<Option<ChatConversation>> {
+        Ok(self
+            .conversations
+            .read()
+            .await
+            .values()
+            .filter(|conversation| {
+                !conversation.is_archived()
+                    && conversation.builder_draft_id.as_deref() == Some(builder_draft_id)
+            })
+            .max_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.as_str().cmp(&right.id.as_str()))
+            })
+            .cloned())
+    }
+
     async fn get_by_context(
         &self,
         context_type: ChatContextType,
