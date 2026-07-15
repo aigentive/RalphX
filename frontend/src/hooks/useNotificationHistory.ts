@@ -82,7 +82,10 @@ export function useNotificationReadActions(projectId?: string) {
 
   const markAllRead = useCallback(async () => {
     const queryKey = notificationKeys.history(projectId);
+    const unreadCountQueryKey = notificationKeys.unreadCount(projectId);
     const previous = queryClient.getQueryData<InfiniteData<NotificationPage>>(queryKey);
+    const previousUnreadCount = queryClient.getQueryData<number>(unreadCountQueryKey);
+    void queryClient.cancelQueries({ queryKey: unreadCountQueryKey });
     queryClient.setQueryData<InfiniteData<NotificationPage>>(
       queryKey,
       (current) => current && {
@@ -95,14 +98,16 @@ export function useNotificationReadActions(projectId?: string) {
         })),
       },
     );
+    queryClient.setQueryData(unreadCountQueryKey, 0);
     try {
       await notificationsApi.markAllRead(projectId);
-      await queryClient.invalidateQueries({ queryKey: notificationKeys.unreadCount(projectId) });
+      await queryClient.invalidateQueries({ queryKey: unreadCountQueryKey });
     } catch (error) {
       queryClient.setQueryData(queryKey, previous);
+      queryClient.setQueryData(unreadCountQueryKey, previousUnreadCount);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey }),
-        queryClient.invalidateQueries({ queryKey: notificationKeys.unreadCount(projectId) }),
+        queryClient.invalidateQueries({ queryKey: unreadCountQueryKey }),
       ]);
       toast.error(error instanceof Error ? error.message : "Failed to mark notifications as read");
     }

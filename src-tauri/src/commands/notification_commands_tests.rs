@@ -388,7 +388,7 @@ async fn notification_commands_page_filter_and_mark_only_requested_notifications
 }
 
 #[tokio::test]
-async fn notification_list_and_count_commands_return_repository_failures_to_the_ipc_caller() {
+async fn notification_read_commands_return_repository_failures_to_the_ipc_caller() {
     let mut state = AppState::new_test();
     state.notification_repo = Arc::new(FailingNotificationRepository);
     let app = test_app_with_state(state);
@@ -402,6 +402,16 @@ async fn notification_list_and_count_commands_return_repository_failures_to_the_
         .await
         .expect_err("notification count failure must reach the IPC caller");
     assert!(count_error.contains("injected notification repository failure"));
+
+    let read_error = mark_notification_read("notification-1".to_string(), app.state::<AppState>())
+        .await
+        .expect_err("notification read failure must reach the IPC caller");
+    assert!(read_error.contains("injected notification repository failure"));
+
+    let mark_all_error = mark_all_notifications_read(None, app.state::<AppState>())
+        .await
+        .expect_err("mark-all-read failure must reach the IPC caller");
+    assert!(mark_all_error.contains("injected notification repository failure"));
 }
 
 #[tokio::test]

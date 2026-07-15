@@ -155,7 +155,11 @@ pub async fn list_notifications(
 
 #[tauri::command]
 pub async fn mark_notification_read(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.notification_service().mark_read(&id).await;
+    state
+        .notification_service()
+        .mark_read(&id)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -167,7 +171,8 @@ pub async fn mark_all_notifications_read(
     state
         .notification_service()
         .mark_all_read(project_id.as_deref())
-        .await;
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

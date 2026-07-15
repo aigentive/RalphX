@@ -22,6 +22,7 @@ import { ThemeSelector } from "./ThemeSelector";
 interface AppTopBarProps {
   currentView: ViewType;
   attentionCount: number;
+  unreadNotificationCount?: number;
   hasUnreadNotificationHistory?: boolean;
   attentionCountStale?: boolean;
   notificationsPanelOpen: boolean;
@@ -437,6 +438,7 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
 export function AppTopBar({
   currentView,
   attentionCount,
+  unreadNotificationCount = 0,
   hasUnreadNotificationHistory = false,
   attentionCountStale = false,
   notificationsPanelOpen,
@@ -478,11 +480,11 @@ export function AppTopBar({
     attentionCount > 0 ? `Notifications · ${attentionCount} need attention` : "Notifications";
 
   useEffect(() => {
-    if (lastDockBadgeCount === attentionCount) return;
+    if (lastDockBadgeCount === unreadNotificationCount) return;
 
-    lastDockBadgeCount = attentionCount;
-    void notificationsApi.setDockBadgeCount(attentionCount).catch(() => undefined);
-  }, [attentionCount]);
+    lastDockBadgeCount = unreadNotificationCount;
+    void notificationsApi.setDockBadgeCount(unreadNotificationCount).catch(() => undefined);
+  }, [unreadNotificationCount]);
 
   const shouldShowProjectSelector =
     showProjectSelector && PROJECT_SELECTOR_VIEWS.has(currentView) && Boolean(onNewProject);
