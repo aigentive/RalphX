@@ -1211,6 +1211,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     startWorkspaceReviewFixerMutation.isPending &&
     startWorkspaceReviewFixerMutation.variables?.conversationId ===
       conversationId;
+  const workspaceReviewStartError =
+    startWorkspaceReviewMutation.variables?.conversationId === conversationId
+      ? startWorkspaceReviewMutation.error
+      : null;
+  const workspaceReviewFixIssuesError =
+    startWorkspaceReviewFixerMutation.variables?.conversationId === conversationId
+      ? startWorkspaceReviewFixerMutation.error
+      : null;
   const workspaceReviewStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewMutation.data,
     conversationId,
@@ -1232,10 +1240,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewDisplayContext?.monitor.status === "reviewing" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "reviewing";
   const workspaceReviewBlocked =
-    (isWorkspaceReviewActionPending &&
-      Boolean(startWorkspaceReviewMutation.error)) ||
-    (isWorkspaceReviewFixIssuesPending &&
-      Boolean(startWorkspaceReviewFixerMutation.error)) ||
+    Boolean(workspaceReviewStartError) ||
+    Boolean(workspaceReviewFixIssuesError) ||
     reviewDisplayContext?.monitor.status === "blocked" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "blocking" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "failed" ||
@@ -1785,11 +1791,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           reviewStartError={
             isReviewPrWorkspace
               ? null
-              : isWorkspaceReviewActionPending
-                ? startWorkspaceReviewMutation.error
-                : isWorkspaceReviewFixIssuesPending
-                  ? startWorkspaceReviewFixerMutation.error
-                  : null
+              : (workspaceReviewStartError ?? workspaceReviewFixIssuesError)
           }
           isReviewLoading={
             Boolean(reviewArtifactId) &&

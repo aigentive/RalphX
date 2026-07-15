@@ -433,3 +433,111 @@ async fn workspace_review_auto_merge_guard_survives_monitor_updates_and_requires
         Some(restoring_guard)
     );
 }
+
+#[tokio::test]
+async fn workspace_review_auto_merge_restore_rejects_a_stale_selected_source_head() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-stale-source");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    repo.create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+        diff_fingerprint: "selected-source".to_string(),
+        head_sha: Some("reviewed-head".to_string()),
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some("selected-source".to_string());
+    monitor.selected_source_pull_request_number = Some(42);
+    monitor.selected_source_head_sha = Some("new-head".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, guard.clone())
+        .await
+        .expect("stale restore should be rejected"));
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}
+
+#[tokio::test]
+async fn workspace_review_auto_merge_restore_rejects_a_retargeted_publication_pr() {
+    let repo = MemoryAgentConversationWorkspaceRepository::new();
+    let conversation_id = ChatConversationId::from_string("workspace-review-retargeted-pr");
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.publication_pr_number = Some(84);
+    workspace.publication_pr_status = Some("open".to_string());
+    repo.create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::Restoring,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "workspace-delta".to_string(),
+        head_sha: None,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-memory".to_string()),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("workspace-delta".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    repo.upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    assert!(!repo
+        .complete_workspace_review_auto_merge_restore(&conversation_id, guard.clone())
+        .await
+        .expect("retargeted restore should be rejected"));
+    assert_eq!(
+        repo.get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist")
+            .pr_auto_merge_current,
+        Some(false)
+    );
+    assert_eq!(
+        repo.get_workspace_review_monitor(&conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}

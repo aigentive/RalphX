@@ -68,6 +68,8 @@ describe("useWorkspaceReviewActions", () => {
         headSha: "head",
         prNumber: 42,
         willDisableAutoMerge: true,
+        mergeMethod: "squash",
+        restoreAfterPublish: true,
       },
     };
     vi.mocked(chatApi.getAgentWorkspaceReviewStartPreview).mockResolvedValue(preview);
@@ -117,6 +119,8 @@ describe("useWorkspaceReviewActions", () => {
         headSha: "head",
         prNumber: 42,
         willDisableAutoMerge: true,
+        mergeMethod: "squash",
+        restoreAfterPublish: true,
       },
     };
     const refreshedPreview: AgentWorkspaceReviewStartPreview = {

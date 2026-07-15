@@ -3505,6 +3505,8 @@ describe("getConversationActiveState", () => {
             head_sha: "head-sha-1",
             pr_number: 42,
             will_disable_auto_merge: true,
+            merge_method: "squash",
+            restore_after_publish: true,
           },
         }),
     });
@@ -3523,6 +3525,8 @@ describe("getConversationActiveState", () => {
       headSha: "head-sha-1",
       prNumber: 42,
       willDisableAutoMerge: true,
+      mergeMethod: "squash",
+      restoreAfterPublish: true,
     });
     expect(result.restoreAfterPublish).toBe(true);
   });

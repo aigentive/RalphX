@@ -40,6 +40,7 @@ interface ConfirmationDialogProps {
   options: ConfirmOptions | null;
   isSubmitting: boolean;
   isPreparing: boolean;
+  prepareFailed: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -52,6 +53,7 @@ function ConfirmationDialogComponent({
   options,
   isSubmitting,
   isPreparing,
+  prepareFailed,
   onConfirm,
   onCancel,
 }: ConfirmationDialogProps) {
@@ -81,7 +83,7 @@ function ConfirmationDialogComponent({
               onConfirm();
             }}
             variant={options.variant ?? "default"}
-            disabled={isSubmitting || isPreparing}
+            disabled={isSubmitting || isPreparing || prepareFailed}
             className="gap-2"
           >
             {(isSubmitting || isPreparing) && (
@@ -124,6 +126,7 @@ export function useConfirmation(): UseConfirmationReturn {
   const [options, setOptions] = useState<ConfirmOptions | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
+  const [prepareFailed, setPrepareFailed] = useState(false);
   const resolveRef = useRef<((value: boolean) => void) | null>(null);
   const requestIdRef = useRef(0);
 
@@ -131,6 +134,7 @@ export function useConfirmation(): UseConfirmationReturn {
     setOptions(opts);
     setIsSubmitting(false);
     setIsPreparing(Boolean(opts.prepare));
+    setPrepareFailed(false);
     setIsOpen(true);
     const requestId = ++requestIdRef.current;
     if (opts.prepare) {
@@ -142,6 +146,7 @@ export function useConfirmation(): UseConfirmationReturn {
             setOptions((current) => (current ? { ...current, ...prepared } : current));
           }
           setIsPreparing(false);
+          setPrepareFailed(false);
         })
         .catch(() => {
           if (requestId !== requestIdRef.current) return;
@@ -154,6 +159,8 @@ export function useConfirmation(): UseConfirmationReturn {
                 }
               : current,
           );
+          setIsPreparing(false);
+          setPrepareFailed(true);
         });
     }
     return new Promise((resolve) => {
@@ -166,12 +173,13 @@ export function useConfirmation(): UseConfirmationReturn {
     setIsOpen(false);
     setOptions(null);
     setIsPreparing(false);
+    setPrepareFailed(false);
     resolveRef.current?.(value);
     resolveRef.current = null;
   }, []);
 
   const onConfirm = useCallback(() => {
-    if (isSubmitting || isPreparing) {
+    if (isSubmitting || isPreparing || prepareFailed) {
       return;
     }
 
@@ -206,7 +214,7 @@ export function useConfirmation(): UseConfirmationReturn {
       .finally(() => {
         setIsSubmitting(false);
       });
-  }, [isPreparing, isSubmitting, options, settle]);
+  }, [isPreparing, isSubmitting, options, prepareFailed, settle]);
 
   const onCancel = useCallback(() => {
     if (isSubmitting) {
@@ -216,8 +224,24 @@ export function useConfirmation(): UseConfirmationReturn {
   }, [isSubmitting, settle]);
 
   const confirmationDialogProps = useMemo(
-    () => ({ isOpen, options, isSubmitting, isPreparing, onConfirm, onCancel }),
-    [isOpen, options, isSubmitting, isPreparing, onConfirm, onCancel]
+    () => ({
+      isOpen,
+      options,
+      isSubmitting,
+      isPreparing,
+      prepareFailed,
+      onConfirm,
+      onCancel,
+    }),
+    [
+      isOpen,
+      options,
+      isSubmitting,
+      isPreparing,
+      prepareFailed,
+      onConfirm,
+      onCancel,
+    ]
   );
 
   return {

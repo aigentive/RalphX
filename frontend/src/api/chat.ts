@@ -2159,6 +2159,8 @@ export interface AgentWorkspaceReviewStartConfirmation {
   headSha: string | null;
   prNumber: number | null;
   willDisableAutoMerge: boolean;
+  mergeMethod: string | null;
+  restoreAfterPublish: boolean;
 }
 
 export interface AgentWorkspaceReviewStartPreview {
@@ -2520,6 +2522,8 @@ const AgentWorkspaceReviewStartConfirmationSchema = z.object({
   head_sha: z.string().nullable().optional().default(null),
   pr_number: z.number().nullable().optional().default(null),
   will_disable_auto_merge: z.boolean(),
+  merge_method: z.string().nullable(),
+  restore_after_publish: z.boolean(),
 });
 const AgentWorkspaceReviewStartPreviewResponseSchema = z.object({
   success: z.boolean(),
@@ -3123,6 +3127,8 @@ function transformAgentWorkspaceReviewStartPreview(
       headSha: raw.confirmation.head_sha,
       prNumber: raw.confirmation.pr_number,
       willDisableAutoMerge: raw.confirmation.will_disable_auto_merge,
+      mergeMethod: raw.confirmation.merge_method,
+      restoreAfterPublish: raw.confirmation.restore_after_publish,
     },
   };
 }
@@ -3369,6 +3375,9 @@ export async function startAgentWorkspaceReview(
               pr_number: options.confirmation.prNumber,
               will_disable_auto_merge:
                 options.confirmation.willDisableAutoMerge,
+              merge_method: options.confirmation.mergeMethod,
+              restore_after_publish:
+                options.confirmation.restoreAfterPublish,
             }
           : undefined,
       }),
