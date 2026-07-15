@@ -357,7 +357,9 @@ async fn manual_preview_fails_closed_for_a_pr_target_without_a_github_service() 
         .await
         .expect_err("PR-backed preview should require the GitHub integration");
 
-    assert!(error.to_string().contains("GitHub integration is unavailable"));
+    assert!(error
+        .to_string()
+        .contains("GitHub integration is unavailable"));
     assert!(state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&workspace.conversation_id)
@@ -384,7 +386,9 @@ async fn automated_review_fails_closed_for_a_pr_target_without_a_github_service(
     .await
     .expect_err("PR-backed automated start should require the GitHub integration");
 
-    assert!(error.to_string().contains("GitHub integration is unavailable"));
+    assert!(error
+        .to_string()
+        .contains("GitHub integration is unavailable"));
     assert!(state
         .agent_conversation_workspace_repo
         .get_workspace_review_monitor(&workspace.conversation_id)
@@ -723,7 +727,9 @@ async fn automated_review_keeps_an_existing_guard_when_the_start_is_already_revi
     let preview = preview_manual_workspace_review_start(&state, &workspace)
         .await
         .expect("preview should resolve");
-    let effect = preview.auto_merge.expect("auto-merge effect should resolve");
+    let effect = preview
+        .auto_merge
+        .expect("auto-merge effect should resolve");
     let guard = AgentWorkspaceReviewAutoMergeGuard {
         status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
         pr_number: effect.pr_number,
@@ -893,6 +899,7 @@ async fn passing_selected_source_review_restores_auto_merge_immediately() {
 
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("selected-source-review-artifact"));
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -982,6 +989,7 @@ async fn passing_workspace_delta_review_defers_restore_until_publish_proof() {
         .diff_fingerprint;
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("workspace-delta-review-artifact"));
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some(diff_fingerprint.clone());
@@ -1170,6 +1178,7 @@ async fn passing_review_cancels_guard_when_target_disappears() {
         .expect("workspace should persist");
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("missing-target-review-artifact"));
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some("missing-delta".to_string());
@@ -1260,6 +1269,7 @@ async fn deferred_restore_marker_failure_rolls_guard_back_to_paused() {
     };
     let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project.id);
     monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("deferred-review-artifact"));
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
@@ -1380,6 +1390,71 @@ async fn reconciliation_disables_auto_merge_for_an_interrupted_pausing_guard() {
             .expect("guard should remain paused")
             .status,
         AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_does_not_restore_from_a_stale_passing_review() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-stale-pass-reconcile")
+            .await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let effect = preview
+        .auto_merge
+        .expect("auto-merge effect should resolve");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: effect.pr_number,
+        merge_method: effect.merge_method,
+        target_scope: effect.target.scope,
+        diff_fingerprint: effect.target.diff_fingerprint.clone(),
+        head_sha: effect.target.head_sha,
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("stale-review-artifact"));
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(effect.target.diff_fingerprint);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.reviewed_diff_fingerprint = Some("stale-review-target".to_string());
+    monitor.reviewed_head_sha = Some("stale-review-head".to_string());
+    monitor.selected_source_head_sha = Some(feature_head.clone());
+    monitor.selected_source_pull_request_number = Some(42);
+    monitor.last_run_id = Some("stale-review-run".to_string());
+    monitor.auto_merge_guard = Some(guard.clone());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    github.state().fetch_pr_health_result =
+        Some(Ok(auto_merge_health("feature/review", &feature_head)));
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("reconciliation should keep the guard fail-closed"),
+        1
+    );
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
     );
 }
 

@@ -67,8 +67,14 @@ pub async fn preview_manual_workspace_review_start(
     let pr_number = target
         .as_ref()
         .and_then(|target| review_target_pr_number(workspace, target));
-    let auto_merge = match (state.github_service.as_ref(), target.as_ref(), pr_number) {
-        (Some(github), Some(target), Some(pr_number)) => {
+    let auto_merge = match (target.as_ref(), pr_number) {
+        (Some(target), Some(pr_number)) => {
+            let github = state.github_service.as_ref().ok_or_else(|| {
+                AppError::Infrastructure(
+                    "GitHub integration is unavailable for this PR-backed workspace Review"
+                        .to_string(),
+                )
+            })?;
             let health = github
                 .fetch_pr_health(&target.working_directory, pr_number)
                 .await?;
@@ -110,8 +116,8 @@ pub async fn preview_manual_workspace_review_start(
     })
 }
 
-/// Re-reads GitHub state for a review target. A preview is absent when there is no open PR,
-/// GitHub integration is unavailable, or auto-merge is already disabled.
+/// Re-reads GitHub state for a review target. A preview is absent when there is no open PR or
+/// auto-merge is already disabled. PR-backed targets fail closed when GitHub is unavailable.
 pub async fn preview_workspace_review_auto_merge_guard(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -154,8 +160,13 @@ pub async fn start_guarded_agent_workspace_review(
     };
     let Some(preview) = preview else {
         let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
-        return settle_skipped_guarded_workspace_review_start(state.as_ref(), workspace, start)
-            .await;
+        return settle_skipped_guarded_workspace_review_start(
+            state.as_ref(),
+            workspace,
+            start,
+            false,
+        )
+        .await;
     };
 
     let mut monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
@@ -163,8 +174,13 @@ pub async fn start_guarded_agent_workspace_review(
         if guard_matches_target(existing_guard, workspace, &preview.target) {
             ensure_guarded_auto_merge_is_paused(state.as_ref(), workspace, existing_guard).await?;
             let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
-            return settle_skipped_guarded_workspace_review_start(state.as_ref(), workspace, start)
-                .await;
+            return settle_skipped_guarded_workspace_review_start(
+                state.as_ref(),
+                workspace,
+                start,
+                false,
+            )
+            .await;
         }
         return Err(AppError::Conflict(
             "another workspace Review auto-merge guard is still authoritative".to_string(),
@@ -258,7 +274,8 @@ pub async fn start_guarded_agent_workspace_review(
     match started {
         Ok(start) if start.started => Ok(start),
         Ok(start) => {
-            settle_skipped_guarded_workspace_review_start(state.as_ref(), workspace, start).await
+            settle_skipped_guarded_workspace_review_start(state.as_ref(), workspace, start, true)
+                .await
         }
         Err(error) => {
             let restore_result =
@@ -276,6 +293,7 @@ async fn settle_skipped_guarded_workspace_review_start(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     mut start: AgentWorkspaceReviewStart,
+    guard_created_by_start: bool,
 ) -> AppResult<AgentWorkspaceReviewStart> {
     let Some(guard) = start.context.monitor.auto_merge_guard.clone() else {
         return Ok(start);
@@ -299,6 +317,10 @@ async fn settle_skipped_guarded_workspace_review_start(
             .await?;
             start.context.monitor = load_or_create_monitor(state, workspace).await?;
         }
+        _ if guard_created_by_start => {
+            restore_guarded_auto_merge(state, workspace, &guard).await?;
+            start.context.monitor = load_or_create_monitor(state, workspace).await?;
+        }
         _ => {}
     }
     Ok(start)
@@ -318,6 +340,9 @@ pub async fn handle_passing_workspace_review_auto_merge_guard(
     let Some(guard) = current.auto_merge_guard.as_ref() else {
         return Ok(current);
     };
+    if !monitor_has_current_passing_review_for_guard(&current, guard) {
+        return Ok(current);
+    }
     let Some(target) = resolve_current_target(state, workspace).await? else {
         cancel_guard_without_restoring(
             state,
@@ -542,7 +567,7 @@ async fn reconcile_workspace_review_auto_merge_guard(
         return Ok(true);
     }
 
-    if monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed {
+    if monitor_has_current_passing_review_for_guard(monitor, guard) {
         let before = guard.clone();
         let after =
             handle_passing_workspace_review_auto_merge_guard(state, workspace, monitor).await?;
@@ -754,6 +779,17 @@ fn passing_monitor_is_current(
         && current.current_diff_fingerprint == completed.current_diff_fingerprint
         && current.reviewed_target_scope == completed.reviewed_target_scope
         && current.reviewed_diff_fingerprint == completed.reviewed_diff_fingerprint
+}
+
+fn monitor_has_current_passing_review_for_guard(
+    monitor: &AgentWorkspaceReviewMonitor,
+    guard: &AgentWorkspaceReviewAutoMergeGuard,
+) -> bool {
+    monitor.has_current_passing_review_for_target(
+        guard.target_scope,
+        guard.head_sha.as_deref(),
+        &guard.diff_fingerprint,
+    )
 }
 
 async fn workspace_delta_publish_proves_guard(
