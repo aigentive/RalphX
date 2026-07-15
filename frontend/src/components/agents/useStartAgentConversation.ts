@@ -687,6 +687,7 @@ function buildStartArtifactState(
     isOpen: integrationTab !== null,
     activeTab: integrationTab ?? "plan",
     taskMode: DEFAULT_AGENT_ARTIFACT_UI_STATE.taskMode,
+    hiddenTabs: [],
   };
 }
 
