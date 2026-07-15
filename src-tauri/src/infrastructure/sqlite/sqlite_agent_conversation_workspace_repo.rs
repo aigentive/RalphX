@@ -2284,8 +2284,24 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          pr_supervision_updated_at = ?3,
                          updated_at = ?3
                      WHERE conversation_id = ?1
-                       AND pr_auto_merge_desired = 1",
-                    rusqlite::params![conversation_id, restored_summary, now],
+                       AND pr_auto_merge_desired = 1
+                       AND (
+                           ?5 = 'selected_source'
+                           OR (
+                               publication_pr_number IS ?4
+                               AND (
+                                   publication_pr_status IS NULL
+                                   OR publication_pr_status NOT IN ('closed', 'merged')
+                               )
+                           )
+                       )",
+                    rusqlite::params![
+                        conversation_id,
+                        restored_summary,
+                        now,
+                        expected_pr_number,
+                        &expected_target_scope,
+                    ],
                 )?;
                 if workspace_changed != 1 {
                     tx.rollback()?;
@@ -2310,7 +2326,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND auto_merge_guard_head_sha IS ?7
                        AND auto_merge_guard_last_error IS ?8
                        AND current_target_scope IS ?5
-                       AND current_diff_fingerprint IS ?6",
+                       AND current_diff_fingerprint IS ?6
+                       AND (
+                           ?5 != 'selected_source'
+                           OR (
+                               selected_source_pull_request_number IS ?3
+                               AND selected_source_head_sha IS ?7
+                           )
+                       )",
                     rusqlite::params![
                         conversation_id,
                         expected_status,

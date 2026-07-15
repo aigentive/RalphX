@@ -28,8 +28,9 @@ use crate::application::agent_workspace_review::{
     AgentWorkspaceReviewTarget,
 };
 use crate::application::agent_workspace_review_auto_merge::{
-    preview_manual_workspace_review_start, start_guarded_agent_workspace_review,
-    WorkspaceReviewStartConfirmation, WorkspaceReviewStartOrigin,
+    preview_manual_workspace_review_start, restore_guarded_auto_merge_after_publish,
+    start_guarded_agent_workspace_review, WorkspaceReviewStartConfirmation,
+    WorkspaceReviewStartOrigin,
 };
 use crate::application::agent_workspace_review_publish_handoff::resume_pr_fix_publish_after_passed_workspace_review;
 use crate::application::publish_resilience::{
@@ -678,6 +679,9 @@ pub struct StartAgentWorkspaceReviewConfirmationRequest {
     pub head_sha: Option<String>,
     pub pr_number: Option<i64>,
     pub will_disable_auto_merge: bool,
+    pub merge_method: Option<String>,
+    #[serde(default)]
+    pub restore_after_publish: bool,
 }
 
 impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest> for WorkspaceReviewStartConfirmation {
@@ -696,6 +700,8 @@ impl TryFrom<StartAgentWorkspaceReviewConfirmationRequest> for WorkspaceReviewSt
             head_sha: value.head_sha,
             pr_number: value.pr_number,
             will_disable_auto_merge: value.will_disable_auto_merge,
+            merge_method: value.merge_method,
+            restore_after_publish: value.restore_after_publish,
         })
     }
 }
@@ -707,6 +713,8 @@ pub struct StartAgentWorkspaceReviewConfirmationResponse {
     pub head_sha: Option<String>,
     pub pr_number: Option<i64>,
     pub will_disable_auto_merge: bool,
+    pub merge_method: Option<String>,
+    pub restore_after_publish: bool,
 }
 
 impl From<WorkspaceReviewStartConfirmation> for StartAgentWorkspaceReviewConfirmationResponse {
@@ -717,6 +725,8 @@ impl From<WorkspaceReviewStartConfirmation> for StartAgentWorkspaceReviewConfirm
             head_sha: value.head_sha,
             pr_number: value.pr_number,
             will_disable_auto_merge: value.will_disable_auto_merge,
+            merge_method: value.merge_method,
+            restore_after_publish: value.restore_after_publish,
         }
     }
 }
@@ -5586,13 +5596,15 @@ pub async fn complete_agent_workspace_repair(
                 pr_number,
                 pr_url,
             )
-        } else if let Some(github) = state.app_state.github_service.as_ref() {
+        } else if let (Some(github), Some(published_pr_number)) =
+            (state.app_state.github_service.as_ref(), pr_number)
+        {
             match push_publish_branch(
                 github,
                 &publish_target.worktree_path,
                 &publish_target.branch_name,
             )
-            .await
+                .await
             {
                 Ok(()) => {
                     state
@@ -5621,16 +5633,39 @@ pub async fn complete_agent_workspace_repair(
                         .app_state
                         .agent_conversation_workspace_repo
                         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
-                            conversation_id,
+                            conversation_id.clone(),
                             "published",
                             "succeeded",
                             "Plan branch repair pushed",
-                            None,
+                            Some(format!("published:{published_pr_number}")),
                         ))
                         .await
                         .map_err(|error| {
                             json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                         })?;
+                    if let Some(refreshed) = state
+                        .app_state
+                        .agent_conversation_workspace_repo
+                        .get_by_conversation_id(&conversation_id)
+                        .await
+                        .map_err(|error| {
+                            json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                        })?
+                    {
+                        if let Err(error) = restore_guarded_auto_merge_after_publish(
+                            state.app_state.as_ref(),
+                            &refreshed,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                conversation_id = %conversation_id,
+                                pr_number = published_pr_number,
+                                error = %error,
+                                "Failed to restore guarded auto-merge after plan branch repair publish"
+                            );
+                        }
+                    }
                     (
                         "Agent workspace repair verified and pushed".to_string(),
                         "pushed".to_string(),

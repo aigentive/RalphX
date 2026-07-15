@@ -6,8 +6,8 @@ use tracing::warn;
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::agent_workspace_review::{
-    load_or_create_monitor, resolve_review_target, start_agent_workspace_review,
-    AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    apply_current_target_to_monitor, load_or_create_monitor, resolve_review_target,
+    start_agent_workspace_review, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::AppState;
 use crate::domain::entities::{
@@ -47,6 +47,8 @@ pub struct WorkspaceReviewStartConfirmation {
     pub head_sha: Option<String>,
     pub pr_number: Option<i64>,
     pub will_disable_auto_merge: bool,
+    pub merge_method: Option<String>,
+    pub restore_after_publish: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +96,12 @@ pub async fn preview_manual_workspace_review_start(
         head_sha: target.as_ref().and_then(|target| target.head_sha.clone()),
         pr_number,
         will_disable_auto_merge: auto_merge.is_some(),
+        merge_method: auto_merge
+            .as_ref()
+            .map(|effect| effect.merge_method.clone()),
+        restore_after_publish: auto_merge
+            .as_ref()
+            .is_some_and(|effect| effect.restore_after_publish),
     };
     Ok(WorkspaceReviewManualStartPreview {
         target,
@@ -150,9 +158,9 @@ pub async fn start_guarded_agent_workspace_review(
             .await;
     };
 
-    let monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
+    let mut monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
     if let Some(existing_guard) = monitor.auto_merge_guard.as_ref() {
-        if guard_matches_target(existing_guard, &preview.target, preview.pr_number) {
+        if guard_matches_target(existing_guard, workspace, &preview.target) {
             ensure_guarded_auto_merge_is_paused(state.as_ref(), workspace, existing_guard).await?;
             let start = start_agent_workspace_review(Arc::clone(&state), workspace, force).await?;
             return settle_skipped_guarded_workspace_review_start(state.as_ref(), workspace, start)
@@ -163,6 +171,7 @@ pub async fn start_guarded_agent_workspace_review(
         ));
     }
 
+    apply_current_target_to_monitor(&mut monitor, Some(&preview.target));
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor.clone())
@@ -319,7 +328,7 @@ pub async fn handle_passing_workspace_review_auto_merge_guard(
         .await?;
         return load_or_create_monitor(state, workspace).await;
     };
-    if !guard_matches_target(guard, &target, guard.pr_number) {
+    if !guard_matches_target(guard, workspace, &target) {
         cancel_guard_without_restoring(
             state,
             workspace,
@@ -347,13 +356,30 @@ pub async fn handle_passing_workspace_review_auto_merge_guard(
                 )
                 .await?;
             if transitioned {
-                append_workspace_delta_restore_deferred_event(
+                if let Err(error) = append_workspace_delta_restore_deferred_event(
                     state,
                     workspace,
                     &awaiting_publish,
                     &current,
                 )
-                .await;
+                .await
+                {
+                    let rolled_back = state
+                        .agent_conversation_workspace_repo
+                        .compare_and_set_workspace_review_auto_merge_guard(
+                            &workspace.conversation_id,
+                            Some(awaiting_publish),
+                            Some(guard.clone()),
+                        )
+                        .await?;
+                    if !rolled_back {
+                        warn!(
+                            conversation_id = %workspace.conversation_id,
+                            "Workspace Review auto-merge guard changed while rolling back a failed publish marker"
+                        );
+                    }
+                    return Err(error);
+                }
             }
         }
     }
@@ -463,7 +489,7 @@ async fn reconcile_workspace_review_auto_merge_guard(
     if !workspace.pr_auto_merge_desired {
         return cancel_workspace_review_auto_merge_guard(state, workspace).await;
     }
-    if workspace.has_terminal_publication_pr_status() {
+    if guarded_pr_is_terminal(workspace, guard.pr_number) {
         return cancel_guard_without_restoring(
             state,
             workspace,
@@ -517,7 +543,7 @@ async fn ensure_guarded_auto_merge_is_paused(
         .await
         .map(|_| true);
     };
-    if !guard_matches_target(guard, &target, guard.pr_number) {
+    if !guard_matches_target(guard, workspace, &target) {
         return cancel_guard_without_restoring(
             state,
             workspace,
@@ -589,7 +615,7 @@ async fn reconcile_interrupted_restore(
             .await
             .map(|_| true);
             };
-            if !guard_matches_target(guard, &target, guard.pr_number) {
+            if !guard_matches_target(guard, workspace, &target) {
                 return cancel_guard_without_restoring(
                     state,
                     workspace,
@@ -652,10 +678,15 @@ fn review_target_pr_number(
     workspace: &AgentConversationWorkspace,
     target: &AgentWorkspaceReviewTarget,
 ) -> Option<i64> {
-    target
+    let pr_number = target
         .source_pull_request_number
-        .or(workspace.publication_pr_number)
-        .filter(|_| !workspace.has_terminal_publication_pr_status())
+        .or(workspace.publication_pr_number)?;
+    (!guarded_pr_is_terminal(workspace, pr_number)).then_some(pr_number)
+}
+
+fn guarded_pr_is_terminal(workspace: &AgentConversationWorkspace, pr_number: i64) -> bool {
+    workspace.publication_pr_number == Some(pr_number)
+        && workspace.has_terminal_publication_pr_status()
 }
 
 fn guard_for_preview(
@@ -675,10 +706,10 @@ fn guard_for_preview(
 
 fn guard_matches_target(
     guard: &AgentWorkspaceReviewAutoMergeGuard,
+    workspace: &AgentConversationWorkspace,
     target: &AgentWorkspaceReviewTarget,
-    pr_number: i64,
 ) -> bool {
-    guard.pr_number == pr_number
+    review_target_pr_number(workspace, target) == Some(guard.pr_number)
         && guard.target_scope == target.scope
         && guard.diff_fingerprint == target.diff_fingerprint
         && (target.scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
@@ -710,6 +741,23 @@ async fn workspace_delta_publish_proves_guard(
         && workspace.publication_pr_number == Some(guard.pr_number)
         && workspace.publication_push_status.as_deref() == Some("pushed")
         && !workspace.has_terminal_publication_pr_status())
+    {
+        return Ok(false);
+    }
+    let current_target = match resolve_current_target(state, workspace).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return Ok(false),
+        Err(error) => {
+            warn!(
+                conversation_id = %workspace.conversation_id,
+                error = %error,
+                "Could not verify current workspace content for auto-merge restoration"
+            );
+            return Ok(false);
+        }
+    };
+    if current_target.scope != AgentWorkspaceReviewTargetScope::WorkspaceDelta
+        || current_target.diff_fingerprint != guard.diff_fingerprint
     {
         return Ok(false);
     }
@@ -751,23 +799,34 @@ async fn append_workspace_delta_restore_deferred_event(
     workspace: &AgentConversationWorkspace,
     guard: &AgentWorkspaceReviewAutoMergeGuard,
     monitor: &AgentWorkspaceReviewMonitor,
-) {
+) -> AppResult<()> {
     let Some(classification) = workspace_delta_restore_deferred_classification(guard, monitor)
     else {
-        warn!(
-            conversation_id = %workspace.conversation_id,
-            "Workspace Review passed without a run id; deferring auto-merge restoration"
-        );
-        return;
+        return Err(AppError::Infrastructure(
+            "Workspace Review passed without a run id for deferred auto-merge restoration"
+                .to_string(),
+        ));
     };
-    append_auto_merge_guard_event_with_classification(
-        state,
-        workspace,
-        "waiting",
-        "Workspace Review passed; GitHub auto-merge will resume after these changes are published.",
-        classification,
-    )
-    .await;
+    let events = state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&workspace.conversation_id)
+        .await?;
+    if events
+        .iter()
+        .any(|entry| entry.classification.as_deref() == Some(classification.as_str()))
+    {
+        return Ok(());
+    }
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            workspace.conversation_id.clone(),
+            "workspace_review_auto_merge",
+            "waiting",
+            "Workspace Review passed; GitHub auto-merge will resume after these changes are published.",
+            Some(classification),
+        ))
+        .await
 }
 
 async fn cancel_guard_without_restoring(
@@ -819,7 +878,7 @@ async fn restore_guarded_auto_merge(
         )
         .await;
     }
-    if current_workspace.has_terminal_publication_pr_status() {
+    if guarded_pr_is_terminal(&current_workspace, guard.pr_number) {
         return cancel_guard_without_restoring(
             state,
             &current_workspace,
@@ -868,7 +927,7 @@ async fn restore_guarded_auto_merge(
             )
             .await;
         };
-        if !guard_matches_target(&restoring, &target, restoring.pr_number) {
+        if !guard_matches_target(&restoring, &current_workspace, &target) {
             return cancel_guard_without_restoring(
                 state,
                 &current_workspace,
@@ -973,7 +1032,7 @@ async fn restoration_authority_is_current(
         return Ok(false);
     };
     if !current_workspace.pr_auto_merge_desired
-        || current_workspace.has_terminal_publication_pr_status()
+        || guarded_pr_is_terminal(&current_workspace, restoring.pr_number)
     {
         return Ok(false);
     }
@@ -997,7 +1056,7 @@ async fn restoration_authority_is_current(
     };
     Ok(
         review_target_pr_number(&current_workspace, &target) == Some(restoring.pr_number)
-            && guard_matches_target(restoring, &target, restoring.pr_number),
+            && guard_matches_target(restoring, &current_workspace, &target),
     )
 }
 
@@ -1065,7 +1124,7 @@ async fn mark_restore_failed(
         last_error: Some(error),
         ..restoring.clone()
     };
-    state
+    let changed = state
         .agent_conversation_workspace_repo
         .compare_and_set_workspace_review_auto_merge_guard(
             &workspace.conversation_id,
@@ -1073,6 +1132,9 @@ async fn mark_restore_failed(
             Some(failed.clone()),
         )
         .await?;
+    if !changed {
+        return Ok(());
+    }
     state
         .agent_conversation_workspace_repo
         .update_pr_auto_merge_state(

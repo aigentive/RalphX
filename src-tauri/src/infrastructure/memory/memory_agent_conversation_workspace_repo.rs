@@ -14,8 +14,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
+    PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -39,6 +40,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     local_cleanup_markers: RwLock<HashMap<ChatConversationId, (String, DateTime<Utc>)>>,
     #[cfg(test)]
     next_pr_supervision_preference_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_publication_event_error: Mutex<Option<String>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -56,12 +59,19 @@ impl MemoryAgentConversationWorkspaceRepository {
             local_cleanup_markers: RwLock::new(HashMap::new()),
             #[cfg(test)]
             next_pr_supervision_preference_error: Mutex::new(None),
+            #[cfg(test)]
+            next_publication_event_error: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub fn fail_next_pr_supervision_preference_update(&self, message: impl Into<String>) {
         *self.next_pr_supervision_preference_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_publication_event(&self, message: impl Into<String>) {
+        *self.next_publication_event_error.lock().unwrap() = Some(message.into());
     }
 
     pub async fn local_cleanup_status_for_test(
@@ -523,6 +533,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         &self,
         event: AgentConversationWorkspacePublicationEvent,
     ) -> AppResult<()> {
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         self.publication_events
             .write()
             .await
@@ -904,7 +918,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let Some(workspace) = workspaces.get_mut(conversation_id) else {
             return Ok(false);
         };
-        if !workspace.pr_auto_merge_desired {
+        if !workspace.pr_auto_merge_desired
+            || (expected.target_scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
+                && (workspace.publication_pr_number != Some(expected.pr_number)
+                    || workspace.has_terminal_publication_pr_status()))
+        {
             return Ok(false);
         }
         let mut monitors = self.workspace_review_monitors.write().await;
@@ -915,6 +933,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             || monitor.current_target_scope != Some(expected.target_scope)
             || monitor.current_diff_fingerprint.as_deref()
                 != Some(expected.diff_fingerprint.as_str())
+            || (expected.target_scope == AgentWorkspaceReviewTargetScope::SelectedSource
+                && (monitor.selected_source_pull_request_number != Some(expected.pr_number)
+                    || monitor.selected_source_head_sha != expected.head_sha))
         {
             return Ok(false);
         }

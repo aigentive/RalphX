@@ -248,7 +248,7 @@ vi.mock("./useWorkspaceReviewActions", () => ({
     onStartReview: (input: { force: boolean }) => Promise<unknown>;
   }) => ({
     startReview: (force: boolean) => {
-      void onStartReview({ force });
+      void onStartReview({ force }).catch(() => undefined);
     },
     confirmationDialogProps: {},
     ConfirmationDialog: () => null,
@@ -2691,6 +2691,35 @@ describe("AgentsArtifactPane", () => {
     expect(toastMessageMock).not.toHaveBeenCalled();
     expect(toastInfoMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed Review start visible after the mutation settles", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+    startWorkspaceReviewMock.mockRejectedValue(
+      new Error("could not disable GitHub auto-merge before workspace Review"),
+    );
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run review" }));
+
+    expect(
+      await screen.findByText(
+        "could not disable GitHub auto-merge before workspace Review",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("hydrates the shared Review context, focuses the child chat, and invalidates the transcript after starting", async () => {
