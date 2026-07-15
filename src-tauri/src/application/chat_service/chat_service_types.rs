@@ -2,7 +2,7 @@
 //
 // Extracted from chat_service.rs to improve modularity and reduce file size.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain::agents::AgentHarnessKind;
@@ -92,6 +92,38 @@ pub enum SendCallerContext {
     /// Startup/recovery-initiated send.
     /// Must not roll over, repair, or spawn a terminal Agent workspace automatically.
     StartupResumption,
+}
+
+const PENDING_PROMPT_ENVELOPE_PREFIX: &str = "ralphx-pending-prompt-v1:";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingPromptEnvelope {
+    message: String,
+    metadata: String,
+}
+
+pub(crate) fn encode_pending_initial_prompt(message: &str, metadata: Option<&str>) -> String {
+    let Some(metadata) = metadata else {
+        return message.to_string();
+    };
+    let envelope = PendingPromptEnvelope {
+        message: message.to_string(),
+        metadata: metadata.to_string(),
+    };
+    match serde_json::to_string(&envelope) {
+        Ok(payload) => format!("{PENDING_PROMPT_ENVELOPE_PREFIX}{payload}"),
+        Err(_) => message.to_string(),
+    }
+}
+
+pub(crate) fn decode_pending_initial_prompt(payload: &str) -> (String, Option<String>) {
+    let Some(encoded) = payload.strip_prefix(PENDING_PROMPT_ENVELOPE_PREFIX) else {
+        return (payload.to_string(), None);
+    };
+    match serde_json::from_str::<PendingPromptEnvelope>(encoded) {
+        Ok(envelope) => (envelope.message, Some(envelope.metadata)),
+        Err(_) => (payload.to_string(), None),
+    }
 }
 
 /// Result from sending a message (returns immediately while processing continues in background)

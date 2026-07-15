@@ -10,8 +10,7 @@ use crate::domain::entities::{ChatContextType, MessageRole};
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_BRANCH_UPDATER, AGENT_CHAT_PROJECT, AGENT_CHAT_TASK, AGENT_IDEATION_TEAM_LEAD,
     AGENT_MERGER, AGENT_ORCHESTRATOR_IDEATION, AGENT_ORCHESTRATOR_IDEATION_READONLY,
-    AGENT_PLAN_VERIFIER, AGENT_REVIEWER, AGENT_REVIEW_CHAT, AGENT_REVIEW_HISTORY, AGENT_WORKER,
-    AGENT_WORKER_TEAM,
+    AGENT_REVIEWER, AGENT_REVIEW_CHAT, AGENT_REVIEW_HISTORY, AGENT_WORKER, AGENT_WORKER_TEAM,
 };
 
 /// Agent Resolution System
@@ -57,9 +56,6 @@ pub fn resolve_agent_with_team_mode(
 
             // Review: approved tasks use read-only history agent for retrospective discussion
             (ChatContextType::Review, "approved") => return AGENT_REVIEW_HISTORY,
-
-            // Ideation: verification child sessions route to the dedicated ralphx-plan-verifier agent
-            (ChatContextType::Ideation, "verification") => return AGENT_PLAN_VERIFIER,
 
             // Ideation: accepted plans use read-only agent (no mutation tools)
             (ChatContextType::Ideation, "accepted") => return AGENT_ORCHESTRATOR_IDEATION_READONLY,

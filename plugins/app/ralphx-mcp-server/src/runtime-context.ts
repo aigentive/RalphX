@@ -15,7 +15,7 @@ type RuntimeContextKey =
   | "tauriApiUrl"
   | "traceDir";
 
-type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
+export type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
 
 const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   key: RuntimeContextKey;
@@ -108,4 +108,18 @@ export function hydrateRalphxRuntimeEnvFromCli(
   }
 
   return context;
+}
+
+export function buildArtifactMutationTransportHeaders(
+  context: RuntimeContext
+): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  if (context.contextType === "ideation" && context.contextId) {
+    headers["X-RalphX-Caller-Session-Id"] = context.contextId;
+  }
+  if (context.agentRunId && context.conversationId) {
+    headers["x-ralphx-agent-run-id"] = context.agentRunId;
+    headers["x-ralphx-conversation-id"] = context.conversationId;
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }

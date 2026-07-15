@@ -1801,6 +1801,55 @@ async fn test_finalize_blocked_by_verification_gate() {
 }
 
 #[tokio::test]
+async fn test_finalize_confirmation_does_not_auto_verify_before_user_accepts() {
+    use ralphx_lib::application::plan_verification_service::{
+        get_plan_verification_status, PlanVerificationStatusKind,
+    };
+
+    let state = AppState::new_sqlite_test();
+    let (session, _) = setup_session_with_gate(&state, "unverified", false).await;
+
+    let mut settings = state
+        .ideation_settings_repo
+        .get_settings()
+        .await
+        .expect("get settings should succeed");
+    settings.require_accept_for_finalize = true;
+    settings.require_verification_for_accept = true;
+    settings.auto_verify_plans = true;
+    state
+        .ideation_settings_repo
+        .update_settings(&settings)
+        .await
+        .expect("update settings should succeed");
+
+    create_proposal_impl(
+        &state,
+        session.id.clone(),
+        make_proposal_options("Proposal", Some(1)),
+    )
+    .await
+    .expect("proposal creation should succeed");
+
+    let response = finalize_proposals_impl(&state, session.id.as_str(), false)
+        .await
+        .expect("finalize should pause for user acceptance before verification admission");
+    assert_eq!(response.status, "pending_acceptance");
+
+    let status = get_plan_verification_status(&state, &session.id)
+        .await
+        .expect("verification status should load");
+    assert_eq!(status.status, PlanVerificationStatusKind::Unverified);
+    let persisted = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session read should succeed")
+        .expect("session should exist");
+    assert!(persisted.pending_initial_prompt.is_none());
+}
+
+#[tokio::test]
 async fn test_finalize_rejects_feature_without_affected_paths() {
     let state = AppState::new_sqlite_test();
     let (session, _) = setup_session_with_gate(&state, "verified", false).await;

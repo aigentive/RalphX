@@ -43,6 +43,7 @@ use super::transition::{
     NoopAutomationEventEmitter,
 };
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
+use crate::application::plan_verification_service::PlanVerificationStatusKind;
 use crate::application::services::pr_auto_merge_status::{
     auto_merge_enable_failure_summary, AUTO_MERGE_ENABLE_WARNING_CODE,
     AUTO_MERGE_SUPERVISION_STATUS_WAITING,
@@ -118,7 +119,7 @@ impl AutomationEventEmitter for RecordingAutomationEventEmitter {
 struct RecordingPlanVerificationStarter {
     calls: Mutex<Vec<AutomationPlanVerificationStartRequest>>,
     responses: Mutex<VecDeque<AppResult<AutomationPlanVerificationStartOutcome>>>,
-    reviewing_session_repo: Option<Arc<MemoryIdeationSessionRepository>>,
+    status: Mutex<PlanVerificationStatusKind>,
 }
 
 impl RecordingPlanVerificationStarter {
@@ -128,7 +129,7 @@ impl RecordingPlanVerificationStarter {
             responses: Mutex::new(VecDeque::from(
                 outcomes.into_iter().map(Ok).collect::<Vec<_>>(),
             )),
-            reviewing_session_repo: None,
+            status: Mutex::new(PlanVerificationStatusKind::Unverified),
         }
     }
 
@@ -141,15 +142,7 @@ impl RecordingPlanVerificationStarter {
                     .map(|error| Err(AppError::Infrastructure(error.to_string())))
                     .collect::<Vec<_>>(),
             )),
-            reviewing_session_repo: None,
-        }
-    }
-
-    fn with_reviewing_side_effect(session_repo: Arc<MemoryIdeationSessionRepository>) -> Self {
-        Self {
-            calls: Mutex::new(Vec::new()),
-            responses: Mutex::new(VecDeque::new()),
-            reviewing_session_repo: Some(session_repo),
+            status: Mutex::new(PlanVerificationStatusKind::Unverified),
         }
     }
 
@@ -159,6 +152,10 @@ impl RecordingPlanVerificationStarter {
 
     fn calls(&self) -> Vec<AutomationPlanVerificationStartRequest> {
         self.calls.lock().unwrap().clone()
+    }
+
+    fn set_status(&self, status: PlanVerificationStatusKind) {
+        *self.status.lock().unwrap() = status;
     }
 }
 
@@ -172,21 +169,30 @@ impl AutomationPlanVerificationStarter for RecordingPlanVerificationStarter {
         let response = self.responses.lock().unwrap().pop_front().unwrap_or(Ok(
             AutomationPlanVerificationStartOutcome::Started { generation: 1 },
         ));
-        if matches!(
-            &response,
-            Ok(AutomationPlanVerificationStartOutcome::Started { .. }
-                | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. })
-        ) {
-            if let Some(repo) = self.reviewing_session_repo.as_ref() {
-                repo.update_verification_state(
-                    &request.session_id,
-                    VerificationStatus::Reviewing,
-                    true,
-                )
-                .await?;
+        match &response {
+            Ok(AutomationPlanVerificationStartOutcome::Started { .. }) => {
+                self.set_status(PlanVerificationStatusKind::Queued)
             }
+            Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. }) => {
+                self.set_status(PlanVerificationStatusKind::Verifying)
+            }
+            Ok(AutomationPlanVerificationStartOutcome::AlreadyTerminal {
+                status: VerificationStatus::Verified | VerificationStatus::ImportedVerified,
+                ..
+            }) => self.set_status(PlanVerificationStatusKind::Verified),
+            Ok(AutomationPlanVerificationStartOutcome::AlreadyTerminal { .. }) => {
+                self.set_status(PlanVerificationStatusKind::Failed)
+            }
+            Ok(AutomationPlanVerificationStartOutcome::Unavailable { .. }) | Err(_) => {}
         }
         response
+    }
+
+    async fn verification_status(
+        &self,
+        _request: &AutomationPlanVerificationStartRequest,
+    ) -> AppResult<PlanVerificationStatusKind> {
+        Ok(*self.status.lock().unwrap())
     }
 }
 
@@ -4496,9 +4502,7 @@ async fn automation_scheduler_automatic_plan_judge_holds_until_first_verificatio
         .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
         .await;
     scenario.complete_planning_agent_run().await;
-    let starter = Arc::new(
-        RecordingPlanVerificationStarter::with_reviewing_side_effect(scenario.session_repo.clone()),
-    );
+    let starter = Arc::new(RecordingPlanVerificationStarter::default());
     let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
         valid_plan_approve_verdict("plan-artifact-1"),
     ]));
@@ -4522,6 +4526,7 @@ async fn automation_scheduler_automatic_plan_judge_holds_until_first_verificatio
         .update_verification_state(&scenario.session_id, VerificationStatus::Verified, false)
         .await
         .unwrap();
+    starter.set_status(PlanVerificationStatusKind::Verified);
 
     let terminal_summary = scheduler.tick_once().await.unwrap();
     wait_for_plan_judge_call_count(&plan_judge, 1).await;

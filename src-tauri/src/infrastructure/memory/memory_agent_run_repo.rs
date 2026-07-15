@@ -6,8 +6,8 @@ use tokio::sync::RwLock;
 
 use crate::domain::entities::agent_run::PersonaRunAttribution;
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
-    InterruptedConversation,
+    AgentRun, AgentRunActionKind, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
+    ChatConversationId, InterruptedConversation,
 };
 use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
 use crate::error::AppResult;
@@ -74,6 +74,24 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(runs
             .values()
             .find(|r| r.conversation_id == *conversation_id && r.is_active())
+            .cloned())
+    }
+
+    async fn get_latest_action(
+        &self,
+        action_kind: AgentRunActionKind,
+        action_context_id: &str,
+        action_target_id: &str,
+    ) -> AppResult<Option<AgentRun>> {
+        let runs = self.runs.read().await;
+        Ok(runs
+            .values()
+            .filter(|run| {
+                run.action_kind == Some(action_kind)
+                    && run.action_context_id.as_deref() == Some(action_context_id)
+                    && run.action_target_id.as_deref() == Some(action_target_id)
+            })
+            .max_by_key(|run| run.started_at)
             .cloned())
     }
 

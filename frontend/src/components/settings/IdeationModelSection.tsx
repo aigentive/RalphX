@@ -225,22 +225,6 @@ function GlobalModelSubsection({
     );
   };
 
-  const handleVerifierChange = (value: string) => {
-    setShowError(false);
-    updateSettings(
-      { verifierModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierSubagentChange = (value: string) => {
-    setShowError(false);
-    updateSettings(
-      { verifierSubagentModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
   const handleIdeationSubagentChange = (value: string) => {
     setShowError(false);
     updateSettings(
@@ -267,30 +251,6 @@ function GlobalModelSubsection({
           onChange={handlePrimaryChange}
           effectiveValue={settings.effectivePrimaryModel}
           effectiveSource={settings.primaryModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
-          id="global-verifier-model"
-          label="Verification Model"
-          description="Model for ralphx-plan-verifier agent"
-          value={settings.verifierModel}
-          disabled={false}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifierModel}
-          effectiveSource={settings.verifierModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
-          id="verifier-subagent-model"
-          label="Verification Subagent Model"
-          description="Model used by critics/specialists spawned by the plan verifier"
-          value={settings.verifierSubagentModel}
-          disabled={false}
-          onChange={handleVerifierSubagentChange}
-          effectiveValue={settings.effectiveVerifierSubagentModel}
-          effectiveSource={settings.verifierSubagentModelSource}
           isPlaceholderData={isPlaceholderData}
           modelOptions={modelOptions}
         />
@@ -340,24 +300,6 @@ function ProjectModelSubsection({
     );
   };
 
-  const handleVerifierChange = (value: string) => {
-    if (isDisabled) return;
-    setShowError(false);
-    updateSettings(
-      { verifierModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
-  const handleVerifierSubagentChange = (value: string) => {
-    if (isDisabled) return;
-    setShowError(false);
-    updateSettings(
-      { verifierSubagentModel: value },
-      { onError: () => setShowError(true) }
-    );
-  };
-
   const handleIdeationSubagentChange = (value: string) => {
     if (isDisabled) return;
     setShowError(false);
@@ -395,30 +337,6 @@ function ProjectModelSubsection({
           onChange={handlePrimaryChange}
           effectiveValue={settings.effectivePrimaryModel}
           effectiveSource={settings.primaryModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
-          id="project-verifier-model"
-          label="Verification Model"
-          description="Override for this project's ralphx-plan-verifier agent"
-          value={settings.verifierModel}
-          disabled={isDisabled}
-          onChange={handleVerifierChange}
-          effectiveValue={settings.effectiveVerifierModel}
-          effectiveSource={settings.verifierModelSource}
-          isPlaceholderData={isPlaceholderData}
-          modelOptions={modelOptions}
-        />
-        <ModelRow
-          id="project-verifier-subagent-model"
-          label="Verification Subagent Model"
-          description="Override verification subagent model for this project"
-          value={settings.verifierSubagentModel}
-          disabled={isDisabled}
-          onChange={handleVerifierSubagentChange}
-          effectiveValue={settings.effectiveVerifierSubagentModel}
-          effectiveSource={settings.verifierSubagentModelSource}
           isPlaceholderData={isPlaceholderData}
           modelOptions={modelOptions}
         />

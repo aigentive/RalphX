@@ -33,7 +33,7 @@ pub const DEFAULT_NOTIFICATION_RETENTION_MAX_ROWS: u64 = 1000;
 /// A specialist agent entry in the verification pipeline.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SpecialistEntry {
-    /// Unique agent name (matches config/ralphx.yaml agent name, e.g. "ralphx-ideation-specialist-code-quality").
+    /// Unique agent name matching a canonical `agents/*/agent.yaml` id.
     pub name: String,
     /// Human-readable display name shown in the UI.
     pub display_name: String,
@@ -47,9 +47,11 @@ pub struct SpecialistEntry {
 
 /// Configuration for the plan verification feature.
 ///
-/// All fields required in config/ralphx.yaml under `ideation.verification:`.
-/// `Default` impl retained only for fallback/test use.
+/// Legacy verification-orchestration fields may be omitted from
+/// `config/ralphx.yaml`; model-native verification only overrides the values it
+/// still consumes.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct VerificationConfig {
     /// Maximum number of adversarial review rounds [1, 10]. Hard cap — always terminates.
     pub max_rounds: u32,
