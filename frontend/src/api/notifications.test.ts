@@ -82,7 +82,7 @@ describe("notificationsApi", () => {
     expect(invoke).toHaveBeenNthCalledWith(3, "get_unread_notification_count", { projectId: "project-1" });
   });
 
-  it("binds the raw attention count to the dock badge command", async () => {
+  it("passes the requested count to the dock badge command", async () => {
     vi.mocked(invoke).mockResolvedValue(null);
 
     await expect(notificationsApi.setDockBadgeCount(10)).resolves.toBeNull();

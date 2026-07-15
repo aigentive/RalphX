@@ -363,7 +363,7 @@ impl NotificationService {
         self.dispatch_desktop(&input.into_notification(Utc::now()))
             .await;
     }
-    pub async fn mark_read(&self, id: &str) {
+    pub async fn mark_read(&self, id: &str) -> AppResult<()> {
         match self.repo.mark_read(id, Utc::now()).await {
             Ok(Some(notification)) => {
                 if let Err(error) = self.emitter.emit_updated(Some(&notification)) {
@@ -371,12 +371,11 @@ impl NotificationService {
                 }
             }
             Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(error = %error, notification_id = id, "Failed to mark notification read")
-            }
+            Err(error) => return Err(error),
         }
+        Ok(())
     }
-    pub async fn mark_all_read(&self, project_id: Option<&str>) {
+    pub async fn mark_all_read(&self, project_id: Option<&str>) -> AppResult<()> {
         match self.repo.mark_all_read(project_id, Utc::now()).await {
             Ok(changed) if changed > 0 => {
                 if let Err(error) = self.emitter.emit_updated(None) {
@@ -384,8 +383,9 @@ impl NotificationService {
                 }
             }
             Ok(_) => {}
-            Err(error) => tracing::warn!(error = %error, "Failed to mark all notifications read"),
+            Err(error) => return Err(error),
         }
+        Ok(())
     }
     async fn dispatch_desktop(&self, notification: &Notification) {
         let settings = match self.settings_repo.get_settings().await {

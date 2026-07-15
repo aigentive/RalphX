@@ -112,18 +112,19 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
     expect(document.getElementById("notifications-toggle")).toBe(screen.getByTestId("reviews-toggle"));
   });
 
-  it("syncs dock badge changes including zero without waiting for the invoke", () => {
+  it("syncs the dock badge from unread history independently of unresolved attention", () => {
     vi.mocked(notificationsApi.setDockBadgeCount).mockReturnValue(new Promise<null>(() => {}));
-    const { rerender } = renderTopBar({ attentionCount: 17 });
+    const { rerender } = renderTopBar({ attentionCount: 17, unreadNotificationCount: 4 });
 
     expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
-    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledWith(17);
+    expect(notificationsApi.setDockBadgeCount).toHaveBeenCalledWith(4);
 
     rerender(
       <QueryClientProvider client={new QueryClient()}>
         <AppTopBar
           currentView="ticketing"
           attentionCount={17}
+          unreadNotificationCount={4}
           notificationsPanelOpen={false}
           onToggleNotificationsPanel={vi.fn()}
         />
@@ -135,13 +136,15 @@ describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
       <QueryClientProvider client={new QueryClient()}>
         <AppTopBar
           currentView="ticketing"
-          attentionCount={0}
+          attentionCount={17}
+          unreadNotificationCount={0}
           notificationsPanelOpen={false}
           onToggleNotificationsPanel={vi.fn()}
         />
       </QueryClientProvider>,
     );
     expect(notificationsApi.setDockBadgeCount).toHaveBeenLastCalledWith(0);
+    expect(screen.getByTestId("reviews-badge")).toHaveTextContent("9+");
   });
 
   it("shows the unread-history dot only when the attention count is zero", () => {

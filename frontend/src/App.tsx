@@ -1082,6 +1082,7 @@ function AppContent() {
           <AppTopBar
             currentView={currentView}
             attentionCount={attentionCount}
+            unreadNotificationCount={unreadNotificationCount.data ?? 0}
             hasUnreadNotificationHistory={hasUnreadNotificationHistory}
             attentionCountStale={attentionItems.isError}
             notificationsPanelOpen={notificationsPanelOpen}
