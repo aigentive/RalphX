@@ -72,6 +72,10 @@ import {
   callAutomationSetupTool,
   isAutomationSetupToolName,
 } from "./automation-tools.js";
+import {
+  callTicketAttachmentTool,
+  isTicketAttachmentToolName,
+} from "./ticket-attachment-tools.js";
 import { callPersonaTool, isPersonaToolName } from "./persona-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
@@ -689,6 +693,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callAutomationSetupTool(name, callTauri, args, {
         conversationId: RALPHX_CONVERSATION_ID,
       });
+    } else if (isTicketAttachmentToolName(name)) {
+      result = await callTicketAttachmentTool(name, callTauri, args);
     } else if (isPersonaToolName(name)) {
       result = await callPersonaTool(name, callTauri, callTauriGet, args, {
         conversationId: RALPHX_CONVERSATION_ID,

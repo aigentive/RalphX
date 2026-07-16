@@ -34,6 +34,9 @@ pub mod session_linking;
 pub mod steps;
 pub mod tasks;
 pub mod teams;
+pub mod ticket_attachments;
+#[cfg(test)]
+mod ticket_attachments_tests;
 pub mod validation;
 pub mod verification;
 pub mod worker;
@@ -67,6 +70,7 @@ pub use session_linking::*;
 pub use steps::*;
 pub use tasks::*;
 pub use teams::*;
+pub use ticket_attachments::*;
 pub use validation::*;
 pub use verification::*;
 pub use worker::*;
