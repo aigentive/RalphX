@@ -72,6 +72,10 @@ Only `tools` and `disallowedTools` are valid Claude agent frontmatter fields; `a
 - Agent: grant it only to canonical agents/profiles whose prompt contract gives them a reason to use it.
 - Validation: assert both allowed and denied agents, unknown-tool behavior, backend payload shape, and any side-effect guard.
 
+## Ticket Attachment Tools (NON-NEGOTIABLE)
+
+`list_ticket_attachments` and `fetch_ticket_attachment` are read-only, pointer-based tools granted only to execution worker, coder, and team-lead surfaces; never expose credentials, provider transport handles, direct download URLs, cache paths, raw bytes, or trusted-content semantics.
+
 ## Failure Diagnosis
 
 | Symptom | Check |
