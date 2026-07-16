@@ -32,7 +32,91 @@ function ConfirmationHarness({
   );
 }
 
+function PreparingConfirmationHarness({
+  onPrepare,
+}: {
+  onPrepare: () => Promise<{ description: string }>;
+}) {
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          void confirm({
+            title: "Start Workspace Review?",
+            description: "Checking the current review target…",
+            confirmText: "Start review",
+            prepare: onPrepare,
+          });
+        }}
+      >
+        Open prepared confirmation
+      </button>
+      <ConfirmationDialog {...confirmationDialogProps} />
+    </>
+  );
+}
+
 describe("useConfirmation", () => {
+  it("opens immediately and keeps Confirm disabled until async preparation supplies its copy", async () => {
+    let finishPrepare!: (value: { description: string }) => void;
+    const onPrepare = vi.fn(
+      () =>
+        new Promise<{ description: string }>((resolve) => {
+          finishPrepare = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+
+    render(<PreparingConfirmationHarness onPrepare={onPrepare} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Open prepared confirmation" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+    expect(
+      within(dialog).getByText("Checking the current review target…"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Preparing..." }),
+    ).toBeDisabled();
+
+    finishPrepare({ description: "GitHub auto-merge will be temporarily paused." });
+
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText("GitHub auto-merge will be temporarily paused."),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByRole("button", { name: "Start review" }),
+      ).toBeEnabled();
+    });
+  });
+
+  it("shows a cancellable preparation error without an endless loading state", async () => {
+    const onPrepare = vi.fn().mockRejectedValue(new Error("preview unavailable"));
+    const user = userEvent.setup();
+
+    render(<PreparingConfirmationHarness onPrepare={onPrepare} />);
+    await user.click(
+      screen.getByRole("button", { name: "Open prepared confirmation" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText("Could not prepare this action. Cancel and try again."),
+      ).toBeInTheDocument();
+    });
+    expect(within(dialog).queryByRole("button", { name: "Preparing..." })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Start review" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
   it("keeps the dialog open with disabled actions while async confirmation is submitting", async () => {
     let finishConfirm!: () => void;
     const onConfirm = vi.fn(
