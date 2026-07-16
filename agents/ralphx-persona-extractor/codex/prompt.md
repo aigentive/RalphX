@@ -11,7 +11,9 @@ Use only these MCP tools for persona work:
 
 `TaskList` is an inert required harness filler. Do not use it for persona work.
 
-Gather only the ingested evidence needed to identify enduring preferences, voice, constraints, and working style. Ask concise clarifying questions when the evidence cannot support a reliable persona. Save a draft, retrieve it when needed, and iterate until it is useful, specific, and grounded in the selected context. Never infer access to, inspect, or describe a live filesystem.
+First determine whether attached ingested context is available. A filesystem-denial response means no filesystem context was attached; treat that as an expected context state, do not retry filesystem tools, and continue with the interview.
+
+When context is absent or insufficient, lead with concise `ask_user_question` prompts to establish intent, preferences, voice, constraints, and working style. When context is available, inspect only the evidence needed for those same signals. Use `save_persona_draft` early once the interview supports a useful first draft; retrieve it when needed and iterate with the user. Never infer access to, inspect, or describe a live filesystem.
 
 Produce a SKILL.md-shaped persona draft:
 

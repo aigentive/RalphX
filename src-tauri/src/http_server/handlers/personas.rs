@@ -35,79 +35,66 @@ pub async fn save_persona_draft(
 ) -> Result<Json<Persona>, HttpError> {
     ensure_enabled()?;
     let service = service(&state);
-    let caller_conversation_id = caller_session_id(&headers);
-    let builder_conversation = if let Some(id) = caller_conversation_id.as_deref() {
-        state
-            .app_state
-            .chat_conversation_repo
-            .get_by_id(&ChatConversationId::from_string(id.to_string()))
-            .await
-            .map_err(map_app_error)?
-            .filter(|conversation| {
-                conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
-            })
-    } else {
-        None
-    };
-    let persona = if let Some(conversation) = builder_conversation {
-        match conversation.builder_draft_id.as_deref() {
-            Some(bound_id) => {
-                if request
-                    .draft_id
-                    .as_deref()
-                    .is_some_and(|requested_id| requested_id != bound_id)
-                {
-                    return Err(HttpError::validation(
-                        "PersonaBuilder conversation cannot write outside its bound draft"
-                            .to_string(),
-                    ));
-                }
-                service
-                    .update_draft(true, &PersonaId::from(bound_id), &request.content)
-                    .await
+    // This caller identity is supplied by the unauthenticated loopback MCP bridge.
+    let caller_conversation_id = caller_session_id(&headers).ok_or_else(|| {
+        HttpError::validation(format!(
+            "save_persona_draft requires a valid {CALLER_SESSION_ID_HEADER} caller-session header"
+        ))
+    })?;
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(caller_conversation_id))
+        .await
+        .map_err(map_app_error)?
+        .ok_or_else(|| {
+            HttpError::validation(
+                "save_persona_draft caller conversation was not found; start or resume the persona builder conversation and retry"
+                    .to_string(),
+            )
+        })?;
+    if conversation.agent_mode != Some(AgentConversationWorkspaceMode::PersonaBuilder) {
+        return Err(HttpError::validation(
+            "save_persona_draft caller conversation is not in persona builder mode; use a persona builder conversation"
+                .to_string(),
+        ));
+    }
+
+    let persona = match conversation.builder_draft_id.as_deref() {
+        Some(bound_id) => {
+            if request
+                .draft_id
+                .as_deref()
+                .is_some_and(|requested_id| requested_id != bound_id)
+            {
+                return Err(HttpError::validation(
+                    "PersonaBuilder conversation cannot write outside its bound draft".to_string(),
+                ));
             }
-            None => {
-                if request.draft_id.is_some() {
-                    return Err(HttpError::validation(
-                        "PersonaBuilder conversation has no bound draft".to_string(),
-                    ));
-                }
-                service
-                    .create_bound_draft(
-                        true,
-                        &conversation.id,
-                        SavePersonaDraftInput {
-                            slug: request.slug,
-                            content: request.content,
-                            source_session_id: Some(conversation.id.as_str()),
-                            source_persona_id: None,
-                            source_content_hash: None,
-                        },
-                    )
-                    .await
-            }
+            service
+                .update_draft(true, &PersonaId::from(bound_id), &request.content)
+                .await
         }
-    } else {
-        match request.draft_id {
-            Some(id) => {
-                service
-                    .update_draft(true, &persona_id(id)?, &request.content)
-                    .await
+        None => {
+            if request.draft_id.is_some() {
+                return Err(HttpError::validation(
+                    "PersonaBuilder conversation has no bound draft; omit draft_id to create its bound draft"
+                        .to_string(),
+                ));
             }
-            None => {
-                service
-                    .create_draft(
-                        true,
-                        SavePersonaDraftInput {
-                            slug: request.slug,
-                            content: request.content,
-                            source_session_id: request.source_session_id.or(caller_conversation_id),
-                            source_persona_id: None,
-                            source_content_hash: None,
-                        },
-                    )
-                    .await
-            }
+            service
+                .create_bound_draft(
+                    true,
+                    &conversation.id,
+                    SavePersonaDraftInput {
+                        slug: request.slug,
+                        content: request.content,
+                        source_session_id: Some(conversation.id.as_str()),
+                        source_persona_id: None,
+                        source_content_hash: None,
+                    },
+                )
+                .await
         }
     }
     .map_err(map_app_error)?;

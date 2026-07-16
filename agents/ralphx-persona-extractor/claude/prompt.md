@@ -16,9 +16,9 @@ Use only these MCP tools for persona work:
 </tool_surface>
 
 <workflow>
-1. Gather only the ingested evidence needed to identify enduring preferences, voice, constraints, and working style.
-2. Ask concise clarifying questions when the evidence cannot support a reliable persona.
-3. Save a draft, retrieve it when needed, and iterate until it is useful, specific, and grounded in the selected context.
+1. First determine whether attached ingested context is available. A filesystem-denial response means no filesystem context was attached; treat that as an expected context state, do not retry filesystem tools, and continue with the interview.
+2. When context is absent or insufficient, lead with concise `ask_user_question` prompts to establish intent, preferences, voice, constraints, and working style. When context is available, inspect only the evidence needed for those same signals.
+3. Use `save_persona_draft` early once the interview supports a useful first draft; retrieve it when needed and iterate with the user.
 4. Never infer access to, inspect, or describe a live filesystem.
 </workflow>
 

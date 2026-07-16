@@ -92,12 +92,17 @@ async fn persona_builder_headers(state: &HttpServerState) -> (ChatConversation, 
         .create(conversation)
         .await
         .unwrap();
+    let headers = conversation_headers(&conversation);
+    (conversation, headers)
+}
+
+fn conversation_headers(conversation: &ChatConversation) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         CALLER_SESSION_ID_HEADER,
         HeaderValue::from_str(&conversation.id.as_str()).unwrap(),
     );
-    (conversation, headers)
+    headers
 }
 
 #[tokio::test]
@@ -144,13 +149,13 @@ async fn builder_save_creates_and_binds_then_redirects_omitted_draft_id() {
 }
 
 #[tokio::test]
-async fn builder_save_rejects_a_draft_id_outside_its_binding() {
+async fn builder_conversation_cannot_write_another_conversations_bound_draft() {
     let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
-    let (_conversation, headers) = persona_builder_headers(&state).await;
+    let (_conversation_a, headers_a) = persona_builder_headers(&state).await;
     let bound = save_persona_draft(
         State(state.clone()),
-        headers.clone(),
+        headers_a.clone(),
         Json(request(
             "bound-owner",
             persona_content("bound-owner", "Bound"),
@@ -159,9 +164,10 @@ async fn builder_save_rejects_a_draft_id_outside_its_binding() {
     .await
     .unwrap()
     .0;
+    let (_conversation_b, headers_b) = persona_builder_headers(&state).await;
     let other = save_persona_draft(
         State(state.clone()),
-        HeaderMap::new(),
+        headers_b,
         Json(request(
             "other-draft",
             persona_content("other-draft", "Other"),
@@ -173,7 +179,7 @@ async fn builder_save_rejects_a_draft_id_outside_its_binding() {
 
     let error = save_persona_draft(
         State(state.clone()),
-        headers,
+        headers_a,
         Json(SavePersonaDraftRequest {
             draft_id: Some(other.id.as_str().to_string()),
             slug: "other-draft".to_string(),
@@ -209,6 +215,114 @@ async fn builder_save_rejects_a_draft_id_outside_its_binding() {
 }
 
 #[tokio::test]
+async fn save_draft_rejects_missing_caller_header_without_updating_requested_draft() {
+    let _persona_flag = enable_personas(true).await;
+    let event_sink = RecordingEventSink::new();
+    let state = setup_state(Some(event_sink.clone()));
+    let (_conversation, headers) = persona_builder_headers(&state).await;
+    let draft = save_persona_draft(
+        State(state.clone()),
+        headers,
+        Json(request(
+            "missing-header-target",
+            persona_content("missing-header-target", "Before"),
+        )),
+    )
+    .await
+    .expect("fixture draft should save")
+    .0;
+
+    let error = save_persona_draft(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(SavePersonaDraftRequest {
+            draft_id: Some(draft.id.as_str().to_string()),
+            slug: draft.slug.clone(),
+            content: persona_content("missing-header-target", "Hijacked"),
+            source_session_id: None,
+        }),
+    )
+    .await
+    .expect_err("missing caller identity must reject");
+
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains(CALLER_SESSION_ID_HEADER)));
+    let unchanged = state
+        .app_state
+        .persona_repo
+        .get_by_id(&draft.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.version, 1);
+    assert_eq!(unchanged.content, draft.content);
+    assert_eq!(
+        event_sink.events().len(),
+        1,
+        "rejected save must not emit another draft-updated event"
+    );
+}
+
+#[tokio::test]
+async fn save_draft_rejects_nonexistent_caller_conversation() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let missing =
+        ChatConversation::new_project(ProjectId::from_string("missing-caller-project".to_string()));
+
+    let error = save_persona_draft(
+        State(state),
+        conversation_headers(&missing),
+        Json(request(
+            "missing-caller",
+            persona_content("missing-caller", "Body"),
+        )),
+    )
+    .await
+    .expect_err("unknown caller conversation must reject");
+
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("conversation was not found")));
+}
+
+#[tokio::test]
+async fn save_draft_rejects_non_builder_caller_conversation() {
+    let _persona_flag = enable_personas(true).await;
+    let state = setup_state(None);
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(ProjectId::from_string(
+            "non-builder-project".to_string(),
+        )))
+        .await
+        .unwrap();
+
+    let error = save_persona_draft(
+        State(state),
+        conversation_headers(&conversation),
+        Json(request(
+            "non-builder-caller",
+            persona_content("non-builder-caller", "Body"),
+        )),
+    )
+    .await
+    .expect_err("non-builder caller conversation must reject");
+
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(error
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("not in persona builder mode")));
+}
+
+#[tokio::test]
 async fn save_draft_handler_rejects_when_flag_off() {
     let _persona_flag = enable_personas(false).await;
     let state = setup_state(None);
@@ -239,9 +353,10 @@ async fn save_draft_handler_rejects_when_flag_off() {
 async fn get_persona_draft_handler_round_trips() {
     let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
+    let (conversation, headers) = persona_builder_headers(&state).await;
     let draft = save_persona_draft(
         State(state.clone()),
-        HeaderMap::new(),
+        headers,
         Json(request("round-trip", persona_content("round-trip", "Body"))),
     )
     .await
@@ -254,16 +369,21 @@ async fn get_persona_draft_handler_round_trips() {
         .0;
 
     assert_eq!(loaded.id, draft.id);
-    assert_eq!(loaded.source_session_id, None);
+    let source_session_id = conversation.id.as_str();
+    assert_eq!(
+        loaded.source_session_id.as_deref(),
+        Some(source_session_id.as_str())
+    );
 }
 
 #[tokio::test]
 async fn save_draft_handler_updates_draft_and_bumps_version() {
     let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
+    let (conversation, headers) = persona_builder_headers(&state).await;
     let draft = save_persona_draft(
         State(state.clone()),
-        HeaderMap::new(),
+        headers.clone(),
         Json(request(
             "handler-update",
             persona_content("handler-update", "Before"),
@@ -275,7 +395,7 @@ async fn save_draft_handler_updates_draft_and_bumps_version() {
 
     let updated = save_persona_draft(
         State(state),
-        HeaderMap::new(),
+        headers,
         Json(SavePersonaDraftRequest {
             draft_id: Some(draft.id.as_str().to_string()),
             slug: "handler-update".to_string(),
@@ -289,16 +409,21 @@ async fn save_draft_handler_updates_draft_and_bumps_version() {
 
     assert_eq!(updated.version, 2);
     assert_eq!(updated.content, persona_content("handler-update", "After"));
-    assert_eq!(updated.source_session_id, None);
+    let source_session_id = conversation.id.as_str();
+    assert_eq!(
+        updated.source_session_id.as_deref(),
+        Some(source_session_id.as_str())
+    );
 }
 
 #[tokio::test]
 async fn save_draft_handler_allows_archived_slug_reuse_but_not_live_collision() {
     let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
+    let (_first_conversation, first_headers) = persona_builder_headers(&state).await;
     let first = save_persona_draft(
         State(state.clone()),
-        HeaderMap::new(),
+        first_headers,
         Json(request(
             "handler-slug",
             persona_content("handler-slug", "First"),
@@ -307,9 +432,10 @@ async fn save_draft_handler_allows_archived_slug_reuse_but_not_live_collision() 
     .await
     .expect("first draft should save")
     .0;
+    let (_collision_conversation, collision_headers) = persona_builder_headers(&state).await;
     let live_collision = save_persona_draft(
         State(state.clone()),
-        HeaderMap::new(),
+        collision_headers,
         Json(request(
             "handler-slug",
             persona_content("handler-slug", "Second"),
@@ -325,9 +451,10 @@ async fn save_draft_handler_allows_archived_slug_reuse_but_not_live_collision() 
         .set_status(&first.id, PersonaStatus::Archived)
         .await
         .expect("test fixture should archive the row");
+    let (_reused_conversation, reused_headers) = persona_builder_headers(&state).await;
     let reused = save_persona_draft(
         State(state),
-        HeaderMap::new(),
+        reused_headers,
         Json(request(
             "handler-slug",
             persona_content("handler-slug", "Reused"),
@@ -343,9 +470,10 @@ async fn save_draft_handler_allows_archived_slug_reuse_but_not_live_collision() 
 async fn save_draft_handler_cannot_mutate_active_persona() {
     let _persona_flag = enable_personas(true).await;
     let state = setup_state(None);
+    let (_conversation, headers) = persona_builder_headers(&state).await;
     let draft = save_persona_draft(
         State(state.clone()),
-        HeaderMap::new(),
+        headers.clone(),
         Json(request(
             "handler-active",
             persona_content("handler-active", "Before"),
@@ -363,7 +491,7 @@ async fn save_draft_handler_cannot_mutate_active_persona() {
 
     let error = save_persona_draft(
         State(state),
-        HeaderMap::new(),
+        headers,
         Json(SavePersonaDraftRequest {
             draft_id: Some(draft.id.as_str().to_string()),
             slug: "handler-active".to_string(),
@@ -382,10 +510,11 @@ async fn save_draft_handler_emits_body_free_event_payload() {
     let _persona_flag = enable_personas(true).await;
     let event_sink = RecordingEventSink::new();
     let state = setup_state(Some(event_sink.clone()));
+    let (_conversation, headers) = persona_builder_headers(&state).await;
 
     let draft = save_persona_draft(
         State(state),
-        HeaderMap::new(),
+        headers,
         Json(request(
             "event-persona",
             persona_content("event-persona", "Secret body"),
