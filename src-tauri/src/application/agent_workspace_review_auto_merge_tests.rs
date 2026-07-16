@@ -516,6 +516,17 @@ async fn automated_review_rolls_back_guard_when_github_disable_fails() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let (state, github, workspace, _feature_head) =
         selected_source_workspace_context(temp.path(), "workspace-review-disable-failure").await;
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    monitor.current_diff_fingerprint = Some("previous-diff".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("existing monitor target should persist");
     github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
         "GitHub refused to disable auto-merge".to_string(),
     )));
@@ -541,6 +552,20 @@ async fn automated_review_rolls_back_guard_when_github_disable_fails() {
         .expect("monitor should exist")
         .auto_merge_guard
         .is_none());
+    let monitor = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist");
+    assert_eq!(
+        monitor.current_target_scope,
+        Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+    );
+    assert_eq!(
+        monitor.current_diff_fingerprint.as_deref(),
+        Some("previous-diff")
+    );
 }
 
 #[tokio::test]
@@ -657,6 +682,63 @@ async fn automated_review_settles_current_passing_selected_source_after_pausing_
             .status,
         AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
     );
+}
+
+#[tokio::test]
+async fn passing_selected_source_review_clears_guard_without_restore_when_source_pr_is_terminal() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-terminal-source-pr").await;
+    let preview = preview_manual_workspace_review_start(&state, &workspace)
+        .await
+        .expect("preview should resolve");
+    let target = preview.target.expect("target should resolve");
+    let guard = AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+        diff_fingerprint: target.diff_fingerprint.clone(),
+        head_sha: Some(feature_head.clone()),
+        last_error: None,
+    };
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact"));
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(target.diff_fingerprint.clone());
+    monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint);
+    monitor.reviewed_head_sha = Some(feature_head.clone());
+    monitor.selected_source_head_sha = Some(feature_head);
+    monitor.selected_source_pull_request_number = Some(42);
+    monitor.last_run_id = Some("review-run".to_string());
+    monitor.auto_merge_guard = Some(guard);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor.clone())
+        .await
+        .expect("monitor should persist");
+    github.state().check_pr_status_result = Some(Ok(PrStatus::Closed));
+
+    handle_passing_workspace_review_auto_merge_guard(&state, &workspace, &monitor)
+        .await
+        .expect("terminal source PR should clear the guard");
+
+    assert_eq!(github.state().check_pr_status_calls, 1);
+    assert_eq!(github.state().last_check_pr_status_number, Some(42));
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
 }
 
 #[tokio::test]

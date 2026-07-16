@@ -15,6 +15,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewAutoMergeGuardStatus,
     AgentWorkspaceReviewMonitor, AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
 };
+use crate::domain::services::github_service::{PrHealth, PrStatus};
 use crate::error::{AppError, AppResult};
 
 const REVIEW_AUTO_MERGE_PAUSED_SUMMARY: &str =
@@ -169,7 +170,7 @@ pub async fn start_guarded_agent_workspace_review(
         .await;
     };
 
-    let mut monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
+    let monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
     if let Some(existing_guard) = monitor.auto_merge_guard.as_ref() {
         if guard_matches_target(existing_guard, workspace, &preview.target) {
             ensure_guarded_auto_merge_is_paused(state.as_ref(), workspace, existing_guard).await?;
@@ -187,7 +188,6 @@ pub async fn start_guarded_agent_workspace_review(
         ));
     }
 
-    apply_current_target_to_monitor(&mut monitor, Some(&preview.target));
     state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor.clone())
@@ -260,6 +260,19 @@ pub async fn start_guarded_agent_workspace_review(
             "workspace Review auto-merge guard changed after GitHub was paused".to_string(),
         ));
     }
+    let mut paused_monitor = load_or_create_monitor(state.as_ref(), workspace).await?;
+    if paused_monitor.auto_merge_guard.as_ref() != Some(&paused) {
+        let _ = restore_guarded_auto_merge(state.as_ref(), workspace, &paused).await;
+        return Err(AppError::Conflict(
+            "workspace Review auto-merge guard changed before review target was recorded"
+                .to_string(),
+        ));
+    }
+    apply_current_target_to_monitor(&mut paused_monitor, Some(&preview.target));
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(paused_monitor)
+        .await?;
     append_auto_merge_guard_event(
         state.as_ref(),
         workspace,
@@ -615,6 +628,16 @@ async fn ensure_guarded_auto_merge_is_paused(
     let health = github
         .fetch_pr_health(&target.working_directory, guard.pr_number)
         .await?;
+    if pr_health_is_terminal(&health) {
+        return cancel_guard_without_restoring(
+            state,
+            workspace,
+            guard,
+            "GitHub auto-merge will remain disabled because the guarded pull request is terminal.",
+        )
+        .await
+        .map(|_| true);
+    }
     let mut changed = false;
     if health.auto_merge_request.is_some() {
         github
@@ -740,6 +763,14 @@ fn review_target_pr_number(
 fn guarded_pr_is_terminal(workspace: &AgentConversationWorkspace, pr_number: i64) -> bool {
     workspace.publication_pr_number == Some(pr_number)
         && workspace.has_terminal_publication_pr_status()
+}
+
+fn pr_health_is_terminal(health: &PrHealth) -> bool {
+    pr_status_is_terminal(&health.sync_state.status)
+}
+
+fn pr_status_is_terminal(status: &PrStatus) -> bool {
+    matches!(status, PrStatus::Closed | PrStatus::Merged { .. })
 }
 
 fn guard_for_preview(
@@ -1007,6 +1038,19 @@ async fn restore_guarded_auto_merge(
             "GitHub integration became unavailable before auto-merge restoration".to_string(),
         )
     })?;
+    if pr_status_is_terminal(
+        &github
+            .check_pr_status(&working_directory, restoring.pr_number)
+            .await?,
+    ) {
+        return cancel_guard_without_restoring(
+            state,
+            &current_workspace,
+            &restoring,
+            "GitHub auto-merge will remain disabled because the guarded pull request is terminal.",
+        )
+        .await;
+    }
     if let Err(error) = github
         .enable_pr_auto_merge(
             &working_directory,
