@@ -965,6 +965,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // GET /api/parent_session_context/:session_id
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`parent_session_context/${session_id}`);
+    } else if (name === "create_agent_workflow_script") {
+      if (!RALPHX_CONVERSATION_ID || RALPHX_CONTEXT_TYPE !== "project" || !RALPHX_CONTEXT_ID) {
+        throw new Error("Agent Workflow authoring requires a project Agent conversation context");
+      }
+      result = await callTauri("agent_workflows/scripts/create", {
+        ...(args as Record<string, unknown>),
+        conversation_id: RALPHX_CONVERSATION_ID,
+        project_id: RALPHX_CONTEXT_ID,
+      });
+    } else if (name === "start_agent_workflow_run") {
+      result = await callTauri("agent_workflows/runs/start", {
+        ...(args as Record<string, unknown>),
+        caller_agent_name: AGENT_TYPE,
+        caller_agent_profile: RALPHX_AGENT_PROFILE,
+      });
+    } else if (["get_agent_workflow_run", "pause_agent_workflow_run", "resume_agent_workflow_run", "cancel_agent_workflow_run"].includes(name)) {
+      const action = name.split("_agent_workflow_run")[0];
+      result = await callTauri(`agent_workflows/runs/${action}`, {
+        ...(args as Record<string, unknown>),
+        ...(action === "resume"
+          ? {
+              caller_agent_name: AGENT_TYPE,
+              caller_agent_profile: RALPHX_AGENT_PROFILE,
+            }
+          : {}),
+      });
     } else if (name === "delegate_start") {
       const delegateArgs = args as Record<string, unknown>;
       const explicitParentConversationId =

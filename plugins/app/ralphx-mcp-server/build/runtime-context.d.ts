@@ -1,4 +1,4 @@
-type RuntimeContextKey = "agentType" | "agentProfile" | "taskId" | "taskState" | "projectId" | "workingDirectory" | "filesystemReadRoots" | "contextType" | "contextId" | "conversationId" | "parentConversationId" | "agentRunId" | "leadSessionId" | "tauriApiUrl" | "traceDir";
+type RuntimeContextKey = "agentType" | "agentProfile" | "taskId" | "taskState" | "projectId" | "workingDirectory" | "filesystemReadRoots" | "contextType" | "contextId" | "conversationId" | "coordinationMode" | "parentConversationId" | "agentRunId" | "leadSessionId" | "tauriApiUrl" | "traceDir";
 export type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
 export declare function parseCliOptionFromArgs(args: readonly string[], optionName: string): string | undefined;
 export declare function parseCliOptionsFromArgs(args: readonly string[], optionName: string): string[];

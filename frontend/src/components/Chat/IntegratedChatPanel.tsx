@@ -48,6 +48,7 @@ import {
   type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
+  type CapabilityIntent,
   type SendAgentMessageResult,
   type TeamIntent,
 } from "@/api/chat";
@@ -153,6 +154,7 @@ type PersonaRetryAttempt = {
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       }
     | undefined;
@@ -272,6 +274,7 @@ export interface IntegratedChatComposerRenderProps {
       projectReferences?: ComposerProjectReference[];
       integrationReferences?: ComposerIntegrationReference[];
       artifactReferences?: ComposerArtifactReference[];
+      capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
     },
   ) => Promise<void>;
@@ -1239,6 +1242,7 @@ export function IntegratedChatPanel({
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       },
     ) => {

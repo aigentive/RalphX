@@ -13,6 +13,8 @@ pub enum CoordinationMode {
     Solo,
     LegacyClaudeTeam,
     RxNativeTeam,
+    RxNativeWorkflow,
+    CodexNativeUltra,
 }
 
 impl fmt::Display for CoordinationMode {
@@ -21,6 +23,8 @@ impl fmt::Display for CoordinationMode {
             Self::Solo => write!(f, "solo"),
             Self::LegacyClaudeTeam => write!(f, "legacy_claude_team"),
             Self::RxNativeTeam => write!(f, "rx_native_team"),
+            Self::RxNativeWorkflow => write!(f, "rx_native_workflow"),
+            Self::CodexNativeUltra => write!(f, "codex_native_ultra"),
         }
     }
 }
@@ -33,8 +37,10 @@ impl FromStr for CoordinationMode {
             "solo" => Ok(Self::Solo),
             "legacy_claude_team" => Ok(Self::LegacyClaudeTeam),
             "rx_native_team" => Ok(Self::RxNativeTeam),
+            "rx_native_workflow" => Ok(Self::RxNativeWorkflow),
+            "codex_native_ultra" => Ok(Self::CodexNativeUltra),
             other => Err(format!(
-                "Invalid coordination mode '{}'. Valid values: solo, legacy_claude_team, rx_native_team",
+                "Invalid coordination mode '{}'. Valid values: solo, legacy_claude_team, rx_native_team, rx_native_workflow, codex_native_ultra",
                 other
             )),
         }
@@ -58,6 +64,10 @@ pub struct TeamIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<TeamIntentStrategy>,
 }
+
+/// Provider-neutral capability request. `TeamIntent` remains the compatibility
+/// name on existing transport surfaces while callers migrate.
+pub type CapabilityIntent = TeamIntent;
 
 impl TeamIntent {
     pub fn rx_native(strategy: Option<TeamIntentStrategy>) -> Self {

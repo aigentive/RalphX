@@ -990,7 +990,7 @@ async fn ensure_delegated_conversation(
         })
 }
 
-async fn build_delegated_session_status_response(
+pub(crate) async fn build_delegated_session_status_response(
     state: &HttpServerState,
     delegated_session_id: &str,
     include_messages: bool,
@@ -1541,9 +1541,16 @@ pub async fn cancel_delegate(
     State(state): State<HttpServerState>,
     Json(req): Json<DelegateCancelRequest>,
 ) -> Result<Json<DelegationJobSnapshot>, JsonError> {
+    cancel_delegate_impl(&state, &req.job_id).await.map(Json)
+}
+
+pub(crate) async fn cancel_delegate_impl(
+    state: &HttpServerState,
+    job_id: &str,
+) -> Result<DelegationJobSnapshot, JsonError> {
     let snapshot = state
         .delegation_service
-        .cancel(&req.job_id)
+        .cancel(job_id)
         .await
         .ok_or_else(|| {
             json_error(
@@ -1585,5 +1592,5 @@ pub async fn cancel_delegate(
                 format!("Failed to update delegated session cancellation: {error}"),
             )
         })?;
-    Ok(Json(snapshot))
+    Ok(snapshot)
 }

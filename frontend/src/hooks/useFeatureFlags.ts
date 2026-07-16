@@ -27,6 +27,8 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   atlassianOauth: false,
   ticketingDashboard: false,
   agentPersonas: false,
+  agentConversationTeam: false,
+  agentConversationWorkflows: false,
 };
 
 export function useFeatureFlags() {
@@ -55,9 +57,23 @@ export function useUpdateFeatureFlags() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ agentPersonas }: { agentPersonas: boolean }) => {
+    mutationFn: async ({
+      agentPersonas,
+      agentConversationTeam,
+      agentConversationWorkflows,
+    }: {
+      agentPersonas?: boolean;
+      agentConversationTeam?: boolean;
+      agentConversationWorkflows?: boolean;
+    }) => {
       const raw = await invoke("update_ui_feature_flags", {
-        input: { agentPersonas },
+        input: {
+          ...(agentPersonas !== undefined && { agentPersonas }),
+          ...(agentConversationTeam !== undefined && { agentConversationTeam }),
+          ...(agentConversationWorkflows !== undefined && {
+            agentConversationWorkflows,
+          }),
+        },
       });
       return applyFeatureFlagOverrides(featureFlagsSchema.parse(raw));
     },

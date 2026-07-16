@@ -5,6 +5,64 @@
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export const WORKFLOW_TOOLS: Tool[] = [
+  {
+    name: "create_agent_workflow_script",
+    description:
+      "Store a generated RalphX Agent Workflow JavaScript program for user review. This never launches the program or grants approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        script: { type: "string" },
+        meta: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            description: { type: "string" },
+            phases: { type: "array", items: { type: "string" } },
+            maxConcurrency: { type: "integer", minimum: 1, maximum: 16 },
+            maxInvocations: { type: "integer", minimum: 1, maximum: 1000 },
+          },
+          required: ["name", "maxConcurrency", "maxInvocations"],
+        },
+        permission_summary: { type: "object" },
+        estimated_fanout: { type: "integer", minimum: 0, maximum: 1000 },
+      },
+      required: ["script", "meta", "permission_summary", "estimated_fanout"],
+    },
+  },
+  {
+    name: "start_agent_workflow_run",
+    description:
+      "Launch a previously user-approved Agent Workflow. The exact script and permission hashes must still match; this tool cannot approve its own script.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        script_id: { type: "string" },
+        script_hash: { type: "string" },
+        permission_hash: { type: "string" },
+        launch_id: {
+          type: "string",
+          description: "Optional UUID idempotency key for retrying the same launch.",
+        },
+        args: { type: "object" },
+        harness: {
+          type: "string",
+          enum: ["claude", "codex"],
+          description: "Optional provider override; defaults to the parent conversation runtime.",
+        },
+      },
+      required: ["script_id", "script_hash", "permission_hash"],
+    },
+  },
+  ...["get", "pause", "resume", "cancel"].map((action): Tool => ({
+    name: `${action}_agent_workflow_run`,
+    description: `${action[0].toUpperCase()}${action.slice(1)} a durable Agent Workflow run.`,
+    inputSchema: {
+      type: "object",
+      properties: { run_id: { type: "string" } },
+      required: ["run_id"],
+    },
+  })),
   // ========================================================================
   // TEAM TOOLS (team lead agents)
   // ========================================================================

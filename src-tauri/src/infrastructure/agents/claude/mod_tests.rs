@@ -417,6 +417,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
         conversation_id: Some("conversation-current".to_string()),
+        coordination_mode: Some("rx_native_workflow".to_string()),
         task_id: None,
         task_state: Some("executing".to_string()),
         project_id: Some("project-123".to_string()),

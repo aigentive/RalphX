@@ -245,6 +245,38 @@ pub async fn start_http_server(
         )
         .route("/api/coordination/delegate/wait", post(wait_delegate))
         .route("/api/coordination/delegate/cancel", post(cancel_delegate))
+        .route(
+            "/api/agent_workflows/scripts/create",
+            post(create_agent_workflow_script),
+        )
+        .route(
+            "/api/agent_workflows/scripts/approve",
+            post(approve_agent_workflow_script),
+        )
+        .route(
+            "/api/agent_workflows/runs/start",
+            post(start_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/get",
+            post(get_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/latest",
+            post(get_latest_agent_workflow_run_for_script),
+        )
+        .route(
+            "/api/agent_workflows/runs/pause",
+            post(pause_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/resume",
+            post(resume_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/cancel",
+            post(cancel_agent_workflow_run),
+        )
         // Native agent task tools (lightweight todo/dependency tracking)
         .route("/api/agent_tasks/create", post(create_agent_task))
         .route("/api/agent_tasks/get", post(get_agent_task))
@@ -651,6 +683,17 @@ pub async fn start_http_server(
                 .allow_methods(Any)
                 .allow_headers(Any),
         );
+
+    let recovery_state = state.clone();
+    tokio::spawn(async move {
+        match recover_agent_workflow_runs(&recovery_state).await {
+            Ok(count) if count > 0 => {
+                tracing::info!(count, "Recovered Scripted Agent workflow runs")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::error!(%error, "Workflow startup recovery failed closed"),
+        }
+    });
 
     let app = Router::new()
         .merge(internal_routes)

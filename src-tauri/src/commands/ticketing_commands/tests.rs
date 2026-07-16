@@ -4061,6 +4061,12 @@ async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() 
 async fn start_agent_conversation_persists_team_intent_for_new_project_conversation() {
     crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
     let state = AppState::new_test();
+    state.agent_capability_gate.replace(
+        crate::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+        },
+    );
     let project_id = seed_ticketing_project(&state, "team-start-new").await;
     let execution_state = Arc::new(ExecutionState::new());
     execution_state.pause();
@@ -4117,6 +4123,12 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
 async fn start_agent_conversation_updates_seeded_project_team_coordination_mode() {
     crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
     let state = AppState::new_test();
+    state.agent_capability_gate.replace(
+        crate::application::agent_capability_gate::AgentCapabilities {
+            team: true,
+            workflows: false,
+        },
+    );
     let project_id = seed_ticketing_project(&state, "team-start-seeded").await;
     let seeded = state
         .chat_conversation_repo
