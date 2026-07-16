@@ -242,6 +242,22 @@ describe("AgentComposerSurface", () => {
     expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1);
   });
 
+  it("uses a Granola fallback label for a note selection without a title", () => {
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "note",
+        sourceKind: "granola",
+        sourceId: "not_1234567890ABCD",
+        provider: "granola",
+        startLine: 3,
+        endLine: 3,
+        content: "Decision",
+      },
+    });
+
+    expect(screen.getByText("Selection: Granola · L3")).toBeTruthy();
+  });
+
   it("sends the frozen selection and clears it only after backend acceptance", async () => {
     let acceptSend: (() => void) | undefined;
     const onSend = vi.fn(

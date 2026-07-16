@@ -1802,12 +1802,12 @@ export interface ComposerArtifactReference {
 }
 
 export interface ComposerSelectionSnapshot {
-  sourceType: "artifact" | "ticket";
-  sourceKind: "plan" | "jira" | "linear" | "clickup";
+  sourceType: "artifact" | "ticket" | "note";
+  sourceKind: "plan" | "jira" | "linear" | "clickup" | "granola";
   sourceId: string;
   sourceTitle?: string;
   sourceKey?: string;
-  provider?: "atlassian" | "linear" | "clickup";
+  provider?: "atlassian" | "linear" | "clickup" | "granola";
   artifactVersion?: number;
   sourceRevision?: string;
   startLine: number;

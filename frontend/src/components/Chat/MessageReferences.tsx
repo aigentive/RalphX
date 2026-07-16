@@ -15,6 +15,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useUiStore } from "@/stores/uiStore";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
@@ -144,16 +145,7 @@ function SelectionSnapshotReference({
 }: {
   snapshot: NonNullable<MessageComposerReferences["selectionSnapshot"]>;
 }) {
-  const sourceLabel =
-    snapshot.sourceKey ??
-    snapshot.sourceTitle ??
-    (snapshot.sourceKind === "plan"
-      ? "Plan"
-      : snapshot.sourceKind === "clickup"
-        ? "ClickUp"
-        : snapshot.sourceKind === "linear"
-          ? "Linear"
-          : "Jira");
+  const sourceLabel = getComposerSelectionSourceLabel(snapshot);
   const lineLabel =
     snapshot.startLine === snapshot.endLine
       ? `L${snapshot.startLine}`

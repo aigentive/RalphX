@@ -61,6 +61,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
+import { getComposerSelectionSourceLabel } from "@/lib/composer-selection-snapshot";
 import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
@@ -2202,10 +2203,7 @@ function ComposerSelectionPill({
   snapshot: ComposerSelectionSnapshot;
   onClear?: () => void;
 }) {
-  const label =
-    snapshot.sourceKey ??
-    snapshot.sourceTitle ??
-    (snapshot.sourceKind === "plan" ? "Plan" : snapshot.sourceKind);
+  const label = getComposerSelectionSourceLabel(snapshot);
   const lineLabel =
     snapshot.startLine === snapshot.endLine
       ? `L${snapshot.startLine}`

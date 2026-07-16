@@ -31,6 +31,22 @@ fn plan_selection(content: &str, start_line: u32, end_line: u32) -> ComposerSele
     }
 }
 
+fn granola_selection(content: &str, start_line: u32, end_line: u32) -> ComposerSelectionSnapshot {
+    ComposerSelectionSnapshot {
+        source_type: "note".to_string(),
+        source_kind: "granola".to_string(),
+        source_id: "not_1234567890ABCD".to_string(),
+        source_title: Some("Planning sync".to_string()),
+        source_key: None,
+        provider: Some("granola".to_string()),
+        artifact_version: None,
+        source_revision: Some("2026-07-16T10:00:00Z".to_string()),
+        start_line,
+        end_line,
+        content: content.to_string(),
+    }
+}
+
 #[test]
 fn expands_selected_file_reference_into_prompt_context() {
     let temp = tempdir().expect("tempdir");
@@ -206,6 +222,16 @@ fn validates_and_formats_immutable_selection_snapshot_context() {
     assert!(expanded.contains("user-selected immutable reference data"));
     assert!(expanded.contains("first line\nsecond line"));
     assert!(expanded.ends_with("</ralphx_selection_snapshot>"));
+
+    let granola = granola_selection("Alex: Ship it", 9, 9);
+    validate_selection_snapshot(&granola).expect("valid Granola selection");
+    let expanded = append_selection_snapshot_for_prompt("Review", Some(&granola))
+        .expect("Granola selection should format");
+    assert!(expanded.contains("source_type=\"note\""));
+    assert!(expanded.contains("source_kind=\"granola\""));
+    assert!(expanded.contains("provider=\"granola\""));
+    assert!(expanded.contains("source_revision=\"2026-07-16T10:00:00Z\""));
+    assert!(expanded.contains("Alex: Ship it"));
 }
 
 #[test]
@@ -266,6 +292,13 @@ fn selection_snapshot_validation_rejects_unsafe_identity_and_oversized_content()
     mismatched_provider.provider = Some("clickup".to_string());
     assert_eq!(
         validate_selection_snapshot(&mismatched_provider),
+        Err(SelectionSnapshotValidationError::UnsupportedSource)
+    );
+
+    let mut mismatched_granola_provider = granola_selection("line", 1, 1);
+    mismatched_granola_provider.provider = Some("linear".to_string());
+    assert_eq!(
+        validate_selection_snapshot(&mismatched_granola_provider),
         Err(SelectionSnapshotValidationError::UnsupportedSource)
     );
 

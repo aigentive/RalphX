@@ -3,6 +3,7 @@ import { Check, ListTree, X } from "lucide-react";
 
 import type { ComposerSelectionSnapshot } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import { getComposerSelectionSourceNoun } from "@/lib/composer-selection-snapshot";
 import {
   selectArtifactSelection,
   useArtifactSelectionStore,
@@ -84,7 +85,7 @@ export function ArtifactSelectionSource({
     });
   };
 
-  const sourceLabel = source.sourceType === "artifact" ? "plan" : "ticket";
+  const sourceLabel = getComposerSelectionSourceNoun(source.sourceKind);
   const selectedLineLabel =
     selectionMatchesSource && selection
       ? selection.startLine === selection.endLine

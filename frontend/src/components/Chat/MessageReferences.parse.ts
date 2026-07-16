@@ -108,6 +108,7 @@ function parseSelectionSnapshot(raw: unknown): ComposerSelectionSnapshot | null 
   const content = record.content;
   const sourcePairSupported =
     (sourceType === "artifact" && sourceKind === "plan") ||
+    (sourceType === "note" && sourceKind === "granola") ||
     (sourceType === "ticket" &&
       (sourceKind === "jira" ||
         sourceKind === "linear" ||
@@ -147,7 +148,8 @@ function parseSelectionSnapshot(raw: unknown): ComposerSelectionSnapshot | null 
   const supportedProvider =
     (sourceKind === "jira" && provider === "atlassian") ||
     (sourceKind === "linear" && provider === "linear") ||
-    (sourceKind === "clickup" && provider === "clickup")
+    (sourceKind === "clickup" && provider === "clickup") ||
+    (sourceKind === "granola" && provider === "granola")
       ? provider
       : undefined;
   if (provider !== undefined && supportedProvider === undefined) {

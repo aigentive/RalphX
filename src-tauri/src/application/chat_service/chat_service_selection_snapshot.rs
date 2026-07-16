@@ -46,7 +46,11 @@ pub(crate) fn validate_selection_snapshot(
 ) -> Result<(), SelectionSnapshotValidationError> {
     let supported = matches!(
         (snapshot.source_type.as_str(), snapshot.source_kind.as_str()),
-        ("artifact", "plan") | ("ticket", "jira") | ("ticket", "linear") | ("ticket", "clickup")
+        ("artifact", "plan")
+            | ("ticket", "jira")
+            | ("ticket", "linear")
+            | ("ticket", "clickup")
+            | ("note", "granola")
     );
     if !supported {
         return Err(SelectionSnapshotValidationError::UnsupportedSource);
@@ -57,6 +61,7 @@ pub(crate) fn validate_selection_snapshot(
             | ("jira", None | Some("atlassian"))
             | ("linear", None | Some("linear"))
             | ("clickup", None | Some("clickup"))
+            | ("granola", None | Some("granola"))
     );
     if !provider_supported {
         return Err(SelectionSnapshotValidationError::UnsupportedSource);
