@@ -35,6 +35,7 @@ pub struct MockGithubState {
     pub fetch_github_connection_status_result: Option<AppResult<GithubConnectionStatus>>,
     pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
     pub enable_pr_auto_merge_result: Option<AppResult<()>>,
+    pub enable_pr_auto_merge_delay_ms: u64,
     pub disable_pr_auto_merge_result: Option<AppResult<()>>,
     pub push_branch_result: Option<AppResult<()>>,
     pub close_pr_result: Option<AppResult<()>>,
@@ -496,11 +497,21 @@ impl GithubServiceTrait for MockGithubService {
         pr_number: i64,
         method: &str,
     ) -> AppResult<()> {
-        let mut s = self.state.lock().expect("lock poisoned");
-        s.enable_pr_auto_merge_calls += 1;
-        s.last_enable_pr_auto_merge_args = Some((pr_number, method.to_string()));
-        s.last_enable_pr_auto_merge_working_dir = Some(working_dir.to_string_lossy().into_owned());
-        s.enable_pr_auto_merge_result.take().unwrap_or(Ok(()))
+        let (delay_ms, result) = {
+            let mut s = self.state.lock().expect("lock poisoned");
+            s.enable_pr_auto_merge_calls += 1;
+            s.last_enable_pr_auto_merge_args = Some((pr_number, method.to_string()));
+            s.last_enable_pr_auto_merge_working_dir =
+                Some(working_dir.to_string_lossy().into_owned());
+            (
+                s.enable_pr_auto_merge_delay_ms,
+                s.enable_pr_auto_merge_result.take(),
+            )
+        };
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        result.unwrap_or(Ok(()))
     }
 
     async fn disable_pr_auto_merge(&self, working_dir: &Path, pr_number: i64) -> AppResult<()> {

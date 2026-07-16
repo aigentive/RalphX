@@ -50,6 +50,7 @@ import {
   type AgentConversationRuntimeStatus,
   type AgentWorkspacePrReviewContext,
   type AgentWorkspaceReviewContext,
+  type AgentWorkspaceReviewStartConfirmation,
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
@@ -160,6 +161,7 @@ import {
 } from "./agentPlanModeActions";
 import { activateAgentPlanProposals } from "./agentPlanProposalActivation";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
+import { useWorkspaceReviewActions } from "./useWorkspaceReviewActions";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import {
   getAutomationConversationTabPolicy,
@@ -858,10 +860,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     mutationFn: ({
       conversationId,
       force,
+      confirmation,
     }: {
       conversationId: string;
       force: boolean;
-    }) => chatApi.startAgentWorkspaceReview(conversationId, { force }),
+      confirmation?: AgentWorkspaceReviewStartConfirmation;
+    }) =>
+      chatApi.startAgentWorkspaceReview(
+        conversationId,
+        confirmation ? { force, confirmation } : { force },
+      ),
     onSuccess: (result, variables) => {
       queryClient.setQueryData(
         agentWorkspaceKeys.workspaceReview(variables.conversationId),
@@ -1218,6 +1226,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     startWorkspaceReviewFixerMutation.isPending &&
     startWorkspaceReviewFixerMutation.variables?.conversationId ===
       conversationId;
+  const workspaceReviewStartError =
+    startWorkspaceReviewMutation.variables?.conversationId === conversationId
+      ? startWorkspaceReviewMutation.error
+      : null;
+  const workspaceReviewFixIssuesError =
+    startWorkspaceReviewFixerMutation.variables?.conversationId === conversationId
+      ? startWorkspaceReviewFixerMutation.error
+      : null;
   const workspaceReviewStartResult = workspaceReviewContextForConversation(
     startWorkspaceReviewMutation.data,
     conversationId,
@@ -1239,10 +1255,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewDisplayContext?.monitor.status === "reviewing" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "reviewing";
   const workspaceReviewBlocked =
-    (isWorkspaceReviewActionPending &&
-      Boolean(startWorkspaceReviewMutation.error)) ||
-    (isWorkspaceReviewFixIssuesPending &&
-      Boolean(startWorkspaceReviewFixerMutation.error)) ||
+    Boolean(workspaceReviewStartError) ||
+    Boolean(workspaceReviewFixIssuesError) ||
     reviewDisplayContext?.monitor.status === "blocked" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "blocking" ||
     reviewDisplayContext?.monitor.reviewGateStatus === "failed" ||
@@ -1368,6 +1382,35 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     },
     [queryClient],
   );
+  const startWorkspaceReviewWithConfirmation = useCallback(
+    ({
+      force,
+      confirmation,
+    }: {
+      force: boolean;
+      confirmation?: AgentWorkspaceReviewStartConfirmation;
+    }) => {
+      if (!conversationId) {
+        return Promise.resolve();
+      }
+      return confirmation
+        ? startWorkspaceReviewMutation.mutateAsync({
+            conversationId,
+            force,
+            confirmation,
+          })
+        : startWorkspaceReviewMutation.mutateAsync({ conversationId, force });
+    },
+    [conversationId, startWorkspaceReviewMutation],
+  );
+  const {
+    startReview: confirmAndStartWorkspaceReview,
+    confirmationDialogProps: workspaceReviewConfirmationDialogProps,
+    ConfirmationDialog: WorkspaceReviewConfirmationDialog,
+  } = useWorkspaceReviewActions({
+    conversationId,
+    onStartReview: startWorkspaceReviewWithConfirmation,
+  });
   const handleStartReview = useCallback(
     (force: boolean) => {
       if (
@@ -1378,14 +1421,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ) {
         return;
       }
-      startWorkspaceReviewMutation.mutate({ conversationId, force });
+      confirmAndStartWorkspaceReview(force);
     },
     [
       conversationId,
       isWorkspaceReviewActionPending,
       isWorkspaceReviewFixIssuesPending,
       isWorkspaceRuntimeGenerating,
-      startWorkspaceReviewMutation,
+      confirmAndStartWorkspaceReview,
     ],
   );
   const handleFixReviewIssues = useCallback(() => {
@@ -1430,7 +1473,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   }, [onOpenPublish, onTabChange]);
 
   return (
-    <aside
+    <>
+      <aside
       className="h-full w-full min-w-0 flex flex-col overflow-hidden border-l"
       style={{
         background: "var(--bg-surface)",
@@ -1743,11 +1787,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           reviewStartError={
             isReviewPrWorkspace
               ? null
-              : isWorkspaceReviewActionPending
-                ? startWorkspaceReviewMutation.error
-                : isWorkspaceReviewFixIssuesPending
-                  ? startWorkspaceReviewFixerMutation.error
-                  : null
+              : (workspaceReviewStartError ?? workspaceReviewFixIssuesError)
           }
           isReviewLoading={
             Boolean(reviewArtifactId) &&
@@ -1794,7 +1834,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         />
         )}
       </div>
-    </aside>
+      </aside>
+      <WorkspaceReviewConfirmationDialog
+        {...workspaceReviewConfirmationDialogProps}
+      />
+    </>
   );
 });
 

@@ -1684,6 +1684,7 @@ export const chatApi = {
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
+  getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
   listAgentConversationIssues,
@@ -2021,6 +2022,13 @@ export type AgentWorkspaceReviewGateStatus =
 export type AgentWorkspaceReviewTargetScope =
   "selected_source" | "workspace_delta";
 
+export type AgentWorkspaceReviewAutoMergeGuardStatus =
+  | "pausing"
+  | "paused_for_review"
+  | "awaiting_publish"
+  | "restoring"
+  | "restore_failed";
+
 export type AgentWorkspacePrReviewActionKind =
   "request_changes" | "approve" | "comment";
 
@@ -2130,6 +2138,13 @@ export interface AgentWorkspaceReviewMonitor {
   reviewFixerStatus: string | null;
   lastRunId: string | null;
   lastError: string | null;
+  autoMergeGuardStatus: AgentWorkspaceReviewAutoMergeGuardStatus | null;
+  autoMergeGuardPrNumber: number | null;
+  autoMergeGuardMethod: string | null;
+  autoMergeGuardTargetScope: AgentWorkspaceReviewTargetScope | null;
+  autoMergeGuardDiffFingerprint: string | null;
+  autoMergeGuardHeadSha: string | null;
+  autoMergeGuardLastError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2143,6 +2158,26 @@ export interface AgentWorkspaceReviewContext {
   isCurrent: boolean;
   isOutdated: boolean;
   shouldShowTab: boolean;
+}
+
+export interface AgentWorkspaceReviewStartConfirmation {
+  targetScope: AgentWorkspaceReviewTargetScope | null;
+  diffFingerprint: string | null;
+  headSha: string | null;
+  prNumber: number | null;
+  willDisableAutoMerge: boolean;
+  mergeMethod: string | null;
+  restoreAfterPublish: boolean;
+}
+
+export interface AgentWorkspaceReviewStartPreview {
+  success: boolean;
+  target: AgentWorkspaceReviewTarget | null;
+  willDisableAutoMerge: boolean;
+  prNumber: number | null;
+  mergeMethod: string | null;
+  restoreAfterPublish: boolean;
+  confirmation: AgentWorkspaceReviewStartConfirmation;
 }
 
 export interface StartAgentWorkspaceReviewResult {
@@ -2445,6 +2480,21 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   review_fixer_status: z.string().nullable().optional().default(null),
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
+  auto_merge_guard_status: z
+    .enum(["pausing", "paused_for_review", "awaiting_publish", "restoring", "restore_failed"])
+    .nullable()
+    .optional()
+    .default(null),
+  auto_merge_guard_pr_number: z.number().nullable().optional().default(null),
+  auto_merge_guard_method: z.string().nullable().optional().default(null),
+  auto_merge_guard_target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  auto_merge_guard_diff_fingerprint: z.string().nullable().optional().default(null),
+  auto_merge_guard_head_sha: z.string().nullable().optional().default(null),
+  auto_merge_guard_last_error: z.string().nullable().optional().default(null),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -2468,6 +2518,28 @@ const StartAgentWorkspaceReviewResponseSchema = z.object({
   started: z.boolean(),
   skipped_reason: z.string().nullable(),
   was_queued: z.boolean(),
+});
+const AgentWorkspaceReviewStartConfirmationSchema = z.object({
+  target_scope: z
+    .enum(["selected_source", "workspace_delta"])
+    .nullable()
+    .optional()
+    .default(null),
+  diff_fingerprint: z.string().nullable().optional().default(null),
+  head_sha: z.string().nullable().optional().default(null),
+  pr_number: z.number().nullable().optional().default(null),
+  will_disable_auto_merge: z.boolean(),
+  merge_method: z.string().nullable(),
+  restore_after_publish: z.boolean(),
+});
+const AgentWorkspaceReviewStartPreviewResponseSchema = z.object({
+  success: z.boolean(),
+  target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
+  will_disable_auto_merge: z.boolean(),
+  pr_number: z.number().nullable(),
+  merge_method: z.string().nullable(),
+  restore_after_publish: z.boolean(),
+  confirmation: AgentWorkspaceReviewStartConfirmationSchema,
 });
 const StartAgentWorkspaceReviewFixerResponseSchema = z.object({
   success: z.boolean(),
@@ -2608,6 +2680,9 @@ type RawAgentWorkspaceReviewContext = z.infer<
 >;
 type RawStartAgentWorkspaceReviewResponse = z.infer<
   typeof StartAgentWorkspaceReviewResponseSchema
+>;
+type RawAgentWorkspaceReviewStartPreviewResponse = z.infer<
+  typeof AgentWorkspaceReviewStartPreviewResponseSchema
 >;
 type RawStartAgentWorkspaceReviewFixerResponse = z.infer<
   typeof StartAgentWorkspaceReviewFixerResponseSchema
@@ -3004,6 +3079,13 @@ function transformAgentWorkspaceReviewMonitor(
     reviewFixerStatus: raw.review_fixer_status,
     lastRunId: raw.last_run_id,
     lastError: raw.last_error,
+    autoMergeGuardStatus: raw.auto_merge_guard_status,
+    autoMergeGuardPrNumber: raw.auto_merge_guard_pr_number,
+    autoMergeGuardMethod: raw.auto_merge_guard_method,
+    autoMergeGuardTargetScope: raw.auto_merge_guard_target_scope,
+    autoMergeGuardDiffFingerprint: raw.auto_merge_guard_diff_fingerprint,
+    autoMergeGuardHeadSha: raw.auto_merge_guard_head_sha,
+    autoMergeGuardLastError: raw.auto_merge_guard_last_error,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   };
@@ -3037,6 +3119,28 @@ function transformStartAgentWorkspaceReviewResponse(
     started: raw.started,
     skippedReason: raw.skipped_reason,
     wasQueued: raw.was_queued,
+  };
+}
+
+function transformAgentWorkspaceReviewStartPreview(
+  raw: RawAgentWorkspaceReviewStartPreviewResponse,
+): AgentWorkspaceReviewStartPreview {
+  return {
+    success: raw.success,
+    target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
+    willDisableAutoMerge: raw.will_disable_auto_merge,
+    prNumber: raw.pr_number,
+    mergeMethod: raw.merge_method,
+    restoreAfterPublish: raw.restore_after_publish,
+    confirmation: {
+      targetScope: raw.confirmation.target_scope,
+      diffFingerprint: raw.confirmation.diff_fingerprint,
+      headSha: raw.confirmation.head_sha,
+      prNumber: raw.confirmation.pr_number,
+      willDisableAutoMerge: raw.confirmation.will_disable_auto_merge,
+      mergeMethod: raw.confirmation.merge_method,
+      restoreAfterPublish: raw.confirmation.restore_after_publish,
+    },
   };
 }
 
@@ -3190,6 +3294,18 @@ export async function listAgentConversationWorkspacePublicationEvents(
   return raw.map(transformAgentConversationWorkspacePublicationEvent);
 }
 
+export class AgentWorkspaceHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, statusText: string, detail: string | null) {
+    super(
+      detail ? `${status} ${statusText}: ${detail}` : `${status} ${statusText}`,
+    );
+    this.name = "AgentWorkspaceHttpError";
+    this.status = status;
+  }
+}
+
 async function fetchAgentWorkspaceJson<T>(
   path: string,
   schema: z.ZodType<T>,
@@ -3208,10 +3324,10 @@ async function fetchAgentWorkspaceJson<T>(
     } catch {
       detail = null;
     }
-    throw new Error(
-      detail
-        ? `${response.status} ${response.statusText}: ${detail}`
-        : `${response.status} ${response.statusText}`,
+    throw new AgentWorkspaceHttpError(
+      response.status,
+      response.statusText,
+      detail,
     );
   }
   return schema.parse(await response.json());
@@ -3237,9 +3353,22 @@ export async function getAgentWorkspaceReviewContext(
   return transformAgentWorkspaceReviewContext(raw);
 }
 
+export async function getAgentWorkspaceReviewStartPreview(
+  conversationId: string,
+): Promise<AgentWorkspaceReviewStartPreview> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-start-preview`,
+    AgentWorkspaceReviewStartPreviewResponseSchema,
+  );
+  return transformAgentWorkspaceReviewStartPreview(raw);
+}
+
 export async function startAgentWorkspaceReview(
   conversationId: string,
-  options: { force?: boolean } = {},
+  options: {
+    force?: boolean;
+    confirmation?: AgentWorkspaceReviewStartConfirmation;
+  } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-runs`,
@@ -3247,7 +3376,22 @@ export async function startAgentWorkspaceReview(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: options.force ?? false }),
+      body: JSON.stringify({
+        force: options.force ?? false,
+        confirmation: options.confirmation
+          ? {
+              target_scope: options.confirmation.targetScope,
+              diff_fingerprint: options.confirmation.diffFingerprint,
+              head_sha: options.confirmation.headSha,
+              pr_number: options.confirmation.prNumber,
+              will_disable_auto_merge:
+                options.confirmation.willDisableAutoMerge,
+              merge_method: options.confirmation.mergeMethod,
+              restore_after_publish:
+                options.confirmation.restoreAfterPublish,
+            }
+          : undefined,
+      }),
     },
   );
   return transformStartAgentWorkspaceReviewResponse(raw);

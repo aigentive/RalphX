@@ -13,8 +13,9 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId, IdeationSessionId,
+    AgentWorkspaceReviewAutoMergeGuard, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, IdeationSessionId,
     PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -39,6 +40,10 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     local_cleanup_markers: RwLock<HashMap<ChatConversationId, (String, DateTime<Utc>)>>,
     #[cfg(test)]
     next_pr_supervision_preference_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_publication_event_error: Mutex<Option<String>>,
+    #[cfg(test)]
+    next_auto_merge_restore_completion_error: Mutex<Option<String>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -56,12 +61,29 @@ impl MemoryAgentConversationWorkspaceRepository {
             local_cleanup_markers: RwLock::new(HashMap::new()),
             #[cfg(test)]
             next_pr_supervision_preference_error: Mutex::new(None),
+            #[cfg(test)]
+            next_publication_event_error: Mutex::new(None),
+            #[cfg(test)]
+            next_auto_merge_restore_completion_error: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub fn fail_next_pr_supervision_preference_update(&self, message: impl Into<String>) {
         *self.next_pr_supervision_preference_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_publication_event(&self, message: impl Into<String>) {
+        *self.next_publication_event_error.lock().unwrap() = Some(message.into());
+    }
+
+    #[cfg(test)]
+    pub fn fail_next_auto_merge_restore_completion(&self, message: impl Into<String>) {
+        *self
+            .next_auto_merge_restore_completion_error
+            .lock()
+            .unwrap() = Some(message.into());
     }
 
     pub async fn local_cleanup_status_for_test(
@@ -523,6 +545,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         &self,
         event: AgentConversationWorkspacePublicationEvent,
     ) -> AppResult<()> {
+        #[cfg(test)]
+        if let Some(message) = self.next_publication_event_error.lock().unwrap().take() {
+            return Err(AppError::Infrastructure(message));
+        }
         self.publication_events
             .write()
             .await
@@ -840,6 +866,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             if monitor.previous_version_id.is_none() {
                 monitor.previous_version_id = existing.previous_version_id.clone();
             }
+            // Guard transitions are exclusively compare-and-set operations. A normal Review
+            // monitor upsert must not erase the durable GitHub auto-merge ownership record.
+            monitor.auto_merge_guard = existing.auto_merge_guard.clone();
         }
         monitor.updated_at = Utc::now();
         monitors.insert(monitor.conversation_id, monitor.clone());
@@ -867,6 +896,92 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|monitor| monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing)
+            .cloned()
+            .collect::<Vec<_>>();
+        monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        Ok(monitors)
+    }
+
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.auto_merge_guard != expected {
+            return Ok(false);
+        }
+        monitor.auto_merge_guard = next;
+        monitor.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        conversation_id: &ChatConversationId,
+        expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        #[cfg(test)]
+        if let Some(message) = self
+            .next_auto_merge_restore_completion_error
+            .lock()
+            .unwrap()
+            .take()
+        {
+            return Err(AppError::Infrastructure(message));
+        }
+        let now = Utc::now();
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if !workspace.pr_auto_merge_desired
+            || (expected.target_scope == AgentWorkspaceReviewTargetScope::WorkspaceDelta
+                && (workspace.publication_pr_number != Some(expected.pr_number)
+                    || workspace.has_terminal_publication_pr_status()))
+        {
+            return Ok(false);
+        }
+        let mut monitors = self.workspace_review_monitors.write().await;
+        let Some(monitor) = monitors.get_mut(conversation_id) else {
+            return Ok(false);
+        };
+        if monitor.auto_merge_guard != Some(expected.clone()) {
+            return Ok(false);
+        }
+        if expected.target_scope == AgentWorkspaceReviewTargetScope::SelectedSource
+            && (monitor.current_target_scope != Some(expected.target_scope)
+                || monitor.current_diff_fingerprint.as_deref()
+                    != Some(expected.diff_fingerprint.as_str())
+                || monitor.selected_source_pull_request_number != Some(expected.pr_number)
+                || monitor.selected_source_head_sha != expected.head_sha)
+        {
+            return Ok(false);
+        }
+        workspace.pr_auto_merge_current = Some(true);
+        workspace.pr_supervision_status = Some("monitoring".to_string());
+        workspace.pr_supervision_summary =
+            Some("GitHub auto-merge was restored after the workspace Review passed.".to_string());
+        workspace.pr_supervision_updated_at = Some(now);
+        workspace.updated_at = now;
+        monitor.auto_merge_guard = None;
+        monitor.updated_at = now;
+        Ok(true)
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        let mut monitors = self
+            .workspace_review_monitors
+            .read()
+            .await
+            .values()
+            .filter(|monitor| monitor.auto_merge_guard.is_some())
             .cloned()
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
