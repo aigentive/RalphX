@@ -440,9 +440,13 @@ mod v20260715181627_agent_conversation_capabilities_tests;
 mod v20260715183000_automation_ideation_signal;
 #[cfg(test)]
 mod v20260715183000_automation_ideation_signal_tests;
-pub(super) mod v20260715194617_scripted_agent_workflows;
+mod v20260715194617_scripted_agent_workflows;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
+#[cfg(test)]
+pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
+    v20260715194617_scripted_agent_workflows::migrate(conn)
+}
 #[cfg(test)]
 mod v20260710134609_notifications_table_tests;
 #[cfg(test)]

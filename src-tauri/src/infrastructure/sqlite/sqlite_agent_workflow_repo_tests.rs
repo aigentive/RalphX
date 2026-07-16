@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use rusqlite::Connection;
 
-use super::migrations::v20260715194617_scripted_agent_workflows;
+use super::migrations::migrate_scripted_agent_workflows_for_test;
 use super::SqliteAgentWorkflowRepository;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
@@ -24,7 +24,7 @@ fn repository() -> SqliteAgentWorkflowRepository {
              INSERT INTO chat_conversations VALUES ('00000000-0000-0000-0000-000000000001');",
         )
         .unwrap();
-    v20260715194617_scripted_agent_workflows::migrate(&connection).unwrap();
+    migrate_scripted_agent_workflows_for_test(&connection).unwrap();
     SqliteAgentWorkflowRepository::new(connection)
 }
 
