@@ -94,7 +94,7 @@ use crate::domain::services::{
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PERSONA_EXTRACTOR, AGENT_PR_REVIEWER, AGENT_TASK_MANAGER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -722,7 +722,10 @@ pub fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) ->
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
-        AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::Tasks => AGENT_TASK_MANAGER,
+        AgentConversationWorkspaceMode::Autopilot | AgentConversationWorkspaceMode::Ideation => {
+            AGENT_CHAT_PROJECT
+        }
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
         AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
         AgentConversationWorkspaceMode::PersonaBuilder => AGENT_PERSONA_EXTRACTOR,

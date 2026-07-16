@@ -4,10 +4,14 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
+  buildAgentConversationModeOptions,
   isConversationModeLocked,
 } from "./agentConversationMode";
 import type { AgentConversation } from "./agentConversations";
-import { AGENT_START_MODE_OPTIONS } from "./agentStartModeOptions";
+import {
+  AGENT_START_MODE_OPTIONS,
+  buildAgentStartModeOptions,
+} from "./agentStartModeOptions";
 
 function conversation(
   overrides: Partial<AgentConversation> = {},
@@ -115,5 +119,50 @@ describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
     expect(AGENT_START_MODE_OPTIONS.map((option) => option.id)).not.toContain(
       "persona_builder",
     );
+  });
+
+  it("keeps Tasks out of fresh conversations and gates Autopilot", () => {
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
+        (option) => option.id,
+      ),
+    ).not.toContain("tasks");
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: false }).map(
+        (option) => option.id,
+      ),
+    ).not.toContain("autopilot");
+    expect(
+      buildAgentStartModeOptions({ autopilotEnabled: true }).map(
+        (option) => option.id,
+      ),
+    ).toContain("autopilot");
+  });
+
+  it("offers Tasks only for the current or durably attached pipeline", () => {
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: false,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).not.toContain("tasks");
+    expect(
+      buildAgentConversationModeOptions({
+        currentMode: "edit",
+        taskPipelineAvailable: true,
+        autopilotEnabled: false,
+      }).map((option) => option.id),
+    ).toContain("tasks");
+  });
+
+  it("keeps a disabled current Autopilot mode visible after opt-out", () => {
+    const autopilot = buildAgentConversationModeOptions({
+      currentMode: "autopilot",
+      taskPipelineAvailable: false,
+      autopilotEnabled: false,
+    }).find((option) => option.id === "autopilot");
+
+    expect(autopilot).toMatchObject({ disabled: true });
   });
 });

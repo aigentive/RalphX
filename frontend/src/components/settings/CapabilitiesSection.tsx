@@ -15,7 +15,8 @@ export function CapabilitiesSection() {
   const update = (
     input:
       | { agentConversationTeam: boolean }
-      | { agentConversationWorkflows: boolean },
+      | { agentConversationWorkflows: boolean }
+      | { agentConversationAutopilot: boolean },
   ) => {
     updateFeatureFlags.mutate(input, {
       onError: (error) => {
@@ -38,6 +39,19 @@ export function CapabilitiesSection() {
         </p>
       </div>
 
+      <ToggleSettingRow
+        id="agent-conversation-autopilot"
+        label="Autopilot"
+        description="Allow native Agent conversations to plan, create tasks, and start execution with minimal supervision."
+        checked={
+          !isPlaceholderData &&
+          (featureFlags.agentConversationAutopilot ?? false)
+        }
+        disabled={disabled}
+        onChange={(agentConversationAutopilot) =>
+          update({ agentConversationAutopilot })
+        }
+      />
       <ToggleSettingRow
         id="agent-conversation-team"
         label="Team"

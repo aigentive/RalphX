@@ -1,7 +1,25 @@
 use super::{
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewMonitor,
-    ArtifactId, ChatConversationId, ProjectId,
+    AgentConversationWorkspaceMode, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewMonitor, ArtifactId, ChatConversationId, ProjectId,
 };
+use std::str::FromStr;
+
+#[test]
+fn workspace_modes_round_trip_tasks_autopilot_and_legacy_ideation() {
+    for (value, mode) in [
+        ("tasks", AgentConversationWorkspaceMode::Tasks),
+        ("autopilot", AgentConversationWorkspaceMode::Autopilot),
+        ("ideation", AgentConversationWorkspaceMode::Ideation),
+    ] {
+        assert_eq!(AgentConversationWorkspaceMode::from_str(value), Ok(mode));
+        assert_eq!(mode.to_string(), value);
+        assert_eq!(
+            serde_json::from_str::<AgentConversationWorkspaceMode>(&format!(r#""{value}""#))
+                .expect("mode should deserialize"),
+            mode
+        );
+    }
+}
 
 fn monitor_and_action() -> (AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewAction) {
     let conversation_id = ChatConversationId::new();

@@ -1,0 +1,87 @@
+name: ralphx-task-manager
+role: task_manager
+description: "Supervises one attached accepted task pipeline and appends explicit same-PR follow-ups."
+capabilities:
+  mcp_tools:
+    - search_memories
+    - get_memory
+    - get_memories_for_paths
+    - get_conversation_transcript
+    - get_artifact
+    - append_task_to_ideation_plan
+    - register_agent_issue
+    - create_agent_task
+    - get_agent_task
+    - list_agent_tasks
+    - update_agent_task
+    - claim_agent_task
+    - complete_agent_task
+harnesses:
+  claude:
+    model: sonnet
+    mcp_transport: external
+    mcp_tools:
+      - v1_get_project_status
+      - v1_get_pipeline_overview
+      - v1_get_ideation_status
+      - v1_send_ideation_message
+      - v1_get_ideation_messages
+      - v1_get_plan
+      - v1_get_plan_verification
+      - v1_list_proposals
+      - v1_get_proposal_detail
+      - v1_get_session_tasks
+      - v1_append_task_to_plan
+    internal_mcp_tools:
+      - search_memories
+      - get_memory
+      - get_memories_for_paths
+      - get_conversation_transcript
+      - get_artifact
+      - register_agent_issue
+      - create_agent_task
+      - get_agent_task
+      - list_agent_tasks
+      - update_agent_task
+      - claim_agent_task
+      - complete_agent_task
+    tools:
+      extends: readonly_tools
+    disallowed_tools:
+      - Write
+      - Edit
+      - NotebookEdit
+      - Bash
+      - Task
+    preapproved_cli_tools: []
+  codex:
+    mcp_transport: external
+    mcp_tools:
+      - v1_get_project_status
+      - v1_get_pipeline_overview
+      - v1_get_ideation_status
+      - v1_send_ideation_message
+      - v1_get_ideation_messages
+      - v1_get_plan
+      - v1_get_plan_verification
+      - v1_list_proposals
+      - v1_get_proposal_detail
+      - v1_get_session_tasks
+      - v1_append_task_to_plan
+    internal_mcp_tools:
+      - search_memories
+      - get_memory
+      - get_memories_for_paths
+      - get_conversation_transcript
+      - get_artifact
+      - register_agent_issue
+      - create_agent_task
+      - get_agent_task
+      - list_agent_tasks
+      - update_agent_task
+      - claim_agent_task
+      - complete_agent_task
+    runtime_features:
+      shell_tool: false
+delegation:
+  allowed_targets: []

@@ -4065,6 +4065,7 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
         crate::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
     let project_id = seed_ticketing_project(&state, "team-start-new").await;
@@ -4127,6 +4128,7 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
         crate::application::agent_capability_gate::AgentCapabilities {
             team: true,
             workflows: false,
+            autopilot: false,
         },
     );
     let project_id = seed_ticketing_project(&state, "team-start-seeded").await;

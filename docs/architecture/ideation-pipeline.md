@@ -1,14 +1,34 @@
 # Ideation Pipeline Architecture
 
+## Native supervised pipeline
+
+Native Agent conversations use the explicit progression
+`Plan → Approve Plan → Create Proposals → Tasks → Start Tasks → execution`.
+`Create Proposals` records a durable conversation/session attachment and asks
+for decomposition only; it creates no Kanban tasks or scheduler work. `Start
+Tasks` revalidates the exact current approval and proposal graph before using
+the canonical apply and scheduling path.
+
+`Tasks` is contextual and returnable only for the owning conversation. Its
+agent may append one explicit user-requested follow-up to the same accepted,
+still-open plan and PR through the scoped append path. External MCP ideation
+remains autonomous and is not gated by the native Autopilot flag.
+
+`Autopilot` is a separate, default-off native capability. It does not rename
+Automation mode or change external MCP authorization.
+
 > **Source:** Derived from code audit of `src-tauri/src/commands/ideation_commands/`,
 > `src-tauri/src/http_server/handlers/ideation.rs`, `artifacts.rs`, `external.rs`.
 > Do not update from docs — re-audit the code if this becomes stale.
 
 ## Overview
 
-The ideation pipeline converts a conversation with an orchestrator agent into a set of scheduled
-tasks. It spans 7 stages from session creation through acceptance cascade. Most stages are
-autonomous (agent-driven); only proposal finalization requires an explicit agent or user action.
+The external MCP and Ideation Studio pipeline converts a conversation with an
+orchestrator agent into scheduled tasks. It spans 7 stages from session
+creation through acceptance cascade. Most stages are autonomous
+(agent-driven); only proposal finalization requires an explicit agent or user
+action. Native Agent conversations use the supervised progression above and
+cannot use `finalize_proposals` while attached in Tasks mode.
 
 ```
 Session Created
@@ -166,6 +186,9 @@ triggers Stage 5 (Auto-Propose) automatically.
 
 ## Stage 6: Proposal Finalization ◉ BREAKPOINT
 
+This stage describes external MCP and Ideation Studio orchestration. A native
+Tasks conversation must use the typed **Start Tasks** command instead.
+
 - **Handler:** `finalize_proposals()` — `ideation.rs:134`
 - **Implementation:** `finalize_proposals_impl()` — `helpers.rs:753`
 - **HTTP:** POST `/api/ideation/proposals/finalize` (MCP tool: `finalize_proposals`)
@@ -304,7 +327,7 @@ typed action state and exact-artifact proof (`unverified`, `queued`, `verifying`
 
 ---
 
-## Autonomy Summary
+## External and Ideation Studio Autonomy Summary
 
 | Stage | User/Agent Action Required | Notes |
 |-------|---------------------------|-------|

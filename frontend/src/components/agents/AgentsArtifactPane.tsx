@@ -90,6 +90,7 @@ import {
 import { ideationKeys } from "@/hooks/useIdeation";
 import { taskKeys, useTasks } from "@/hooks/useTasks";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
+import { validateDependencyGraph } from "@/hooks/useDependencyGraphComplete";
 import {
   useVerificationStatus,
   verificationStatusKey,
@@ -611,7 +612,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     focusedIdeationSessionId ||
     focusedRunTarget ||
     scopedWorkspace?.mode === "ideation" ||
+    scopedWorkspace?.mode === "tasks" ||
     scopedWorkspace?.mode === "plan" ||
+    scopedWorkspace?.taskPipelineSessionId ||
     scopedWorkspace?.linkedIdeationSessionId ||
     scopedWorkspace?.linkedPlanBranchId,
   );
@@ -646,7 +649,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? resolveAttachedIdeationSessionId(
             conversation,
             conversationMessages,
-            scopedWorkspace?.linkedIdeationSessionId ?? null,
+            scopedWorkspace?.taskPipelineSessionId ??
+              scopedWorkspace?.linkedIdeationSessionId ??
+              null,
           )
         : null),
     [
@@ -655,6 +660,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       focusedIdeationSessionId,
       shouldLoadIdeationData,
       scopedWorkspace?.linkedIdeationSessionId,
+      scopedWorkspace?.taskPipelineSessionId,
     ],
   );
   const atlassianSettingsQuery = useQuery({
@@ -2189,6 +2195,7 @@ function AgentPlanPanel({
     useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] =
     useState(false);
+  const [isStartingTasks, setIsStartingTasks] = useState(false);
   const [viewingProposalId, setViewingProposalId] = useState<string | null>(
     null,
   );
@@ -2336,6 +2343,12 @@ function AgentPlanPanel({
     canShowPlanModeControls && !isImplementingPlanDirectly;
   const canShowManualPlanContinuationActions =
     canShowApprovedPlanActions && !isAutomationRunConversation;
+  const canRetryTaskDecomposition = Boolean(
+    workspace?.mode === "tasks" &&
+      session !== null &&
+      workspace.taskPipelineSessionId === session.id &&
+      !hasImplementationAttempt,
+  );
   const isPlanVerificationSatisfied = verificationState === "verified";
   const canVerifyPlan =
     canShowApprovedPlanActions &&
@@ -2343,7 +2356,7 @@ function AgentPlanPanel({
     verificationState !== null &&
     !isPlanVerificationSatisfied;
   const canCreateProposals =
-    canShowManualPlanContinuationActions &&
+    (canShowManualPlanContinuationActions || canRetryTaskDecomposition) &&
     session !== null &&
     (!isPlanningSession || isPlanApproved);
   const canImplementDirectly = Boolean(
@@ -2769,12 +2782,70 @@ function AgentPlanPanel({
   const showCreateProposalsLifecycleAction = Boolean(
     canCreateProposals && linkedProposalsCount === 0,
   );
+  const taskGraphValidation = useMemo(
+    () => validateDependencyGraph(proposals, dependencyGraph),
+    [dependencyGraph, proposals],
+  );
+  const canStartTasks = Boolean(
+    workspace?.mode === "tasks" &&
+      session?.id &&
+      workspace.taskPipelineSessionId === session.id &&
+      proposals.length > 0 &&
+      taskGraphValidation.isComplete &&
+      !hasImplementationAttempt,
+  );
+  const handleStartTasks = useCallback(async () => {
+    if (!canStartTasks || !session || !workspace?.conversationId) {
+      return;
+    }
+    setIsStartingTasks(true);
+    try {
+      const result = await chatApi.startAgentTaskPipeline({
+        conversationId: workspace.conversationId,
+        sessionId: session.id,
+        proposalIds: proposals.map((proposal) => proposal.id),
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ideationKeys.sessionWithData(session.id),
+        }),
+        queryClient.invalidateQueries({ queryKey: taskKeys.lists() }),
+        invalidateWorkspaceQueries(queryClient, workspace.conversationId),
+      ]);
+      toast.success(
+        "Started " +
+          result.tasksCreated +
+          " task" +
+          (result.tasksCreated === 1 ? "" : "s"),
+      );
+    } catch (err) {
+      toast.error(extractErrorMessage(err, "Failed to start tasks"));
+    } finally {
+      setIsStartingTasks(false);
+    }
+  }, [canStartTasks, proposals, queryClient, session, workspace]);
   const planLifecycleActions = useMemo<PlanLifecycleAction[]>(() => {
     if (!planLifecycleState || planLifecycleState === "accepted") {
       return [];
     }
 
     const actions: PlanLifecycleAction[] = [];
+    if (canStartTasks) {
+      actions.push({
+        key: "start-tasks",
+        label: isStartingTasks
+          ? "Starting..."
+          : "Start Tasks (" + proposals.length + ")",
+        onClick: () => {
+          void handleStartTasks();
+        },
+        icon: Play,
+        loading: isStartingTasks,
+        primary: true,
+        testId: "plan-lifecycle-start-tasks-button",
+      });
+      return actions;
+    }
     const verifyPending =
       isStartingPlanVerification || verificationInProgress;
     const verifyAction = canVerifyPlan
@@ -2860,18 +2931,22 @@ function AgentPlanPanel({
     return actions;
   }, [
     canApprovePlan,
+    canStartTasks,
     canImplementDirectly,
     canVerifyPlan,
     handleApprovePlan,
     handleCreateProposals,
     handleImplementDirectly,
+    handleStartTasks,
     handleVerifyPlan,
     isApprovingPlan,
     isImplementingPlanDirectly,
     isPlanRecommendationPending,
     isStartingPlanVerification,
+    isStartingTasks,
     planLifecycleState,
     primaryPlanAction,
+    proposals.length,
     showCreateProposalsLifecycleAction,
     verificationInProgress,
   ]);

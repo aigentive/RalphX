@@ -335,6 +335,8 @@ pub struct AgentConversationWorkspaceResponse {
     pub branch_name: String,
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<String>,
+    pub task_pipeline_session_id: Option<String>,
+    pub task_pipeline_available: bool,
     pub linked_plan_branch_id: Option<String>,
     pub source_pull_request: Option<AgentWorkspaceSourcePullRequestResponse>,
     pub publication_pr_number: Option<i64>,
@@ -399,6 +401,7 @@ pub struct AgentConversationForkedPayload {
 
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
     fn from(workspace: AgentConversationWorkspace) -> Self {
+        let task_pipeline_available = workspace.task_pipeline_session_id.is_some();
         Self {
             conversation_id: workspace.conversation_id.as_str(),
             project_id: workspace.project_id.as_str().to_string(),
@@ -413,6 +416,10 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             linked_ideation_session_id: workspace
                 .linked_ideation_session_id
                 .map(|id| id.as_str().to_string()),
+            task_pipeline_session_id: workspace
+                .task_pipeline_session_id
+                .map(|id| id.as_str().to_string()),
+            task_pipeline_available,
             linked_plan_branch_id: workspace
                 .linked_plan_branch_id
                 .map(|id| id.as_str().to_string()),
@@ -2837,6 +2844,8 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
         mode,
         AgentConversationWorkspaceMode::Edit
             | AgentConversationWorkspaceMode::Plan
+            | AgentConversationWorkspaceMode::Tasks
+            | AgentConversationWorkspaceMode::Autopilot
             | AgentConversationWorkspaceMode::Ideation
             | AgentConversationWorkspaceMode::ReviewPr
     )
@@ -2962,10 +2971,11 @@ fn validate_agent_conversation_mode_transition(
         return Err("Automation and PersonaBuilder conversations cannot change mode".to_string());
     }
     reject_persona_builder_workspace_mode(&target_mode.to_string())?;
-    if workspace_mode_lock.locked && target_mode != AgentConversationWorkspaceMode::Ideation {
+    if workspace_mode_lock.locked && target_mode != current_mode {
         return Err(workspace_mode_lock.reason.clone().unwrap_or_else(|| {
-            "This workspace is owned by active ideation or execution state and cannot leave Ideation Mode"
-                .to_string()
+            format!(
+                "This workspace is owned by active planning or execution state and cannot leave {current_mode} mode"
+            )
         }));
     }
 
@@ -3499,6 +3509,22 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
         .agent_mode
         .or_else(|| existing_workspace.as_ref().map(|workspace| workspace.mode))
         .unwrap_or(AgentConversationWorkspaceMode::Chat);
+    if target_mode == AgentConversationWorkspaceMode::Autopilot
+        && current_mode != AgentConversationWorkspaceMode::Autopilot
+        && !state.agent_capability_gate.autopilot_enabled()
+    {
+        return Err("Autopilot is disabled in Agent conversation capabilities".to_string());
+    }
+    if target_mode == AgentConversationWorkspaceMode::Tasks
+        && existing_workspace
+            .as_ref()
+            .is_none_or(|workspace| workspace.task_pipeline_session_id.is_none())
+    {
+        return Err(
+            "Tasks mode is available only for this conversation's attached task pipeline"
+                .to_string(),
+        );
+    }
     let workspace_mode_lock = match existing_workspace.as_ref() {
         Some(workspace) => resolve_agent_conversation_workspace_mode_lock(state, workspace).await?,
         None => AgentConversationWorkspaceModeLock::unlocked(),
@@ -3529,9 +3555,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
-            let preserve_planning_session_link = if target_mode
-                != AgentConversationWorkspaceMode::Ideation
-                && workspace.linked_plan_branch_id.is_none()
+            let preserve_planning_session_link = if !matches!(
+                target_mode,
+                AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
+            ) && workspace.linked_plan_branch_id.is_none()
             {
                 linked_ideation_session_is_planning(state, &workspace).await?
             } else {
@@ -3545,9 +3572,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
             } else {
                 false
             };
-            let should_detach_inactive_owner = target_mode
-                != AgentConversationWorkspaceMode::Ideation
-                && !workspace_mode_lock.locked
+            let should_detach_inactive_owner = !matches!(
+                target_mode,
+                AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Tasks
+            ) && !workspace_mode_lock.locked
                 && (workspace.linked_ideation_session_id.is_some()
                     || workspace.linked_plan_branch_id.is_some())
                 && !preserve_planning_session_link;
@@ -9478,7 +9506,9 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Chat => AgentConversationRuntimeIndexMode::Chat,
         AgentConversationWorkspaceMode::Edit => AgentConversationRuntimeIndexMode::Agent,
         AgentConversationWorkspaceMode::Plan => AgentConversationRuntimeIndexMode::Plan,
-        AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
+        AgentConversationWorkspaceMode::Tasks
+        | AgentConversationWorkspaceMode::Autopilot
+        | AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
         AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
         AgentConversationWorkspaceMode::PersonaBuilder => {
@@ -11206,6 +11236,7 @@ mod tests {
             crate::application::agent_capability_gate::AgentCapabilities {
                 team: true,
                 workflows: false,
+                autopilot: false,
             },
         );
         mock_builder()
@@ -11593,6 +11624,8 @@ mod tests {
             branch_name: "agent-d619a9fd".to_string(),
             worktree_path: "/tmp/workspace".to_string(),
             linked_ideation_session_id: Some("session-1".to_string()),
+            task_pipeline_session_id: None,
+            task_pipeline_available: false,
             linked_plan_branch_id: Some("plan-branch-1".to_string()),
             source_pull_request: None,
             publication_pr_number: None,
@@ -11660,6 +11693,8 @@ mod tests {
             branch_name: "agent-shell-branch".to_string(),
             worktree_path: "/tmp/workspace".to_string(),
             linked_ideation_session_id: Some("session-1".to_string()),
+            task_pipeline_session_id: None,
+            task_pipeline_available: false,
             linked_plan_branch_id: Some("plan-branch-1".to_string()),
             source_pull_request: None,
             publication_pr_number: Some(12),

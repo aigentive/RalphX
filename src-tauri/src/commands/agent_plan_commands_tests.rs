@@ -1,6 +1,8 @@
 use super::agent_plan_commands::{
-    copy_agent_conversation_plan_for_state, import_agent_conversation_plan_for_state,
-    CopyAgentConversationPlanInput, ImportAgentConversationPlanInput,
+    activate_agent_task_pipeline_for_state, copy_agent_conversation_plan_for_state,
+    import_agent_conversation_plan_for_state, validate_complete_task_pipeline_proposal_selection,
+    ActivateAgentTaskPipelineInput, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanInput,
 };
 use crate::application::{
     agent_conversation_workspace::resolve_agent_conversation_workspace_path, AppState,
@@ -9,8 +11,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactBucketId,
     ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactRelationType, ArtifactType,
     ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    IdeationSessionStatus, Project,
+    IdeationSessionStatus, Priority, Project, ProposalCategory, TaskProposal,
 };
+use crate::domain::repositories::PlanApprovalActor;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -211,6 +214,231 @@ async fn import_agent_conversation_plan_switches_to_plan_and_creates_draft() {
         session.plan_artifact_id.as_ref().map(|id| id.as_str()),
         Some(response.artifact.id.as_str()),
     );
+}
+
+#[tokio::test]
+async fn approved_current_plan_activates_durable_tasks_pipeline_once() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Approved plan".to_string(),
+            content: "# Approved".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id = seeded.session_id.clone();
+    let artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(session_id),
+                Some(&artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+
+    let input = || ActivateAgentTaskPipelineInput {
+        conversation_id: conversation.id.as_str().to_string(),
+        session_id: seeded.session_id.clone(),
+    };
+    let activated = activate_agent_task_pipeline_for_state(input(), &state)
+        .await
+        .unwrap();
+    let replayed = activate_agent_task_pipeline_for_state(input(), &state)
+        .await
+        .unwrap();
+
+    assert_eq!(activated.mode, "tasks");
+    assert_eq!(
+        activated.task_pipeline_session_id.as_deref(),
+        Some(seeded.session_id.as_str()),
+    );
+    assert!(activated.task_pipeline_available);
+    assert_eq!(
+        replayed.task_pipeline_session_id,
+        activated.task_pipeline_session_id,
+    );
+    assert!(
+        state
+            .task_repo
+            .get_by_ideation_session(&crate::domain::entities::IdeationSessionId::from_string(
+                seeded.session_id
+            ),)
+            .await
+            .unwrap()
+            .is_empty(),
+        "Create Proposals authority must not create Kanban tasks",
+    );
+}
+
+#[tokio::test]
+async fn unapproved_plan_cannot_activate_tasks_pipeline() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Draft plan".to_string(),
+            content: "# Draft".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(error, "Current plan is not approved");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn stale_plan_approval_cannot_activate_tasks_pipeline() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Approved then revised plan".to_string(),
+            content: "# Version one".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let approval_session_id = seeded.session_id.clone();
+    let approval_artifact_id = seeded.artifact.id.clone();
+    state
+        .db
+        .run_transaction(move |conn| {
+            crate::application::plan_artifact_approval::approve_current_plan_artifact_sync(
+                conn,
+                crate::domain::entities::IdeationSessionId::from_string(approval_session_id),
+                Some(&approval_artifact_id),
+                PlanApprovalActor::User,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    let previous_id = ArtifactId::from_string(seeded.artifact.id.clone());
+    let mut revised = state
+        .artifact_repo
+        .get_by_id(&previous_id)
+        .await
+        .unwrap()
+        .unwrap();
+    revised.id = ArtifactId::new();
+    revised.content = ArtifactContent::Inline {
+        text: "# Version two".to_string(),
+    };
+    revised.metadata.version += 1;
+    state
+        .artifact_repo
+        .create_with_previous_version(revised, previous_id)
+        .await
+        .unwrap();
+
+    let error = activate_agent_task_pipeline_for_state(
+        ActivateAgentTaskPipelineInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            session_id: seeded.session_id,
+        },
+        &state,
+    )
+    .await
+    .unwrap_err();
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(error, "Current plan version is not approved");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Plan);
+    assert!(workspace.task_pipeline_session_id.is_none());
+}
+
+#[tokio::test]
+async fn start_tasks_requires_the_complete_current_proposal_set() {
+    let (state, _project, conversation, _test_root) =
+        setup_target_workspace(AgentConversationWorkspaceMode::Edit).await;
+    let seeded = import_agent_conversation_plan_for_state(
+        ImportAgentConversationPlanInput {
+            conversation_id: conversation.id.as_str().to_string(),
+            title: "Proposal selection".to_string(),
+            content: "# Proposal selection".to_string(),
+        },
+        &state,
+    )
+    .await
+    .unwrap();
+    let session_id =
+        crate::domain::entities::IdeationSessionId::from_string(seeded.session_id.clone());
+    let first = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id.clone(),
+            "First",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+    let second = state
+        .task_proposal_repo
+        .create(TaskProposal::new(
+            session_id,
+            "Second",
+            ProposalCategory::Feature,
+            Priority::Medium,
+        ))
+        .await
+        .unwrap();
+
+    let subset_error = validate_complete_task_pipeline_proposal_selection(
+        &state,
+        &seeded.session_id,
+        &[first.id.as_str().to_string()],
+    )
+    .await
+    .unwrap_err();
+    assert!(subset_error.contains("complete current proposal set"));
+    validate_complete_task_pipeline_proposal_selection(
+        &state,
+        &seeded.session_id,
+        &[
+            first.id.as_str().to_string(),
+            second.id.as_str().to_string(),
+        ],
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
