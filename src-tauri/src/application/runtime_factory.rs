@@ -4,6 +4,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::application::chat_service::{AppChatService, ChatService, StreamingStateCache};
+use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::notification_service::NotificationService;
 use crate::application::{
     AgentClientBundle, AppState, AtlassianIntegrationService, GranolaIntegrationService,
@@ -50,6 +51,7 @@ pub(crate) struct RuntimeFactoryDeps {
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    pub manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
@@ -96,6 +98,7 @@ impl RuntimeFactoryDeps {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_default_service: None,
             review_repo: None,
             plan_branch_repo: None,
             agent_conversation_workspace_repo: None,
@@ -158,6 +161,14 @@ impl RuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_manual_role_default_service(
+        mut self,
+        service: Arc<ManualRoleDefaultService>,
+    ) -> Self {
+        self.manual_role_default_service = Some(service);
+        self
+    }
+
     pub(crate) fn with_plan_pr_description_drafter(
         mut self,
         drafter: Arc<dyn PlanPrDescriptionDrafter>,
@@ -195,6 +206,7 @@ impl RuntimeFactoryDeps {
         .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_execution_plan_repo(Arc::clone(&state.execution_plan_repo))
         .with_review_repo(Arc::clone(&state.review_repo))
+        .with_manual_role_default_service(Arc::new(state.manual_role_default_service()))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
             Some(Arc::clone(&state.agent_lane_settings_repo)),
@@ -214,6 +226,7 @@ impl RuntimeFactoryDeps {
                 Arc::clone(&state.agent_conversation_workspace_repo),
                 Arc::clone(&state.chat_conversation_repo),
                 Arc::clone(&state.agent_provider_settings_repo),
+                Arc::new(state.manual_role_default_service()),
                 state.agent_clients.clone(),
             ),
         );
@@ -249,6 +262,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    pub manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
     pub ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     pub ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
@@ -310,6 +324,7 @@ impl ChatRuntimeFactoryDeps {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_default_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             agent_conversation_workspace_repo: None,
@@ -373,6 +388,14 @@ impl ChatRuntimeFactoryDeps {
         repo: Arc<dyn AgentProviderSettingsRepository>,
     ) -> Self {
         self.agent_provider_settings_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_manual_role_default_service(
+        mut self,
+        service: Arc<ManualRoleDefaultService>,
+    ) -> Self {
+        self.manual_role_default_service = Some(service);
         self
     }
 
@@ -578,6 +601,7 @@ impl ChatRuntimeFactoryDeps {
         .with_notification_service(state.notification_service())
         .with_delegated_session_repo(Arc::clone(&state.delegated_session_repo))
         .with_persona_repo(Arc::clone(&state.persona_repo))
+        .with_manual_role_default_service(Arc::new(state.manual_role_default_service()))
         .with_branch_update_repo(Arc::clone(&state.branch_update_repo))
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
@@ -665,6 +689,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.agent_provider_settings_repo.as_ref() {
         service = service.with_agent_provider_settings_repo(Arc::clone(repo));
+    }
+    if let Some(defaults) = deps.manual_role_default_service.as_ref() {
+        service = service.with_manual_role_default_service(Arc::clone(defaults));
     }
     if let Some(repo) = deps.ideation_effort_settings_repo.as_ref() {
         service = service.with_ideation_effort_settings_repo(Arc::clone(repo));
@@ -807,6 +834,7 @@ pub(crate) fn build_transition_service_from_deps(
         deps.execution_settings_repo.as_ref().map(Arc::clone),
         deps.agent_lane_settings_repo.as_ref().map(Arc::clone),
         deps.agent_provider_settings_repo.as_ref().map(Arc::clone),
+        deps.manual_role_default_service.as_ref().map(Arc::clone),
         deps.plan_branch_repo.as_ref().map(Arc::clone),
         deps.interactive_process_registry.as_ref().map(Arc::clone),
     );

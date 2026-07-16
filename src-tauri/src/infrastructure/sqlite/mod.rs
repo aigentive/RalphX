@@ -12,6 +12,7 @@ pub mod sqlite_agent_conversation_jira_issue_repo;
 pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
 pub mod sqlite_agent_lane_settings_repo;
+pub mod sqlite_manual_role_default_repo;
 pub mod sqlite_agent_model_registry_repo;
 pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
@@ -140,6 +141,7 @@ pub use sqlite_agent_conversation_jira_issue_repo::SqliteAgentConversationJiraIs
 pub use sqlite_agent_conversation_linear_issue_repo::SqliteAgentConversationLinearIssueRepository;
 pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
+pub use sqlite_manual_role_default_repo::SqliteManualRoleDefaultRepository;
 pub use sqlite_agent_model_registry_repo::SqliteAgentModelRegistryRepository;
 pub use sqlite_agent_profile_repo::SqliteAgentProfileRepository;
 pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsRepository;

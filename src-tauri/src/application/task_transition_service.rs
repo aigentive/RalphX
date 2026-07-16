@@ -20,6 +20,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::application::agent_client_bundle::{AgentClientBundle, AgentClientFactoryBundle};
+use crate::application::manual_role_default_service::ManualRoleDefaultService;
 use crate::application::runtime_factory::{
     build_chat_service_with_fallback, ChatRuntimeFactoryDeps,
 };
@@ -891,6 +892,7 @@ pub struct TaskTransitionService {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
 
     /// Activity event repository for emitting merge pipeline audit events.
@@ -1006,6 +1008,7 @@ impl TaskTransitionService {
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
             self.agent_provider_settings_repo.as_ref().map(Arc::clone),
+            self.manual_role_default_service.as_ref().map(Arc::clone),
             Arc::clone(
                 self.ideation_session_repo
                     .as_ref()
@@ -1024,6 +1027,7 @@ impl TaskTransitionService {
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
         agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+        manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
     ) -> Arc<dyn AgentSpawner> {
@@ -1036,6 +1040,11 @@ impl TaskTransitionService {
             .with_execution_state(Arc::clone(&execution_state));
         let spawner = if let Some(provider_repo) = agent_provider_settings_repo {
             spawner.with_agent_provider_settings_repo(provider_repo)
+        } else {
+            spawner
+        };
+        let spawner = if let Some(defaults) = manual_role_default_service {
+            spawner.with_manual_role_default_service(defaults)
         } else {
             spawner
         };
@@ -1124,6 +1133,9 @@ impl TaskTransitionService {
         if let Some(repo) = self.agent_provider_settings_repo.as_ref() {
             service = service.with_agent_provider_settings_repo(Arc::clone(repo));
         }
+        if let Some(defaults) = self.manual_role_default_service.as_ref() {
+            service = service.with_manual_role_default_service(Arc::clone(defaults));
+        }
         if let Some(repo) = self.plan_branch_repo.as_ref() {
             service = service.with_plan_branch_repo(Arc::clone(repo));
         }
@@ -1181,6 +1193,7 @@ impl TaskTransitionService {
             Arc::clone(&task_repo),
             Arc::clone(&project_repo),
             Arc::clone(&execution_state),
+            None,
             None,
             None,
             None,
@@ -1311,6 +1324,7 @@ impl TaskTransitionService {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            manual_role_default_service: None,
             review_repo: None,
             activity_event_repo: activity_event_repo_for_services,
             team_mode: None,
@@ -1460,12 +1474,23 @@ impl TaskTransitionService {
         self
     }
 
+    pub fn with_manual_role_default_service(
+        mut self,
+        service: Arc<ManualRoleDefaultService>,
+    ) -> Self {
+        self.manual_role_default_service = Some(service);
+        self.rebuild_chat_service();
+        self.rebuild_agent_spawner();
+        self
+    }
+
     pub(crate) fn with_runtime_resolution_context(
         mut self,
         agent_clients: Option<AgentClientBundle>,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
         agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+        manual_role_default_service: Option<Arc<ManualRoleDefaultService>>,
         plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
         interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     ) -> Self {
@@ -1473,7 +1498,8 @@ impl TaskTransitionService {
         let agent_clients_changed = agent_clients.is_some();
         let runtime_settings_changed = execution_settings_repo.is_some()
             || agent_lane_settings_repo.is_some()
-            || agent_provider_settings_repo.is_some();
+            || agent_provider_settings_repo.is_some()
+            || manual_role_default_service.is_some();
         let app_agent_lane_settings_repo =
             if execution_settings_repo.is_some() && agent_lane_settings_repo.is_none() {
                 self._app_handle
@@ -1504,6 +1530,9 @@ impl TaskTransitionService {
         }
         if let Some(repo) = agent_provider_settings_repo.or(app_agent_provider_settings_repo) {
             self.agent_provider_settings_repo = Some(repo);
+        }
+        if let Some(defaults) = manual_role_default_service {
+            self.manual_role_default_service = Some(defaults);
         }
 
         if let Some(repo) = plan_branch_repo {

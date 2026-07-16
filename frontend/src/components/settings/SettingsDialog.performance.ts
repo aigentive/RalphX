@@ -9,8 +9,8 @@ export type ScheduledJob = {
 
 export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unknown>> = {
   providers: () => import("./HarnessProvidersSection"),
+  agents: () => import("./AgentsSettingsSection"),
   execution: () => import("./sections/ExecutionSection"),
-  "execution-harnesses": () => import("./IdeationHarnessSection"),
   models: () => import("./AgentModelsSection"),
   "global-execution": () => import("./sections/GlobalExecutionSection"),
   personas: () => import("./PersonasSection"),
@@ -21,7 +21,6 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   repository: () => import("./RepositorySettingsSection"),
   "project-analysis": () => import("./ProjectAnalysisSection"),
   "ideation-workflow": () => import("./IdeationSettingsPanel"),
-  "ideation-harnesses": () => import("./IdeationHarnessSection"),
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
   github: () => import("./GitHubIntegrationSettingsPanel"),
   linear: () => import("./LinearIntegrationSettingsPanel"),

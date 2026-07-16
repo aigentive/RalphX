@@ -9,6 +9,7 @@ pub mod error;
 pub mod harness;
 pub mod model_registry;
 pub mod provider_settings;
+pub mod routing_role;
 pub mod types;
 
 // Re-export key types
@@ -36,6 +37,10 @@ pub use model_registry::{
     AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource,
 };
 pub use provider_settings::{AgentProviderCliManagementMode, AgentProviderSettings};
+pub use routing_role::{
+    ManualRoleDefault, ManualServiceTier, RoutingRole, RoutingRoleFamily, RoutingRoleMetadata,
+    StoredManualRoleDefault, ROUTING_ROLE_COUNT, ROUTING_ROLE_FAMILIES, ROUTING_ROLES,
+};
 pub use types::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentRole, ClientType, ResponseChunk,
 };
@@ -43,3 +48,7 @@ pub use types::{
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod dependency_tests;
+
+#[cfg(test)]
+#[path = "routing_role_tests.rs"]
+mod routing_role_tests;

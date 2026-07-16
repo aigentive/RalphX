@@ -44,12 +44,11 @@ use crate::application::UnavailableGranolaApiClient;
 use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
-    default_approval_policy_for_harness, default_sandbox_mode_for_harness,
-    lightweight_model_for_provider, AgentHarnessKind, AgentProviderCliManagementMode,
-    AgentProviderSettings, AgenticClient, LogicalEffort, WorkspaceReviewRuntimeSettings,
-    DEFAULT_AGENT_HARNESS,
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
+    AgentProviderSettings, AgenticClient, LogicalEffort, RoutingRole,
+    WorkspaceReviewRuntimeSettings, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{AgentRun, ChatContextType, ChatConversation, IdeationSession};
+use crate::domain::entities::{AgentRun, ChatConversation};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -64,12 +63,12 @@ use crate::domain::repositories::{
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
-    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
-    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
-    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    ManualRoleDefaultRepository, MemoryArchiveRepository, MemoryEntryRepository,
+    MemoryEventRepository, MethodologyRepository, NotificationRepository,
+    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
+    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
+    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
@@ -97,19 +96,19 @@ use crate::infrastructure::memory::{
     MemoryGlobalExecutionSettingsRepository, MemoryGranolaIntegrationSettingsRepository,
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
-    MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
-    MemoryNotificationRepository, MemoryNotificationSettingsRepository,
-    MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
-    MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository, MemoryPlanBranchRepository,
-    MemoryPlanSelectionStatsRepository, MemoryProcessRepository, MemoryProjectRepository,
-    MemoryProposalDependencyRepository, MemoryQuestionRepository, MemoryQueuedMessageRepository,
-    MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
-    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
-    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
-    MemoryTicketCanonicalBranchRepository, MemoryTicketingStatusCatalogRepository,
-    MemoryUiFeatureFlagOverridesRepository, MemoryValidationRunRepository,
-    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryLinearIntegrationSettingsRepository, MemoryManualRoleDefaultRepository,
+    MemoryMethodologyRepository, MemoryNotificationRepository,
+    MemoryNotificationSettingsRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
+    MemoryPermissionRepository, MemoryPersonaRepository, MemoryPlanArtifactApprovalRepository,
+    MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
+    MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
+    MemoryQueuedMessageRepository, MemoryReviewIssueRepository, MemoryReviewRepository,
+    MemoryReviewSettingsRepository, MemorySecretStore, MemorySessionLinkRepository,
+    MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
+    MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
+    MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
+    MemoryTicketingStatusCatalogRepository, MemoryUiFeatureFlagOverridesRepository,
+    MemoryValidationRunRepository, MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
     MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -132,20 +131,20 @@ use crate::infrastructure::sqlite::{
     SqliteGlobalExecutionSettingsRepository, SqliteGranolaIntegrationSettingsRepository,
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
-    SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
-    SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
-    SqliteNotificationRepository, SqliteNotificationSettingsRepository,
-    SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
-    SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository, SqlitePlanBranchRepository,
-    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
-    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteQueuedMessageRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
-    SqliteTicketCanonicalBranchRepository, SqliteTicketingStatusCatalogRepository,
-    SqliteUiFeatureFlagOverridesRepository, SqliteValidationRunRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteLinearIntegrationSettingsRepository, SqliteManualRoleDefaultRepository,
+    SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository, SqliteMemoryEventRepository,
+    SqliteMethodologyRepository, SqliteNotificationRepository,
+    SqliteNotificationSettingsRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
+    SqlitePermissionRepository, SqlitePersonaRepository, SqlitePlanArtifactApprovalRepository,
+    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
+    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
+    SqliteQueuedMessageRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
+    SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
+    SqliteTicketingStatusCatalogRepository, SqliteUiFeatureFlagOverridesRepository,
+    SqliteValidationRunRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
     SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
@@ -250,6 +249,8 @@ pub struct AppState {
     pub ideation_model_settings_repo: Arc<dyn IdeationModelSettingsRepository>,
     /// Provider-neutral lane settings repository for multi-harness routing
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
+    /// Exact manual routing-role defaults at global and project scopes.
+    pub manual_role_default_repo: Arc<dyn ManualRoleDefaultRepository>,
     /// Provider/model compatibility and custom model registry
     pub agent_model_registry_repo: Arc<dyn AgentModelRegistryRepository>,
     /// Global enabled/default provider settings
@@ -395,6 +396,19 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn manual_role_default_service(
+        &self,
+    ) -> crate::application::manual_role_default_service::ManualRoleDefaultService {
+        crate::application::manual_role_default_service::ManualRoleDefaultService::new(
+            Arc::clone(&self.manual_role_default_repo),
+            Arc::clone(&self.agent_lane_settings_repo),
+            Arc::clone(&self.agent_provider_settings_repo),
+            Arc::clone(&self.persona_repo),
+            crate::infrastructure::agents::claude::agent_personas_enabled(),
+            self.app_paths.global_router_path(),
+        )
+    }
+
     pub fn agent_workflow_runner(
         &self,
     ) -> AppResult<crate::application::agent_workflow_runner::AgentWorkflowRunner> {
@@ -668,17 +682,6 @@ impl AppState {
         }
     }
 
-    pub(crate) fn lock_utility_agent_runtime_model(
-        runtime: ResolvedBackgroundAgentRuntime,
-    ) -> ResolvedBackgroundAgentRuntime {
-        let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-        ResolvedBackgroundAgentRuntime {
-            model: Some(lightweight_model_for_provider(harness).to_string()),
-            logical_effort: Some(LogicalEffort::Medium),
-            ..runtime
-        }
-    }
-
     fn apply_workspace_review_runtime_settings(
         runtime: ResolvedBackgroundAgentRuntime,
         settings: WorkspaceReviewRuntimeSettings,
@@ -724,18 +727,6 @@ impl AppState {
             runtime.service_tier = service_tier;
         }
         runtime
-    }
-
-    async fn latest_conversation_service_tier(
-        &self,
-        conversation: &ChatConversation,
-    ) -> AppResult<Option<String>> {
-        Ok(self
-            .agent_run_repo
-            .get_latest_for_conversation(&conversation.id)
-            .await
-            .map_err(|error| AppError::Infrastructure(error.to_string()))?
-            .and_then(|run| run.service_tier))
     }
 
     pub(crate) fn managed_cli_path_override_for_provider(
@@ -832,6 +823,67 @@ impl AppState {
         ))
     }
 
+    pub(crate) async fn resolve_manual_role_background_agent_runtime(
+        &self,
+        project_id: Option<&str>,
+        project_root: Option<&std::path::Path>,
+        role: RoutingRole,
+        agent_name: &str,
+        purpose: &str,
+        harness_override: Option<AgentHarnessKind>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let defaults = self.manual_role_default_service();
+        let resolved =
+            crate::application::agent_lane_resolution::resolve_manual_role_spawn_settings(
+                agent_name,
+                project_id,
+                project_root,
+                role,
+                harness_override,
+                None,
+                &defaults,
+            )
+            .await?;
+        crate::application::ensure_provider_spawn_enabled(
+            &self.agent_provider_settings_repo,
+            resolved.effective_harness,
+            purpose,
+        )
+        .await
+        .map_err(AppError::Infrastructure)?;
+        let provider_settings = self
+            .agent_provider_settings_repo
+            .get(resolved.effective_harness)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .unwrap_or_else(|| {
+                AgentProviderSettings::disabled_defaults(resolved.effective_harness)
+            });
+        let (client, cli_path_override) = self
+            .resolve_background_agent_client_and_cli_path_override(
+                resolved.effective_harness,
+                purpose,
+                &provider_settings,
+            )
+            .await?;
+        let provider_env = crate::application::provider_env_file::load_provider_custom_env_file(
+            &provider_settings,
+        )
+        .map_err(AppError::Infrastructure)?;
+
+        Ok(self.background_agent_runtime_for_harness(
+            client,
+            resolved.effective_harness,
+            Some(resolved.model),
+            cli_path_override,
+            resolved.logical_effort,
+            resolved.approval_policy,
+            resolved.sandbox_mode,
+            resolved.service_tier.or(provider_settings.service_tier),
+            provider_env,
+        ))
+    }
+
     pub fn build_chat_service(&self) -> AppChatService {
         self.build_chat_service_for_runtime(None, self.app_handle.clone())
     }
@@ -900,6 +952,7 @@ impl AppState {
                 Arc::clone(&self.agent_conversation_workspace_repo),
                 Arc::clone(&self.chat_conversation_repo),
                 Arc::clone(&self.agent_provider_settings_repo),
+                Arc::new(self.manual_role_default_service()),
                 self.agent_clients.clone(),
             );
         service = service.with_plan_pr_description_drafter(drafter);
@@ -915,216 +968,6 @@ impl AppState {
         let deps = RuntimeFactoryDeps::from_app_state(self);
 
         build_task_scheduler_from_deps(app_handle, execution_state, &deps)
-    }
-
-    pub(crate) async fn resolve_ideation_background_agent_runtime(
-        &self,
-        project_id: Option<&str>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        let resolved = crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
-            crate::infrastructure::agents::claude::agent_names::AGENT_ORCHESTRATOR_IDEATION,
-            project_id,
-            ChatContextType::Ideation,
-            None,
-            None,
-            None,
-            Some(&self.agent_lane_settings_repo),
-        )
-        .await;
-
-        crate::application::ensure_provider_spawn_enabled(
-            &self.agent_provider_settings_repo,
-            resolved.effective_harness,
-            "ideation sidecar runtime",
-        )
-        .await
-        .map_err(AppError::Infrastructure)?;
-        let provider_settings = self
-            .agent_provider_settings_repo
-            .get(resolved.effective_harness)
-            .await
-            .map_err(|error| AppError::Infrastructure(error.to_string()))?
-            .unwrap_or_else(|| {
-                crate::domain::agents::AgentProviderSettings::disabled_defaults(
-                    resolved.effective_harness,
-                )
-            });
-        let preserve_resolution_error = provider_settings.cli_management_mode
-            == AgentProviderCliManagementMode::RxManaged
-            || provider_settings.custom_binary_enabled;
-        let (client, cli_path_override) = self
-            .resolve_background_agent_client_and_cli_path_override(
-                resolved.effective_harness,
-                "ideation sidecar runtime",
-                &provider_settings,
-            )
-            .await
-            .map_err(|error| {
-                if resolved.effective_harness != self.agent_clients.default_harness
-                    && !preserve_resolution_error
-                {
-                    AppError::Infrastructure(format!(
-                        "Configured ideation sidecar harness unavailable for project {}: {}",
-                        project_id.unwrap_or(""),
-                        resolved.effective_harness
-                    ))
-                } else {
-                    error
-                }
-            })?;
-        let use_resolved_lane_settings = resolved.effective_harness
-            != self.agent_clients.default_harness
-            || resolved.effective_harness == AgentHarnessKind::Codex;
-        let provider_env = crate::application::provider_env_file::load_provider_custom_env_file(
-            &provider_settings,
-        )
-        .map_err(AppError::Infrastructure)?;
-        let (model, logical_effort, approval_policy, sandbox_mode) = if use_resolved_lane_settings {
-            (
-                Some(resolved.model),
-                resolved.logical_effort,
-                resolved.approval_policy,
-                resolved.sandbox_mode,
-            )
-        } else {
-            (
-                provider_settings.model,
-                provider_settings.effort,
-                provider_settings.approval_policy,
-                provider_settings.sandbox_mode,
-            )
-        };
-
-        Ok(self.background_agent_runtime_for_harness(
-            client,
-            resolved.effective_harness,
-            model,
-            cli_path_override,
-            logical_effort,
-            approval_policy,
-            sandbox_mode,
-            provider_settings.service_tier,
-            provider_env,
-        ))
-    }
-
-    pub(crate) async fn resolve_session_namer_runtime_for_project(
-        &self,
-        project_id: Option<&str>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        let runtime = self
-            .resolve_ideation_background_agent_runtime(project_id)
-            .await?;
-        Ok(Self::lock_utility_agent_runtime_model(runtime))
-    }
-
-    pub(crate) async fn resolve_project_analyzer_runtime_for_project(
-        &self,
-        project_id: Option<&str>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        let runtime = self
-            .resolve_ideation_background_agent_runtime(project_id)
-            .await?;
-        Ok(Self::lock_utility_agent_runtime_model(runtime))
-    }
-
-    pub(crate) async fn resolve_session_namer_runtime_for_session(
-        &self,
-        session: &IdeationSession,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        if let Some(conversation) = self
-            .chat_conversation_repo
-            .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
-            .await?
-        {
-            return self
-                .resolve_session_namer_runtime_for_conversation(
-                    &conversation,
-                    Some(session.project_id.as_str()),
-                )
-                .await;
-        }
-
-        self.resolve_session_namer_runtime_for_project(Some(session.project_id.as_str()))
-            .await
-    }
-
-    pub(crate) async fn resolve_session_namer_runtime_for_conversation(
-        &self,
-        conversation: &ChatConversation,
-        project_id: Option<&str>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        self.resolve_session_namer_runtime_for_conversation_with_requested_harness(
-            conversation,
-            project_id,
-            None,
-        )
-        .await
-    }
-
-    pub(crate) async fn resolve_session_namer_runtime_for_conversation_with_requested_harness(
-        &self,
-        conversation: &ChatConversation,
-        project_id: Option<&str>,
-        requested_harness: Option<AgentHarnessKind>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        if let Some(harness) = requested_harness {
-            let runtime = self
-                .resolve_background_agent_runtime_for_harness(
-                    harness,
-                    "session namer requested provider",
-                )
-                .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
-        }
-
-        if let Some(harness) = conversation.provider_harness {
-            let service_tier = self.latest_conversation_service_tier(conversation).await?;
-            let runtime = self
-                .resolve_background_agent_runtime_for_harness(
-                    harness,
-                    "session namer owning conversation",
-                )
-                .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(
-                Self::with_runtime_service_tier(runtime, service_tier),
-            ));
-        }
-
-        self.resolve_session_namer_runtime_for_project(project_id)
-            .await
-    }
-
-    pub(crate) async fn resolve_pr_describer_runtime(
-        &self,
-        conversation: &ChatConversation,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        if let Some(harness) = conversation.provider_harness {
-            let service_tier = self.latest_conversation_service_tier(conversation).await?;
-            let runtime = self
-                .resolve_background_agent_runtime_for_harness(
-                    harness,
-                    "PR describer owning conversation",
-                )
-                .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(
-                Self::with_runtime_service_tier(runtime, service_tier),
-            ));
-        }
-
-        let default_provider = crate::application::resolve_enabled_default_provider(
-            &self.agent_provider_settings_repo,
-            "PR describer default provider",
-        )
-        .await
-        .map_err(AppError::Infrastructure)?;
-        let runtime = self
-            .resolve_background_agent_runtime_for_harness(
-                default_provider.provider,
-                "PR describer default provider",
-            )
-            .await?;
-        Ok(Self::lock_utility_agent_runtime_model(runtime))
     }
 
     pub(crate) async fn resolve_workspace_reviewer_runtime_for_project(
@@ -1175,28 +1018,6 @@ impl AppState {
             Self::with_runtime_service_tier(runtime, service_tier),
             settings,
         ))
-    }
-
-    pub(crate) async fn resolve_plan_complexity_runtime_for_session(
-        &self,
-        session: &IdeationSession,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        if let Some(conversation) = self
-            .chat_conversation_repo
-            .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
-            .await?
-        {
-            let runtime = self
-                .resolve_session_namer_runtime_for_conversation(
-                    &conversation,
-                    Some(session.project_id.as_str()),
-                )
-                .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
-        }
-
-        self.resolve_session_namer_runtime_for_project(Some(session.project_id.as_str()))
-            .await
     }
 
     /// Create AppState for production use with SQLite repositories.
@@ -1383,6 +1204,9 @@ impl AppState {
                 SqliteIdeationModelSettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             agent_lane_settings_repo: Arc::new(SqliteAgentLaneSettingsRepository::from_shared(
+                Arc::clone(&shared_conn),
+            )),
+            manual_role_default_repo: Arc::new(SqliteManualRoleDefaultRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
             agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
@@ -1651,6 +1475,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -1829,6 +1654,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -2016,6 +1842,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
@@ -2188,6 +2015,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            manual_role_default_repo: Arc::new(MemoryManualRoleDefaultRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             agent_provider_settings_repo: Arc::new(
                 MemoryAgentProviderSettingsRepository::with_all_providers_enabled(

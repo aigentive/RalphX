@@ -5,14 +5,14 @@ import type { ProjectSettings } from "@/types/settings";
 import type { SettingsSectionId } from "./settings-registry";
 
 const LazyExecutionSection = lazy(() => import("./sections/ExecutionSection"));
+const LazyAgentsSettingsSection = lazy(() =>
+  import("./AgentsSettingsSection").then((module) => ({
+    default: module.AgentsSettingsSection,
+  })),
+);
 const LazyHarnessProvidersSection = lazy(() =>
   import("./HarnessProvidersSection").then((module) => ({
     default: module.HarnessProvidersSection,
-  })),
-);
-const LazyExecutionHarnessSection = lazy(() =>
-  import("./IdeationHarnessSection").then((module) => ({
-    default: module.ExecutionHarnessSection,
   })),
 );
 const LazyGlobalExecutionSection = lazy(() =>
@@ -45,11 +45,6 @@ const LazyProjectAnalysisSection = lazy(() =>
 const LazyIdeationSettingsPanel = lazy(() =>
   import("./IdeationSettingsPanel").then((module) => ({
     default: module.IdeationSettingsPanel,
-  })),
-);
-const LazyIdeationHarnessSection = lazy(() =>
-  import("./IdeationHarnessSection").then((module) => ({
-    default: module.IdeationHarnessSection,
   })),
 );
 const LazyApiKeysSection = lazy(() =>
@@ -157,7 +152,7 @@ export function SettingsSectionContent({
           />
         ) : null)}
       {section === "providers" && <LazyHarnessProvidersSection />}
-      {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
+      {section === "agents" && <LazyAgentsSettingsSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
       {section === "personas" && <LazyPersonasSection />}
@@ -168,7 +163,6 @@ export function SettingsSectionContent({
       {section === "repository" && <LazyRepositorySettingsSection />}
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
       {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}
-      {section === "ideation-harnesses" && <LazyIdeationHarnessSection />}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "github" && <LazyGitHubIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}

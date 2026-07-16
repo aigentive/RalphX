@@ -22,7 +22,12 @@ describe("settings-ui-state", () => {
   });
 
   it("preserves current-version section choices", () => {
-    expect(migrateActiveSectionPreference("execution", 2)).toBe("execution");
+    expect(migrateActiveSectionPreference("execution", 3)).toBe("execution");
+  });
+
+  it("migrates saved Execution and Ideation agent pages into Agents", () => {
+    expect(migrateActiveSectionPreference("execution-harnesses", 2)).toBe("agents");
+    expect(migrateActiveSectionPreference("ideation-harnesses", 2)).toBe("agents");
   });
 
   it("loads Providers and writes the migrated active-section version", () => {
@@ -33,7 +38,7 @@ describe("settings-ui-state", () => {
       "providers",
     );
     expect(localStorage.getItem("ralphx-settings-active-section-version")).toBe(
-      "2",
+      "3",
     );
   });
 
@@ -42,7 +47,7 @@ describe("settings-ui-state", () => {
 
     expect(loadActiveSection()).toBe("review");
     expect(localStorage.getItem("ralphx-settings-active-section-version")).toBe(
-      "2",
+      "3",
     );
   });
 });

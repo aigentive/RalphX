@@ -1,10 +1,22 @@
 use std::sync::Arc;
 
-use super::agent_lane_resolution::resolve_agent_spawn_settings;
-use crate::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort};
-use crate::domain::entities::ChatContextType;
-use crate::domain::repositories::AgentLaneSettingsRepository;
-use crate::infrastructure::memory::MemoryAgentLaneSettingsRepository;
+use super::agent_lane_resolution::{
+    resolve_agent_spawn_settings, resolve_manual_role_spawn_settings, routing_role_for_chat_launch,
+    routing_role_for_delegated_launch, routing_role_for_spawner_agent,
+};
+use super::manual_role_default_service::ManualRoleDefaultService;
+use crate::domain::agents::{
+    AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort, ManualRoleDefault,
+    ManualServiceTier, RoutingRole,
+};
+use crate::domain::entities::{AgentConversationWorkspaceMode, ChatContextType};
+use crate::domain::repositories::{
+    AgentLaneSettingsRepository, AgentProviderSettingsRepository, ManualRoleDefaultRepository,
+};
+use crate::infrastructure::memory::{
+    MemoryAgentLaneSettingsRepository, MemoryAgentProviderSettingsRepository,
+    MemoryManualRoleDefaultRepository, MemoryPersonaRepository,
+};
 
 fn claude_lane_settings(
     model: &str,
@@ -408,4 +420,315 @@ async fn reexecuting_task_execution_uses_reexecutor_lane_settings() {
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
+}
+
+#[test]
+fn chat_launch_inventory_maps_every_context_without_an_unnamed_fallback() {
+    let cases = [
+        (
+            "ralphx-general-explorer",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Chat),
+            false,
+            RoutingRole::WorkspaceChat,
+        ),
+        (
+            "ralphx-general-worker",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Edit),
+            false,
+            RoutingRole::WorkspaceEdit,
+        ),
+        (
+            "ralphx-ideation",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Plan),
+            false,
+            RoutingRole::WorkspacePlan,
+        ),
+        (
+            "ralphx-chat-project",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Ideation),
+            false,
+            RoutingRole::WorkspaceIdeation,
+        ),
+        (
+            "ralphx-pr-reviewer",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::ReviewPr),
+            false,
+            RoutingRole::WorkspaceReviewPr,
+        ),
+        (
+            "ralphx-automation-setup",
+            ChatContextType::Project,
+            None,
+            Some(AgentConversationWorkspaceMode::Automation),
+            false,
+            RoutingRole::WorkspaceAutomation,
+        ),
+        (
+            "ralphx-ideation",
+            ChatContextType::Ideation,
+            None,
+            None,
+            false,
+            RoutingRole::IdeationPrimary,
+        ),
+        (
+            "ralphx-ideation",
+            ChatContextType::Ideation,
+            None,
+            None,
+            true,
+            RoutingRole::IdeationVerifier,
+        ),
+        (
+            "ralphx-chat-project",
+            ChatContextType::Delegation,
+            None,
+            None,
+            false,
+            RoutingRole::DelegatedSubagent,
+        ),
+        (
+            "ralphx-chat-task",
+            ChatContextType::Task,
+            None,
+            None,
+            false,
+            RoutingRole::UtilityLightweight,
+        ),
+        (
+            "ralphx-execution-worker",
+            ChatContextType::TaskExecution,
+            None,
+            None,
+            false,
+            RoutingRole::ExecutionWorker,
+        ),
+        (
+            "ralphx-execution-worker",
+            ChatContextType::TaskExecution,
+            Some("re_executing"),
+            None,
+            false,
+            RoutingRole::ExecutionReexecutor,
+        ),
+        (
+            "ralphx-execution-reviewer",
+            ChatContextType::Review,
+            None,
+            None,
+            false,
+            RoutingRole::ExecutionReviewer,
+        ),
+        (
+            "ralphx-execution-merger",
+            ChatContextType::Merge,
+            None,
+            None,
+            false,
+            RoutingRole::ExecutionMerger,
+        ),
+        (
+            "ralphx-execution-branch-updater",
+            ChatContextType::BranchUpdate,
+            None,
+            None,
+            false,
+            RoutingRole::WorkspaceRepair,
+        ),
+    ];
+
+    for (agent, context, status, mode, verification, expected) in cases {
+        assert_eq!(
+            routing_role_for_chat_launch(agent, context, status, mode, verification),
+            expected,
+            "unexpected role for {agent} in {context}"
+        );
+    }
+}
+
+#[test]
+fn canonical_specialist_launches_override_generic_project_context() {
+    let cases = [
+        (
+            "ralphx-automation-plan-judge",
+            RoutingRole::AutomationPlanJudge,
+        ),
+        (
+            "ralphx-automation-judge",
+            RoutingRole::AutomationResultJudge,
+        ),
+        ("ralphx-workspace-reviewer", RoutingRole::WorkspaceReviewer),
+        (
+            "ralphx-agent-workspace-repair",
+            RoutingRole::WorkspaceRepair,
+        ),
+        (
+            "ralphx-agent-workspace-pr-fixer",
+            RoutingRole::WorkspacePrFixer,
+        ),
+        (
+            "ralphx-utility-pr-describer",
+            RoutingRole::UtilityPrDescriber,
+        ),
+        (
+            "ralphx-project-analyzer",
+            RoutingRole::UtilityProjectAnalyzer,
+        ),
+        ("ralphx-memory-capture", RoutingRole::MemoryCapture),
+        ("ralphx-memory-maintainer", RoutingRole::MemoryMaintainer),
+    ];
+
+    for (agent, expected) in cases {
+        assert_eq!(
+            routing_role_for_chat_launch(agent, ChatContextType::Project, None, None, false,),
+            expected,
+            "unexpected specialist role for {agent}"
+        );
+    }
+}
+
+#[test]
+fn delegated_launches_preserve_ideation_parent_roles() {
+    assert_eq!(
+        routing_role_for_delegated_launch(
+            "ralphx-ideation-specialist-backend",
+            ChatContextType::Ideation,
+            false,
+        ),
+        RoutingRole::IdeationSubagent
+    );
+    assert_eq!(
+        routing_role_for_delegated_launch(
+            "ralphx-general-explorer",
+            ChatContextType::Ideation,
+            true,
+        ),
+        RoutingRole::IdeationVerifierSubagent
+    );
+    assert_eq!(
+        routing_role_for_delegated_launch(
+            "ralphx-research-deep-researcher",
+            ChatContextType::Project,
+            false,
+        ),
+        RoutingRole::DelegatedSubagent
+    );
+}
+
+#[test]
+fn workspace_repair_agent_uses_merge_repair_role_inside_merge_context() {
+    assert_eq!(
+        routing_role_for_chat_launch(
+            "ralphx-agent-workspace-repair",
+            ChatContextType::Merge,
+            None,
+            None,
+            false,
+        ),
+        RoutingRole::WorkspaceMergeRepair
+    );
+    assert_eq!(
+        routing_role_for_chat_launch(
+            "ralphx-agent-workspace-repair",
+            ChatContextType::BranchUpdate,
+            None,
+            None,
+            false,
+        ),
+        RoutingRole::WorkspaceRepair
+    );
+}
+
+#[tokio::test]
+async fn manual_role_default_preserves_exact_standard_speed_in_spawn_settings() {
+    let config_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let manual_repo = Arc::new(MemoryManualRoleDefaultRepository::new());
+    manual_repo
+        .upsert_for_project(
+            "project-manual",
+            RoutingRole::WorkspaceEdit,
+            &ManualRoleDefault {
+                harness: AgentHarnessKind::Codex,
+                model: Some("gpt-5.6-test".to_string()),
+                effort: Some(LogicalEffort::High),
+                service_tier: ManualServiceTier::Standard,
+                coordination_mode: None,
+                persona_id: None,
+                approval_policy: Some("on-request".to_string()),
+                sandbox_mode: Some("workspace-write".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
+        Arc::new(MemoryAgentLaneSettingsRepository::new());
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Claude),
+    );
+    let service = ManualRoleDefaultService::new(
+        manual_repo,
+        lane_repo,
+        provider_repo,
+        Arc::new(MemoryPersonaRepository::new()),
+        true,
+        config_root.path().join("router.yaml"),
+    );
+
+    let resolved = resolve_manual_role_spawn_settings(
+        "ralphx-general-worker",
+        Some("project-manual"),
+        None,
+        RoutingRole::WorkspaceEdit,
+        None,
+        None,
+        &service,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.effective_harness, AgentHarnessKind::Codex);
+    assert_eq!(resolved.configured_model.as_deref(), Some("gpt-5.6-test"));
+    assert_eq!(resolved.model, "gpt-5.6-test");
+    assert_eq!(resolved.logical_effort, Some(LogicalEffort::High));
+    assert_eq!(resolved.service_tier.as_deref(), Some("standard"));
+    assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
+    assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
+}
+
+#[test]
+fn state_machine_spawner_inventory_maps_specialized_execution_roles() {
+    let cases = [
+        ("worker", None, RoutingRole::ExecutionWorker),
+        (
+            "worker",
+            Some("re_executing"),
+            RoutingRole::ExecutionReexecutor,
+        ),
+        ("coder", None, RoutingRole::DelegatedSubagent),
+        ("qa-prep", None, RoutingRole::ExecutionQaPrep),
+        ("qa-refiner", None, RoutingRole::ExecutionQaRefiner),
+        ("qa-tester", None, RoutingRole::ExecutionQaTester),
+        ("reviewer", None, RoutingRole::ExecutionReviewer),
+        ("merger", None, RoutingRole::ExecutionMerger),
+        ("branch-updater", None, RoutingRole::WorkspaceRepair),
+    ];
+
+    for (agent_type, status, expected) in cases {
+        assert_eq!(
+            routing_role_for_spawner_agent(agent_type, status),
+            Some(expected),
+            "unexpected spawner role for {agent_type}"
+        );
+    }
+    assert_eq!(routing_role_for_spawner_agent("custom-agent", None), None);
 }

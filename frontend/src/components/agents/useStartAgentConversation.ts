@@ -147,6 +147,7 @@ export function useStartAgentConversation({
       content,
       runtime,
       runtimeProviderContext,
+      useRoleDefault = false,
       mode,
       automationAuthoringMode,
       base,
@@ -163,6 +164,7 @@ export function useStartAgentConversation({
       content: string;
       runtime: AgentRuntimeSelection;
       runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
+      useRoleDefault?: boolean | undefined;
       mode: AgentConversationWorkspaceMode;
       automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
@@ -462,19 +464,23 @@ export function useStartAgentConversation({
           projectId: targetProjectId,
           content,
           ...(seededConversation ? { conversationId: seededConversation.id } : {}),
-          providerHarness: normalizedRuntime.provider,
-          modelId: normalizedRuntime.modelId,
-          logicalEffort: normalizedRuntime.effort,
-          ...(codexFastMode !== undefined
+          ...(!useRoleDefault
             ? {
-                codexFastMode:
-                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
+                providerHarness: normalizedRuntime.provider,
+                modelId: normalizedRuntime.modelId,
+                logicalEffort: normalizedRuntime.effort,
+                ...(codexFastMode !== undefined
+                  ? {
+                      codexFastMode:
+                        normalizedRuntime.provider === "codex" ? codexFastMode : null,
+                    }
+                  : {}),
+                ...(personaId ? { personaId } : {}),
+                ...(capabilityIntent ? { capabilityIntent } : {}),
+                ...(teamIntent ? { teamIntent } : {}),
               }
             : {}),
-          ...(personaId ? { personaId } : {}),
           mode,
-          ...(capabilityIntent ? { capabilityIntent } : {}),
-          ...(teamIntent ? { teamIntent } : {}),
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
             : {}),
@@ -592,9 +598,11 @@ export function useStartAgentConversation({
               content,
               runtime: normalizedRuntime,
               runtimeProviderContext,
+              useRoleDefault,
               mode,
               base,
               codexFastMode,
+              personaId,
               capabilityIntent,
               teamIntent,
               composerArtifactReferences,
