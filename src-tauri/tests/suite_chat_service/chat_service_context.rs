@@ -100,6 +100,40 @@ fn final_spawnable_command(
     rendered
 }
 
+fn mcp_runtime_args(
+    spawnable: &ralphx_lib::infrastructure::agents::claude::SpawnableCommand,
+) -> Vec<String> {
+    let command_args = spawnable.get_args_for_test();
+    if let Some(config_path) = command_args
+        .iter()
+        .position(|arg| arg == "--mcp-config")
+        .and_then(|index| command_args.get(index + 1))
+    {
+        let config = if config_path.trim_start().starts_with('{') {
+            config_path.clone()
+        } else {
+            fs::read_to_string(config_path).unwrap_or_default()
+        };
+        let json: serde_json::Value = serde_json::from_str(&config).expect("valid MCP config");
+        return json
+            .get("mcpServers")
+            .and_then(|servers| servers.as_object())
+            .into_iter()
+            .flat_map(|servers| servers.values())
+            .filter_map(|server| server.get("args").and_then(|args| args.as_array()))
+            .flatten()
+            .filter_map(|arg| arg.as_str().map(str::to_string))
+            .collect();
+    }
+
+    command_args
+        .iter()
+        .filter_map(|arg| arg.split_once(".args="))
+        .filter_map(|(_, encoded)| serde_json::from_str::<Vec<String>>(encoded).ok())
+        .find(|args| args.iter().any(|arg| arg == "--conversation-id"))
+        .unwrap_or_default()
+}
+
 #[test]
 fn persona_builder_send_without_live_draft_session_resolves_zero_read_roots_and_fails_closed() {
     assert!(
@@ -249,6 +283,21 @@ async fn persona_builder_read_roots_resolve_to_ingest_store_only() {
         !command_args.contains(project_directory.to_string_lossy().as_ref()),
         "MCP read roots must exclude the project working directory"
     );
+    assert!(
+        command_args.contains("--filesystem-enforced") && command_args.contains("\"1\""),
+        "fresh PersonaBuilder MCP config must enable filesystem enforcement: {command_args}"
+    );
+    assert!(
+        mcp_runtime_args(&command)
+            .windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation.id.as_str()]),
+        "fresh PersonaBuilder MCP config must carry the conversation row id: {command_args}"
+    );
+    assert!(
+        !command_args.contains("RALPHX_FILESYSTEM_ENFORCED")
+            && env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
+        "filesystem enforcement must not use process env"
+    );
 }
 
 #[tokio::test]
@@ -362,6 +411,60 @@ async fn non_persona_modes_keep_project_read_root_behavior() {
 }
 
 #[tokio::test]
+async fn non_persona_modes_preserve_unenforced_mcp_spawn_shape() {
+    let temp = tempfile::tempdir().expect("working directory");
+    let project_id = ProjectId::from_string("unenforced-mode-project".to_string());
+    let modes = [
+        AgentConversationWorkspaceMode::Chat,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceMode::Plan,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceMode::ReviewPr,
+    ];
+
+    for mode in modes {
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.agent_mode = Some(mode);
+        let command = with_claude_spawn_allowed_in_tests(|| async {
+            build_command(
+                Path::new("/fake/claude"),
+                &repo_plugin_dir(),
+                &conversation,
+                "preserve the unenforced config",
+                None,
+                temp.path(),
+                None,
+                Some(project_id.as_str()),
+                &[],
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                None,
+                None,
+                None,
+                &[],
+                0,
+                None,
+                None,
+                None,
+            )
+            .await
+        })
+        .await
+        .expect("non-builder command should build");
+        let args = mcp_runtime_args(&command);
+        assert!(
+            !args.iter().any(|arg| arg == "--filesystem-enforced"),
+            "{mode} must preserve the pre-change unenforced MCP args: {args:?}"
+        );
+        assert!(
+            env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
+            "{mode} must not receive enforcement through process env"
+        );
+    }
+}
+
+#[tokio::test]
 async fn queued_flush_uses_persona_builder_read_roots() {
     let (root, project_repo, project_id, project_directory, working_directory) =
         persona_read_root_fixture().await;
@@ -389,6 +492,8 @@ async fn queued_flush_uses_persona_builder_read_roots() {
             ChatContextType::Project,
             project_id.as_str(),
             CoordinationMode::Solo,
+            &conversation_id.as_str(),
+            Some(AgentConversationWorkspaceMode::PersonaBuilder),
             "queued ingest follow-up",
             Some("ralphx-persona-extractor"),
             None,
@@ -449,6 +554,23 @@ async fn queued_flush_uses_persona_builder_read_roots() {
     assert!(
         !command_args.contains(project_directory.to_string_lossy().as_ref()),
         "queued MCP read roots must exclude the project working directory"
+    );
+    assert!(
+        command_args.contains("--filesystem-enforced") && command_args.contains("\"1\""),
+        "queued PersonaBuilder MCP config must enable filesystem enforcement: {command_args}"
+    );
+    assert!(
+        mcp_runtime_args(&command)
+            .windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation_id.as_str()])
+            && !mcp_runtime_args(&command)
+                .windows(2)
+                .any(|pair| pair == ["--conversation-id", project_id.as_str()]),
+        "queued MCP identity must be the conversation row id, not the project id: {command_args}"
+    );
+    assert!(
+        env_value(&command.get_envs_for_test(), "RALPHX_FILESYSTEM_ENFORCED").is_none(),
+        "queued filesystem enforcement must not use process env"
     );
 }
 
@@ -613,6 +735,65 @@ async fn fresh_spawn_prompt_includes_bound_persona_block() {
 }
 
 #[tokio::test]
+async fn codex_fresh_persona_builder_spawn_uses_conversation_identity_and_cli_enforcement() {
+    let temp = tempfile::tempdir().expect("working directory");
+    let cli_path = make_fake_codex_cli(&temp);
+    let project_id = ProjectId::from_string("codex-builder-project".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::PersonaBuilder);
+
+    let command = build_command_for_harness(
+        AgentHarnessKind::Codex,
+        &cli_path,
+        &repo_plugin_dir(),
+        &conversation,
+        "fresh builder send",
+        None,
+        temp.path(),
+        None,
+        Some(project_id.as_str()),
+        &[],
+        false,
+        Arc::new(MemoryChatAttachmentRepository::new()),
+        Arc::new(MemoryArtifactRepository::new()),
+        None,
+        None,
+        None,
+        &[],
+        0,
+        None,
+        None,
+        false,
+        None,
+    )
+    .await
+    .expect("Codex PersonaBuilder command should build");
+
+    let args = mcp_runtime_args(&command.spawnable);
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--filesystem-enforced", "1"]),
+        "fresh Codex builder MCP args must enable filesystem enforcement: {args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--conversation-id".to_string(), conversation.id.as_str()])
+            && !args
+                .windows(2)
+                .any(|pair| pair == ["--conversation-id", project_id.as_str()]),
+        "fresh Codex MCP identity must be the conversation row id: {args:?}"
+    );
+    assert!(
+        env_value(
+            &command.spawnable.get_envs_for_test(),
+            "RALPHX_FILESYSTEM_ENFORCED"
+        )
+        .is_none(),
+        "Codex filesystem enforcement must not use process env"
+    );
+}
+
+#[tokio::test]
 async fn resume_command_prompt_includes_bound_persona_block() {
     let (conversation, persona) = bound_project_persona().await;
     let working_dir = tempfile::tempdir().expect("working directory");
@@ -625,6 +806,8 @@ async fn resume_command_prompt_includes_bound_persona_block() {
             ChatContextType::Project,
             conversation.context_id.as_str(),
             CoordinationMode::Solo,
+            &conversation.id.as_str(),
+            conversation.agent_mode,
             "resume persona send",
             Some(persona),
             None,
@@ -2367,6 +2550,8 @@ async fn test_build_resume_command_with_team_mode() {
         ChatContextType::Ideation,
         "test-session-id",
         CoordinationMode::Solo,
+        "ideation-conversation-team-enabled",
+        None,
         "test message",
         None,
         None,
@@ -2400,6 +2585,8 @@ async fn test_build_resume_command_with_team_mode() {
         ChatContextType::Ideation,
         "test-session-id",
         CoordinationMode::Solo,
+        "ideation-conversation-team-disabled",
+        None,
         "test message",
         None,
         None,
@@ -2442,6 +2629,8 @@ async fn codex_recovery_resume_command_forwards_a_resolved_persona_block() {
             ChatContextType::Project,
             conversation.context_id.as_str(),
             CoordinationMode::Solo,
+            &conversation.id.as_str(),
+            conversation.agent_mode,
             "continue",
             Some(persona),
             None,
@@ -2532,6 +2721,8 @@ async fn persona_codex_resume_command_uses_resume_subcommand_and_reports_injecti
             ChatContextType::Project,
             "project-1",
             CoordinationMode::Solo,
+            "codex-project-resume-conversation",
+            None,
             "continue",
             Some(persona),
             None,
@@ -2627,6 +2818,8 @@ async fn codex_legacy_verification_session_uses_active_ideation_features() {
             ChatContextType::Ideation,
             child_id.as_str(),
             CoordinationMode::Solo,
+            "codex-ideation-recovery-conversation",
+            None,
             "continue",
             None,
             None,
@@ -4142,6 +4335,8 @@ async fn test_both_build_and_resume_use_ideation_subagent_cap() {
             ChatContextType::Ideation,
             session_id.as_str(),
             CoordinationMode::Solo,
+            "ideation-conversation-resume",
+            None,
             "continue",
             None,
             None,

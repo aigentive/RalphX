@@ -1907,6 +1907,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     context_type,
                     context_id,
                     conversation_coordination_mode.unwrap_or(CoordinationMode::Solo),
+                    &conversation_id.as_str(),
+                    queued_agent_context.effective_mode,
                     &runtime_content,
                     resolved_persona,
                     queued_agent_context.identity.agent_name.as_deref(),

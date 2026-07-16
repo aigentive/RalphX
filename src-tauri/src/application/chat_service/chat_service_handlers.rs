@@ -2648,6 +2648,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     context_type,
                                     context_id,
                                     conv.coordination_mode,
+                                    &conversation_id.as_str(),
+                                    conv.agent_mode,
                                     msg,
                                     persona,
                                     None,
