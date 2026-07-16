@@ -861,6 +861,19 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
             'update_automation',
             'verify_automation_decomposition',
             'finalize_automation',
+            'run_automation_now',
+            'pause_automation',
+            'resume_automation',
+            'cancel_automation_run',
+            'cancel_automation',
+            'restart_automation',
+            'retry_automation_judge',
+            'retry_automation_plan_judge',
+            'skip_automation_judge',
+            'get_automation_publish_status',
+            'check_automation_publish_readiness',
+            'update_automation_from_base',
+            'publish_automation_workspace',
         ]);
         setAgentType(AUTOMATION_SETUP);
         const filteredToolNames = getFilteredTools().map((tool) => tool.name);

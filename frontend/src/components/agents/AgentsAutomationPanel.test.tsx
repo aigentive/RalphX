@@ -11,6 +11,10 @@ const {
   pauseAutomationMock,
   resumeAutomationMock,
   stopAutomationMock,
+  restartAutomationMock,
+  triggerRunNowMock,
+  retryJudgeMock,
+  retryPlanJudgeMock,
   deleteAutomationMock,
   cancelRunMock,
   updateSettingsMock,
@@ -28,6 +32,10 @@ const {
   pauseAutomationMock: vi.fn(),
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
+  restartAutomationMock: vi.fn(),
+  triggerRunNowMock: vi.fn(),
+  retryJudgeMock: vi.fn(),
+  retryPlanJudgeMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
   cancelRunMock: vi.fn(),
   updateSettingsMock: vi.fn(),
@@ -147,6 +155,10 @@ vi.mock("@/api/automations", async (importOriginal) => {
       pause: (...args: unknown[]) => pauseAutomationMock(...args),
       resume: (...args: unknown[]) => resumeAutomationMock(...args),
       stop: (...args: unknown[]) => stopAutomationMock(...args),
+      restart: (...args: unknown[]) => restartAutomationMock(...args),
+      triggerRunNow: (...args: unknown[]) => triggerRunNowMock(...args),
+      retryJudge: (...args: unknown[]) => retryJudgeMock(...args),
+      retryPlanJudge: (...args: unknown[]) => retryPlanJudgeMock(...args),
       delete: (...args: unknown[]) => deleteAutomationMock(...args),
       cancelRun: (...args: unknown[]) => cancelRunMock(...args),
       updateSettings: (...args: unknown[]) => updateSettingsMock(...args),
@@ -304,6 +316,10 @@ describe("AgentsAutomationPanel", () => {
     pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
+    restartAutomationMock.mockResolvedValue({ scheduled: true, reason: null });
+    triggerRunNowMock.mockResolvedValue({ scheduled: true, reason: null });
+    retryJudgeMock.mockResolvedValue({ scheduled: true, reason: null });
+    retryPlanJudgeMock.mockResolvedValue({ scheduled: true, reason: null });
     deleteAutomationMock.mockResolvedValue(undefined);
     cancelRunMock.mockResolvedValue(automationRunFixture({ status: "cancelled" }));
     updateSettingsMock.mockResolvedValue(automationFixture({ maxRuns: 8 }));
@@ -808,11 +824,11 @@ describe("AgentsAutomationPanel", () => {
     renderPanel({ onFocusAutomationRun });
 
     expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
-      "Judging plan",
+      "Plan judge running",
     );
     expect(
       within(screen.getByTestId("agents-automation-run-3-status")).getByText(
-        "Judging plan",
+        "Plan judge running",
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Awaiting plan approval")).toBeInTheDocument();
@@ -1339,7 +1355,7 @@ describe("AgentsAutomationPanel", () => {
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
   });
 
-  it("pauses active automations and confirms stop requests", async () => {
+  it("pauses active automations and explains cancellation consequences", async () => {
     renderPanel();
 
     fireEvent.click(screen.getByTestId("agents-automation-pause"));
@@ -1353,11 +1369,12 @@ describe("AgentsAutomationPanel", () => {
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation paused");
 
     fireEvent.click(screen.getByTestId("agents-automation-stop"));
-    expect(await screen.findByText("Stop automation?")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(await screen.findByText("Cancel automation?")).toBeInTheDocument();
+    expect(screen.getByText(/cancelled run cannot be resumed/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel automation" }));
 
     await waitFor(() => expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"));
-    expect(toastSuccessMock).toHaveBeenCalledWith("Automation stopped");
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation cancelled");
   });
 
   it("surfaces the latest run failure reason as an error line", () => {
@@ -1434,7 +1451,7 @@ describe("AgentsAutomationPanel", () => {
     const activeView = renderPanel();
 
     expect(screen.getByTestId("agents-automation-idle-after-cancelled")).toHaveTextContent(
-      "This automation is idle — its last run was cancelled and no new run will start on its own.",
+      "The last run was cancelled. Run now starts a new run from that run's prompt; it does not resume the cancelled run.",
     );
     activeView.unmount();
 
@@ -1467,6 +1484,41 @@ describe("AgentsAutomationPanel", () => {
     expect(
       screen.queryByTestId("agents-automation-idle-after-cancelled"),
     ).not.toBeInTheDocument();
+  });
+
+  it("starts a fresh run from the active cancelled-run notice", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+    fireEvent.click(
+      within(screen.getByTestId("agents-automation-idle-after-cancelled"))
+        .getByRole("button", { name: "Run now" }),
+    );
+
+    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+  });
+
+  it("restarts a stopped automation as a new run", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "stopped" }),
+        runs: [automationRunFixture({ status: "cancelled", judgeState: "none" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+    fireEvent.click(screen.getByTestId("agents-automation-restart"));
+
+    await waitFor(() => expect(restartAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation restarted with a new run");
   });
 
   it("renders terminal automations without mutation controls", () => {

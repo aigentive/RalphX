@@ -152,7 +152,8 @@ pub use crate::application::automation::api::{
 };
 pub use automation_commands::{
     create_automation_draft, get_automation, list_automations, pause_automation, resume_automation,
-    stop_automation, update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
+    restart_automation, retry_automation_judge, retry_automation_plan_judge, stop_automation,
+    update_automation_settings, AutomationIdInput, CreateAutomationDraftInput,
     ListAutomationsInput, PauseAutomationInput, UpdateAutomationSettingsInput,
 };
 pub use persona_builder_commands::{

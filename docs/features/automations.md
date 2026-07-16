@@ -27,9 +27,21 @@ Starting an automation from the Automations page uses trusted one-shot authoring
 
 Direct automation setup conversations retain the reviewed mode: the setup agent may draft and revise the configuration, but activation remains an explicit user decision. Legacy rows without authoring metadata are treated as reviewed and unverified.
 
+Setup conversations expose the versioned setup Plan and the same Commit & Publish surface as ordinary agent workspaces, plus caller-bound lifecycle, judge recovery, status, and publish tools. The server derives the automation from the injected setup-conversation identity; these tools do not accept an automation id, run id, or publish conversation id from the model. Publish actions reuse the ordinary agent-workspace readiness, update-from-base, repair, push, and draft-PR pipeline. The trusted publish target is the setup workspace when present, otherwise the latest run workspace; no eligible bound workspace fails closed. Run conversations keep their own versioned implementation Plan for audit while publication remains owned by the shared automation workspace surface.
+
+## Lifecycle And Recovery
+
+- **Pause** is resumable and leaves the current durable run state intact. Resume accepts only `Paused`; it cannot reactivate a stopped automation.
+- **Stop / Cancel automation** is terminal for the current run attempt. It cancels every open run, clears parked plan-judge state, disarms applicable automatic PR merge, and preserves completed/cancelled history for audit.
+- **Restart automation** is the explicit recovery path from `Stopped`. It moves the automation back to `Active` with compare-and-swap protection and creates a new pending run from the last durable run prompt/base. It never mutates a cancelled run back to pending. If fresh-run creation fails, the status is compensated back to `Stopped` while the original failure is returned.
+- **Cancel run** affects only the current latest run selected by the server. A later Run Now or automation restart creates a separate run row.
+- **Retry judge** redispatches only the latest signal-terminal run whose terminal judge is `Failed`. **Retry plan judge** requires the latest parked run, the exact current parked artifact, and a `Failed` plan judge; stale artifacts and superseded attempts are rejected.
+
 ## Run Plan Gate
 
 Every run plans before it implements. The run conversation is provisioned in workspace **plan mode**: the read-only plan profile explores the repo and authors a versioned plan artifact in a hidden Planning ideation session, then the run parks at `awaiting_plan_approval`. Approval switches the same conversation to edit mode and delivers the implement prompt; from there the run behaves exactly as before (publish, merge, run-level judge).
+
+Parking is driven by the current agent turn's durable `Completed` state, not provider-process exit. This lets a Claude interactive process remain alive after ending the planning turn while the scheduler advances immediately. A plan artifact by itself is never completion evidence: the agent run must have started after the automation phase began and must be completed, so stale artifacts and earlier turns cannot park the run.
 
 Per-automation config (editable at any status via settings; also exposed through MCP `update_automation`):
 

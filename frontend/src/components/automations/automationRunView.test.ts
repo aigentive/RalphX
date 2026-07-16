@@ -10,6 +10,7 @@ import type {
 } from "@/api/automations";
 import {
   describeAutomationRunPrState,
+  getAutomationJudgeRecovery,
   getAutomationRunView,
   isAutomationRunComposerReadOnly,
   isIdleAfterCancelledRun,
@@ -173,6 +174,40 @@ describe("automationRunView", () => {
     expect(isIdleAfterCancelledRun(automation(), null)).toBe(false);
   });
 
+  it("offers judge recovery only for backend-recoverable failed states", () => {
+    const automatic = automation({ planApprovalMode: "automatic" });
+
+    expect(
+      getAutomationJudgeRecovery(
+        automatic,
+        run({ status: "awaiting_plan_approval", planJudgeState: "none" }),
+      ),
+    ).toBeNull();
+    expect(
+      getAutomationJudgeRecovery(
+        automatic,
+        run({ status: "awaiting_plan_approval", planJudgeState: "failed" }),
+      ),
+    ).toEqual(expect.objectContaining({ kind: "plan", actionLabel: "Retry plan judge" }));
+    expect(
+      getAutomationJudgeRecovery(
+        automation(),
+        run({ status: "completed", judgeState: "none" }),
+      ),
+    ).toBeNull();
+    expect(
+      getAutomationJudgeRecovery(
+        automation(),
+        run({ status: "completed", judgeState: "failed" }),
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        kind: "terminal",
+        actionLabel: "Retry terminal judge",
+      }),
+    );
+  });
+
   it("collects the core run view flags from one selector", () => {
     const view = getAutomationRunView(
       automation(),
@@ -187,7 +222,7 @@ describe("automationRunView", () => {
         composerReadOnly: true,
         statusLabel: "Running",
         statusTone: "success",
-        judgeLabel: "Judge pending",
+        judgeLabel: null,
         stageLabel: "Run 1 planning",
         pr: {
           rowLabel: "Current PR",

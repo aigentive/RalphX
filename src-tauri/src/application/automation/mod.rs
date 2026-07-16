@@ -1,4 +1,5 @@
 pub mod api;
+pub mod actions;
 pub mod decomposition_verifier;
 pub mod delete;
 pub mod integration_pr;
