@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use ralphx_domain::repositories::automation_run_repository::AutomationJudgeTransitionGuard;
 
 use crate::application::automation::api::{
@@ -13,10 +14,21 @@ use crate::application::automation::scheduler::{
 use crate::application::automation::service::{
     AutomationRunNowAction, AutomationScheduleOutcome, AutomationService,
 };
+use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::AppState;
-use crate::domain::entities::{AutomationId, AutomationJudgeState};
+use crate::domain::entities::{Automation, AutomationId, AutomationJudgeState, AutomationRun};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::automations_config;
+
+pub(crate) struct AutomationJudgeStartDispatch {
+    pub service: AutomationService,
+    pub transition_service: AutomationTransitionService,
+    pub config: AutomationSchedulerConfig,
+    pub automation: Automation,
+    pub runs: Vec<AutomationRun>,
+    pub run: AutomationRun,
+    pub judge_lease_expires_at: DateTime<Utc>,
+}
 
 pub async fn trigger_automation_run_now_for_state(
     id: &AutomationId,
@@ -42,6 +54,31 @@ async fn dispatch_automation_run_now_action(
     service: AutomationService,
     action: AutomationRunNowAction,
 ) -> AppResult<AutomationScheduleOutcome> {
+    dispatch_automation_run_now_action_with_spawner(id, state, service, action, |dispatch| {
+        spawn_automation_judge_task(
+            dispatch.service,
+            dispatch.transition_service,
+            Arc::new(HarnessAutomationJudgeInvoker::new(state.clone())),
+            dispatch.config,
+            dispatch.automation,
+            dispatch.runs,
+            dispatch.run,
+            dispatch.judge_lease_expires_at,
+        );
+    })
+    .await
+}
+
+pub(crate) async fn dispatch_automation_run_now_action_with_spawner<F>(
+    id: &AutomationId,
+    state: &AppState,
+    service: AutomationService,
+    action: AutomationRunNowAction,
+    spawn_judge: F,
+) -> AppResult<AutomationScheduleOutcome>
+where
+    F: FnOnce(AutomationJudgeStartDispatch),
+{
     match action {
         AutomationRunNowAction::Outcome(outcome) => Ok(outcome),
         AutomationRunNowAction::StartJudge {
@@ -78,16 +115,15 @@ async fn dispatch_automation_run_now_action(
                     reason: Some("run in flight".to_string()),
                 });
             }
-            spawn_automation_judge_task(
+            spawn_judge(AutomationJudgeStartDispatch {
                 service,
                 transition_service,
-                Arc::new(HarnessAutomationJudgeInvoker::new(state.clone())),
                 config,
                 automation,
                 runs,
                 run,
                 judge_lease_expires_at,
-            );
+            });
             Ok(AutomationScheduleOutcome {
                 scheduled: true,
                 reason: None,

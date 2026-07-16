@@ -16,6 +16,8 @@ pub mod transition;
 pub(crate) mod utility_agent;
 
 #[cfg(test)]
+mod actions_tests;
+#[cfg(test)]
 mod decomposition_verifier_tests;
 #[cfg(test)]
 mod delete_tests;
