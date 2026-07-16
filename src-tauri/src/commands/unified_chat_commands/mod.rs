@@ -132,7 +132,8 @@ use crate::domain::execution::{
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
-    ComposerProjectReference, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    ComposerProjectReference, ComposerSelectionSnapshot, QueuedMessage, RunningAgentKey,
+    RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
@@ -189,6 +190,8 @@ pub struct SendAgentMessageInput {
     /// Structured artifact references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Immutable whole-line artifact or ticket excerpt selected for this turn.
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
     /// Optional native team-mode overlay request for this send.
     #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
@@ -241,7 +244,8 @@ fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>
 #[cfg(test)]
 mod chat_attachment_id_parser_tests {
     use super::{
-        parse_chat_attachment_ids, visible_queued_message_responses, QueuedMessageResponse,
+        parse_chat_attachment_ids, visible_queued_message_responses, ComposerSelectionSnapshot,
+        QueuedMessageResponse,
     };
     use crate::domain::entities::ChatAttachmentId;
     use crate::domain::services::QueuedMessage;
@@ -266,10 +270,30 @@ mod chat_attachment_id_parser_tests {
         let attachment_id = ChatAttachmentId::new();
         let mut queued = QueuedMessage::new("queued with file".to_string());
         queued.attachment_ids = vec![attachment_id];
+        queued.composer_selection_snapshot = Some(ComposerSelectionSnapshot {
+            source_type: "ticket".to_string(),
+            source_kind: "jira".to_string(),
+            source_id: "10042".to_string(),
+            source_title: Some("Queue recovery".to_string()),
+            source_key: Some("RX-42".to_string()),
+            provider: Some("atlassian".to_string()),
+            artifact_version: None,
+            source_revision: None,
+            start_line: 2,
+            end_line: 2,
+            content: "selected".to_string(),
+        });
 
         let response = QueuedMessageResponse::from(queued);
 
         assert_eq!(response.attachment_ids, vec![attachment_id.to_string()]);
+        assert_eq!(
+            response
+                .composer_selection_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.source_key.as_deref()),
+            Some(Some("RX-42"))
+        );
     }
 
     #[test]
@@ -1660,6 +1684,7 @@ pub struct QueuedMessageResponse {
     pub content: String,
     pub created_at: String,
     pub is_editing: bool,
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
     pub attachment_ids: Vec<String>,
 }
 
@@ -1670,6 +1695,7 @@ impl From<QueuedMessage> for QueuedMessageResponse {
             content: msg.content,
             created_at: msg.created_at,
             is_editing: msg.is_editing,
+            composer_selection_snapshot: msg.composer_selection_snapshot,
             attachment_ids: msg
                 .attachment_ids
                 .into_iter()
@@ -4011,6 +4037,7 @@ pub async fn send_agent_message(
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
                 composer_artifact_references: input.composer_artifact_references,
+                composer_selection_snapshot: input.composer_selection_snapshot,
                 team_intent: input.team_intent,
                 team_message_target: input.team_message_target,
                 attachment_ids,

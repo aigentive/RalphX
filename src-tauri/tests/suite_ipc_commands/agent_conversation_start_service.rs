@@ -115,6 +115,7 @@ fn service_start_input(
         composer_project_references: Vec::new(),
         composer_integration_references: Vec::new(),
         composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
         team_intent: None,
     }
 }

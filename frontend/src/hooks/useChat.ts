@@ -23,6 +23,7 @@ import {
   type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
+  type ComposerSelectionSnapshot,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
   type SendAgentMessageOptions,
@@ -86,6 +87,7 @@ type SendMessageVariables = {
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   capabilityIntent?: CapabilityIntent | null;
+  composerSelectionSnapshot?: ComposerSelectionSnapshot;
   teamIntent?: TeamIntent | null;
 };
 
@@ -1196,13 +1198,16 @@ export function useChat(
       composerProjectReferences,
       composerIntegrationReferences,
       capabilityIntent,
+      composerSelectionSnapshot,
       teamIntent,
     }) => {
       const sendOptions =
         composerProjectReferences?.length ||
         composerIntegrationReferences?.length ||
         composerArtifactReferences?.length ||
-        capabilityIntent || teamIntent
+        composerSelectionSnapshot ||
+        capabilityIntent ||
+        teamIntent
           ? {
               ...options?.sendOptions,
               ...(capabilityIntent ? { capabilityIntent } : {}),
@@ -1215,6 +1220,9 @@ export function useChat(
                 : {}),
               ...(composerArtifactReferences?.length
                 ? { composerArtifactReferences }
+                : {}),
+              ...(composerSelectionSnapshot
+                ? { composerSelectionSnapshot }
                 : {}),
             }
           : options?.sendOptions;
@@ -1252,6 +1260,7 @@ export function useChat(
             projectReferences: variables.composerProjectReferences,
             integrationReferences: variables.composerIntegrationReferences,
             artifactReferences: variables.composerArtifactReferences,
+            selectionSnapshot: variables.composerSelectionSnapshot,
           }),
         }
       );

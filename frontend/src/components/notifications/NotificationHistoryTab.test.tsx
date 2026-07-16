@@ -34,15 +34,8 @@ function renderHistory(active = true, now = new Date("2026-07-10T10:00:00Z").get
   return render(<TooltipProvider><NotificationHistoryTab active={active} now={now} onOpen={vi.fn()} /></TooltipProvider>);
 }
 
-function intersectLatestObserver() {
-  const callback = observerCallbacks.at(-1);
-  if (!callback) throw new Error("observer was not created");
-  callback([{ isIntersecting: true, target: screen.getByTestId("notification-history-row-notification-1") } as IntersectionObserverEntry], {} as IntersectionObserver);
-}
-
 describe("NotificationHistoryTab", () => {
   const markRead = vi.fn();
-  const markReadBatch = vi.fn();
   const markAllRead = vi.fn();
 
   beforeEach(() => {
@@ -55,7 +48,7 @@ describe("NotificationHistoryTab", () => {
       data: { pages: [{ notifications: [notification] }] }, isLoading: false, hasNextPage: false,
       isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn(), isError: false,
     } as ReturnType<typeof useNotificationHistory>);
-    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead, markReadBatch, markAllRead });
+    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead, markAllRead });
   });
 
   afterEach(() => {
@@ -73,26 +66,14 @@ describe("NotificationHistoryTab", () => {
     expect(screen.getByTestId("notification-history-row-notification-1")).toBeVisible();
   });
 
-  it("does not mark rows read just because the drawer/history tab opened", () => {
+  it("never marks rows read from history hydration or viewport visibility", () => {
     renderHistory();
     act(() => { vi.runAllTimers(); });
-    expect(markReadBatch).not.toHaveBeenCalled();
-  });
 
-  it("marks each visible unread row once after one second through the deduped batch window", () => {
-    renderHistory();
-    act(() => { vi.runAllTimers(); });
-    intersectLatestObserver();
-    act(() => { vi.advanceTimersByTime(1_099); });
-    expect(markReadBatch).not.toHaveBeenCalled();
-
-    act(() => { vi.advanceTimersByTime(1); });
-    expect(markReadBatch).toHaveBeenCalledTimes(1);
-    expect(markReadBatch).toHaveBeenCalledWith(["notification-1"]);
-
-    intersectLatestObserver();
+    expect(observerCallbacks).toHaveLength(0);
     act(() => { vi.advanceTimersByTime(2_000); });
-    expect(markReadBatch).toHaveBeenCalledTimes(1);
+
+    expect(markRead).not.toHaveBeenCalled();
   });
 
   it("marks all rows read from the explicit control", () => {

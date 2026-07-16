@@ -657,6 +657,37 @@ describe("chatStore", () => {
       ]);
     });
 
+    it("stores and merges an immutable composer selection snapshot", () => {
+      const snapshot = {
+        sourceType: "ticket" as const,
+        sourceKind: "clickup" as const,
+        sourceId: "task-1",
+        provider: "clickup" as const,
+        startLine: 4,
+        endLine: 5,
+        content: "first\nsecond",
+      };
+
+      useChatStore
+        .getState()
+        .queueMessage(contextKey, "Test", "msg-with-selection");
+      useChatStore
+        .getState()
+        .queueMessage(
+          contextKey,
+          "Test",
+          "msg-with-selection",
+          undefined,
+          snapshot,
+        );
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toHaveLength(1);
+      expect(
+        useChatStore.getState().queuedMessages[contextKey]?.[0]
+          .composerSelectionSnapshot,
+      ).toEqual(snapshot);
+    });
+
     it("merges attachment IDs from duplicate backend queue events", () => {
       useChatStore.getState().queueMessage(contextKey, "Test", "msg-with-attachments");
       useChatStore

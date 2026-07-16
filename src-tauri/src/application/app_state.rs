@@ -1150,36 +1150,29 @@ impl AppState {
         let requested_harness = latest_run
             .and_then(|run| run.harness)
             .or(conversation.provider_harness);
-
-        let runtime = if let Some(harness) = requested_harness {
-            self.resolve_background_agent_runtime_for_harness(
-                harness,
-                "workspace reviewer owning conversation",
+        let selected_provider = crate::application::resolve_enabled_provider_or_default(
+            &self.agent_provider_settings_repo,
+            requested_harness,
+            "workspace reviewer provider",
+        )
+        .await
+        .map_err(AppError::Infrastructure)?;
+        let runtime = self
+            .resolve_background_agent_runtime_for_harness(
+                selected_provider.provider,
+                "workspace reviewer provider",
             )
-            .await?
-        } else {
-            let default_provider = crate::application::resolve_enabled_default_provider(
-                &self.agent_provider_settings_repo,
-                "workspace reviewer default provider",
-            )
-            .await
-            .map_err(AppError::Infrastructure)?;
-            self.resolve_background_agent_runtime_for_harness(
-                default_provider.provider,
-                "workspace reviewer default provider",
-            )
-            .await?
-        };
+            .await?;
         let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let service_tier = latest_run
+            .filter(|run| run.harness == Some(harness))
+            .and_then(|run| run.service_tier.clone());
         let settings = self
             .resolve_workspace_review_runtime_settings(project_id, harness)
             .await?;
 
         Ok(Self::apply_workspace_review_runtime_settings(
-            Self::with_runtime_service_tier(
-                runtime,
-                latest_run.and_then(|run| run.service_tier.clone()),
-            ),
+            Self::with_runtime_service_tier(runtime, service_tier),
             settings,
         ))
     }

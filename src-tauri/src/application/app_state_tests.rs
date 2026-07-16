@@ -915,6 +915,61 @@ async fn test_resolve_workspace_reviewer_runtime_uses_latest_run_harness_with_ut
 }
 
 #[tokio::test]
+async fn test_resolve_workspace_reviewer_runtime_falls_back_from_disabled_latest_run_harness() {
+    let claude_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test()
+        .with_agent_client(claude_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+    codex.is_default = true;
+    codex.model = Some("gpt-provider-default".to_string());
+    codex.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+    codex.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
+    codex.service_tier = Some("fast".to_string());
+    provider_repo.upsert(&codex).await.unwrap();
+    provider_repo
+        .upsert(&AgentProviderSettings::disabled_defaults(
+            AgentHarnessKind::Claude,
+        ))
+        .await
+        .unwrap();
+    state.agent_provider_settings_repo = provider_repo;
+
+    let project = Project::new("Disabled Claude Review".to_string(), "/tmp".to_string());
+    let project_id = project.id.as_str().to_string();
+    let mut conversation = ChatConversation::new_project(project.id);
+    conversation.provider_harness = Some(AgentHarnessKind::Claude);
+    let mut latest_run = AgentRun::new(conversation.id);
+    latest_run.harness = Some(AgentHarnessKind::Claude);
+    latest_run.service_tier = Some("claude-priority".to_string());
+
+    let runtime = state
+        .resolve_workspace_reviewer_runtime_for_project(
+            &conversation,
+            Some(&latest_run),
+            project_id.as_str(),
+        )
+        .await
+        .expect("disabled historical harness should fall back to enabled default provider");
+
+    assert!(Arc::ptr_eq(&runtime.client, &codex_mock));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(
+        runtime.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
+    );
+    assert_eq!(runtime.service_tier.as_deref(), Some("fast"));
+}
+
+#[tokio::test]
 async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_run_metadata() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
