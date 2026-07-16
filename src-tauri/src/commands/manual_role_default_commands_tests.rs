@@ -6,12 +6,18 @@ use crate::domain::entities::{
 
 use super::manual_role_default_commands::{
     control_options, parse_input, reset_agent_conversation_role_default_for_state,
-    ManualRoleDefaultInput, ResetAgentConversationRoleDefaultInput,
+    update_manual_role_default_for_state, ManualRoleDefaultInput,
+    ResetAgentConversationRoleDefaultInput, UpdateManualRoleDefaultInput,
 };
 
 #[test]
 fn non_workspace_roles_receive_backend_disabled_capability_and_persona_reasons() {
-    let options = control_options(RoutingRole::ExecutionWorker, AgentHarnessKind::Codex, true);
+    let options = control_options(
+        RoutingRole::ExecutionWorker,
+        AgentHarnessKind::Codex,
+        Some("unsupported-model"),
+        true,
+    );
 
     assert!(
         options
@@ -31,6 +37,64 @@ fn non_workspace_roles_receive_backend_disabled_capability_and_persona_reasons()
     );
     assert!(!options.persona.enabled);
     assert!(options.persona.disabled_reason.is_some());
+}
+
+#[test]
+fn unsupported_codex_model_disables_ultra_in_role_control_metadata() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let options = control_options(
+        RoutingRole::WorkspaceEdit,
+        AgentHarnessKind::Codex,
+        Some("definitely-not-an-ultra-model"),
+        true,
+    );
+    let ultra = options
+        .capabilities
+        .iter()
+        .find(|option| option.value == "codex_native_ultra")
+        .unwrap();
+
+    assert!(!ultra.enabled);
+    assert_eq!(
+        ultra.disabled_reason.as_deref(),
+        Some("Codex Ultra is unavailable for the selected model and Codex account.")
+    );
+}
+
+#[tokio::test]
+async fn unsupported_codex_model_is_rejected_before_role_default_persistence() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let state = AppState::new_test();
+    let error = update_manual_role_default_for_state(
+        UpdateManualRoleDefaultInput {
+            project_id: None,
+            role: "workspace_edit".into(),
+            value: ManualRoleDefaultInput {
+                provider: "codex".into(),
+                model: Some("definitely-not-an-ultra-model".into()),
+                effort: None,
+                service_tier: "provider_default".into(),
+                coordination_mode: Some("codex_native_ultra".into()),
+                persona_id: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            },
+        },
+        &state,
+    )
+    .await
+    .expect_err("unsupported Ultra model must fail before persistence");
+
+    assert_eq!(
+        error,
+        "Codex Ultra is unavailable for the selected model and Codex account."
+    );
+    assert!(state
+        .manual_role_default_repo
+        .list_global()
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

@@ -321,10 +321,18 @@ pub async fn update_manual_role_default(
     input: UpdateManualRoleDefaultInput,
     state: State<'_, AppState>,
 ) -> Result<ManualRoleDefaultResponse, String> {
+    update_manual_role_default_for_state(input, state.inner()).await
+}
+
+#[doc(hidden)]
+pub async fn update_manual_role_default_for_state(
+    input: UpdateManualRoleDefaultInput,
+    state: &AppState,
+) -> Result<ManualRoleDefaultResponse, String> {
     let role = parse_role(&input.role)?;
     let value = parse_input(input.value)?;
-    validate_role_value(role, &value).map_err(|error| error.to_string())?;
-    validate_persona(state.inner(), value.persona_id.as_ref()).await?;
+    validate_manual_role_default_update(role, &value, &state.agent_capability_gate)?;
+    validate_persona(state, value.persona_id.as_ref()).await?;
 
     let row = match input.project_id {
         Some(project_id) => {
@@ -457,18 +465,20 @@ fn catalog_entry(
     personas_enabled: bool,
 ) -> ManualRoleCatalogEntryResponse {
     let metadata = role.metadata();
-    let (effective, source, diagnostics, provider) = match resolution {
+    let (effective, source, diagnostics, provider, model) = match resolution {
         Ok(resolved) => (
             Some(response(&resolved.value)),
             Some(resolved.source.key().to_string()),
             resolved.diagnostics,
             resolved.value.harness,
+            resolved.value.model.clone(),
         ),
         Err(error) => (
             None,
             None,
             vec![error.to_string()],
             AgentHarnessKind::Claude,
+            None,
         ),
     };
     ManualRoleCatalogEntryResponse {
@@ -480,16 +490,29 @@ fn catalog_entry(
         effective,
         source,
         diagnostics,
-        controls: control_options(role, provider, personas_enabled),
+        controls: control_options(role, provider, model.as_deref(), personas_enabled),
     }
 }
 
 pub(super) fn control_options(
     role: RoutingRole,
     provider: AgentHarnessKind,
+    model: Option<&str>,
     personas_enabled: bool,
 ) -> RoleControlOptionsResponse {
     let workspace_root = role.metadata().family == RoutingRoleFamily::Workspace;
+    let ultra_supported =
+        crate::application::agent_capability_validation::codex_ultra_support_for_model(
+            provider, model,
+        ) == Some(true);
+    let ultra_disabled_reason = if !workspace_root {
+        "Codex Ultra is available only for Workspace root roles".to_string()
+    } else if provider != AgentHarnessKind::Codex {
+        "Codex Ultra is available only with the Codex provider.".to_string()
+    } else {
+        crate::application::agent_capability_validation::AgentCapabilityError::UltraUnavailable
+            .to_string()
+    };
     let capability = |value: &str, supported: bool, reason: &str| ControlOptionResponse {
         value: value.to_string(),
         enabled: supported,
@@ -510,8 +533,8 @@ pub(super) fn control_options(
             ),
             capability(
                 "codex_native_ultra",
-                workspace_root && provider == AgentHarnessKind::Codex,
-                "Codex Ultra requires a Workspace root role and Codex provider",
+                workspace_root && ultra_supported,
+                &ultra_disabled_reason,
             ),
         ],
         speeds: vec![
@@ -534,6 +557,29 @@ pub(super) fn control_options(
             }),
         },
     }
+}
+
+fn validate_manual_role_default_update(
+    role: RoutingRole,
+    value: &ManualRoleDefault,
+    capability_gate: &crate::application::agent_capability_gate::AgentCapabilityGate,
+) -> Result<(), String> {
+    validate_role_value(role, value).map_err(|error| error.to_string())?;
+    if value.coordination_mode == Some(CoordinationMode::CodexNativeUltra) {
+        let ultra_supported =
+            crate::application::agent_capability_validation::codex_ultra_support_for_model(
+                value.harness,
+                value.model.as_deref(),
+            );
+        crate::application::agent_capability_validation::validate_agent_capability(
+            CoordinationMode::CodexNativeUltra,
+            value.harness,
+            capability_gate,
+            ultra_supported,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub(super) fn parse_input(input: ManualRoleDefaultInput) -> Result<ManualRoleDefault, String> {
