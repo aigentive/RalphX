@@ -63,6 +63,7 @@ fn automation(id: &str, project_id: &ProjectId, status: AutomationStatus) -> Aut
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: None,
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     }
@@ -868,6 +869,14 @@ impl AutomationRepository for DraftLostCasAutomationRepository {
         _goal_items_json: Option<String>,
     ) -> AppResult<Option<Automation>> {
         Ok(None)
+    }
+    async fn update_authoring_state_if_unchanged(
+        &self,
+        _id: &AutomationId,
+        _expected_updated_at: chrono::DateTime<Utc>,
+        _authoring_state_json: Option<String>,
+    ) -> AppResult<bool> {
+        Ok(false)
     }
     async fn compare_and_swap_status(
         &self,

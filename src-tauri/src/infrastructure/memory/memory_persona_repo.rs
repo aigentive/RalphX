@@ -30,9 +30,11 @@ impl Default for MemoryPersonaRepository {
 impl PersonaRepository for MemoryPersonaRepository {
     async fn create(&self, persona: Persona) -> AppResult<Persona> {
         let mut personas = self.personas.write().await;
-        if personas.values().any(|existing| {
-            existing.slug == persona.slug && existing.status != PersonaStatus::Archived
-        }) {
+        if persona.status == PersonaStatus::Active
+            && personas.values().any(|existing| {
+                existing.slug == persona.slug && existing.status == PersonaStatus::Active
+            })
+        {
             return Err(AppError::Validation(format!(
                 "Persona slug `{}` is already in use",
                 persona.slug
@@ -54,6 +56,37 @@ impl PersonaRepository for MemoryPersonaRepository {
             .values()
             .filter(|persona| persona.slug == slug)
             .max_by_key(|persona| persona.created_at)
+            .cloned())
+    }
+
+    async fn get_active_by_slug(&self, slug: &str) -> AppResult<Option<Persona>> {
+        Ok(self
+            .personas
+            .read()
+            .await
+            .values()
+            .find(|persona| persona.slug == slug && persona.status == PersonaStatus::Active)
+            .cloned())
+    }
+
+    async fn get_draft_by_source_persona_id(
+        &self,
+        source_persona_id: &PersonaId,
+    ) -> AppResult<Option<Persona>> {
+        Ok(self
+            .personas
+            .read()
+            .await
+            .values()
+            .filter(|persona| {
+                persona.status == PersonaStatus::Draft
+                    && persona.source_persona_id.as_ref() == Some(source_persona_id)
+            })
+            .max_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+            })
             .cloned())
     }
 
@@ -101,6 +134,20 @@ impl PersonaRepository for MemoryPersonaRepository {
 
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()> {
         let mut personas = self.personas.write().await;
+        if status == PersonaStatus::Active {
+            let slug = personas
+                .get(id)
+                .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?
+                .slug
+                .clone();
+            if personas.values().any(|persona| {
+                &persona.id != id && persona.slug == slug && persona.status == PersonaStatus::Active
+            }) {
+                return Err(AppError::Validation(format!(
+                    "Persona slug `{slug}` is already in use"
+                )));
+            }
+        }
         let persona = personas
             .get_mut(id)
             .ok_or_else(|| AppError::NotFound(format!("Persona not found: {id}")))?;

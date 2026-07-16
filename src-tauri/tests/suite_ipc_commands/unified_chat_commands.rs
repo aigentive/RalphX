@@ -286,6 +286,8 @@ async fn seed_persona_for_switch(state: &AppState, id: &str, status: PersonaStat
         version: 1,
         content_hash: format!("{id}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,

@@ -57,9 +57,6 @@ const ProposalWidget = lazyWidget(() =>
 const IdeationWidget = lazyWidget(() =>
   import("./IdeationWidget").then((module) => ({ default: module.IdeationWidget }))
 );
-const VerificationWidget = lazyWidget(() =>
-  import("./VerificationWidget").then((module) => ({ default: module.VerificationWidget }))
-);
 const ChildSessionWidget = lazyWidget(() =>
   import("./ChildSessionWidget").then((module) => ({ default: module.ChildSessionWidget }))
 );
@@ -196,15 +193,6 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   "mcp__ralphx__send_ideation_session_message": IdeationWidget,
   "mcp__ralphx__finalize_proposals": IdeationWidget,
   "mcp__ralphx__cross_project_guide": IdeationWidget,
-  // Verification tools → VerificationWidget
-  "mcp__ralphx__run_verification_enrichment": VerificationWidget,
-  "mcp__ralphx__run_verification_round": VerificationWidget,
-  "mcp__ralphx__report_verification_round": VerificationWidget,
-  "mcp__ralphx__complete_plan_verification": VerificationWidget,
-  "mcp__ralphx__get_plan_verification": VerificationWidget,
-  "mcp__ralphx__get_child_session_status": VerificationWidget,
-  "mcp__ralphx__get_verification_confirmation_status": VerificationWidget,
-  "mcp__ralphx__get_pending_confirmations": VerificationWidget,
   // Child session creation → ChildSessionWidget
   "mcp__ralphx__create_child_session": ChildSessionWidget,
   "mcp__ralphx__start_ideation_session": ChildSessionWidget,

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
@@ -375,6 +375,12 @@ pub struct AppState {
     /// Shared per-session mutex map for serializing concurrent plan:delivered checks.
     /// ONE Arc, shared between both AppState instances (Tauri IPC + HTTP server) via lib.rs.
     pub session_merge_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Serializes Verify Plan admission per ideation session so concurrent
+    /// manual, automatic, and external requests cannot enqueue duplicate turns.
+    pub plan_verification_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// In-process admission marker spanning the brief interval before a queued
+    /// verification action becomes visible through durable queue/run storage.
+    pub plan_verification_admissions: Arc<dashmap::DashMap<String, String>>,
     /// Sessions where user has enabled auto-accept for verification. Ephemeral.
     pub auto_accept_sessions: Arc<Mutex<HashSet<String>>>,
     /// Startup Git/GitHub recovery gate. Set when startup defers Git-dependent
@@ -801,6 +807,16 @@ impl AppState {
 
     pub fn build_chat_service(&self) -> AppChatService {
         self.build_chat_service_for_runtime(None, self.app_handle.clone())
+    }
+
+    /// Build chat service with the app-managed execution halt state when available.
+    pub fn build_chat_service_with_managed_execution_state(&self) -> AppChatService {
+        let execution_state = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
+            .map(|state| state.inner().clone());
+        self.build_chat_service_for_runtime(execution_state, self.app_handle.clone())
     }
 
     pub fn build_chat_service_for_runtime<R: Runtime>(
@@ -1487,6 +1503,8 @@ impl AppState {
             )),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -1684,6 +1702,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -1856,6 +1876,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -1885,7 +1907,7 @@ impl AppState {
     /// Repositories backed by the shared connection:
     /// - `ideation_session_repo`, `task_proposal_repo`, `proposal_dependency_repo`
     /// - `execution_plan_repo`, `task_repo`, `task_step_repo`, `task_dependency_repo`
-    /// - `plan_branch_repo`, `project_repo`, `db`
+    /// - `plan_branch_repo`, `project_repo`, `active_plan_repo`, `db`
     #[doc(hidden)]
     pub fn new_sqlite_for_apply_test() -> Self {
         Self::enable_claude_test_mode();
@@ -2019,7 +2041,9 @@ impl AppState {
             ))),
             plan_selection_stats_repo: Arc::new(MemoryPlanSelectionStatsRepository::new()),
             app_state_repo: Arc::new(MemoryAppStateRepository::new()),
-            active_plan_repo: Arc::new(MemoryActivePlanRepository::new()),
+            active_plan_repo: Arc::new(SqliteActivePlanRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
@@ -2049,6 +2073,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -2201,6 +2227,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 

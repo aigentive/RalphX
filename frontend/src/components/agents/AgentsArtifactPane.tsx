@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  CheckCircle2,
   FileText,
   GitPullRequestArrow,
   LayoutGrid,
@@ -35,7 +34,11 @@ import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
 import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
-import { ideationApi, toTaskProposal } from "@/api/ideation";
+import {
+  ideationApi,
+  toTaskProposal,
+  type VerificationStatusResponse,
+} from "@/api/ideation";
 import { tasksApi } from "@/api/tasks";
 import { verificationApi } from "@/api/verification";
 import {
@@ -50,6 +53,12 @@ import {
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -91,7 +100,6 @@ import type { Artifact } from "@/types/artifact";
 import type {
   IdeationSession,
   TaskProposal,
-  VerificationStatus,
 } from "@/types/ideation";
 import type { Task } from "@/types/task";
 import {
@@ -105,6 +113,10 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
+import {
+  AgentsArtifactTabCustomizer,
+  type AgentArtifactTabCustomizerItem,
+} from "./AgentsArtifactTabCustomizer";
 import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
 import {
   PlanLifecycleBanner,
@@ -297,11 +309,6 @@ const LazyProposalDetailSheet = lazy(() =>
     default: module.ProposalDetailSheet,
   })),
 );
-const LazyVerificationPanel = lazy(() =>
-  import("@/components/Ideation/VerificationPanel").then((module) => ({
-    default: module.VerificationPanel,
-  })),
-);
 const LazyAgentsJiraIssuePanel = lazy(() =>
   import("@/components/agents/AgentsJiraIssuePanel").then((module) => ({
     default: module.AgentsJiraIssuePanel,
@@ -340,7 +347,6 @@ const ARTIFACT_TABS: Array<{
 }> = [
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
-  { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
 
@@ -384,6 +390,31 @@ const PR_TAB = {
   id: "pr" as const,
   label: "PR",
   icon: GitPullRequestArrow,
+};
+
+const ALL_ARTIFACT_TAB_DEFINITIONS = [
+  ...ARTIFACT_TABS,
+  AUTOMATION_TAB,
+  PR_TAB,
+  JIRA_TAB,
+  LINEAR_TAB,
+  GRANOLA_TAB,
+  REVIEW_TAB,
+  PUBLISH_TAB,
+] as const;
+
+const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
+  issues: "Appears when this conversation has open issues.",
+  plan: "Appears when a plan can be created or already exists.",
+  verification: "Appears when verification evidence is available.",
+  tasks: "Appears when implementation tasks are available.",
+  automation: "Appears in automation conversations.",
+  pr: "Appears when this workspace has a pull request.",
+  jira: "Connect Jira in Settings to make it available.",
+  linear: "Connect Linear in Settings to make it available.",
+  granola: "Connect Granola in Settings to make it available.",
+  review: "Appears when a review is created.",
+  publish: "Appears when this conversation has an editable workspace.",
 };
 
 type VisibleArtifactTab = {
@@ -476,8 +507,14 @@ interface AgentsArtifactPaneProps {
   projectBaseBranch?: string | null;
   focusedIdeationSessionId?: string | null;
   activeTab: AgentArtifactTab;
+  hiddenTabs?: readonly AgentArtifactTab[];
   taskMode: AgentTaskArtifactMode;
   onTabChange: (tab: AgentArtifactTab) => void;
+  onHideTab?: (
+    tab: AgentArtifactTab,
+    availableTabs: readonly AgentArtifactTab[],
+  ) => void;
+  onShowTab?: (tab: AgentArtifactTab) => void;
   onOpenPublish?: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
@@ -522,8 +559,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   projectBaseBranch = null,
   focusedIdeationSessionId = null,
   activeTab,
+  hiddenTabs = [],
   taskMode,
   onTabChange,
+  onHideTab,
+  onShowTab,
   onOpenPublish,
   onTaskModeChange,
   onPublishWorkspace,
@@ -640,11 +680,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     granolaSettingsQuery.data?.enabled &&
     granolaSettingsQuery.data?.validationStatus === "valid",
   );
-  const [displayedVerificationStatus, setDisplayedVerificationStatus] =
-    useState<{
-      status: VerificationStatus;
-      inProgress: boolean;
-    } | null>(null);
   const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const conversationProjectId =
     conversation?.projectId ?? scopedWorkspace?.projectId ?? workspace?.projectId ?? null;
@@ -841,9 +876,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     string | null
   >(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
-    setDisplayedVerificationStatus(null);
-  }, [attachedSessionId]);
-  useEffect(() => {
     setTaskArtifactSelectedIdState(
       readSelectedTaskForConversation(conversationId),
     );
@@ -963,17 +995,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         sessionData?.session.inheritedPlanArtifactId ??
         null)
       : null);
-  const sessionVerificationStatus =
-    sessionData?.session.verificationStatus ?? "unverified";
-  const hasVerificationEvidence = Boolean(
-    sessionData &&
-    (sessionData.session.verificationInProgress ||
-      sessionVerificationStatus !== "unverified" ||
-      sessionData.session.gapScore != null ||
-      (displayedVerificationStatus !== null &&
-        (displayedVerificationStatus.inProgress ||
-          displayedVerificationStatus.status !== "unverified"))),
-  );
   const proposalCount = proposals.length;
   const automationRunTabPolicy = useMemo(
     () =>
@@ -1010,13 +1031,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
         canStartPlan,
-        hasVerificationEvidence,
+        hasVerificationEvidence: false,
         hasExecutionTasks: hasImplementationAttempt,
       }),
     [
       canStartPlan,
       hasImplementationAttempt,
-      hasVerificationEvidence,
       planArtifactId,
       sessionData,
     ],
@@ -1042,7 +1062,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
-  const visibleTabs = useMemo<VisibleArtifactTab[]>(
+  const availableTabs = useMemo<VisibleArtifactTab[]>(
     () =>
       isAutomationRunConversation
         ? automationRunTabPolicy.tabs.map(visibleTabFromPolicy)
@@ -1072,6 +1092,36 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showPullRequestTab,
     ],
   );
+  const shownTabs = useMemo(
+    () => availableTabs.filter((tab) => !hiddenTabs.includes(tab.id)),
+    [availableTabs, hiddenTabs],
+  );
+  const shownEnabledTabs = useMemo(
+    () => shownTabs.filter((tab) => tab.enabled),
+    [shownTabs],
+  );
+  const enabledAvailableTabIds = useMemo(
+    () => availableTabs.filter((tab) => tab.enabled).map((tab) => tab.id),
+    [availableTabs],
+  );
+  const customizerTabs = useMemo<AgentArtifactTabCustomizerItem[]>(
+    () =>
+      ALL_ARTIFACT_TAB_DEFINITIONS.map((definition) => {
+        const availableTab = availableTabs.find(
+          (tab) => tab.id === definition.id,
+        );
+        return {
+          ...definition,
+          available: availableTab?.enabled === true,
+          unavailableReason:
+            availableTab?.disabledReason ??
+            ARTIFACT_TAB_UNAVAILABLE_REASONS[definition.id],
+        };
+      }),
+    [availableTabs],
+  );
+  const allAvailableTabsHidden =
+    enabledAvailableTabIds.length > 0 && shownEnabledTabs.length === 0;
   const requestedFallbackActiveTab =
     isAutomationRunConversation
       ? automationRunTabPolicy.defaultTab
@@ -1087,28 +1137,28 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               ? "linear"
               : showGranolaTab
                 ? "granola"
-                : visibleTabs.some((tab) => tab.id === "plan")
+                : shownTabs.some((tab) => tab.id === "plan")
                   ? "plan"
-                  : visibleTabs.some((tab) => tab.id === "issues")
+                  : shownTabs.some((tab) => tab.id === "issues")
                     ? "issues"
-                    : visibleTabs.some((tab) => tab.id === "review")
+                    : shownTabs.some((tab) => tab.id === "review")
                       ? "review"
                       : "plan";
   const fallbackActiveTab =
-    visibleTabs.find(
+    shownEnabledTabs.find(
       (tab) => tab.id === requestedFallbackActiveTab && tab.enabled,
     )?.id ??
-    visibleTabs.find((tab) => tab.enabled)?.id ??
+    shownEnabledTabs[0]?.id ??
     "automation";
   const shouldPreferAutomationOverPlan =
     activeTab === "plan" &&
     automationId &&
     conversation?.agentMode === "automation" &&
     !isAutomationRunConversation &&
-    visibleTabs.some((tab) => tab.id === "automation");
+    shownTabs.some((tab) => tab.id === "automation");
   const effectiveActiveTab = shouldPreferAutomationOverPlan
     ? "automation"
-    : visibleTabs.some((tab) => tab.id === activeTab && tab.enabled)
+    : shownTabs.some((tab) => tab.id === activeTab && tab.enabled)
       ? activeTab
       : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
@@ -1175,8 +1225,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const reviewTabStatusColor = isWorkspaceReviewRunning
     ? reviewTabIconColor
     : null;
-  const shouldLoadVerificationData =
-    shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
     shouldLoadIdeationData &&
     (effectiveActiveTab === "tasks" ||
@@ -1206,28 +1254,20 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     !planArtifact &&
     !!attachedSessionId &&
     (planArtifactQuery.isFetching || sessionQuery.isFetching);
-  const verificationQuery = useVerificationStatus(
-    shouldLoadVerificationData ? (attachedSessionId ?? undefined) : undefined,
-  );
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? (attachedSessionId ?? "") : "",
   );
-  const verificationData =
-    attachedSessionId && verificationQuery.data?.sessionId === attachedSessionId
-      ? verificationQuery.data
-      : null;
+  const verificationQuery = useVerificationStatus(
+    shouldLoadIdeationData &&
+      effectiveActiveTab === "plan" &&
+      planArtifactId
+      ? (attachedSessionId ?? undefined)
+      : undefined,
+  );
   const dependencyGraph =
     attachedSessionId && sessionData ? (dependencyQuery.data ?? null) : null;
-  const verificationState =
-    displayedVerificationStatus?.status ??
-    verificationData?.status ??
-    sessionData?.session.verificationStatus ??
-    "unverified";
-  const verificationInProgress =
-    displayedVerificationStatus?.inProgress ??
-    verificationData?.inProgress ??
-    sessionData?.session.verificationInProgress ??
-    false;
+  const verificationState = verificationQuery.data?.status ?? null;
+  const verificationInProgress = verificationQuery.data?.inProgress ?? false;
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
       queryClient.setQueryData(
@@ -1243,6 +1283,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           ["agents", "plan-approval", attachedSessionId],
           updatedPlan,
         );
+        void queryClient.invalidateQueries({
+          queryKey: verificationStatusKey(attachedSessionId),
+        });
       }
     },
     [attachedSessionId, queryClient],
@@ -1367,26 +1410,14 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         }}
       >
         <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
-          {visibleTabs.map(({ id, label, icon: Icon, enabled, disabledReason }) => {
+          {shownTabs.map(({ id, label, icon: Icon, enabled, disabledReason }) => {
             const isActive = effectiveActiveTab === id;
             const count = id === "tasks" ? visibleImplementationTaskCount : 0;
 
             let iconColor: string | undefined;
             let iconPulse = false;
             let tabStatusColor: string | null = null;
-            if (id === "verification") {
-              if (verificationInProgress) {
-                iconColor = "var(--accent-primary)";
-                iconPulse = true;
-              } else if (
-                verificationState === "verified" ||
-                verificationState === "imported_verified"
-              ) {
-                iconColor = "var(--status-success)";
-              } else if (verificationState === "needs_revision") {
-                iconColor = "var(--status-warning)";
-              }
-            } else if (id === "review") {
+            if (id === "review") {
               iconColor = reviewTabIconColor ?? undefined;
               iconPulse = isWorkspaceReviewRunning;
               tabStatusColor = reviewTabStatusColor;
@@ -1476,11 +1507,37 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 </Tooltip>
               );
             }
-            return tabButton;
+            return (
+              <ContextMenu key={id}>
+                <ContextMenuTrigger asChild>{tabButton}</ContextMenuTrigger>
+                <ContextMenuContent
+                  style={{
+                    backgroundColor: "var(--bg-elevated)",
+                    borderColor: "var(--overlay-medium)",
+                    borderWidth: 1,
+                    borderStyle: "solid",
+                  }}
+                >
+                  <ContextMenuItem
+                    onSelect={() => onHideTab?.(id, enabledAvailableTabIds)}
+                  >
+                    Hide “{label}”
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            );
           })}
         </div>
 
         <div className="ml-auto flex items-center gap-1">
+          {availableTabs.length > 0 ? (
+            <AgentsArtifactTabCustomizer
+              tabs={customizerTabs}
+              hiddenTabs={hiddenTabs}
+              onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
+              onShow={(tab) => onShowTab?.(tab)}
+            />
+          ) : null}
           {effectiveActiveTab === "tasks" && (
             <div
               className="h-8 p-0.5 flex items-center rounded-md border"
@@ -1570,9 +1627,32 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 
       <div
         className="flex-1 min-h-0 overflow-y-auto"
-        data-testid={`agents-artifact-content-${effectiveActiveTab}`}
+        data-testid={
+          allAvailableTabsHidden
+            ? "agents-artifact-content-hidden"
+            : `agents-artifact-content-${effectiveActiveTab}`
+        }
       >
-        <ArtifactContent
+        {allAvailableTabsHidden ? (
+          <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-3 px-6 text-center">
+            <div>
+              <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                All tabs are hidden
+              </h2>
+              <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>
+                Choose which artifact tabs you want to see in this conversation.
+              </p>
+            </div>
+            <AgentsArtifactTabCustomizer
+              triggerVariant="button"
+              tabs={customizerTabs}
+              hiddenTabs={hiddenTabs}
+              onHide={(tab) => onHideTab?.(tab, enabledAvailableTabIds)}
+              onShow={(tab) => onShowTab?.(tab)}
+            />
+          </div>
+        ) : (
+          <ArtifactContent
           activeTab={effectiveActiveTab}
           workspace={scopedWorkspace}
           conversationId={conversationId}
@@ -1664,17 +1744,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             onFocusIdeationSessionForConversation
           }
           onFocusVerificationSession={onFocusVerificationSession}
-          onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           {...(onFocusTaskRuntime ? { onFocusTaskRuntime } : {})}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
           onOpenReview={handleOpenReview}
           onOpenPublish={handleOpenPublish}
-          onOpenVerification={() => onTabChange("verification")}
           onOpenTasks={() => onTabChange("tasks")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
         />
+        )}
       </div>
     </aside>
   );
@@ -1748,21 +1827,14 @@ type ArtifactContentProps = {
     | undefined;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
-  onDisplayedVerificationStatusChange: (
-    status: {
-      status: VerificationStatus;
-      inProgress: boolean;
-    } | null,
-  ) => void;
   onFocusTaskRuntime?: (
     taskId: string,
     contextType: AgentTaskRuntimeContextType
   ) => void;
-  verificationState: VerificationStatus | null;
+  verificationState: VerificationStatusResponse["status"] | null;
   verificationInProgress: boolean;
   onOpenReview: () => void;
   onOpenPublish: () => void;
-  onOpenVerification: () => void;
   onOpenTasks: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
@@ -1819,33 +1891,15 @@ function ArtifactContent({
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
   onFocusVerificationSession: _onFocusVerificationSession,
-  onDisplayedVerificationStatusChange,
   onFocusTaskRuntime,
   verificationState,
   verificationInProgress,
   onOpenReview,
   onOpenPublish,
-  onOpenVerification,
   onOpenTasks,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
-  // Opening the Verification tab no longer auto-focuses the chat on the
-  // verification child. The user switches chats explicitly via the composer
-  // chat-focus pill instead.
-  const handleDisplayedVerificationChildChange = useCallback(
-    (_childSessionId: string | null) => {
-      // intentionally empty — see comment above.
-    },
-    [],
-  );
-  const handleDisplayedVerificationStatusChange = useCallback(
-    (status: VerificationStatus, inProgress: boolean) => {
-      onDisplayedVerificationStatusChange({ status, inProgress });
-    },
-    [onDisplayedVerificationStatusChange],
-  );
-
   if (activeTab === "automation" && automationId) {
     return (
       <Suspense
@@ -2008,7 +2062,6 @@ function ArtifactContent({
         onFocusIdeationSessionForConversation={
           onFocusIdeationSessionForConversation
         }
-        onOpenVerification={onOpenVerification}
         onOpenTasks={onOpenTasks}
       />
     );
@@ -2024,29 +2077,6 @@ function ArtifactContent({
         title="No ideation run attached"
         detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
       />
-    );
-  }
-
-  if (activeTab === "verification") {
-    if (!session) {
-      return <EmptyArtifactState title="No verification data yet" />;
-    }
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        <Suspense
-          fallback={<EmptyArtifactState title="Loading verification..." />}
-        >
-          <LazyVerificationPanel
-            session={session}
-            onDisplayedVerificationChildChange={
-              handleDisplayedVerificationChildChange
-            }
-            onDisplayedVerificationStatusChange={
-              handleDisplayedVerificationStatusChange
-            }
-          />
-        </Suspense>
-      </div>
     );
   }
 
@@ -2081,7 +2111,6 @@ function AgentPlanPanel({
   verificationInProgress,
   onConversationModeSwitched,
   onFocusIdeationSessionForConversation,
-  onOpenVerification,
   onOpenTasks,
 }: {
   workspace: AgentConversationWorkspace | null;
@@ -2098,7 +2127,7 @@ function AgentPlanPanel({
   implementationTaskCounts: StatusCounts;
   hasImplementationAttempt: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
-  verificationState: VerificationStatus | null;
+  verificationState: VerificationStatusResponse["status"] | null;
   verificationInProgress: boolean;
   onConversationModeSwitched:
     | ((
@@ -2110,7 +2139,6 @@ function AgentPlanPanel({
   onFocusIdeationSessionForConversation:
     | ((conversationId: string, sessionId: string) => void)
     | undefined;
-  onOpenVerification: () => void;
   onOpenTasks: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -2269,12 +2297,11 @@ function AgentPlanPanel({
     canShowPlanModeControls && !isImplementingPlanDirectly;
   const canShowManualPlanContinuationActions =
     canShowApprovedPlanActions && !isAutomationRunConversation;
-  const isPlanVerificationSatisfied =
-    verificationState === "verified" ||
-    verificationState === "imported_verified";
+  const isPlanVerificationSatisfied = verificationState === "verified";
   const canVerifyPlan =
     canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
+    verificationState !== null &&
     !isPlanVerificationSatisfied;
   const canCreateProposals =
     canShowManualPlanContinuationActions &&
@@ -2463,17 +2490,7 @@ function AgentPlanPanel({
     }
     setIsStartingPlanVerification(true);
     try {
-      let disabledSpecialists: string[] = [];
-      try {
-        const specialists = await verificationApi.getSpecialists();
-        disabledSpecialists = specialists.specialists
-          .filter((specialist) => !specialist.enabled_by_default)
-          .map((specialist) => specialist.name);
-      } catch (err) {
-        console.warn("Failed to load verification specialists:", err);
-      }
-
-      await verificationApi.confirm(session.id, disabledSpecialists);
+      await verificationApi.confirm(session.id);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: verificationStatusKey(session.id),
@@ -2483,8 +2500,7 @@ function AgentPlanPanel({
         }),
         queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
       ]);
-      onOpenVerification();
-      toast.success("Plan verification started");
+      toast.success("Verify Plan queued in this conversation");
     } catch (err) {
       console.error("Failed to start plan verification:", err);
       toast.error(
@@ -2497,7 +2513,6 @@ function AgentPlanPanel({
     }
   }, [
     canVerifyPlan,
-    onOpenVerification,
     queryClient,
     session,
     verificationInProgress,
@@ -2511,7 +2526,7 @@ function AgentPlanPanel({
     void confirm({
       title: "Restart implementation?",
       description:
-        "Running work will be stopped. RalphX will safely restore the linked implementation workspace if it was previously cleaned, close the existing PR, archive the current task attempt, reset the branch to the latest base from origin, and create fresh tasks.",
+        "The accepted plan will remain unchanged. Running work will stop, and the current implementation attempt, Kanban tasks, and uncommitted implementation changes will be discarded. RalphX will close or reconcile any existing PR, reset the branch to the latest fetched base, and create fresh tasks.",
       confirmText: "Restart Implementation",
       pendingText: "Restarting…",
       variant: "destructive",

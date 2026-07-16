@@ -51,6 +51,8 @@ fn active_persona(id: &str, content: &str, content_hash: &str) -> Persona {
         version: 1,
         content_hash: content_hash.to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: Utc::now(),
         updated_at: Utc::now(),

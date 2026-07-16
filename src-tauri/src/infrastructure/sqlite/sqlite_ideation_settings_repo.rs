@@ -36,6 +36,8 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
     let ext_require_verification_for_accept: Option<i64> = row.get(7)?;
     let ext_require_verification_for_proposals: Option<i64> = row.get(8)?;
     let ext_require_accept_for_finalize: Option<i64> = row.get(9)?;
+    let auto_verify_plans: i64 = row.get(10)?;
+    let ext_auto_verify_plans: Option<i64> = row.get(11)?;
 
     let plan_mode = match plan_mode_str.as_str() {
         "required" => IdeationPlanMode::Required,
@@ -49,12 +51,12 @@ fn parse_ideation_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Idea
         require_plan_approval: require_plan_approval != 0,
         suggest_plans_for_complex: suggest_plans_for_complex != 0,
         auto_link_proposals: auto_link_proposals != 0,
+        auto_verify_plans: auto_verify_plans != 0,
         require_verification_for_accept: require_verification_for_accept != 0,
         require_verification_for_proposals: require_verification_for_proposals != 0,
-        require_accept_for_finalize: require_accept_for_finalize
-            .map(|v| v != 0)
-            .unwrap_or(false),
+        require_accept_for_finalize: require_accept_for_finalize.map(|v| v != 0).unwrap_or(false),
         external_overrides: ExternalIdeationOverrides {
+            auto_verify_plans: ext_auto_verify_plans.map(|v| v != 0),
             require_verification_for_accept: ext_require_verification_for_accept.map(|v| v != 0),
             require_verification_for_proposals: ext_require_verification_for_proposals
                 .map(|v| v != 0),
@@ -72,7 +74,9 @@ pub fn get_settings_sync(conn: &Connection) -> AppResult<IdeationSettings> {
                 require_accept_for_finalize,
                 ext_require_verification_for_accept,
                 ext_require_verification_for_proposals,
-                ext_require_accept_for_finalize
+                ext_require_accept_for_finalize,
+                auto_verify_plans,
+                ext_auto_verify_plans
          FROM ideation_settings WHERE id = 1
          LIMIT 1",
         [],
@@ -121,6 +125,8 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                  ext_require_verification_for_accept = ?8,
                  ext_require_verification_for_proposals = ?9,
                  ext_require_accept_for_finalize = ?10,
+                 auto_verify_plans = ?11,
+                 ext_auto_verify_plans = ?12,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
              WHERE id = 1",
                     rusqlite::params![
@@ -131,9 +137,23 @@ impl IdeationSettingsRepository for SqliteIdeationSettingsRepository {
                         settings.require_verification_for_accept as i64,
                         settings.require_verification_for_proposals as i64,
                         settings.require_accept_for_finalize as i64,
-                        settings.external_overrides.require_verification_for_accept.map(|v| v as i64),
-                        settings.external_overrides.require_verification_for_proposals.map(|v| v as i64),
-                        settings.external_overrides.require_accept_for_finalize.map(|v| v as i64),
+                        settings
+                            .external_overrides
+                            .require_verification_for_accept
+                            .map(|v| v as i64),
+                        settings
+                            .external_overrides
+                            .require_verification_for_proposals
+                            .map(|v| v as i64),
+                        settings
+                            .external_overrides
+                            .require_accept_for_finalize
+                            .map(|v| v as i64),
+                        settings.auto_verify_plans as i64,
+                        settings
+                            .external_overrides
+                            .auto_verify_plans
+                            .map(|v| v as i64),
                     ],
                 )?;
 

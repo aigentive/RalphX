@@ -1399,6 +1399,7 @@ describe("App", () => {
         projectId: "demo-project-1",
         content: "",
         mode: "automation",
+        automationAuthoringMode: "trusted_auto_finalize",
       });
     });
 

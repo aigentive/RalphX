@@ -4,12 +4,20 @@ use chrono::Utc;
 use ralphx_domain::personas::validation::validate_persona_content;
 use serde_json::{json, Value};
 
-use crate::domain::entities::{Persona, PersonaId, PersonaStatus};
+use crate::domain::entities::{ChatConversationId, Persona, PersonaId, PersonaStatus};
 use crate::domain::repositories::{ChatConversationRepository, PersonaRepository};
 use crate::error::{AppError, AppResult};
-use crate::infrastructure::sqlite::sqlite_chat_conversation_repo::clear_persona_bindings_sync;
-use crate::infrastructure::sqlite::sqlite_persona_repo::persona_set_status_sync;
+use crate::infrastructure::sqlite::sqlite_chat_conversation_repo::{
+    clear_persona_bindings_sync, update_builder_draft_binding_sync,
+};
+use crate::infrastructure::sqlite::sqlite_persona_repo::{
+    map_live_slug_unique_error, persona_create_sync, persona_set_status_sync,
+};
 use crate::infrastructure::sqlite::DbConnection;
+
+mod persona_update_approval;
+
+pub use persona_update_approval::draft_applied_payload;
 
 /// Prefix used by every caller that reports a persona that cannot be bound.
 pub const PERSONA_UNAVAILABLE_PREFIX: &str = "[Persona unavailable:";
@@ -30,6 +38,8 @@ pub struct SavePersonaDraftInput {
     pub slug: String,
     pub content: String,
     pub source_session_id: Option<String>,
+    pub source_persona_id: Option<PersonaId>,
+    pub source_content_hash: Option<String>,
 }
 
 /// Application authority for persona lifecycle changes.
@@ -61,12 +71,42 @@ impl PersonaService {
         feature_enabled: bool,
         input: SavePersonaDraftInput,
     ) -> AppResult<Persona> {
+        let persona = self.build_draft(feature_enabled, input).await?;
+        self.persona_repo.create(persona).await
+    }
+
+    pub async fn create_bound_draft(
+        &self,
+        feature_enabled: bool,
+        conversation_id: &ChatConversationId,
+        input: SavePersonaDraftInput,
+    ) -> AppResult<Persona> {
+        let persona = self.build_draft(feature_enabled, input).await?;
+        let collision_slug = persona.slug.clone();
+        let conversation_id = conversation_id.as_str();
+        let draft_id = persona.id.to_string();
+        self.db
+            .run_transaction(move |conn| {
+                let persona = persona_create_sync(conn, persona)?;
+                update_builder_draft_binding_sync(conn, &conversation_id, Some(&draft_id))?;
+                Ok(persona)
+            })
+            .await
+            .map_err(|error| map_live_slug_unique_error(error, &collision_slug))
+    }
+
+    async fn build_draft(
+        &self,
+        feature_enabled: bool,
+        input: SavePersonaDraftInput,
+    ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let parsed = validate_persona_content(&input.slug, &input.content)?;
-        self.ensure_live_slug_available(&input.slug, None).await?;
+        if input.source_persona_id.is_none() {
+            self.ensure_live_slug_available(&input.slug, None).await?;
+        }
         let now = Utc::now();
-        self.persona_repo
-            .create(Persona {
+        Ok(Persona {
                 id: PersonaId::new(),
                 slug: input.slug,
                 name: parsed.frontmatter.name,
@@ -76,11 +116,12 @@ impl PersonaService {
                 version: 1,
                 content_hash: parsed.content_hash,
                 source_session_id: input.source_session_id,
+                source_persona_id: input.source_persona_id,
+                source_content_hash: input.source_content_hash,
                 source_json: "{}".to_string(),
                 created_at: now,
                 updated_at: now,
             })
-            .await
     }
 
     pub async fn update_draft(
@@ -110,7 +151,12 @@ impl PersonaService {
     ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let persona = self.require_status(id, PersonaStatus::Draft).await?;
+        if persona.source_persona_id.is_some() {
+            return self.apply_seeded_draft(id).await;
+        }
         let parsed = validate_persona_content(&persona.slug, &persona.content)?;
+        self.ensure_active_slug_available(&persona.slug, Some(id))
+            .await?;
         self.persona_repo
             .update_content(id, &persona.content, &parsed.content_hash)
             .await?;
@@ -159,7 +205,16 @@ impl PersonaService {
 
     pub async fn hard_delete_draft(&self, feature_enabled: bool, id: &PersonaId) -> AppResult<()> {
         ensure_enabled(feature_enabled)?;
-        self.require_status(id, PersonaStatus::Draft).await?;
+        let draft = self.require_status(id, PersonaStatus::Draft).await?;
+        if draft.source_persona_id.is_some()
+            || self
+                .chat_conversation_repo
+                .get_by_builder_draft_id(id.as_str())
+                .await?
+                .is_some()
+        {
+            return self.delete_bound_draft(id).await;
+        }
         self.persona_repo.delete(id).await
     }
 
@@ -209,6 +264,24 @@ impl PersonaService {
         Ok(())
     }
 
+    async fn ensure_active_slug_available(
+        &self,
+        slug: &str,
+        excluding: Option<&PersonaId>,
+    ) -> AppResult<()> {
+        let occupied = self
+            .persona_repo
+            .get_active_by_slug(slug)
+            .await?
+            .is_some_and(|persona| excluding.is_none_or(|id| id != &persona.id));
+        if occupied {
+            return Err(AppError::Validation(format!(
+                "Persona slug `{slug}` is already in use"
+            )));
+        }
+        Ok(())
+    }
+
     async fn require_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<Persona> {
         let persona = self
             .persona_repo
@@ -236,3 +309,6 @@ fn ensure_enabled(feature_enabled: bool) -> AppResult<()> {
 
 #[path = "persona_service_tests.rs"]
 mod persona_service_tests;
+
+#[path = "persona_update_approval_tests.rs"]
+mod persona_update_approval_tests;

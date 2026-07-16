@@ -162,4 +162,40 @@ describe("acceptAndSchedule", () => {
     expect(result.taskIds).toEqual([]);
     expect(result.progress.failed?.step).toBe("load_session");
   });
+
+  it("returns an actionable verification outcome when acceptance queues verification", async () => {
+    mockGet.mockResolvedValueOnce({
+      status: 200,
+      body: { proposals: [{ id: "prop-001" }] },
+    });
+    mockPost.mockResolvedValueOnce({
+      status: 400,
+      body: {
+        error:
+          "Plan verification was queued. Accept the plan again after verification completes.",
+      },
+    });
+
+    const result = await acceptAndSchedule(
+      { sessionId: "sess-verify" },
+      testContext,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      verification: {
+        status: "queued",
+        sessionId: "sess-verify",
+        pollTool: "v1_get_plan_verification",
+        retryTool: "v1_accept_plan_and_schedule",
+      },
+      progress: {
+        failed: {
+          step: "apply_proposals",
+          error:
+            "Plan verification was queued. Accept the plan again after verification completes.",
+        },
+      },
+    });
+  });
 });

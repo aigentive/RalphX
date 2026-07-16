@@ -15,6 +15,7 @@ use crate::application::automation::api::{
     AutomationDetailResponse, AutomationResponse, AutomationRunResponse,
     AutomationScheduleResponse, CreateAutomationDraftResponse,
 };
+use crate::application::automation::decomposition_verifier::AutomationAuthoringMode;
 use crate::application::automation::delete::delete_automation_with_archive;
 use crate::application::automation::scheduler::{
     automation_judge_lease_expires_at, spawn_automation_judge_task, AutomationSchedulerConfig,
@@ -47,6 +48,8 @@ pub struct CreateAutomationDraftInput {
     pub project_id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub authoring_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +141,14 @@ pub(crate) async fn create_automation_draft_for_state(
     state: &AppState,
 ) -> Result<CreateAutomationDraftResponse, String> {
     let project_id = parse_project_id(&input.project_id)?;
+    let authoring_mode = input
+        .authoring_mode
+        .as_deref()
+        .map(|value| {
+            AutomationAuthoringMode::parse(value)
+                .ok_or_else(|| format!("invalid automation authoring mode: {value}"))
+        })
+        .transpose()?;
     if input
         .name
         .as_deref()
@@ -217,6 +228,7 @@ pub(crate) async fn create_automation_draft_for_state(
             base_ref_kind: Some(IdeationAnalysisBaseRefKind::LocalBranch.to_string()),
             base_ref: Some(setup_branch.clone()),
             base_display_name: Some(format!("Automation branch ({setup_branch})")),
+            authoring_mode,
         })
         .await;
 

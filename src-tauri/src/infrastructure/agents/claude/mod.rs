@@ -277,17 +277,8 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "ideation-advocate" => "ralphx-ideation-advocate",
         "ideation-critic" => "ralphx-ideation-critic",
         "ideation-specialist-backend" => "ralphx-ideation-specialist-backend",
-        "ideation-specialist-code-quality" => "ralphx-ideation-specialist-code-quality",
         "ideation-specialist-frontend" => "ralphx-ideation-specialist-frontend",
         "ideation-specialist-infra" => "ralphx-ideation-specialist-infra",
-        "ideation-specialist-intent" => "ralphx-ideation-specialist-intent",
-        "ideation-specialist-pipeline-safety" => "ralphx-ideation-specialist-pipeline-safety",
-        "ideation-specialist-prompt-quality" => "ralphx-ideation-specialist-prompt-quality",
-        "ideation-specialist-state-machine" => "ralphx-ideation-specialist-state-machine",
-        "ideation-specialist-ux" => "ralphx-ideation-specialist-ux",
-        "plan-verifier" => "ralphx-plan-verifier",
-        "plan-critic-completeness" => "ralphx-plan-critic-completeness",
-        "plan-critic-implementation-feasibility" => "ralphx-plan-critic-implementation-feasibility",
         "chat-task" => "ralphx-chat-task",
         "chat-project" => "ralphx-chat-project",
         "ralphx-worker-team" => "ralphx-execution-team-lead",
@@ -2509,6 +2500,25 @@ mod tests {
 
     #[test]
     fn common_spawn_env_sets_agent_tool_path() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        let seeded_path = dirs::home_dir()
+            .map(|home| {
+                std::env::join_paths([
+                    home.join(".cargo").join("bin"),
+                    PathBuf::from("/opt/homebrew/bin"),
+                    PathBuf::from("/usr/local/bin"),
+                    PathBuf::from("/usr/bin"),
+                    PathBuf::from("/bin"),
+                ])
+                .expect("seed test PATH")
+            })
+            .unwrap_or_else(|| OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"));
+        let _path = EnvGuard::set_os("PATH", seeded_path);
+        let _disable_login_shell =
+            EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
         let mut command = Command::new("/fake/claude");
         apply_common_spawn_env(&mut command);
 
