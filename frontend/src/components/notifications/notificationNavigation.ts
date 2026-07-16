@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { requestAutomationRunOpen } from "@/components/automations/automationRunNavigation";
+import { automationsApi } from "@/api/automations";
 import { tasksApi } from "@/api/tasks";
 import {
   navigateToAgentConversation,
@@ -17,6 +18,13 @@ const AUTOMATION_NOTIFICATION_TAB_HINTS = {
   automation_run_failed: "automation",
   automation_run_completed: "pr",
 } as const;
+const ATTENTION_QUERY_KEY = ["attention"] as const;
+const AUTOMATIONS_QUERY_KEY = ["automations"] as const;
+const AUTOMATION_SIDEBAR_QUERY_KEY = [
+  "agents",
+  "sidebar-conversations",
+  "automation",
+] as const;
 
 function permissionRequestId(id: string): string {
   return id.replace(/^(?:permission|perm):/, "");
@@ -31,6 +39,30 @@ export interface NotificationNavigationItem {
 export interface NotificationNavigationOptions {
   onClose?: () => void;
   onOpenAutomationDetail?: (automationId: string) => void;
+}
+
+export async function performNotificationPrimaryAction(
+  item: NotificationNavigationItem,
+  queryClient: QueryClient,
+  options: NotificationNavigationOptions = {},
+): Promise<boolean> {
+  if (item.category !== "automation_paused" || !item.target.automationId) {
+    return navigateNotification(item, queryClient, options);
+  }
+  const automationId = item.target.automationId;
+  try {
+    await automationsApi.resume(automationId);
+    void queryClient.invalidateQueries({ queryKey: AUTOMATIONS_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: AUTOMATION_SIDEBAR_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: ATTENTION_QUERY_KEY });
+    toast.success("Automation resumed");
+    options.onClose?.();
+    return true;
+  } catch {
+    void queryClient.invalidateQueries({ queryKey: ATTENTION_QUERY_KEY });
+    toast.error("Automation is no longer resumable");
+    return false;
+  }
 }
 
 /** The one target dispatcher used by attention rows, history rows, and toast actions. */

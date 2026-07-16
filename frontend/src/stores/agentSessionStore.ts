@@ -17,6 +17,7 @@ import type {
   TeamIntent,
 } from "@/api/chat";
 import type {
+  AutomationAuthoringMode,
   AutomationJudgeState,
   AutomationRunStatus,
 } from "@/api/automations";
@@ -37,6 +38,19 @@ export type AgentArtifactTab =
   | "clickup"
   | "granola"
   | "publish";
+export const AGENT_ARTIFACT_TABS: readonly AgentArtifactTab[] = [
+  "issues",
+  "plan",
+  "verification",
+  "tasks",
+  "automation",
+  "pr",
+  "jira",
+  "linear",
+  "granola",
+  "review",
+  "publish",
+];
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
 export type AgentSidebarGroupBy = "project" | "publication" | "automation";
@@ -52,6 +66,7 @@ export interface AgentArtifactState {
   isOpen: boolean;
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
+  hiddenTabs: AgentArtifactTab[];
 }
 
 export interface AgentTaskArtifactFocusRequest {
@@ -88,6 +103,7 @@ export interface AgentStartConversationDraft {
   projectId: string;
   content: string;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -99,6 +115,7 @@ export interface AgentStartConversationRetryInput {
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
   teamIntent?: TeamIntent | null;
@@ -172,6 +189,13 @@ interface AgentSessionActions {
   setArtifactOpen: (conversationId: string, isOpen: boolean) => void;
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
+  hideArtifactTab: (
+    conversationId: string,
+    tab: AgentArtifactTab,
+    availableTabs: readonly AgentArtifactTab[],
+  ) => void;
+  showArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
+  revealArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setTaskArtifactMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
   focusTaskArtifact: (conversationId: string, taskId: string) => void;
   requestAutomationRunFocus: (
@@ -200,6 +224,7 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   isOpen: false,
   activeTab: "plan",
   taskMode: "graph",
+  hiddenTabs: [],
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
 export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
@@ -210,7 +235,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 7;
+const AGENT_SESSION_STORE_VERSION = 8;
 
 type LegacyAgentArtifactTab = AgentArtifactTab | "proposal";
 
@@ -221,14 +246,61 @@ export function normalizeAgentArtifactTab(
 }
 
 function normalizeAgentArtifactState(
-  artifactState: Omit<AgentArtifactState, "activeTab"> & {
+  artifactState: Omit<AgentArtifactState, "activeTab" | "hiddenTabs"> & {
     activeTab: LegacyAgentArtifactTab;
+    hiddenTabs?: unknown;
   },
 ): AgentArtifactState {
   return {
     ...artifactState,
     activeTab: normalizeAgentArtifactTab(artifactState.activeTab),
+    hiddenTabs: normalizeHiddenArtifactTabs(artifactState.hiddenTabs),
   };
+}
+
+function isAgentArtifactTab(value: unknown): value is AgentArtifactTab {
+  return typeof value === "string" && AGENT_ARTIFACT_TABS.includes(value as AgentArtifactTab);
+}
+
+function normalizeHiddenArtifactTabs(value: unknown): AgentArtifactTab[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(new Set(value.filter(isAgentArtifactTab)));
+}
+
+export function getShownArtifactTabs(
+  availableTabs: readonly AgentArtifactTab[],
+  hiddenTabs: readonly AgentArtifactTab[],
+): AgentArtifactTab[] {
+  const hidden = new Set(hiddenTabs);
+  return availableTabs.filter((tab) => !hidden.has(tab));
+}
+
+export function getArtifactTabFallback(
+  availableTabs: readonly AgentArtifactTab[],
+  hiddenTabs: readonly AgentArtifactTab[],
+  hiddenTab: AgentArtifactTab,
+): AgentArtifactTab | undefined {
+  const shownTabs = getShownArtifactTabs(availableTabs, hiddenTabs);
+  const hiddenIndex = availableTabs.indexOf(hiddenTab);
+  return (
+    availableTabs
+      .slice(0, Math.max(hiddenIndex, 0))
+      .reverse()
+      .find((candidate) => shownTabs.includes(candidate)) ?? shownTabs[0]
+  );
+}
+
+export function getSeededArtifactTab(
+  activeTab: AgentArtifactTab,
+  requestedTab: AgentArtifactTab,
+  hiddenTabs: readonly AgentArtifactTab[],
+): AgentArtifactTab {
+  if (!hiddenTabs.includes(requestedTab)) {
+    return requestedTab;
+  }
+  return activeTab;
 }
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
@@ -255,9 +327,14 @@ function migrateArtifactStateRecord(value: unknown): unknown {
         return [conversationId, artifactState];
       }
       const state = artifactState as Record<string, unknown>;
-      return state.activeTab === "proposal"
-        ? [conversationId, { ...state, activeTab: "plan" }]
-        : [conversationId, artifactState];
+      return [
+        conversationId,
+        {
+          ...state,
+          activeTab: state.activeTab === "proposal" ? "plan" : state.activeTab,
+          hiddenTabs: normalizeHiddenArtifactTabs(state.hiddenTabs),
+        },
+      ];
     }),
   );
 }
@@ -307,7 +384,7 @@ export function migrateAgentSessionStore(
     nextState.lastModelEffortByProvider = {};
   }
 
-  if (version < 7) {
+  if (version < 8) {
     nextState.artifactByConversationId = migrateArtifactStateRecord(
       nextState.artifactByConversationId,
     );
@@ -338,6 +415,9 @@ function cloneStartConversationDraft(
     projectId: draft.projectId,
     content: draft.content,
     mode: draft.mode,
+    ...(draft.automationAuthoringMode
+      ? { automationAuthoringMode: draft.automationAuthoringMode }
+      : {}),
     ...(draft.composerProjectReferences
       ? {
           composerProjectReferences: draft.composerProjectReferences.map(
@@ -518,12 +598,51 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           const artifactState = ensureArtifactState(state, conversationId);
           artifactState.activeTab = normalizeAgentArtifactTab(tab);
           artifactState.isOpen = true;
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== tab,
+          );
         }),
 
       setArtifactState: (conversationId, artifactState) =>
         set((state) => {
           state.artifactByConversationId[conversationId] =
             normalizeAgentArtifactState(artifactState);
+        }),
+
+      hideArtifactTab: (conversationId, tab, availableTabs) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          if (!artifactState.hiddenTabs.includes(tab)) {
+            artifactState.hiddenTabs.push(tab);
+          }
+          if (artifactState.activeTab !== tab) {
+            return;
+          }
+          const nextActiveTab = getArtifactTabFallback(
+            availableTabs,
+            artifactState.hiddenTabs,
+            tab,
+          );
+          if (nextActiveTab) {
+            artifactState.activeTab = nextActiveTab;
+          }
+        }),
+
+      showArtifactTab: (conversationId, tab) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== tab,
+          );
+        }),
+
+      revealArtifactTab: (conversationId, tab) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== tab,
+          );
+          artifactState.activeTab = tab;
         }),
 
       setTaskArtifactMode: (conversationId, mode) =>
@@ -536,6 +655,9 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           const artifactState = ensureArtifactState(state, conversationId);
           artifactState.activeTab = "tasks";
           artifactState.isOpen = true;
+          artifactState.hiddenTabs = artifactState.hiddenTabs.filter(
+            (hiddenTab) => hiddenTab !== "tasks",
+          );
           const current =
             state.taskArtifactFocusRequestByConversationId[conversationId];
           state.taskArtifactFocusRequestByConversationId[conversationId] = {

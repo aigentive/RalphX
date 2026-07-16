@@ -204,7 +204,6 @@ The gate prevents proposal creation on sessions with a plan that haven't been cr
 | New session (just created) | `false` | Builder default — must call `cross_project_guide` before proposals |
 | Imported via `create_cross_project_session` | `true` | Set explicitly in `create_cross_project_session_impl` |
 | Child session (linked via `create_child_session`) | `true` | Set explicitly in `create_child_session_impl` |
-| Verification child session | `true` | Set explicitly in `create_verification_child_session` |
 | Existing rows (pre-migration v72) | `true` | Migration DEFAULT 1 — grandfathered in |
 
 ### Gate Enforcement

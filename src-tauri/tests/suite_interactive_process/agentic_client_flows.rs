@@ -39,6 +39,8 @@ async fn seed_bound_active_persona() -> (AppState, tempfile::TempDir, String) {
         version: 1,
         content_hash: "excluded-agent-persona-hash".to_string(),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,

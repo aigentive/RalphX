@@ -209,6 +209,8 @@ async fn seed_persona(state: &AppState, id: &str, status: PersonaStatus) -> Pers
         version: 1,
         content_hash: format!("{id}-hash"),
         source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
         source_json: "{}".to_string(),
         created_at: now,
         updated_at: now,
@@ -818,6 +820,7 @@ async fn ipc_contract_start_service_plan_mode_links_planning_session_for_automat
         first_run_prompt: Some("Author the automation run plan".to_string()),
         setup_analysis_summary: None,
         spec_artifact_id: Some(spec.id.as_str().to_string()),
+        authoring_state_json: None,
         created_at: now,
         updated_at: now,
     };

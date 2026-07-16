@@ -29,6 +29,11 @@ interface AgentsConversationSideRegionsProps {
   chatDockElement: HTMLDivElement | null;
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
+  hideArtifactTab: (
+    conversationId: string,
+    tab: AgentArtifactTab,
+    availableTabs: readonly AgentArtifactTab[],
+  ) => void;
   isArtifactResizing: boolean;
   openArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   automationRunFocusTarget: Extract<
@@ -41,6 +46,7 @@ interface AgentsConversationSideRegionsProps {
   selectedConversationId: string | null;
   setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
   setArtifactTaskMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
+  showArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
   taskArtifactFocusRequest: AgentTaskArtifactFocusRequest | null;
   terminalArchivedReason: string | null;
@@ -87,6 +93,7 @@ export function AgentsConversationSideRegions({
   chatDockElement,
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
+  hideArtifactTab,
   isArtifactResizing,
   openArtifactTab,
   automationRunFocusTarget,
@@ -96,6 +103,7 @@ export function AgentsConversationSideRegions({
   selectedConversationId,
   setArtifactPaneVisibility,
   setArtifactTaskMode,
+  showArtifactTab,
   setTerminalPanelDockElement,
   taskArtifactFocusRequest,
   terminalArchivedReason,
@@ -134,6 +142,10 @@ export function AgentsConversationSideRegions({
           onResizeStart={onResizeStart}
           onResizeReset={onResizeReset}
           onTabChange={onSelectArtifact}
+          onHideTab={(tab, availableTabs) =>
+            hideArtifactTab(selectedConversationId, tab, availableTabs)
+          }
+          onShowTab={(tab) => showArtifactTab(selectedConversationId, tab)}
           onOpenPublish={onOpenPublish}
           onTaskModeChange={(mode) =>
             setArtifactTaskMode(selectedConversationId, mode)

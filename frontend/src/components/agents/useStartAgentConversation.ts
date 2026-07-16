@@ -16,6 +16,7 @@ import {
   type TeamIntent,
 } from "@/api/chat";
 import { automationsApi } from "@/api/automations";
+import type { AutomationAuthoringMode } from "@/api/automations";
 import { ticketingApi, type TicketRef } from "@/api/ticketing";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
@@ -147,6 +148,7 @@ export function useStartAgentConversation({
       runtime,
       runtimeProviderContext,
       mode,
+      automationAuthoringMode,
       base,
       files,
       codexFastMode,
@@ -161,6 +163,7 @@ export function useStartAgentConversation({
       runtime: AgentRuntimeSelection;
       runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
       mode: AgentConversationWorkspaceMode;
+      automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
       files: File[];
       codexFastMode?: boolean | null;
@@ -352,6 +355,9 @@ export function useStartAgentConversation({
             ? await automationsApi.createDraft({
                 projectId: targetProjectId,
                 name: automationDraftNameFromContent(content),
+                ...(automationAuthoringMode
+                  ? { authoringMode: automationAuthoringMode }
+                  : {}),
               })
             : null;
         const setupConversationId = automationDraft?.setupConversationId ?? null;
@@ -690,6 +696,7 @@ function buildStartArtifactState(
     isOpen: integrationTab !== null,
     activeTab: integrationTab ?? "plan",
     taskMode: DEFAULT_AGENT_ARTIFACT_UI_STATE.taskMode,
+    hiddenTabs: [],
   };
 }
 

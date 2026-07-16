@@ -336,6 +336,7 @@ pub struct Automation {
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
     pub spec_artifact_id: Option<String>,
+    pub authoring_state_json: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

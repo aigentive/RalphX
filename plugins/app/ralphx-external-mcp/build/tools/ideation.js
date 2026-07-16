@@ -296,7 +296,7 @@ export async function handleAnalyzeDependencies(args, context) {
     }
 }
 /**
- * v1_trigger_plan_verification — trigger auto-verification for a session's plan.
+ * v1_trigger_plan_verification — queue a model-native review of the current plan.
  * POST /api/external/trigger_verification
  */
 export async function handleTriggerPlanVerification(args, context) {
@@ -313,7 +313,7 @@ export async function handleTriggerPlanVerification(args, context) {
     }
 }
 /**
- * v1_get_plan_verification — get plan verification status for a session.
+ * v1_get_plan_verification — get exact-artifact verification status for a session.
  * GET /api/external/plan_verification/:session_id
  */
 export async function handleGetPlanVerification(args, context) {

@@ -34,6 +34,8 @@ pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
 pub const SHORT_AUTOMATION_SETUP: &str = "ralphx-automation-setup";
 pub const SHORT_AUTOMATION_JUDGE: &str = "ralphx-automation-judge";
 pub const SHORT_AUTOMATION_PLAN_JUDGE: &str = "ralphx-automation-plan-judge";
+pub const SHORT_AUTOMATION_DECOMPOSITION_VERIFIER: &str =
+    "ralphx-automation-decomposition-verifier";
 pub const SHORT_REVIEWER: &str = "ralphx-execution-reviewer";
 pub const SHORT_QA_PREP: &str = "ralphx-qa-prep";
 pub const SHORT_QA_EXECUTOR: &str = "ralphx-qa-executor";
@@ -45,12 +47,6 @@ pub const SHORT_BRANCH_UPDATER: &str = "ralphx-execution-branch-updater";
 pub const SHORT_MEMORY_MAINTAINER: &str = "ralphx-memory-maintainer";
 pub const SHORT_MEMORY_CAPTURE: &str = "ralphx-memory-capture";
 
-// ── Plan verification critic agents ─────────────────────────────────────
-pub const SHORT_PLAN_CRITIC_COMPLETENESS: &str = "ralphx-plan-critic-completeness";
-pub const SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY: &str =
-    "ralphx-plan-critic-implementation-feasibility";
-pub const SHORT_PLAN_VERIFIER: &str = "ralphx-plan-verifier";
-
 // ── Team lead variants (extends base agents) ────────────────────────────
 pub const SHORT_IDEATION_TEAM_LEAD: &str = "ralphx-ideation-team-lead";
 pub const SHORT_WORKER_TEAM: &str = "ralphx-execution-team-lead";
@@ -60,14 +56,8 @@ pub const SHORT_IDEATION_TEAM_MEMBER: &str = "ideation-team-member";
 pub const SHORT_IDEATION_SPECIALIST_BACKEND: &str = "ralphx-ideation-specialist-backend";
 pub const SHORT_IDEATION_SPECIALIST_FRONTEND: &str = "ralphx-ideation-specialist-frontend";
 pub const SHORT_IDEATION_SPECIALIST_INFRA: &str = "ralphx-ideation-specialist-infra";
-pub const SHORT_IDEATION_SPECIALIST_UX: &str = "ralphx-ideation-specialist-ux";
-pub const SHORT_IDEATION_SPECIALIST_CODE_QUALITY: &str = "ralphx-ideation-specialist-code-quality";
 pub const SHORT_IDEATION_ADVOCATE: &str = "ralphx-ideation-advocate";
 pub const SHORT_IDEATION_CRITIC: &str = "ralphx-ideation-critic";
-pub const SHORT_IDEATION_SPECIALIST_PIPELINE_SAFETY: &str =
-    "ralphx-ideation-specialist-pipeline-safety";
-pub const SHORT_IDEATION_SPECIALIST_STATE_MACHINE: &str =
-    "ralphx-ideation-specialist-state-machine";
 
 // ── ChatService team agents (team_mode=true → resolve_agent_with_team_mode) ──
 
@@ -84,9 +74,6 @@ pub const AGENT_ORCHESTRATOR_IDEATION: &str = "ralphx:ralphx-ideation";
 
 /// Ideation orchestrator in read-only mode (session status = "accepted")
 pub const AGENT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx:ralphx-ideation-readonly";
-
-/// Plan verifier agent (ChatContextType::Ideation when session_purpose = Verification)
-pub const AGENT_PLAN_VERIFIER: &str = "ralphx:ralphx-plan-verifier";
 
 /// Task-scoped chat (ChatContextType::Task)
 pub const AGENT_CHAT_TASK: &str = "ralphx:ralphx-chat-task";
@@ -117,6 +104,10 @@ pub const AGENT_AUTOMATION_JUDGE: &str = "ralphx:ralphx-automation-judge";
 
 /// Automation plan judge utility agent for automatic plan-gate verdicts
 pub const AGENT_AUTOMATION_PLAN_JUDGE: &str = "ralphx:ralphx-automation-plan-judge";
+
+/// Automation decomposition verifier for trusted one-shot authoring.
+pub const AGENT_AUTOMATION_DECOMPOSITION_VERIFIER: &str =
+    "ralphx:ralphx-automation-decomposition-verifier";
 
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";

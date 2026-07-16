@@ -1,3 +1,4 @@
+use chrono::Utc;
 use ralphx_lib::application::persona_ingest::{
     build_persona_ingest_file_path, persona_builder_ingest_session_is_live,
     persona_ingest_conversation_path, persona_ingest_storage_path,
@@ -10,8 +11,15 @@ use ralphx_lib::commands::persona_builder_commands::{
     ingest_persona_context_for_state, CreatePersonaBuilderConversationInput,
     IngestPersonaContextInput, PersonaBuilderIngestStatusInput,
 };
-use ralphx_lib::domain::entities::{AgentConversationWorkspaceMode, ChatConversation, ProjectId};
+use ralphx_lib::domain::entities::{
+    AgentConversationWorkspaceMode, ChatConversation, Persona, PersonaId, PersonaStatus, ProjectId,
+};
+use ralphx_lib::infrastructure::sqlite::{
+    DbConnection, SqliteChatConversationRepository, SqlitePersonaRepository,
+};
+use ralphx_lib::testing::SqliteTestDb;
 use std::fs;
+use std::sync::Arc;
 use tauri::Manager;
 
 fn persona_builder_command_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -26,6 +34,7 @@ async fn builder_conversation_created_only_via_flag_gated_settings_command() {
     let state = AppState::new_test();
     let input = CreatePersonaBuilderConversationInput {
         project_id: "project-persona-builder-command".to_string(),
+        source_persona_id: None,
     };
 
     let disabled = create_persona_builder_conversation_for_state(input.clone(), &state, false)
@@ -65,19 +74,94 @@ async fn builder_conversation_created_only_via_flag_gated_settings_command() {
     assert_eq!(project_id.as_str(), "project-persona-builder-command");
 }
 
+fn source_persona(id: &str, status: PersonaStatus) -> Persona {
+    let now = Utc::now();
+    Persona {
+        id: PersonaId::from(id),
+        slug: "existing-reviewer".to_string(),
+        name: "Existing Reviewer".to_string(),
+        description: "Existing persona to update".to_string(),
+        content: "---\nname: existing-reviewer\nkind: persona\ndescription: Existing persona to update\n---\nOriginal body".to_string(),
+        status,
+        version: 7,
+        content_hash: "source-hash-v7".to_string(),
+        source_session_id: None,
+        source_persona_id: None,
+        source_content_hash: None,
+        source_json: "{}".to_string(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[tokio::test]
+async fn update_mode_seeds_binds_and_reuses_one_draft_conversation() {
+    let db = SqliteTestDb::new("persona_builder_update_mode");
+    let shared = db.shared_conn();
+    let mut state = AppState::new_test();
+    state.db = DbConnection::from_shared(Arc::clone(&shared));
+    state.persona_repo = Arc::new(SqlitePersonaRepository::from_shared(Arc::clone(&shared)));
+    state.chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(shared));
+    let source = source_persona("source-persona", PersonaStatus::Active);
+    state.persona_repo.create(source.clone()).await.unwrap();
+    let input = CreatePersonaBuilderConversationInput {
+        project_id: "project-persona-update".to_string(),
+        source_persona_id: Some(source.id.as_str().to_string()),
+    };
+
+    let first = create_persona_builder_conversation_for_state(input.clone(), &state, true)
+        .await
+        .expect("source mode should seed and bind a draft");
+    let draft_id = first
+        .builder_draft_id
+        .as_deref()
+        .expect("create response must carry the authoritative draft id");
+    let draft = state
+        .persona_repo
+        .get_by_id(&PersonaId::from(draft_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(draft.status, PersonaStatus::Draft);
+    assert_eq!(draft.source_persona_id.as_ref(), Some(&source.id));
+    assert_eq!(draft.source_content_hash.as_deref(), Some("source-hash-v7"));
+    assert_eq!(draft.content, source.content);
+
+    let second = create_persona_builder_conversation_for_state(input, &state, true)
+        .await
+        .expect("re-entry should reuse the draft-first binding");
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.builder_draft_id, first.builder_draft_id);
+    let sourced_drafts = state
+        .persona_repo
+        .list_by_status(PersonaStatus::Draft)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|persona| persona.source_persona_id.as_ref() == Some(&source.id))
+        .count();
+    assert_eq!(sourced_drafts, 1);
+}
+
 #[test]
 fn persona_builder_command_input_uses_camel_case_project_id() {
     let input: CreatePersonaBuilderConversationInput =
         serde_json::from_str(r#"{"projectId":"project-persona-builder-input"}"#)
             .expect("camelCase projectId should deserialize");
     assert_eq!(input.project_id, "project-persona-builder-input");
+    assert_eq!(input.source_persona_id, None);
+    let update: CreatePersonaBuilderConversationInput = serde_json::from_str(
+        r#"{"projectId":"project-persona-builder-input","sourcePersonaId":"persona-1"}"#,
+    )
+    .expect("camelCase sourcePersonaId should deserialize");
+    assert_eq!(update.source_persona_id.as_deref(), Some("persona-1"));
 
     let ingest: IngestPersonaContextInput = serde_json::from_str(
-        r#"{"conversationId":"conversation-persona-builder-input","pickedPath":"/tmp/context.md"}"#,
+        r#"{"conversationId":"conversation-persona-builder-input","pickedPaths":["/tmp/context.md","/tmp/context-dir"]}"#,
     )
     .expect("camelCase ingestion input should deserialize");
     assert_eq!(ingest.conversation_id, "conversation-persona-builder-input");
-    assert_eq!(ingest.picked_path, "/tmp/context.md");
+    assert_eq!(ingest.picked_paths, ["/tmp/context.md", "/tmp/context-dir"]);
 
     let status: PersonaBuilderIngestStatusInput =
         serde_json::from_str(r#"{"conversationId":"conversation-persona-builder-input"}"#)
@@ -125,6 +209,7 @@ async fn persona_builder_command_adapters_use_mock_app_state_and_live_feature_fl
     let creation_error = create_persona_builder_conversation(
         CreatePersonaBuilderConversationInput {
             project_id: "project-persona-builder-wrapper".to_string(),
+            source_persona_id: None,
         },
         app.state(),
     )
@@ -135,7 +220,7 @@ async fn persona_builder_command_adapters_use_mock_app_state_and_live_feature_fl
     let ingest_error = ingest_persona_context(
         IngestPersonaContextInput {
             conversation_id: "missing-persona-builder-wrapper".to_string(),
-            picked_path: "not-inspected-while-disabled".to_string(),
+            picked_paths: vec!["not-inspected-while-disabled".to_string()],
         },
         app.state(),
         app.handle().clone(),
@@ -150,7 +235,7 @@ async fn ingest_command_rejects_flag_off() {
     let state = AppState::new_test();
     let input = IngestPersonaContextInput {
         conversation_id: "missing-persona-builder".to_string(),
-        picked_path: "not-inspected-while-disabled".to_string(),
+        picked_paths: vec!["not-inspected-while-disabled".to_string()],
     };
 
     let error = ingest_persona_context_for_state(input, &state, false, std::path::Path::new("."))
@@ -172,7 +257,7 @@ async fn ingest_command_rejects_non_persona_builder_conversation() {
         .expect("non-PersonaBuilder fixture conversation");
     let input = IngestPersonaContextInput {
         conversation_id: conversation.id.as_str().to_string(),
-        picked_path: "not-inspected-for-wrong-mode".to_string(),
+        picked_paths: vec!["not-inspected-for-wrong-mode".to_string()],
     };
 
     let error = ingest_persona_context_for_state(input, &state, true, std::path::Path::new("."))
@@ -183,11 +268,42 @@ async fn ingest_command_rejects_non_persona_builder_conversation() {
 }
 
 #[tokio::test]
+async fn ingest_command_rejects_an_empty_path_batch() {
+    let state = AppState::new_test();
+    let conversation = create_persona_builder_conversation_for_state(
+        CreatePersonaBuilderConversationInput {
+            project_id: "project-persona-builder-empty-ingest".to_string(),
+            source_persona_id: None,
+        },
+        &state,
+        true,
+    )
+    .await
+    .expect("PersonaBuilder conversation");
+    let temp = tempfile::tempdir().expect("ingest temp directory");
+
+    let error = ingest_persona_context_for_state(
+        IngestPersonaContextInput {
+            conversation_id: conversation.id,
+            picked_paths: Vec::new(),
+        },
+        &state,
+        true,
+        temp.path(),
+    )
+    .await
+    .expect_err("an empty path batch must reject");
+
+    assert!(error.contains("at least one"));
+}
+
+#[tokio::test]
 async fn ingest_command_copies_context_for_a_persona_builder_conversation() {
     let state = AppState::new_test();
     let conversation = create_persona_builder_conversation_for_state(
         CreatePersonaBuilderConversationInput {
             project_id: "project-persona-builder-ingest".to_string(),
+            source_persona_id: None,
         },
         &state,
         true,
@@ -202,7 +318,7 @@ async fn ingest_command_copies_context_for_a_persona_builder_conversation() {
     let manifest = ingest_persona_context_for_state(
         IngestPersonaContextInput {
             conversation_id: conversation.id.clone(),
-            picked_path: picked_path.to_string_lossy().to_string(),
+            picked_paths: vec![picked_path.to_string_lossy().to_string()],
         },
         &state,
         true,
@@ -220,9 +336,13 @@ async fn ingest_command_copies_context_for_a_persona_builder_conversation() {
         &persona_ingest_storage_path(&app_data_dir),
         &conversation.id,
     );
-    let copied_path =
-        build_persona_ingest_file_path(&destination_root, std::path::Path::new("context.md"))
-            .expect("ingest destination is derived from the approved relative path");
+    let canonical_picked_path = picked_path.canonicalize().expect("canonical picked path");
+    let copied_path = build_persona_ingest_file_path(
+        &destination_root,
+        &canonical_picked_path,
+        std::path::Path::new("context.md"),
+    )
+    .expect("ingest destination is derived from the approved relative path");
     assert_eq!(
         fs::read_to_string(copied_path).expect("app-owned copy should be readable"),
         "Persona context\n"
@@ -239,7 +359,7 @@ async fn ingest_command_maps_absent_persona_builder_conversation_to_not_found() 
     let error = ingest_persona_context_for_state(
         IngestPersonaContextInput {
             conversation_id: "missing-persona-builder".to_string(),
-            picked_path: temp.path().join("context.md").to_string_lossy().to_string(),
+            picked_paths: vec![temp.path().join("context.md").to_string_lossy().to_string()],
         },
         &state,
         true,
@@ -333,6 +453,7 @@ async fn persona_ingest_status_command_reports_not_live_without_ingested_files()
     let conversation = create_persona_builder_conversation_for_state(
         CreatePersonaBuilderConversationInput {
             project_id: "project-persona-builder-status-empty".to_string(),
+            source_persona_id: None,
         },
         &state,
         true,
@@ -362,6 +483,7 @@ async fn persona_ingest_status_command_reports_live_after_ingesting_a_file() {
     let conversation = create_persona_builder_conversation_for_state(
         CreatePersonaBuilderConversationInput {
             project_id: "project-persona-builder-status-live".to_string(),
+            source_persona_id: None,
         },
         &state,
         true,

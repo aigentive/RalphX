@@ -84,9 +84,7 @@ export interface GetAgentHarnessOptions {
 
 export const IDEATION_LANES: AgentLane[] = [
   "ideation_primary",
-  "ideation_verifier",
   "ideation_subagent",
-  "ideation_verifier_subagent",
 ];
 
 export const EXECUTION_LANES: AgentLane[] = [

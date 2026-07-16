@@ -80,7 +80,7 @@ PM Agent
   │    → adversarial review loop; wait for verified status
   │
   ├─ v1_get_plan_verification(session_id)
-  │    → poll until status = "Verified"
+  │    → poll until status = "verified" (or failed/cancelled)
   │
   └─ v1_accept_plan_and_schedule(session_id)
        → tasks enter Backlog; RalphX auto-schedules execution
