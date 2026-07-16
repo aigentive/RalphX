@@ -2832,3 +2832,625 @@ async fn restore_finalization_error_repauses_github_and_keeps_guard_retryable() 
         .as_deref()
         .is_some_and(|error| error.contains("restore finalization unavailable")));
 }
+
+async fn selected_source_guard(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AgentWorkspaceReviewAutoMergeGuard {
+    let preview = preview_manual_workspace_review_start(state, workspace)
+        .await
+        .expect("selected-source preview should resolve");
+    let effect = preview
+        .auto_merge
+        .expect("selected-source auto-merge effect should resolve");
+    AgentWorkspaceReviewAutoMergeGuard {
+        status: AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview,
+        pr_number: effect.pr_number,
+        merge_method: effect.merge_method,
+        target_scope: effect.target.scope,
+        diff_fingerprint: effect.target.diff_fingerprint,
+        head_sha: effect.target.head_sha,
+        last_error: None,
+    }
+}
+
+async fn persist_selected_source_guard(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    guard: AgentWorkspaceReviewAutoMergeGuard,
+) {
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(guard.diff_fingerprint.clone());
+    monitor.auto_merge_guard = Some(guard);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+}
+
+async fn no_change_workspace_context(
+    root: &Path,
+    conversation_name: &str,
+) -> (AppState, Arc<MockGithubService>, AgentConversationWorkspace) {
+    let repo = root.join("repository");
+    let head = init_repo(&repo, "main");
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(auto_merge_health("main", &head)));
+    state.github_service = Some(github.clone());
+    let mut project = Project::new(
+        "Workspace Review".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should persist");
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string(conversation_name),
+        project.id,
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "main".to_string(),
+        None,
+        None,
+        "ralphx/test/workspace-review".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    workspace.pr_auto_merge_desired = true;
+    workspace.publication_pr_number = Some(42);
+    workspace.publication_pr_status = Some("open".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    (state, github, workspace)
+}
+
+fn workspace_delta_guard(
+    status: AgentWorkspaceReviewAutoMergeGuardStatus,
+) -> AgentWorkspaceReviewAutoMergeGuard {
+    AgentWorkspaceReviewAutoMergeGuard {
+        status,
+        pr_number: 42,
+        merge_method: "squash".to_string(),
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        diff_fingerprint: "stale-workspace-delta".to_string(),
+        head_sha: Some("stale-head".to_string()),
+        last_error: None,
+    }
+}
+
+#[tokio::test]
+async fn selected_source_restore_cancels_when_supervision_is_disabled_before_restore() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-restore-disabled").await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    let mut disabled_workspace = workspace.clone();
+    disabled_workspace.pr_auto_merge_desired = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(disabled_workspace)
+        .await
+        .expect("disabled supervision should persist");
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("disabled supervision should cancel the guard without restoring");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn selected_source_restore_cancels_when_guarded_pr_is_terminal_before_restore() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-restore-terminal").await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    let mut terminal_workspace = workspace.clone();
+    terminal_workspace.publication_pr_number = Some(42);
+    terminal_workspace.publication_pr_status = Some("closed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(terminal_workspace)
+        .await
+        .expect("terminal publication should persist");
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("terminal guarded PR should cancel the guard without restoring");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn selected_source_restore_requires_github_after_claiming_restore_authority() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (mut state, _github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-restore-no-github").await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    state.github_service = None;
+
+    let error = restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect_err("restoration should fail closed without GitHub");
+
+    assert!(error
+        .to_string()
+        .contains("GitHub integration became unavailable"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard
+            .expect("guard should remain blocking for reconciliation")
+            .status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::Restoring
+    );
+}
+
+#[tokio::test]
+async fn selected_source_restore_cancels_when_target_disappears_after_claiming_authority() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-restore-target-missing")
+            .await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    let mut missing_target_workspace = workspace.clone();
+    missing_target_workspace.source_pull_request = None;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(missing_target_workspace)
+        .await
+        .expect("missing target should persist");
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("missing selected-source target should cancel the guard");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn selected_source_restore_cancels_when_target_changes_after_claiming_authority() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-restore-target-changed")
+            .await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    let mut changed_target_workspace = workspace.clone();
+    changed_target_workspace
+        .source_pull_request
+        .as_mut()
+        .expect("source PR should exist")
+        .number = 43;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(changed_target_workspace)
+        .await
+        .expect("changed target should persist");
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("changed selected-source target should cancel the guard");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn reconciliation_cancels_interrupted_selected_source_restore_when_target_disappears() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-reconcile-missing-target")
+            .await;
+    let mut guard = selected_source_guard(&state, &workspace).await;
+    guard.status = AgentWorkspaceReviewAutoMergeGuardStatus::Restoring;
+    persist_selected_source_guard(&state, &workspace, guard).await;
+    let mut missing_target_workspace = workspace.clone();
+    missing_target_workspace.source_pull_request = None;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(missing_target_workspace)
+        .await
+        .expect("missing target should persist");
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("reconciliation should cancel interrupted restore"),
+        1
+    );
+
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn reconciliation_cancels_interrupted_selected_source_restore_when_target_changes() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-reconcile-changed-target")
+            .await;
+    let mut guard = selected_source_guard(&state, &workspace).await;
+    guard.status = AgentWorkspaceReviewAutoMergeGuardStatus::Restoring;
+    persist_selected_source_guard(&state, &workspace, guard).await;
+    let mut changed_target_workspace = workspace.clone();
+    changed_target_workspace
+        .source_pull_request
+        .as_mut()
+        .expect("source PR should exist")
+        .head_ref_oid = Some("different-head".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(changed_target_workspace)
+        .await
+        .expect("changed target should persist");
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("reconciliation should cancel interrupted restore"),
+        1
+    );
+
+    assert_eq!(github.state().fetch_pr_health_calls, 1);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn selected_source_restore_records_retryable_failure_when_lost_authority_cannot_repause() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-lost-authority-disable")
+            .await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    {
+        let mut github_state = github.state();
+        github_state.enable_pr_auto_merge_delay_ms = 50;
+        github_state.fetch_pr_health_result =
+            Some(Ok(auto_merge_health("feature/review", &feature_head)));
+    }
+    let state = Arc::new(state);
+    let restore_state = Arc::clone(&state);
+    let restore_workspace = workspace.clone();
+    let restore_guard = guard.clone();
+    let restore = tokio::spawn(async move {
+        restore_guarded_auto_merge(restore_state.as_ref(), &restore_workspace, &restore_guard).await
+    });
+    for _ in 0..1_000 {
+        if github.state().enable_pr_auto_merge_calls == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 1);
+    github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+        "remote disable failed after authority loss".to_string(),
+    )));
+    let mut disabled_workspace = workspace.clone();
+    disabled_workspace.pr_auto_merge_desired = false;
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(disabled_workspace)
+        .await
+        .expect("lost restore authority should persist");
+
+    let error = restore
+        .await
+        .expect("restore task should join")
+        .expect_err("failed re-pause after lost authority should be reported");
+
+    assert!(error
+        .to_string()
+        .contains("remote disable failed after authority loss"));
+    assert_eq!(github.state().disable_pr_auto_merge_calls, 1);
+    let guard = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .expect("guard should remain retryable");
+    assert_eq!(
+        guard.status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    );
+    assert!(guard
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("remote disable failed after authority loss")));
+}
+
+#[tokio::test]
+async fn already_reviewing_no_changes_clears_existing_guard_without_restoring() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, feature_head) = selected_source_workspace_context(
+        temp.path(),
+        "workspace-review-already-reviewing-no-changes",
+    )
+    .await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        workspace.conversation_id.clone(),
+        workspace.project_id.clone(),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::NoChanges;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.current_diff_fingerprint = Some(guard.diff_fingerprint.clone());
+    monitor.auto_merge_guard = Some(guard);
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+    github.state().fetch_pr_health_result =
+        Some(Ok(no_auto_merge_health("feature/review", &feature_head)));
+    let state = Arc::new(state);
+
+    let start = start_guarded_agent_workspace_review(
+        Arc::clone(&state),
+        &workspace,
+        false,
+        WorkspaceReviewStartOrigin::Automated,
+        None,
+    )
+    .await
+    .expect("already-reviewing no-changes monitor should settle");
+
+    assert!(!start.started);
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn reconciliation_cancels_paused_guard_when_selected_source_target_changes() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-paused-target-changed")
+            .await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard).await;
+    let mut changed_target_workspace = workspace.clone();
+    changed_target_workspace
+        .source_pull_request
+        .as_mut()
+        .expect("source PR should exist")
+        .head_ref_oid = Some("different-head".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(changed_target_workspace)
+        .await
+        .expect("changed target should persist");
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("reconciliation should cancel target-mismatched guard"),
+        1
+    );
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn reconciliation_fails_closed_when_github_is_missing_for_paused_guard() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (mut state, _github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-paused-no-github").await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    state.github_service = None;
+
+    let error = reconcile_workspace_review_auto_merge_guards(&state)
+        .await
+        .expect_err("reconciliation should fail closed without GitHub");
+
+    assert!(error
+        .to_string()
+        .contains("GitHub integration is unavailable"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_fails_closed_when_github_is_missing_for_interrupted_restore() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (mut state, _github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-restoring-no-github")
+            .await;
+    let mut guard = selected_source_guard(&state, &workspace).await;
+    guard.status = AgentWorkspaceReviewAutoMergeGuardStatus::Restoring;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    state.github_service = None;
+
+    let error = reconcile_workspace_review_auto_merge_guards(&state)
+        .await
+        .expect_err("interrupted restore should fail closed without GitHub");
+
+    assert!(error
+        .to_string()
+        .contains("GitHub integration is unavailable"));
+    assert_eq!(
+        state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor lookup should succeed")
+            .expect("monitor should exist")
+            .auto_merge_guard,
+        Some(guard)
+    );
+}
+
+#[tokio::test]
+async fn selected_source_restore_records_retryable_failure_when_github_confirmation_errors() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace, _feature_head) =
+        selected_source_workspace_context(temp.path(), "workspace-review-confirmation-error").await;
+    let guard = selected_source_guard(&state, &workspace).await;
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+    github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
+        "confirmation lookup failed".to_string(),
+    )));
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("confirmation failure should be recorded as retryable");
+
+    let guard = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .expect("guard should remain retryable");
+    assert_eq!(
+        guard.status,
+        AgentWorkspaceReviewAutoMergeGuardStatus::RestoreFailed
+    );
+    assert_eq!(
+        guard.last_error.as_deref(),
+        Some("Infrastructure error: confirmation lookup failed")
+    );
+}
+
+#[tokio::test]
+async fn workspace_delta_restore_cancels_when_current_target_has_no_changes() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace) =
+        no_change_workspace_context(temp.path(), "workspace-review-no-target-restore").await;
+    let guard = workspace_delta_guard(AgentWorkspaceReviewAutoMergeGuardStatus::PausedForReview);
+    persist_selected_source_guard(&state, &workspace, guard.clone()).await;
+
+    restore_guarded_auto_merge(&state, &workspace, &guard)
+        .await
+        .expect("no-change workspace target should cancel restore");
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
+
+#[tokio::test]
+async fn reconciliation_cancels_interrupted_workspace_delta_restore_with_no_current_target() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let (state, github, workspace) =
+        no_change_workspace_context(temp.path(), "workspace-review-no-target-reconcile").await;
+    let guard = workspace_delta_guard(AgentWorkspaceReviewAutoMergeGuardStatus::Restoring);
+    persist_selected_source_guard(&state, &workspace, guard).await;
+
+    assert_eq!(
+        reconcile_workspace_review_auto_merge_guards(&state)
+            .await
+            .expect("reconciliation should cancel no-target interrupted restore"),
+        1
+    );
+
+    assert_eq!(github.state().enable_pr_auto_merge_calls, 0);
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .expect("monitor lookup should succeed")
+        .expect("monitor should exist")
+        .auto_merge_guard
+        .is_none());
+}
