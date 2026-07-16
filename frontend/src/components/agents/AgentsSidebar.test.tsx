@@ -850,6 +850,7 @@ function renderSidebar(
         onAutoRenameConversation={vi.fn()}
         onRenameConversation={vi.fn()}
         onArchiveConversation={vi.fn()}
+        onBulkArchiveConversations={vi.fn()}
         onRestoreConversation={vi.fn()}
         onForkConversation={vi.fn()}
         showArchived={false}
@@ -2426,6 +2427,9 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-group-trigger")).toHaveTextContent("Group");
     expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
+    expect(screen.getByTestId("agents-bulk-archive-trigger")).toHaveAccessibleName(
+      "Bulk archive sessions"
+    );
     expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
       "aria-label",
       "Sort projects: Latest"
@@ -2440,6 +2444,14 @@ describe("AgentsSidebar", () => {
         screen.getByTestId("agents-sort-trigger")
       )
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(
+      screen.getByTestId("agents-sort-trigger").compareDocumentPosition(
+        screen.getByTestId("agents-bulk-archive-trigger")
+      )
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByTestId("agents-bulk-archive-trigger")).toHaveClass("ml-auto");
+    await user.hover(screen.getByTestId("agents-bulk-archive-trigger"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Bulk archive sessions");
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
@@ -2482,6 +2494,237 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filter-publication-state-active")).toHaveTextContent(
       "Active"
     );
+  });
+
+  it("selects eligible rows for bulk archive and blocks open pull-request rows", async () => {
+    const user = userEvent.setup();
+    const eligibleConversation = conversation({
+      id: "conversation-bulk-eligible",
+      title: "Eligible session",
+    });
+    const blockedConversation = conversation({
+      id: "conversation-bulk-blocked",
+      title: "Open PR session",
+    });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: eligibleConversation.id }),
+      workspace({
+        conversationId: blockedConversation.id,
+        publicationPrNumber: 91,
+        publicationPrStatus: "open",
+      }),
+    ]);
+    conversationsByProject.set("project-1", {
+      data: [eligibleConversation, blockedConversation],
+      total: 2,
+      isLoading: false,
+    });
+    let settleArchive: ((result: {
+      archivedConversationIds: string[];
+      failedConversationIds: string[];
+    }) => void) | undefined;
+    const onBulkArchiveConversations = vi.fn(
+      () =>
+        new Promise<{
+          archivedConversationIds: string[];
+          failedConversationIds: string[];
+        }>((resolve) => {
+          settleArchive = resolve;
+        })
+    );
+
+    renderSidebar([project()], { onBulkArchiveConversations });
+
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    const eligibleCheckbox = screen.getByRole("checkbox", {
+      name: "Select Eligible session for bulk archive",
+    });
+    const blockedCheckbox = screen.getByRole("checkbox", {
+      name: "Select Open PR session for bulk archive",
+    });
+    expect(eligibleCheckbox).not.toBeChecked();
+    expect(blockedCheckbox).toBeDisabled();
+    expect(blockedCheckbox).toHaveAccessibleDescription(
+      "Archive individually to manage the pull request"
+    );
+    expect(screen.getByRole("button", { name: "Archive selected" })).toBeDisabled();
+
+    await user.click(eligibleCheckbox);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Archive selected" })).toBeEnabled();
+
+    const blockedRow = screen.getByTestId(`agents-session-${blockedConversation.id}`);
+    await user.click(within(blockedRow).getByRole("button", { name: "Session actions" }));
+    expect(screen.getByText("Archive session")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
+    expect(screen.getByRole("heading", { name: "Archive selected sessions?" })).toBeVisible();
+    expect(onBulkArchiveConversations).not.toHaveBeenCalled();
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Archive selected",
+      })
+    );
+
+    expect(onBulkArchiveConversations).toHaveBeenCalledWith([
+      {
+        conversation: eligibleConversation,
+        workspace: expect.objectContaining({ conversationId: eligibleConversation.id }),
+      },
+    ]);
+    expect(screen.getByRole("button", { name: "Archiving selected..." })).toBeDisabled();
+
+    settleArchive?.({
+      archivedConversationIds: [eligibleConversation.id],
+      failedConversationIds: [],
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Archive selected sessions?")).not.toBeInTheDocument()
+    );
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "Select Eligible session for bulk archive",
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("retains only failed rows after a partial bulk archive result", async () => {
+    const user = userEvent.setup();
+    const archivedConversation = conversation({
+      id: "conversation-bulk-success",
+      title: "Archived session",
+    });
+    const failedConversation = conversation({
+      id: "conversation-bulk-failure",
+      title: "Retry session",
+    });
+    conversationsByProject.set("project-1", {
+      data: [archivedConversation, failedConversation],
+      total: 2,
+      isLoading: false,
+    });
+    const onBulkArchiveConversations = vi.fn().mockResolvedValue({
+      archivedConversationIds: [archivedConversation.id],
+      failedConversationIds: [failedConversation.id],
+    });
+
+    renderSidebar([project()], { onBulkArchiveConversations });
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select Archived session for bulk archive",
+        hidden: true,
+      })
+    );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select Retry session for bulk archive",
+        hidden: true,
+      })
+    );
+    await user.click(screen.getByRole("button", { name: "Archive selected" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Archive selected",
+      })
+    );
+
+    await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select Archived session for bulk archive",
+        hidden: true,
+      })
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select Retry session for bulk archive",
+        hidden: true,
+      })
+    ).toBeChecked();
+    expect(screen.getByRole("heading", { name: "Archive selected sessions?" })).toBeVisible();
+  });
+
+  it("prunes a selected row when it leaves the loaded filter result", async () => {
+    const user = userEvent.setup();
+    const selectedConversation = conversation({
+      id: "conversation-bulk-stale",
+      title: "Stale selection",
+    });
+    const remainingConversation = conversation({
+      id: "conversation-bulk-current",
+      title: "Current selection",
+    });
+    conversationsByProject.set("project-1", {
+      data: [selectedConversation, remainingConversation],
+      total: 2,
+      isLoading: false,
+    });
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select Stale selection for bulk archive",
+      })
+    );
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    conversationsByProject.set("project-1", {
+      data: [remainingConversation],
+      total: 1,
+      isLoading: false,
+    });
+    useAgentSessionStore.getState().setProjectSort("az");
+
+    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "Select Stale selection for bulk archive",
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("prunes a selected row when refreshed workspace data makes it bulk-ineligible", async () => {
+    const user = userEvent.setup();
+    const selectedConversation = conversation({
+      id: "conversation-bulk-open-pr-refresh",
+      title: "PR changed session",
+    });
+    conversationsByProject.set("project-1", {
+      data: [selectedConversation],
+      total: 1,
+      isLoading: false,
+    });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: selectedConversation.id }),
+    ]);
+
+    renderSidebar();
+    await user.click(screen.getByTestId("agents-bulk-archive-trigger"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Select PR changed session for bulk archive",
+      })
+    );
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: selectedConversation.id,
+        publicationPrNumber: 92,
+        publicationPrStatus: "open",
+      }),
+    ]);
+    useAgentSessionStore.getState().setProjectSort("az");
+
+    await waitFor(() => expect(screen.getByText("0 selected")).toBeInTheDocument());
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Select PR changed session for bulk archive",
+      })
+    ).toBeDisabled();
   });
 
   it("uses a soft wrapper border for sidebar search focus", async () => {

@@ -10,6 +10,7 @@ import {
   type ChatMessageResponse,
   type ForkAgentConversationResult,
 } from "@/api/chat";
+import { ideationApi } from "@/api/ideation";
 import { chatKeys } from "@/hooks/useChat";
 import type { Project } from "@/types/project";
 import type { ChatConversation } from "@/types/chat-conversation";
@@ -27,6 +28,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
     ...actual,
     chatApi: {
       ...actual.chatApi,
+      archiveConversation: vi.fn(),
       forkAgentConversation: vi.fn(),
       getConversation: vi.fn(),
       spawnConversationSessionNamer: vi.fn(),
@@ -40,6 +42,20 @@ vi.mock("sonner", () => ({
     success: vi.fn(),
   },
 }));
+
+vi.mock("@/api/ideation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/ideation")>();
+  return {
+    ...actual,
+    ideationApi: {
+      ...actual.ideationApi,
+      sessions: {
+        ...actual.ideationApi.sessions,
+        archive: vi.fn(),
+      },
+    },
+  };
+});
 
 const NOW = "2026-05-22T00:00:00.000Z";
 
@@ -155,7 +171,10 @@ function trackedSetter<T>(initialValue: T) {
   };
 }
 
-function renderActions(queryClient = createQueryClient()) {
+function renderActions(
+  queryClient = createQueryClient(),
+  overrides: Partial<Parameters<typeof useAgentConversationActions>[0]> = {}
+) {
   const conversations = trackedSetter<Record<string, AgentConversation>>({});
   const workspaces = trackedSetter<Record<string, AgentConversationWorkspace>>({});
   const selectedConversationId = trackedSetter<string | null>(null);
@@ -180,6 +199,7 @@ function renderActions(queryClient = createQueryClient()) {
     setFocusedProject: vi.fn(),
     setOptimisticSelectedConversationId: selectedConversationId.setter,
     setRuntimeForConversation: vi.fn(),
+    ...overrides,
   };
   const hook = renderHook(() => useAgentConversationActions(args));
   return {
@@ -282,6 +302,139 @@ describe("useAgentConversationActions", () => {
 
     expect(toast.error).toHaveBeenCalledWith("Failed to fork conversation", {
       description: "fork failed",
+      duration: 10000,
+    });
+  });
+
+  it("bulk archives conversations with ideation-first ordering and one invalidation per project", async () => {
+    const projectConversation: AgentConversation = {
+      ...createConversation({ id: "project-conversation" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const ideationConversation: AgentConversation = {
+      ...createConversation({
+        id: "ideation-conversation",
+        contextType: "ideation",
+        contextId: "ideation-session-1",
+      }),
+      projectId: "project-1",
+      ideationSessionId: "ideation-session-1",
+    };
+    vi.mocked(chatApi.archiveConversation).mockResolvedValue(undefined);
+    vi.mocked(ideationApi.sessions.archive).mockResolvedValue(undefined);
+    const { args, result } = renderActions(createQueryClient(), {
+      selectedConversationId: ideationConversation.id,
+    });
+
+    let archiveResult:
+      | Awaited<ReturnType<typeof result.current.handleBulkArchiveConversations>>
+      | undefined;
+    await act(async () => {
+      archiveResult = await result.current.handleBulkArchiveConversations([
+        { conversation: projectConversation, workspace: null },
+        { conversation: ideationConversation, workspace: null },
+      ]);
+    });
+
+    expect(chatApi.archiveConversation).toHaveBeenNthCalledWith(
+      1,
+      projectConversation.id,
+      { closePullRequest: false }
+    );
+    expect(chatApi.archiveConversation).toHaveBeenNthCalledWith(
+      2,
+      ideationConversation.id,
+      { closePullRequest: false }
+    );
+    expect(ideationApi.sessions.archive).toHaveBeenCalledWith("ideation-session-1");
+    expect(vi.mocked(ideationApi.sessions.archive).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(chatApi.archiveConversation).mock.invocationCallOrder[1] ?? Infinity
+    );
+    expect(args.clearAgentConversationSelection).toHaveBeenCalledTimes(1);
+    expect(args.invalidateProjectConversations).toHaveBeenCalledTimes(1);
+    expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-1");
+    expect(archiveResult).toEqual({
+      archivedConversationIds: [projectConversation.id, ideationConversation.id],
+      failedConversationIds: [],
+    });
+    expect(toast.success).toHaveBeenCalledWith("Archived 2 sessions");
+  });
+
+  it("continues after a bulk archive failure and returns failed rows for retry", async () => {
+    const firstConversation: AgentConversation = {
+      ...createConversation({ id: "conversation-success" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const failedConversation: AgentConversation = {
+      ...createConversation({
+        id: "conversation-failure",
+        contextId: "project-2",
+        title: "Blocked by backend",
+      }),
+      projectId: "project-2",
+      ideationSessionId: null,
+    };
+    vi.mocked(chatApi.archiveConversation)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("archive denied"));
+    const { args, result } = renderActions();
+
+    let archiveResult:
+      | Awaited<ReturnType<typeof result.current.handleBulkArchiveConversations>>
+      | undefined;
+    await act(async () => {
+      archiveResult = await result.current.handleBulkArchiveConversations([
+        { conversation: firstConversation, workspace: null },
+        { conversation: failedConversation, workspace: null },
+      ]);
+    });
+
+    expect(chatApi.archiveConversation).toHaveBeenCalledTimes(2);
+    expect(args.invalidateProjectConversations).toHaveBeenCalledTimes(2);
+    expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-1");
+    expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-2");
+    expect(archiveResult).toEqual({
+      archivedConversationIds: [firstConversation.id],
+      failedConversationIds: [failedConversation.id],
+    });
+    expect(toast.success).toHaveBeenCalledWith("Archived 1 session");
+    expect(toast.error).toHaveBeenCalledWith("Failed to archive 1 session", {
+      description: expect.stringContaining("archive denied"),
+      duration: 10000,
+    });
+  });
+
+  it("rejects a stale bulk target with an open pull request before mutation", async () => {
+    const blockedConversation: AgentConversation = {
+      ...createConversation({ id: "conversation-stale-open-pr" }),
+      projectId: "project-1",
+      ideationSessionId: null,
+    };
+    const { args, result } = renderActions();
+
+    const archiveResult = await result.current.handleBulkArchiveConversations([
+      {
+        conversation: blockedConversation,
+        workspace: createWorkspace({
+          conversationId: blockedConversation.id,
+          publicationPrNumber: 93,
+          publicationPrStatus: "open",
+        }),
+      },
+    ]);
+
+    expect(chatApi.archiveConversation).not.toHaveBeenCalled();
+    expect(args.invalidateProjectConversations).not.toHaveBeenCalled();
+    expect(archiveResult).toEqual({
+      archivedConversationIds: [],
+      failedConversationIds: [blockedConversation.id],
+    });
+    expect(toast.error).toHaveBeenCalledWith("Failed to archive 1 session", {
+      description: expect.stringContaining(
+        "Archive individually to manage the pull request"
+      ),
       duration: 10000,
     });
   });
