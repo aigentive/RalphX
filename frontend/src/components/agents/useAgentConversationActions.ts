@@ -27,6 +27,12 @@ import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
 } from "./agentWorkspaceQueries";
+import {
+  BULK_ARCHIVE_BLOCKED_REASON,
+  isBulkArchiveConversationEligible,
+  type BulkArchiveConversationTarget,
+  type BulkArchiveConversationsResult,
+} from "./bulkConversationArchive";
 
 interface UseAgentConversationActionsArgs {
   activeProjectId: string | null;
@@ -68,6 +74,16 @@ function getFirstUserMessageContent(messages: ChatMessageResponse[]): string | n
     }
   }
   return null;
+}
+
+async function archiveAgentConversation(
+  conversation: AgentConversation,
+  options: AgentConversationArchiveOptions
+) {
+  if (conversation.contextType === "ideation") {
+    await ideationApi.sessions.archive(conversation.contextId);
+  }
+  await chatApi.archiveConversation(conversation.id, options);
 }
 
 export function useAgentConversationActions({
@@ -289,10 +305,7 @@ export function useAgentConversationActions({
       options: AgentConversationArchiveOptions
     ) => {
       try {
-        if (conversation.contextType === "ideation") {
-          await ideationApi.sessions.archive(conversation.contextId);
-        }
-        await chatApi.archiveConversation(conversation.id, options);
+        await archiveAgentConversation(conversation, options);
         if (selectedConversationId === conversation.id) {
           clearAgentConversationSelection();
         }
@@ -302,6 +315,79 @@ export function useAgentConversationActions({
       }
     },
     [clearAgentConversationSelection, invalidateProjectConversations, selectedConversationId]
+  );
+
+  const handleBulkArchiveConversations = useCallback(
+    async (
+      targets: BulkArchiveConversationTarget[]
+    ): Promise<BulkArchiveConversationsResult> => {
+      const archivedConversationIds: string[] = [];
+      const failedConversationIds: string[] = [];
+      const failureDetails: string[] = [];
+      const affectedProjectIds = new Set<string>();
+
+      for (const target of targets) {
+        const { conversation } = target;
+        if (!isBulkArchiveConversationEligible(target)) {
+          failedConversationIds.push(conversation.id);
+          failureDetails.push(`${conversation.title || "Untitled agent"}: ${BULK_ARCHIVE_BLOCKED_REASON}`);
+          continue;
+        }
+
+        affectedProjectIds.add(conversation.projectId);
+        try {
+          await archiveAgentConversation(conversation, {
+            closePullRequest: false,
+          });
+          archivedConversationIds.push(conversation.id);
+        } catch (error) {
+          failedConversationIds.push(conversation.id);
+          failureDetails.push(
+            `${conversation.title || "Untitled agent"}: ${
+              error instanceof Error ? error.message : "Archive failed"
+            }`
+          );
+        }
+      }
+
+      if (
+        selectedConversationId !== null &&
+        archivedConversationIds.includes(selectedConversationId)
+      ) {
+        clearAgentConversationSelection();
+      }
+      await Promise.all(
+        Array.from(affectedProjectIds, (targetProjectId) =>
+          invalidateProjectConversations(targetProjectId)
+        )
+      );
+
+      if (archivedConversationIds.length > 0) {
+        toast.success(
+          `Archived ${archivedConversationIds.length} ${
+            archivedConversationIds.length === 1 ? "session" : "sessions"
+          }`
+        );
+      }
+      if (failedConversationIds.length > 0) {
+        toast.error(
+          `Failed to archive ${failedConversationIds.length} ${
+            failedConversationIds.length === 1 ? "session" : "sessions"
+          }`,
+          {
+            description: failureDetails.join("\n"),
+            duration: 10000,
+          }
+        );
+      }
+
+      return { archivedConversationIds, failedConversationIds };
+    },
+    [
+      clearAgentConversationSelection,
+      invalidateProjectConversations,
+      selectedConversationId,
+    ]
   );
 
   const handleRestoreConversation = useCallback(
@@ -376,6 +462,7 @@ export function useAgentConversationActions({
   return {
     handleAutoRenameConversation,
     handleArchiveConversation,
+    handleBulkArchiveConversations,
     handleArchiveProject,
     handleRenameConversation,
     handleRestoreConversation,

@@ -1173,6 +1173,7 @@ export function useAgentsViewController({
 
   const {
     handleArchiveConversation,
+    handleBulkArchiveConversations,
     handleArchiveProject,
     handleAutoRenameConversation,
     handleForkConversation,
@@ -1425,6 +1426,7 @@ export function useAgentsViewController({
     onAutoRenameConversation: handleAutoRenameConversation,
     onRenameConversation: handleRenameConversation,
     onArchiveConversation: handleArchiveConversation,
+    onBulkArchiveConversations: handleBulkArchiveConversations,
     onRestoreConversation: handleRestoreConversation,
     showArchived,
     onShowArchivedChange: setShowArchived,
