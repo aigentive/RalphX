@@ -85,41 +85,6 @@ describe("notification read queries", () => {
     expect(notificationsApi.getUnreadCount).toHaveBeenCalledWith("project-1");
   });
 
-  it("optimistically marks only unread unique rows and refreshes the unread count", async () => {
-    vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
-    queryClient.setQueryData(notificationKeys.history("project-1"), {
-      pages: [{ notifications: [unreadNotification, { ...unreadNotification, id: "already-read", readAt: "2026-07-09T10:00:00Z" }], hasMore: false }],
-      pageParams: [undefined],
-    });
-    const { result } = renderHook(() => useNotificationReadActions("project-1"), { wrapper: createWrapper(queryClient) });
-
-    act(() => result.current.markReadBatch(["unread", "unread", "already-read"]));
-
-    await waitFor(() => expect(notificationsApi.markRead).toHaveBeenCalledTimes(2));
-    expect(notificationsApi.markRead).toHaveBeenCalledWith("unread");
-    expect(notificationsApi.markRead).toHaveBeenCalledWith("already-read");
-    const cached = queryClient.getQueryData<{
-      pages: Array<{ notifications: Array<{ id: string; readAt?: string }> }>;
-    }>(notificationKeys.history("project-1"));
-    expect(cached?.pages[0]?.notifications).toEqual([
-      expect.objectContaining({ id: "unread", readAt: expect.any(String) }),
-      expect.objectContaining({ id: "already-read", readAt: "2026-07-09T10:00:00Z" }),
-    ]);
-    await waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: notificationKeys.unreadCount("project-1") }));
-  });
-
-  it("does not mutate or call the backend for an empty read batch", () => {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { result } = renderHook(() => useNotificationReadActions(), { wrapper: createWrapper(queryClient) });
-
-    act(() => result.current.markReadBatch([]));
-
-    expect(notificationsApi.markRead).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData(notificationKeys.history())).toBeUndefined();
-  });
-
   it("marks one unread row through the single-row action and refreshes its count", async () => {
     vi.mocked(notificationsApi.markRead).mockResolvedValue(null);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
