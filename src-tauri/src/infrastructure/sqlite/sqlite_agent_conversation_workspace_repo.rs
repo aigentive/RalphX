@@ -2288,7 +2288,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND (
                            ?5 = 'selected_source'
                            OR (
-                               publication_pr_number IS ?4
+                               (
+                                   publication_pr_number IS NULL
+                                   OR publication_pr_number IS ?4
+                               )
                                AND (
                                    publication_pr_status IS NULL
                                    OR publication_pr_status NOT IN ('closed', 'merged')
