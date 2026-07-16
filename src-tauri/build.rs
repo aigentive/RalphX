@@ -3,15 +3,21 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-fn trusted_target_triple(target: &str) -> Option<&'static str> {
-    match target {
-        "aarch64-apple-darwin" => Some("aarch64-apple-darwin"),
-        "x86_64-apple-darwin" => Some("x86_64-apple-darwin"),
-        "aarch64-unknown-linux-gnu" => Some("aarch64-unknown-linux-gnu"),
-        "x86_64-unknown-linux-gnu" => Some("x86_64-unknown-linux-gnu"),
-        "aarch64-pc-windows-msvc" => Some("aarch64-pc-windows-msvc"),
-        "x86_64-pc-windows-msvc" => Some("x86_64-pc-windows-msvc"),
-        _ => None,
+fn build_host_target_triple() -> Option<&'static str> {
+    if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+        Some("aarch64-apple-darwin")
+    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
+        Some("x86_64-apple-darwin")
+    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        Some("aarch64-unknown-linux-gnu")
+    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+        Some("x86_64-unknown-linux-gnu")
+    } else if cfg!(all(target_arch = "aarch64", target_os = "windows")) {
+        Some("aarch64-pc-windows-msvc")
+    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
+        Some("x86_64-pc-windows-msvc")
+    } else {
+        None
     }
 }
 
@@ -19,10 +25,7 @@ fn ensure_workflow_runner_binary_placeholder() {
     let Ok(manifest_dir) = fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR"))) else {
         return;
     };
-    let Ok(target_triple) = env::var("TARGET") else {
-        return;
-    };
-    let Some(target_triple) = trusted_target_triple(&target_triple) else {
+    let Some(target_triple) = build_host_target_triple() else {
         return;
     };
 
