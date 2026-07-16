@@ -151,6 +151,9 @@ import {
   hasOpenAgentConversationIssues,
   useAgentConversationIssues,
 } from "./agentConversationIssueQueries";
+import { agentGranolaNoteKeys } from "./agentGranolaNoteQueries";
+import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
+import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
@@ -412,9 +415,9 @@ const ARTIFACT_TAB_UNAVAILABLE_REASONS: Record<AgentArtifactTab, string> = {
   tasks: "Appears when implementation tasks are available.",
   automation: "Appears in automation conversations.",
   pr: "Appears when this workspace has a pull request.",
-  jira: "Connect Jira in Settings to make it available.",
-  linear: "Connect Linear in Settings to make it available.",
-  granola: "Connect Granola in Settings to make it available.",
+  jira: "Appears when Jira is connected and a ticket is attached.",
+  linear: "Appears when Linear is connected and a ticket is attached.",
+  granola: "Appears when Granola is connected and a note is attached.",
   review: "Appears when a review is created.",
   publish: "Appears when this conversation has an editable workspace.",
 };
@@ -637,6 +640,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         : [],
     [conversationData, conversation?.id, shouldLoadIdeationData],
   );
+  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
   const attachedSessionId = useMemo(
     () =>
       focusedIdeationSessionId ??
@@ -660,29 +664,64 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     queryFn: () => atlassianApi.getSettings(),
     staleTime: 30_000,
   });
-  const showJiraTab = Boolean(
+  const jiraIntegrationAvailable = Boolean(
     atlassianSettingsQuery.data?.enabled &&
     atlassianSettingsQuery.data?.jiraAvailable,
+  );
+  const jiraIssueQuery = useQuery({
+    queryKey: agentJiraIssueKeys.issue(conversationId),
+    queryFn: () =>
+      atlassianApi.getAgentConversationJiraIssue({
+        conversationId: conversationId!,
+      }),
+    enabled: Boolean(conversationId && jiraIntegrationAvailable),
+    staleTime: 5_000,
+  });
+  const showJiraTab = Boolean(
+    jiraIntegrationAvailable && jiraIssueQuery.data,
   );
   const linearSettingsQuery = useQuery({
     queryKey: ["linear", "settings"],
     queryFn: () => linearApi.getSettings(),
     staleTime: 30_000,
   });
-  const showLinearTab = Boolean(
+  const linearIntegrationAvailable = Boolean(
     linearSettingsQuery.data?.enabled &&
     linearSettingsQuery.data?.issueSearchAvailable,
+  );
+  const linearIssueQuery = useQuery({
+    queryKey: agentLinearIssueKeys.issue(conversationId),
+    queryFn: () =>
+      linearApi.getAgentConversationLinearIssue({
+        conversationId: conversationId!,
+      }),
+    enabled: Boolean(conversationId && linearIntegrationAvailable),
+    staleTime: 5_000,
+  });
+  const showLinearTab = Boolean(
+    linearIntegrationAvailable && linearIssueQuery.data,
   );
   const granolaSettingsQuery = useQuery({
     queryKey: ["granola", "settings"],
     queryFn: () => granolaApi.getSettings(),
     staleTime: 30_000,
   });
-  const showGranolaTab = Boolean(
+  const granolaIntegrationAvailable = Boolean(
     granolaSettingsQuery.data?.enabled &&
     granolaSettingsQuery.data?.validationStatus === "valid",
   );
-  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
+  const granolaNoteQuery = useQuery({
+    queryKey: agentGranolaNoteKeys.note(conversationId),
+    queryFn: () =>
+      granolaApi.getAgentConversationGranolaNote({
+        conversationId: conversationId!,
+      }),
+    enabled: Boolean(conversationId && granolaIntegrationAvailable),
+    staleTime: 5_000,
+  });
+  const showGranolaTab = Boolean(
+    granolaIntegrationAvailable && granolaNoteQuery.data,
+  );
   const conversationProjectId =
     conversation?.projectId ?? scopedWorkspace?.projectId ?? workspace?.projectId ?? null;
   const canStartPlan = Boolean(
