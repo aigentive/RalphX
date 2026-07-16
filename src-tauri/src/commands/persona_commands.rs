@@ -77,6 +77,15 @@ pub struct UpdatePersonaInput {
     pub body: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaDraftInput {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub expected_content_hash: Option<String>,
+}
+
 #[tauri::command]
 pub async fn list_personas(
     input: ListPersonasInput,
@@ -144,6 +153,33 @@ pub async fn create_persona_draft_for_state(
                 source_persona_id: None,
                 source_content_hash: None,
             },
+        )
+        .await
+        .map_err(to_string)?;
+    emit_draft_updated(state, &persona);
+    Ok(persona)
+}
+
+#[tauri::command]
+pub async fn update_persona_draft(
+    input: UpdatePersonaDraftInput,
+    state: State<'_, AppState>,
+) -> Result<Persona, String> {
+    update_persona_draft_for_state(input, state.inner(), enabled()).await
+}
+
+#[doc(hidden)]
+pub async fn update_persona_draft_for_state(
+    input: UpdatePersonaDraftInput,
+    state: &AppState,
+    feature_enabled: bool,
+) -> Result<Persona, String> {
+    let persona = service(state)
+        .update_draft(
+            feature_enabled,
+            &persona_id(input.id)?,
+            &input.content,
+            input.expected_content_hash.as_deref(),
         )
         .await
         .map_err(to_string)?;

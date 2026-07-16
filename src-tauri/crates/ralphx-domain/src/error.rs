@@ -76,6 +76,11 @@ pub enum AppError {
 
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    #[error(
+        "PERSONA_DRAFT_CONFLICT: expected content hash `{expected}` but current hash is `{actual}`"
+    )]
+    PersonaDraftConflict { expected: String, actual: String },
 }
 
 impl From<AgentError> for AppError {

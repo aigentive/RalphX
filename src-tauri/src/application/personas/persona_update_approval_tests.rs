@@ -316,6 +316,70 @@ async fn stale_source_blocks_apply_until_the_draft_is_explicitly_reseeded() {
 }
 
 #[tokio::test]
+async fn manual_seeded_draft_edits_preserve_source_freshness_in_both_directions() {
+    let current_db = SqliteTestDb::new("manual_seeded_edit_current_source");
+    let (current_service, current_source, current_draft, _) =
+        seeded_fixture(&current_db, "manual-current-source").await;
+    let current_content = persona_content(&current_source.slug, "Manual draft refinement");
+    let current_edited = current_service
+        .update_draft(
+            true,
+            &current_draft.id,
+            &current_content,
+            Some(&current_draft.content_hash),
+        )
+        .await
+        .expect("manual editing must be allowed for seeded drafts");
+    assert_eq!(
+        current_edited.source_content_hash, current_draft.source_content_hash,
+        "manual editing must not rewrite the seed baseline"
+    );
+    let applied = current_service
+        .approve_persona(true, &current_draft.id)
+        .await
+        .expect("an unchanged source must not spuriously trip seed freshness");
+    assert_eq!(applied.id, current_source.id);
+    assert_eq!(applied.content, current_content);
+
+    let stale_db = SqliteTestDb::new("manual_seeded_edit_stale_source");
+    let (stale_service, stale_source, stale_draft, _) =
+        seeded_fixture(&stale_db, "manual-stale-source").await;
+    let stale_content = persona_content(&stale_source.slug, "Manual draft before source drift");
+    let stale_edited = stale_service
+        .update_draft(
+            true,
+            &stale_draft.id,
+            &stale_content,
+            Some(&stale_draft.content_hash),
+        )
+        .await
+        .expect("manual seeded draft edit should succeed before source drift");
+    stale_service
+        .update_persona(
+            true,
+            &stale_source.id,
+            &persona_content(&stale_source.slug, "Source changed independently"),
+        )
+        .await
+        .expect("source fixture should change independently");
+
+    let error = stale_service
+        .approve_persona(true, &stale_draft.id)
+        .await
+        .expect_err("source drift must still block a manually edited seeded draft");
+    assert!(matches!(error, AppError::Conflict(message)
+        if message.starts_with("SourceChangedSinceSeed:")));
+    assert_eq!(
+        stale_service
+            .get_draft(true, &stale_draft.id)
+            .await
+            .unwrap(),
+        stale_edited,
+        "failed freshness validation must preserve the manual draft edit"
+    );
+}
+
+#[tokio::test]
 async fn double_approval_writes_the_source_once_and_clears_every_binding() {
     let db = SqliteTestDb::new("seeded_approval_reentry");
     let (service, source, draft, conversations) = seeded_fixture(&db, "reentry-source").await;

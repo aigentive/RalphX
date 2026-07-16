@@ -167,7 +167,7 @@ async fn update_content_bumps_version_and_hash() {
     let original = persona("reviewer", PersonaStatus::Draft);
     repo.create(original.clone()).await.unwrap();
 
-    repo.update_content(&original.id, "new content", "new hash")
+    repo.update_content(&original.id, "new content", "new hash", None)
         .await
         .unwrap();
     let updated = repo.get_by_id(&original.id).await.unwrap().unwrap();

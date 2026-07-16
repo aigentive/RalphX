@@ -158,7 +158,7 @@ async fn memory_persona_repo_trait_parity_update_content() {
     let repo = MemoryPersonaRepository::new();
     let original = persona("reviewer", PersonaStatus::Draft);
     repo.create(original.clone()).await.unwrap();
-    repo.update_content(&original.id, "new content", "new hash")
+    repo.update_content(&original.id, "new content", "new hash", None)
         .await
         .unwrap();
     let updated = repo.get_by_id(&original.id).await.unwrap().unwrap();

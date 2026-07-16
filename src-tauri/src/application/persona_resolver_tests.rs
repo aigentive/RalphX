@@ -90,7 +90,13 @@ impl PersonaRepository for FailingPersonaRepository {
         Err(AppError::Database("unexpected status list".to_string()))
     }
 
-    async fn update_content(&self, _: &PersonaId, _: &str, _: &str) -> AppResult<()> {
+    async fn update_content(
+        &self,
+        _: &PersonaId,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> AppResult<()> {
         Err(AppError::Database("unexpected update".to_string()))
     }
 
@@ -140,7 +146,13 @@ impl PersonaRepository for CountingPersonaRepository {
         Err(AppError::Database("unexpected status list".to_string()))
     }
 
-    async fn update_content(&self, _: &PersonaId, _: &str, _: &str) -> AppResult<()> {
+    async fn update_content(
+        &self,
+        _: &PersonaId,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> AppResult<()> {
         Err(AppError::Database("unexpected update".to_string()))
     }
 

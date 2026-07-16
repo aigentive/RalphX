@@ -72,7 +72,7 @@ pub async fn save_persona_draft(
                 ));
             }
             service
-                .update_draft(true, &PersonaId::from(bound_id), &request.content)
+                .update_draft(true, &PersonaId::from(bound_id), &request.content, None)
                 .await
         }
         None => {

@@ -49,6 +49,7 @@ impl PersonaRepository for ErroringPersonaRepository {
         _id: &PersonaId,
         _content: &str,
         _content_hash: &str,
+        _expected_content_hash: Option<&str>,
     ) -> AppResult<()> {
         repository_error()
     }

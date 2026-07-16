@@ -25,6 +25,8 @@ pub use persona_update_approval::draft_applied_payload;
 pub const PERSONA_UNAVAILABLE_PREFIX: &str = "[Persona unavailable:";
 /// Prefix used by every persona surface when the feature is disabled.
 pub const PERSONA_FEATURE_DISABLED_PREFIX: &str = "[Personas disabled:";
+/// Stable IPC code for a manual persona draft compare-and-swap rejection.
+pub const PERSONA_DRAFT_CONFLICT_CODE: &str = "PERSONA_DRAFT_CONFLICT:";
 
 /// The draft-update event contract intentionally excludes persona content/body.
 pub fn draft_updated_payload(persona: &Persona) -> Value {
@@ -148,12 +150,21 @@ impl PersonaService {
         feature_enabled: bool,
         id: &PersonaId,
         content: &str,
+        expected_content_hash: Option<&str>,
     ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let persona = self.require_status(id, PersonaStatus::Draft).await?;
+        if let Some(expected) = expected_content_hash {
+            if expected != persona.content_hash {
+                return Err(AppError::PersonaDraftConflict {
+                    expected: expected.to_string(),
+                    actual: persona.content_hash.clone(),
+                });
+            }
+        }
         let parsed = validate_persona_content(&persona.slug, content)?;
         self.persona_repo
-            .update_content(id, content, &parsed.content_hash)
+            .update_content(id, content, &parsed.content_hash, expected_content_hash)
             .await?;
         self.get_draft(feature_enabled, id).await
     }
@@ -177,7 +188,7 @@ impl PersonaService {
         self.ensure_active_slug_available(&persona.slug, persona.project_id.as_ref(), Some(id))
             .await?;
         self.persona_repo
-            .update_content(id, &persona.content, &parsed.content_hash)
+            .update_content(id, &persona.content, &parsed.content_hash, None)
             .await?;
         self.persona_repo
             .set_status(id, PersonaStatus::Active)
@@ -195,7 +206,7 @@ impl PersonaService {
         let persona = self.require_status(id, PersonaStatus::Active).await?;
         let parsed = validate_persona_content(&persona.slug, content)?;
         self.persona_repo
-            .update_content(id, content, &parsed.content_hash)
+            .update_content(id, content, &parsed.content_hash, None)
             .await?;
         self.get_persona(feature_enabled, id).await
     }

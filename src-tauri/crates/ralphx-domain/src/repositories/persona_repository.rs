@@ -34,6 +34,7 @@ pub trait PersonaRepository: Send + Sync {
         id: &PersonaId,
         content: &str,
         content_hash: &str,
+        expected_content_hash: Option<&str>,
     ) -> AppResult<()>;
 
     async fn set_status(&self, id: &PersonaId, status: PersonaStatus) -> AppResult<()>;

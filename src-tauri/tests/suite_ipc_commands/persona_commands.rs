@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use ralphx_domain::personas::validation::validate_persona_content;
 use ralphx_events::RecordingEventSink;
+use ralphx_lib::application::personas::PERSONA_DRAFT_CONFLICT_CODE;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::persona_commands::{
     approve_persona, approve_persona_for_state, archive_persona, archive_persona_for_state,
     create_persona_draft, create_persona_draft_for_state, delete_persona_draft,
     delete_persona_draft_for_state, get_persona, get_persona_for_state, list_personas,
-    list_personas_for_state, update_persona, update_persona_for_state, CreatePersonaDraftInput,
-    ListPersonasInput, PersonaIdInput, UpdatePersonaInput,
+    list_personas_for_state, update_persona, update_persona_draft, update_persona_draft_for_state,
+    update_persona_for_state, CreatePersonaDraftInput, ListPersonasInput, PersonaIdInput,
+    UpdatePersonaDraftInput, UpdatePersonaInput,
 };
 use ralphx_lib::domain::entities::PersonaStatus;
 use ralphx_lib::infrastructure::sqlite::SqlitePersonaRepository;
@@ -55,6 +57,15 @@ fn persona_commands_use_struct_param_wrapping() {
     assert_eq!(update.id, "persona-1");
     assert_eq!(update.content.as_deref(), Some("updated"));
 
+    let draft_update: UpdatePersonaDraftInput = serde_json::from_str(
+        r#"{"id":"draft-1","content":"updated","expectedContentHash":"hash-v1"}"#,
+    )
+    .expect("camelCase draft CAS input should deserialize inside the input wrapper");
+    assert_eq!(
+        draft_update.expected_content_hash.as_deref(),
+        Some("hash-v1")
+    );
+
     let id: PersonaIdInput = serde_json::from_str(r#"{"id":"persona-1"}"#)
         .expect("id input should deserialize inside the input wrapper");
     assert_eq!(id.id, "persona-1");
@@ -67,6 +78,108 @@ fn persona_commands_use_struct_param_wrapping() {
         "optional unknown snake_case fields are ignored"
     );
     assert!(snake_case.unwrap().source_session_id.is_none());
+}
+
+#[tokio::test]
+async fn update_persona_draft_command_enforces_cas_and_emits_only_after_success() {
+    let (app, events) = command_app();
+    let state = app.state::<AppState>();
+    let draft = create_persona_draft_for_state(
+        CreatePersonaDraftInput {
+            project_id: None,
+            slug: "manual-draft".to_string(),
+            content: Some(persona_content("manual-draft", "Initial body")),
+            description: None,
+            body: None,
+            source_session_id: None,
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("fixture draft should create");
+    let events_after_create = events.events().len();
+
+    let updated = update_persona_draft_for_state(
+        UpdatePersonaDraftInput {
+            id: draft.id.as_str().to_string(),
+            content: persona_content("manual-draft", "Manual edit"),
+            expected_content_hash: Some(draft.content_hash.clone()),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("matching draft hash should update through the command path");
+    assert_eq!(updated.version, draft.version + 1);
+    let emitted = events.events();
+    assert_eq!(emitted.len(), events_after_create + 1);
+    assert_eq!(emitted.last().unwrap().event, "persona:draft_updated");
+    assert_eq!(emitted.last().unwrap().payload["version"], updated.version);
+    assert!(emitted.last().unwrap().payload.get("content").is_none());
+
+    let stale_error = update_persona_draft_for_state(
+        UpdatePersonaDraftInput {
+            id: draft.id.as_str().to_string(),
+            content: persona_content("manual-draft", "Stale overwrite"),
+            expected_content_hash: Some(draft.content_hash.clone()),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect_err("stale hash must surface a stable typed conflict string");
+    assert!(stale_error.starts_with(PERSONA_DRAFT_CONFLICT_CODE));
+    assert_eq!(events.events().len(), events_after_create + 1);
+    assert_eq!(
+        get_persona_for_state(
+            PersonaIdInput {
+                id: draft.id.as_str().to_string(),
+            },
+            state.inner(),
+            true,
+        )
+        .await
+        .unwrap(),
+        updated,
+        "conflict must not mutate the draft"
+    );
+
+    approve_persona_for_state(
+        PersonaIdInput {
+            id: draft.id.as_str().to_string(),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect("fixture draft should activate");
+    let events_before_active_rejection = events.events().len();
+    let active_error = update_persona_draft_for_state(
+        UpdatePersonaDraftInput {
+            id: draft.id.as_str().to_string(),
+            content: persona_content("manual-draft", "Invalid active edit"),
+            expected_content_hash: Some(updated.content_hash),
+        },
+        state.inner(),
+        true,
+    )
+    .await
+    .expect_err("manual draft command must reject active personas");
+    assert!(active_error.contains("must be draft"));
+    assert_eq!(events.events().len(), events_before_active_rejection);
+
+    assert_disabled(
+        update_persona_draft(
+            UpdatePersonaDraftInput {
+                id: draft.id.as_str().to_string(),
+                content: persona_content("manual-draft", "Disabled"),
+                expected_content_hash: None,
+            },
+            state,
+        )
+        .await,
+    );
 }
 
 #[tokio::test]

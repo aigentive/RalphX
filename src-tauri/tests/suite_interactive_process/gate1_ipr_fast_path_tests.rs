@@ -348,7 +348,7 @@ async fn edit_while_idle_respawns_with_new_persona_and_preserved_provider_sessio
         .await;
     state
         .persona_repo
-        .update_content(&persona.id, "new persona body", "new-hash")
+        .update_content(&persona.id, "new persona body", "new-hash", None)
         .await
         .expect("simulate update_persona content hash bump");
 

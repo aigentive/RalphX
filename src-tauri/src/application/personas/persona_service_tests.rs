@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use ralphx_domain::personas::validation::compute_content_hash;
 
-use super::{PersonaService, SavePersonaDraftInput, PERSONA_UNAVAILABLE_PREFIX};
+use super::{
+    PersonaService, SavePersonaDraftInput, PERSONA_DRAFT_CONFLICT_CODE, PERSONA_UNAVAILABLE_PREFIX,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
     ChatConversation, ChatConversationId, IdeationSessionId, PersonaId, PersonaScopeFilter,
@@ -208,7 +210,7 @@ async fn save_persona_draft_rejects_slug_collision_with_live_rows() {
 }
 
 #[tokio::test]
-async fn save_persona_draft_updates_own_draft_and_bumps_version() {
+async fn update_draft_with_matching_hash_updates_content_and_bumps_version() {
     let service = memory_service();
     let draft = service
         .create_draft(true, draft_input("draft-update", "First body"))
@@ -217,11 +219,55 @@ async fn save_persona_draft_updates_own_draft_and_bumps_version() {
     let content = persona_content("draft-update", "Updated body");
 
     let updated = service
-        .update_draft(true, &draft.id, &content)
+        .update_draft(true, &draft.id, &content, Some(&draft.content_hash))
         .await
         .expect("draft should update");
 
     assert_eq!(updated.version, 2);
+    assert_eq!(updated.content, content);
+}
+
+#[tokio::test]
+async fn update_draft_with_stale_hash_conflicts_without_changing_content() {
+    let service = memory_service();
+    let draft = service
+        .create_draft(true, draft_input("draft-conflict", "First body"))
+        .await
+        .expect("draft should be created");
+    let content = persona_content("draft-conflict", "Rejected body");
+
+    let error = service
+        .update_draft(true, &draft.id, &content, Some("stale-content-hash"))
+        .await
+        .expect_err("a stale editor must not overwrite the current draft");
+
+    assert!(
+        matches!(&error, AppError::PersonaDraftConflict { expected, actual }
+        if expected == "stale-content-hash" && actual.as_str() == draft.content_hash)
+    );
+    assert!(error.to_string().starts_with(PERSONA_DRAFT_CONFLICT_CODE));
+    assert_eq!(
+        service.get_draft(true, &draft.id).await.unwrap(),
+        draft,
+        "CAS rejection must leave every persisted draft field unchanged"
+    );
+}
+
+#[tokio::test]
+async fn update_draft_without_expected_hash_preserves_agent_write_behavior() {
+    let service = memory_service();
+    let draft = service
+        .create_draft(true, draft_input("agent-draft-update", "First body"))
+        .await
+        .expect("draft should be created");
+    let content = persona_content("agent-draft-update", "Agent update");
+
+    let updated = service
+        .update_draft(true, &draft.id, &content, None)
+        .await
+        .expect("the existing agent path should update without a CAS hash");
+
+    assert_eq!(updated.version, draft.version + 1);
     assert_eq!(updated.content, content);
 }
 
@@ -232,7 +278,7 @@ async fn save_persona_draft_cannot_touch_active_or_archived_rows() {
     let content = persona_content("draft-guard", "Attempted change");
 
     assert!(service
-        .update_draft(true, &active_id, &content)
+        .update_draft(true, &active_id, &content, None)
         .await
         .is_err());
     service
@@ -241,7 +287,7 @@ async fn save_persona_draft_cannot_touch_active_or_archived_rows() {
         .await
         .expect("test fixture should archive the row");
     assert!(service
-        .update_draft(true, &active_id, &content)
+        .update_draft(true, &active_id, &content, None)
         .await
         .is_err());
 }
@@ -255,7 +301,7 @@ async fn approve_transitions_draft_to_active_and_recomputes_hash() {
         .expect("draft should be created");
     service
         .persona_repo
-        .update_content(&draft.id, &draft.content, "tampered-hash")
+        .update_content(&draft.id, &draft.content, "tampered-hash", None)
         .await
         .expect("stored hash should be tampered for regression coverage");
 
@@ -531,7 +577,7 @@ async fn all_lifecycle_entry_points_fail_closed_when_flag_off() {
             .create_draft(false, draft_input("disabled-persona", "Body"))
             .await,
     );
-    assert_disabled(service.update_draft(false, &id, &content).await);
+    assert_disabled(service.update_draft(false, &id, &content, None).await);
     assert_disabled(service.get_draft(false, &id).await);
     assert_disabled(service.approve_persona(false, &id).await);
     assert_disabled(service.reseed_persona_draft(false, &id).await);

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{Persona, PersonaId, PersonaScopeFilter, PersonaStatus, ProjectId};
@@ -253,18 +253,53 @@ impl PersonaRepository for SqlitePersonaRepository {
         id: &PersonaId,
         content: &str,
         content_hash: &str,
+        expected_content_hash: Option<&str>,
     ) -> AppResult<()> {
         let id = id.as_str().to_string();
         let content = content.to_string();
         let content_hash = content_hash.to_string();
+        let expected_content_hash = expected_content_hash.map(str::to_string);
         self.db
             .run(move |conn| {
-                conn.execute(
-                    "UPDATE personas
-                     SET content = ?1, content_hash = ?2, version = version + 1, updated_at = ?3
-                     WHERE id = ?4",
-                    rusqlite::params![content, content_hash, Utc::now().to_rfc3339(), id],
-                )?;
+                if let Some(expected) = expected_content_hash {
+                    let changed = conn.execute(
+                        "UPDATE personas
+                         SET content = ?1, content_hash = ?2, version = version + 1, updated_at = ?3
+                         WHERE id = ?4 AND status = 'draft' AND content_hash = ?5",
+                        rusqlite::params![
+                            content,
+                            content_hash,
+                            Utc::now().to_rfc3339(),
+                            id,
+                            expected,
+                        ],
+                    )?;
+                    if changed == 0 {
+                        let current = conn
+                            .query_row(
+                                "SELECT status, content_hash FROM personas WHERE id = ?1",
+                                [&id],
+                                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                            )
+                            .optional()?;
+                        return match current {
+                            None => Err(AppError::NotFound(format!("Persona not found: {id}"))),
+                            Some((status, _)) if status != "draft" => {
+                                Err(AppError::Validation(format!("Persona {id} must be draft")))
+                            }
+                            Some((_, actual)) => {
+                                Err(AppError::PersonaDraftConflict { expected, actual })
+                            }
+                        };
+                    }
+                } else {
+                    conn.execute(
+                        "UPDATE personas
+                         SET content = ?1, content_hash = ?2, version = version + 1, updated_at = ?3
+                         WHERE id = ?4",
+                        rusqlite::params![content, content_hash, Utc::now().to_rfc3339(), id],
+                    )?;
+                }
                 Ok(())
             })
             .await
