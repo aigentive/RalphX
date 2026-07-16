@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronUp,
+  ChevronsUpDown,
   Copy,
   ExternalLink,
   GitPullRequest,
@@ -12,6 +13,7 @@ import {
   Pencil,
   Play,
   PlayCircle,
+  Rows3,
   SkipForward,
   Square,
   Trash2,
@@ -67,6 +69,10 @@ import {
   useAutomationDetail,
 } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
+import {
+  useUiStore,
+  type AutomationRunsDensity,
+} from "@/stores/uiStore";
 
 interface AutomationDetailViewProps {
   automationId: string;
@@ -163,6 +169,28 @@ interface RunTimelineHighlight {
   backgroundColor: string;
   borderColor: string;
   markerColor: string;
+}
+
+interface RunExpansionCommand {
+  version: number;
+  expanded: boolean;
+}
+
+function formatRunsSummary(runs: AutomationRun[]): string {
+  const merged = runs.filter((run) => run.status === "merged").length;
+  return `${runs.length} ${runs.length === 1 ? "run" : "runs"} · ${merged} merged`;
+}
+
+function compactRunSummary(automation: Automation, run: AutomationRun): string {
+  const view = getAutomationRunView(automation, run);
+  const labels = [`Run ${run.runIndex}`, view.statusLabel];
+  if (view.judgeLabel) {
+    labels.push(view.judgeLabel);
+  }
+  if (view.stageLabel) {
+    labels.push(view.stageLabel);
+  }
+  return labels.join(" · ");
 }
 
 function runTimelineHighlight(run: AutomationRun): RunTimelineHighlight {
@@ -627,6 +655,8 @@ const RunTimelineItem = memo(function RunTimelineItem({
   automation,
   projectId,
   defaultExpanded,
+  density,
+  expansionCommand,
   activeGoalItem,
   onOpenRunConversation,
   onOpenAutomationRun,
@@ -636,12 +666,21 @@ const RunTimelineItem = memo(function RunTimelineItem({
   automation: Automation;
   projectId: string | null;
   defaultExpanded: boolean;
+  density: AutomationRunsDensity;
+  expansionCommand: RunExpansionCommand;
   activeGoalItem: AutomationGoalItem | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
   onOpenAutomationRun?: (target: AutomationRunOpenTarget) => void;
   setupConversationId: string | null;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [expansionState, setExpansionState] = useState({
+    expanded: defaultExpanded,
+    commandVersion: 0,
+  });
+  const expanded = expansionCommand.version > expansionState.commandVersion
+    ? expansionCommand.expanded
+    : expansionState.expanded;
+  const compactCollapsed = density === "compact" && !expanded;
   const canOpenConversation = Boolean(
     projectId &&
       run.conversationId &&
@@ -649,6 +688,12 @@ const RunTimelineItem = memo(function RunTimelineItem({
   );
   const failureReason = describeRunFailure(run);
   const highlight = runTimelineHighlight(run);
+  const toggleExpanded = useCallback(() => {
+    setExpansionState({
+      expanded: !expanded,
+      commandVersion: expansionCommand.version,
+    });
+  }, [expanded, expansionCommand.version]);
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       if (onOpenAutomationRun) {
@@ -698,7 +743,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
         data-testid={`automation-run-${run.id}-marker`}
       />
       <div
-        className="rounded-md p-4"
+        className={cn("rounded-md", compactCollapsed ? "px-3 py-2" : "p-4")}
         style={{
           backgroundColor: highlight.backgroundColor,
           borderColor: highlight.borderColor,
@@ -706,43 +751,101 @@ const RunTimelineItem = memo(function RunTimelineItem({
           borderWidth: "1px",
         }}
         data-testid={`automation-run-${run.id}-card`}
+        data-density={compactCollapsed ? "compact" : "comfortable"}
       >
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
-          className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
-        >
-          <AutomationRunStatusHeader
-            automation={automation}
-            run={run}
-            density="card"
-            activeGoalItem={activeGoalItem}
-            showPr={false}
-            phaseTestId={`automation-run-${run.id}-phase`}
-            testId={`automation-run-${run.id}-header`}
-          />
-          <span className="flex shrink-0 items-center gap-2">
-            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {formatDate(run.updatedAt)}
-            </span>
-            {expanded ? (
-              <ChevronUp className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
-            ) : (
-              <ChevronDown className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
-            )}
-          </span>
-        </button>
-
-        {run.prUrl ? (
-          <div className="mt-2">
-            <AutomationRunPrLink
-              run={run}
-              testId={`automation-run-${run.id}-pr-link`}
-            />
+        {compactCollapsed ? (
+          <div
+            className="@container flex min-w-0 items-center gap-2"
+            data-testid={`automation-run-${run.id}-compact-row`}
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="min-w-0 flex-1 overflow-hidden">
+                  <AutomationRunStatusHeader
+                    automation={automation}
+                    run={run}
+                    density="row"
+                    activeGoalItem={activeGoalItem}
+                    showPr={false}
+                    className="flex-nowrap overflow-hidden [&>span]:shrink-0"
+                    phaseTestId={`automation-run-${run.id}-phase`}
+                    testId={`automation-run-${run.id}-header`}
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[360px] text-xs">
+                {compactRunSummary(automation, run)}
+              </TooltipContent>
+            </Tooltip>
+            {run.prUrl ? (
+              <AutomationRunPrLink
+                run={run}
+                className="shrink-0"
+                testId={`automation-run-${run.id}-pr-link`}
+              />
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="max-w-36 shrink truncate text-xs @max-[520px]:max-w-24"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {formatDate(run.updatedAt)}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-xs">
+                {formatDate(run.updatedAt)}
+              </TooltipContent>
+            </Tooltip>
+            <TooltipIconButton
+              label={`Expand run ${run.runIndex}`}
+              variant="ghost"
+              className="h-6 w-6 shrink-0"
+              aria-expanded={expanded}
+              onClick={toggleExpanded}
+            >
+              <ChevronDown className="h-4 w-4" aria-hidden="true" />
+            </TooltipIconButton>
           </div>
-        ) : null}
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={toggleExpanded}
+              aria-expanded={expanded}
+              aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
+              className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
+            >
+              <AutomationRunStatusHeader
+                automation={automation}
+                run={run}
+                density="card"
+                activeGoalItem={activeGoalItem}
+                showPr={false}
+                phaseTestId={`automation-run-${run.id}-phase`}
+                testId={`automation-run-${run.id}-header`}
+              />
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  {formatDate(run.updatedAt)}
+                </span>
+                {expanded ? (
+                  <ChevronUp className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
+                ) : (
+                  <ChevronDown className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
+                )}
+              </span>
+            </button>
+            {run.prUrl ? (
+              <div className="mt-2">
+                <AutomationRunPrLink
+                  run={run}
+                  testId={`automation-run-${run.id}-pr-link`}
+                />
+              </div>
+            ) : null}
+          </>
+        )}
 
         {expanded && (
           <div data-testid={`automation-run-${run.id}-body`}>
@@ -894,6 +997,12 @@ export function AutomationDetailView({
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();
+  const automationRunsDensity = useUiStore((state) => state.automationRunsDensity);
+  const setAutomationRunsDensity = useUiStore((state) => state.setAutomationRunsDensity);
+  const [runExpansionCommand, setRunExpansionCommand] = useState<RunExpansionCommand>({
+    version: 0,
+    expanded: false,
+  });
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const invalidate = useCallback(() => {
     invalidateAutomationQueries(queryClient, automationId);
@@ -973,6 +1082,17 @@ export function AutomationDetailView({
     () => findInProgressAutomationGoalItem(goalItemsJson),
     [goalItemsJson],
   );
+  const toggleAllRuns = useCallback(() => {
+    setRunExpansionCommand((current) => ({
+      version: current.version + 1,
+      expanded: !current.expanded,
+    }));
+  }, []);
+  const toggleRunsDensity = useCallback(() => {
+    setAutomationRunsDensity(
+      automationRunsDensity === "comfortable" ? "compact" : "comfortable",
+    );
+  }, [automationRunsDensity, setAutomationRunsDensity]);
 
   if (!afterPaint || detail.isLoading) {
     return <DetailLoading onBack={onBack} />;
@@ -1307,6 +1427,33 @@ export function AutomationDetailView({
           </div>
 
           <Section title="Runs timeline" testId="automation-runs-timeline">
+            <div className="-mt-1 mb-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                {formatRunsSummary(runs)}
+              </p>
+              <div className="flex items-center gap-1">
+                <TooltipIconButton
+                  label={runExpansionCommand.expanded ? "Collapse all runs" : "Expand all runs"}
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={toggleAllRuns}
+                  data-testid="automation-runs-expand-toggle"
+                >
+                  <ChevronsUpDown className="h-4 w-4" aria-hidden="true" />
+                </TooltipIconButton>
+                <TooltipIconButton
+                  label={automationRunsDensity === "comfortable"
+                    ? "Use compact run density"
+                    : "Use comfortable run density"}
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={toggleRunsDensity}
+                  data-testid="automation-runs-density-toggle"
+                >
+                  <Rows3 className="h-4 w-4" aria-hidden="true" />
+                </TooltipIconButton>
+              </div>
+            </div>
             {newestRuns.length === 0 ? (
               <p className="text-sm" style={{ color: "var(--text-muted)" }}>
                 No runs have been created yet.
@@ -1322,6 +1469,8 @@ export function AutomationDetailView({
                     defaultExpanded={
                       run.runIndex === latest?.runIndex || isOpenAutomationRun(run)
                     }
+                    density={automationRunsDensity}
+                    expansionCommand={runExpansionCommand}
                     activeGoalItem={activeGoalItem}
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                     {...(onOpenAutomationRun ? { onOpenAutomationRun } : {})}

@@ -68,6 +68,7 @@ describe("uiStore", () => {
       taskHistoryState: null,
       boardSearchQuery: null,
       kanbanCardDisplayMode: "default",
+      automationRunsDensity: "comfortable",
       activityFilter: { taskId: null, sessionId: null },
       featureFlags: ALL_ENABLED,
       preserveCurrentViewOnProjectSwitch: false,
@@ -983,6 +984,57 @@ describe("uiStore", () => {
 
       expect(useUiStore.getState().kanbanCardDisplayMode).toBe("mini");
       expect(localStorage.getItem("ralphx-kanban-card-display-mode")).toBe("mini");
+    });
+  });
+
+  describe("Automation run density", () => {
+    it("defaults to comfortable and defers persistence until after paint", () => {
+      const afterPaintCallbacks: FrameRequestCallback[] = [];
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        afterPaintCallbacks.push(callback);
+        return afterPaintCallbacks.length;
+      });
+
+      expect(useUiStore.getState().automationRunsDensity).toBe("comfortable");
+
+      useUiStore.getState().setAutomationRunsDensity("compact");
+
+      expect(useUiStore.getState().automationRunsDensity).toBe("compact");
+      expect(localStorage.getItem("ralphx-automation-runs-density")).toBeNull();
+
+      afterPaintCallbacks.shift()?.(performance.now());
+      expect(localStorage.getItem("ralphx-automation-runs-density")).toBeNull();
+
+      afterPaintCallbacks.shift()?.(performance.now());
+
+      expect(localStorage.getItem("ralphx-automation-runs-density")).toBe("compact");
+      vi.unstubAllGlobals();
+    });
+
+    it("defaults to comfortable and rehydrates a persisted compact preference", async () => {
+      localStorage.removeItem("ralphx-automation-runs-density");
+      vi.resetModules();
+      const defaultStore = (await import("./uiStore")).useUiStore;
+      expect(defaultStore.getState().automationRunsDensity).toBe("comfortable");
+
+      localStorage.setItem("ralphx-automation-runs-density", "compact");
+      vi.resetModules();
+      const rehydratedStore = (await import("./uiStore")).useUiStore;
+      expect(rehydratedStore.getState().automationRunsDensity).toBe("compact");
+    });
+
+    it("defers persistence with a timer when animation frames are unavailable", () => {
+      vi.stubGlobal("requestAnimationFrame", undefined);
+      vi.useFakeTimers();
+
+      useUiStore.getState().setAutomationRunsDensity("compact");
+
+      expect(localStorage.getItem("ralphx-automation-runs-density")).toBeNull();
+      vi.runAllTimers();
+      expect(localStorage.getItem("ralphx-automation-runs-density")).toBe("compact");
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
     });
   });
 

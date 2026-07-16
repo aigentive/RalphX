@@ -1,9 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useUiStore } from "@/stores/uiStore";
 import { AutomationDetailView } from "./AutomationDetailView";
 import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations.types";
 
@@ -22,6 +24,7 @@ const {
   toastSuccessMock,
   toastErrorMock,
   toastInfoMock,
+  runStatusHeaderRenderMock,
 } = vi.hoisted(() => ({
   getAutomationMock: vi.fn(),
   pauseAutomationMock: vi.fn(),
@@ -37,7 +40,26 @@ const {
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
+  runStatusHeaderRenderMock: vi.fn(),
 }));
+
+vi.mock("@/components/automations/AutomationRunStatusHeader", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/components/automations/AutomationRunStatusHeader")
+  >();
+
+  function TrackedAutomationRunStatusHeader(
+    props: ComponentProps<typeof actual.AutomationRunStatusHeader>,
+  ) {
+    runStatusHeaderRenderMock(props.run?.id ?? null);
+    return <actual.AutomationRunStatusHeader {...props} />;
+  }
+
+  return {
+    ...actual,
+    AutomationRunStatusHeader: TrackedAutomationRunStatusHeader,
+  };
+});
 
 vi.mock("@/api/agent-tasks", () => ({
   agentTaskApi: {
@@ -252,6 +274,9 @@ describe("AutomationDetailView", () => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
+    runStatusHeaderRenderMock.mockReset();
+    localStorage.removeItem("ralphx-automation-runs-density");
+    useUiStore.setState({ automationRunsDensity: "comfortable" });
   });
 
   it("shows ideation task-graph progress in the automation pipeline", async () => {
@@ -567,6 +592,114 @@ describe("AutomationDetailView", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Collapse run 1" }));
     expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+  });
+
+  it("summarizes runs and switches collapsed rows to compact density synchronously", async () => {
+    const user = userEvent.setup();
+    const olderRun = run({
+      id: "run-1",
+      runIndex: 1,
+      status: "merged",
+      judgeState: "done",
+    });
+    const latestRun = run({
+      id: "run-2",
+      runIndex: 2,
+      status: "merged",
+      judgeState: "done",
+      prNumber: 612,
+      prUrl: "https://github.com/aigentive/ralphx.app/pull/612",
+    });
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [olderRun, latestRun],
+      usage,
+    });
+
+    const timeline = await screen.findByTestId("automation-runs-timeline");
+    expect(within(timeline).getByText("2 runs · 2 merged")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-run-run-1-card")).toHaveAttribute(
+      "data-density",
+      "comfortable",
+    );
+
+    await user.click(within(timeline).getByRole("button", { name: "Use compact run density" }));
+
+    expect(useUiStore.getState().automationRunsDensity).toBe("compact");
+    expect(screen.getByTestId("automation-run-run-1-card")).toHaveAttribute(
+      "data-density",
+      "compact",
+    );
+    const compactRow = screen.getByTestId("automation-run-run-1-compact-row");
+    expect(within(compactRow).getByText("Run 1")).toBeInTheDocument();
+    expect(within(compactRow).getByText("Merged")).toBeInTheDocument();
+    expect(within(compactRow).getByText("Judge done")).toBeInTheDocument();
+    expect(within(compactRow).getByTestId("automation-run-run-1-pr-link")).toHaveTextContent(
+      "PR #593",
+    );
+    expect(within(compactRow).getByText(/Jul 5/)).toBeInTheDocument();
+
+    expect(screen.getByTestId("automation-run-run-2-card")).toHaveAttribute(
+      "data-density",
+      "comfortable",
+    );
+    expect(screen.getByTestId("automation-run-run-2-body")).toBeInTheDocument();
+  });
+
+  it("expands and collapses every run while preserving per-run chevrons", async () => {
+    const user = userEvent.setup();
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [
+        run({ id: "run-1", runIndex: 1, status: "merged", judgeState: "done" }),
+        run({ id: "run-2", runIndex: 2, status: "merged", judgeState: "done" }),
+      ],
+      usage,
+    });
+
+    const timeline = await screen.findByTestId("automation-runs-timeline");
+    await user.click(within(timeline).getByRole("button", { name: "Expand all runs" }));
+
+    expect(screen.getByTestId("automation-run-run-1-body")).toBeInTheDocument();
+    expect(screen.getByTestId("automation-run-run-2-body")).toBeInTheDocument();
+
+    await user.click(within(timeline).getByRole("button", { name: "Collapse all runs" }));
+
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("automation-run-run-2-body")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Expand run 1" }));
+    expect(screen.getByTestId("automation-run-run-1-body")).toBeInTheDocument();
+    expect(screen.queryByTestId("automation-run-run-2-body")).not.toBeInTheDocument();
+  });
+
+  it("does not rerender a collapsed sibling when one run expands", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [
+        run({ id: "run-1", runIndex: 1, status: "merged", judgeState: "done" }),
+        run({ id: "run-2", runIndex: 2, status: "merged", judgeState: "done" }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    const runOneRendersBefore = runStatusHeaderRenderMock.mock.calls.filter(
+      ([runId]) => runId === "run-1",
+    ).length;
+    const runTwoRendersBefore = runStatusHeaderRenderMock.mock.calls.filter(
+      ([runId]) => runId === "run-2",
+    ).length;
+
+    await userEvent.click(screen.getByRole("button", { name: "Expand run 1" }));
+
+    expect(
+      runStatusHeaderRenderMock.mock.calls.filter(([runId]) => runId === "run-1"),
+    ).toHaveLength(runOneRendersBefore + 1);
+    expect(
+      runStatusHeaderRenderMock.mock.calls.filter(([runId]) => runId === "run-2"),
+    ).toHaveLength(runTwoRendersBefore);
   });
 
   it("renders the live task ledger inside an expanded open run", async () => {

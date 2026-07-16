@@ -33,8 +33,10 @@ import {
 
 const SHOW_MERGE_TASKS_KEY = "ralphx-show-merge-tasks";
 const KANBAN_CARD_DISPLAY_MODE_KEY = "ralphx-kanban-card-display-mode";
+const AUTOMATION_RUNS_DENSITY_KEY = "ralphx-automation-runs-density";
 
 export type KanbanCardDisplayMode = "default" | "mini";
+export type AutomationRunsDensity = "comfortable" | "compact";
 
 function loadShowMergeTasks(): boolean {
   try {
@@ -74,6 +76,36 @@ function saveKanbanCardDisplayMode(mode: KanbanCardDisplayMode): void {
   } catch {
     /* ignore write errors */
   }
+}
+
+function loadAutomationRunsDensity(): AutomationRunsDensity {
+  try {
+    const saved = localStorage.getItem(AUTOMATION_RUNS_DENSITY_KEY);
+    if (saved === "comfortable" || saved === "compact") {
+      return saved;
+    }
+  } catch {
+    /* ignore read errors */
+  }
+  return "comfortable";
+}
+
+function saveAutomationRunsDensity(density: AutomationRunsDensity): void {
+  try {
+    localStorage.setItem(AUTOMATION_RUNS_DENSITY_KEY, density);
+  } catch {
+    /* ignore write errors */
+  }
+}
+
+function saveAutomationRunsDensityAfterPaint(density: AutomationRunsDensity): void {
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => saveAutomationRunsDensity(density));
+    });
+    return;
+  }
+  setTimeout(() => saveAutomationRunsDensity(density), 0);
 }
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -281,6 +313,8 @@ interface UiState {
   boardSearchQuery: string | null;
   /** App-wide Kanban card density preference */
   kanbanCardDisplayMode: KanbanCardDisplayMode;
+  /** Automation run timeline density (persisted to localStorage) */
+  automationRunsDensity: AutomationRunsDensity;
   /** Whether a search request is in flight */
   isSearching: boolean;
   /** ID of selected task for split-screen overlay (kanban view only) */
@@ -394,6 +428,8 @@ interface UiActions {
   setBoardSearchQuery: (query: string | null) => void;
   /** Set app-wide Kanban card density preference */
   setKanbanCardDisplayMode: (mode: KanbanCardDisplayMode) => void;
+  /** Set app-wide automation run timeline density */
+  setAutomationRunsDensity: (density: AutomationRunsDensity) => void;
   /** Set whether a search is in progress */
   setIsSearching: (searching: boolean) => void;
   /** Set selected task ID for split-screen overlay */
@@ -506,6 +542,7 @@ export const useUiStore = create<UiState & UiActions>()(
     showMergeTasks: loadShowMergeTasks(),
     boardSearchQuery: null,
     kanbanCardDisplayMode: loadKanbanCardDisplayMode(),
+    automationRunsDensity: loadAutomationRunsDensity(),
     isSearching: false,
     selectedTaskId: null,
     graphSelection: null,
@@ -705,6 +742,13 @@ export const useUiStore = create<UiState & UiActions>()(
         state.kanbanCardDisplayMode = mode;
         saveKanbanCardDisplayMode(mode);
       }),
+
+    setAutomationRunsDensity: (density) => {
+      set((state) => {
+        state.automationRunsDensity = density;
+      });
+      saveAutomationRunsDensityAfterPaint(density);
+    },
 
     setIsSearching: (searching) =>
       set((state) => {
