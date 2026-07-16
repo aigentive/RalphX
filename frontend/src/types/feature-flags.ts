@@ -10,6 +10,8 @@ export const featureFlagsSchema = z.object({
   atlassianOauth: z.boolean().default(false),
   ticketingDashboard: z.boolean().default(false),
   agentPersonas: z.boolean().default(false),
+  agentConversationTeam: z.boolean().default(false),
+  agentConversationWorkflows: z.boolean().default(false),
 });
 
 /**
@@ -18,7 +20,9 @@ export const featureFlagsSchema = z.object({
  */
 export type FeatureFlags = Omit<
   z.infer<typeof featureFlagsSchema>,
-  "agentPersonas"
+  "agentPersonas" | "agentConversationTeam" | "agentConversationWorkflows"
 > & {
   agentPersonas?: boolean;
+  agentConversationTeam?: boolean;
+  agentConversationWorkflows?: boolean;
 };

@@ -11,6 +11,7 @@ import {
 import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
+  CapabilityIntent,
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
@@ -117,6 +118,7 @@ export interface AgentStartConversationRetryInput {
   automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null;
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[];
   composerProjectReferences?: ComposerProjectReference[];

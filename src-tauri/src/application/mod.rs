@@ -37,6 +37,8 @@ pub mod agent_workspace_review_auto_merge;
 mod agent_workspace_review_auto_merge_tests;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
+#[cfg(test)]
+mod app_paths_tests;
 pub mod app_setup;
 pub mod app_state;
 pub mod apply_service;
@@ -421,3 +423,10 @@ pub use chat_service::{
     TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
     TeamTeammateSpawnedPayload, AGENT_MESSAGE_QUEUED,
 };
+pub mod agent_capability_gate;
+#[cfg(test)]
+mod agent_capability_gate_tests;
+pub mod agent_capability_validation;
+pub mod agent_workflow_runner;
+#[cfg(test)]
+mod agent_capability_validation_tests;

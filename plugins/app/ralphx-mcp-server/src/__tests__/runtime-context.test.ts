@@ -42,6 +42,8 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         "session-123",
         "--conversation-id",
         "conversation-current",
+        "--coordination-mode",
+        "rx_native_workflow",
         "--parent-conversation-id",
         "conversation-789",
         "--agent-run-id",
@@ -68,6 +70,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
     expect(runtimeContext.contextType).toBe("ideation");
     expect(runtimeContext.contextId).toBe("session-123");
     expect(runtimeContext.conversationId).toBe("conversation-current");
+    expect(runtimeContext.coordinationMode).toBe("rx_native_workflow");
     expect(runtimeContext.parentConversationId).toBe("conversation-789");
     expect(runtimeContext.agentRunId).toBe("run-current");
     expect(runtimeContext.taskState).toBe("re_executing");
@@ -83,6 +86,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
     expect(env.RALPHX_CONTEXT_TYPE).toBe("ideation");
     expect(env.RALPHX_CONTEXT_ID).toBe("session-123");
     expect(env.RALPHX_CONVERSATION_ID).toBe("conversation-current");
+    expect(env.RALPHX_COORDINATION_MODE).toBe("rx_native_workflow");
     expect(env.RALPHX_PARENT_CONVERSATION_ID).toBe("conversation-789");
     expect(env.RALPHX_AGENT_RUN_ID).toBe("run-current");
     expect(env.RALPHX_TASK_STATE).toBe("re_executing");

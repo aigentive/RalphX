@@ -6,6 +6,7 @@ import { chatApi } from "@/api/chat";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceMode,
+  CapabilityIntent,
 } from "@/api/chat";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 import type {
@@ -69,7 +70,8 @@ export function useAgentsActiveComposerControls({
   setRuntimeForConversation,
 }: UseAgentsActiveComposerControlsArgs) {
   const [switchingConversationModeId, setSwitchingConversationModeId] = useState<string | null>(null);
-  const [updatingTeamConversationId, setUpdatingTeamConversationId] = useState<string | null>(null);
+  const [updatingCapabilityConversationId, setUpdatingCapabilityConversationId] =
+    useState<string | null>(null);
   const defaultRuntime =
     (defaultProjectId ? lastRuntimeByProjectId[defaultProjectId] : null) ??
     (runtimeConversationId ? runtimeByConversationId[runtimeConversationId] : null) ??
@@ -262,8 +264,8 @@ export function useAgentsActiveComposerControls({
     });
   }, [queryClient, selectedConversationId]);
 
-  const handleActiveTeamEnabledChange = useCallback(
-    async (enabled: boolean) => {
+  const handleActiveCapabilityChange = useCallback(
+    async (coordinationMode: CapabilityIntent["coordinationMode"]) => {
       if (
         !selectedConversationId ||
         !activeProjectId ||
@@ -273,34 +275,43 @@ export function useAgentsActiveComposerControls({
         return;
       }
 
-      const coordinationMode = enabled ? "rx_native_team" : "solo";
       if (activeConversation.coordinationMode === coordinationMode) {
         return;
       }
 
-      setUpdatingTeamConversationId(selectedConversationId);
+      setUpdatingCapabilityConversationId(selectedConversationId);
       try {
         await chatApi.updateAgentConversationCoordinationMode({
           conversationId: selectedConversationId,
           coordinationMode,
+          ...(coordinationMode === "codex_native_ultra"
+            ? { modelOverride: normalizedActiveRuntime.modelId }
+            : {}),
         });
         await Promise.all([
           invalidateProjectConversations(activeProjectId),
           invalidateConversationDataQueries(queryClient, selectedConversationId),
         ]);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to change Team setting");
+        toast.error(err instanceof Error ? err.message : "Failed to change capability");
       } finally {
-        setUpdatingTeamConversationId(null);
+        setUpdatingCapabilityConversationId(null);
       }
     },
     [
       activeConversation,
       activeProjectId,
       invalidateProjectConversations,
+      normalizedActiveRuntime.modelId,
       queryClient,
       selectedConversationId,
     ],
+  );
+
+  const handleActiveTeamEnabledChange = useCallback(
+    (enabled: boolean) =>
+      handleActiveCapabilityChange(enabled ? "rx_native_team" : "solo"),
+    [handleActiveCapabilityChange],
   );
 
   return {
@@ -308,11 +319,13 @@ export function useAgentsActiveComposerControls({
     defaultRuntime,
     handleActiveConversationModeChange,
     handleActiveConversationModeMenuOpen,
+    handleActiveCapabilityChange,
     handleActiveTeamEnabledChange,
     handleActiveEffortChange,
     handleActiveModelChange,
     handleActiveProviderChange,
     switchingConversationModeId,
-    updatingTeamConversationId,
+    updatingCapabilityConversationId,
+    updatingTeamConversationId: updatingCapabilityConversationId,
   };
 }

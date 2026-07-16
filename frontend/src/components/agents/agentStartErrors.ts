@@ -7,6 +7,7 @@ import type {
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  CapabilityIntent,
   TeamIntent,
 } from "@/api/chat";
 import type {
@@ -30,6 +31,7 @@ export interface AgentStartConversationRetryInputSource {
   automationAuthoringMode?: AutomationAuthoringMode | undefined;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null | undefined;
+  capabilityIntent?: CapabilityIntent | null | undefined;
   teamIntent?: TeamIntent | null | undefined;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -70,6 +72,9 @@ export function buildAgentStartConversationRetryInput(
   }
   if (input.codexFastMode !== undefined) {
     retryInput.codexFastMode = input.codexFastMode;
+  }
+  if (input.capabilityIntent !== undefined) {
+    retryInput.capabilityIntent = input.capabilityIntent;
   }
   if (input.teamIntent !== undefined) {
     retryInput.teamIntent = input.teamIntent;

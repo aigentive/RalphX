@@ -714,6 +714,7 @@ async fn update_agent_conversation_coordination_mode_persists_idle_project_conve
         UpdateAgentConversationCoordinationModeInput {
             conversation_id: conversation.id.as_str(),
             coordination_mode: "rx_native_team".to_string(),
+            model_override: None,
         },
         app.state(),
     )
@@ -747,6 +748,7 @@ async fn update_agent_conversation_coordination_mode_rejects_legacy_writes() {
         UpdateAgentConversationCoordinationModeInput {
             conversation_id: conversation.id.as_str(),
             coordination_mode: "legacy_claude_team".to_string(),
+            model_override: None,
         },
         app.state(),
     )

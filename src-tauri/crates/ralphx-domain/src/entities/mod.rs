@@ -8,6 +8,9 @@ pub mod agent_conversation_workspace;
 mod agent_conversation_workspace_tests;
 pub mod agent_run;
 pub mod agent_task;
+pub mod agent_workflow_protocol;
+#[cfg(test)]
+mod agent_workflow_protocol_tests;
 pub mod api_key;
 pub mod app_state;
 pub mod artifact;
@@ -37,6 +40,9 @@ pub mod plan_selection_stats;
 pub mod persona;
 pub mod project;
 pub mod research;
+pub mod scripted_agent_workflow;
+#[cfg(test)]
+mod scripted_agent_workflow_tests;
 pub mod review;
 pub mod review_issue;
 pub mod status;
@@ -185,6 +191,12 @@ pub use research::{
     ResearchDepth, ResearchDepthPreset, ResearchOutput, ResearchPresets, ResearchProcess,
     ResearchProcessId, ResearchProcessStatus, ResearchProgress, RESEARCH_PRESETS,
 };
+pub use scripted_agent_workflow::{
+    sha256_hex, AgentWorkflowInvocation, AgentWorkflowInvocationId, AgentWorkflowLogEntry,
+    AgentWorkflowMeta, AgentWorkflowPhase, AgentWorkflowPhaseId, AgentWorkflowProgress,
+    AgentWorkflowRun, AgentWorkflowRunId, AgentWorkflowRunStatus, AgentWorkflowScript,
+    AgentWorkflowScriptId, AgentWorkflowStepStatus,
+};
 pub use review::{
     ParseReviewActionTypeError, ParseReviewOutcomeError, ParseReviewStatusError,
     ParseReviewerTypeError, Review, ReviewAction, ReviewActionId, ReviewActionType, ReviewId,
@@ -212,7 +224,8 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId, TeamMessageRecord,
+    CapabilityIntent, CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId,
+    TeamMessageRecord,
     TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
     TeammateSnapshot,
 };

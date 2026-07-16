@@ -32,6 +32,8 @@ async fn persona_flag_override_update_persists_and_updates_effective_response() 
     let response = update_ui_feature_flags(
         UpdateUiFeatureFlagsInput {
             agent_personas: Some(true),
+            agent_conversation_team: None,
+            agent_conversation_workflows: None,
         },
         app.state(),
     )
@@ -55,8 +57,9 @@ async fn persona_flag_override_update_persists_and_updates_effective_response() 
 fn persona_flag_override_get_reports_live_effective_value() {
     let _reset = PersonaFlagOverrideReset;
     set_agent_personas_override(Some(true));
+    let app = persona_flag_override_command_app();
 
-    assert!(get_ui_feature_flags().agent_personas);
+    assert!(get_ui_feature_flags(app.state()).agent_personas);
 }
 
 #[test]

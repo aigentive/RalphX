@@ -2529,6 +2529,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     plugin_dir,
                                     context_type,
                                     context_id,
+                                    conv.coordination_mode,
                                     msg,
                                     persona,
                                     None,

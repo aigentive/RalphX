@@ -151,6 +151,7 @@ fn custom_provider_runtime_probe(
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some(error),
@@ -175,6 +176,7 @@ fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some("RX-managed Codex is not installed.".to_string()),
@@ -203,6 +205,7 @@ fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
                 non_empty_capability_values(capabilities.supported_model_aliases.clone());
             let supported_efforts =
                 non_empty_capability_values(capabilities.supported_effort_labels());
+            let ultra_supported_models = capabilities.ultra_supported_models.clone();
             HarnessRuntimeProbe {
                 binary_path: Some(path.to_string_lossy().into_owned()),
                 binary_found: true,
@@ -212,6 +215,7 @@ fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
                 cli_version: capabilities.version.clone(),
                 supported_model_aliases,
                 supported_efforts,
+                ultra_supported_models,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -226,6 +230,7 @@ fn managed_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some(error),
@@ -256,6 +261,7 @@ fn custom_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
                 non_empty_capability_values(capabilities.supported_model_aliases.clone());
             let supported_efforts =
                 non_empty_capability_values(capabilities.supported_effort_labels());
+            let ultra_supported_models = capabilities.ultra_supported_models.clone();
             HarnessRuntimeProbe {
                 binary_path: Some(path.to_string_lossy().into_owned()),
                 binary_found: true,
@@ -265,6 +271,7 @@ fn custom_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
                 cli_version: capabilities.version.clone(),
                 supported_model_aliases,
                 supported_efforts,
+                ultra_supported_models,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -279,6 +286,7 @@ fn custom_codex_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some(error),
@@ -307,6 +315,7 @@ fn custom_claude_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
                 cli_version: capabilities.version,
                 supported_model_aliases: Some(capabilities.supported_model_aliases),
                 supported_efforts: Some(supported_efforts),
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: None,
@@ -321,6 +330,7 @@ fn custom_claude_runtime_probe(path: PathBuf) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some(error),

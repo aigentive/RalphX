@@ -1587,6 +1587,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 plugin_dir,
                 context_type,
                 context_id,
+                conversation_coordination_mode.unwrap_or(CoordinationMode::Solo),
                 &runtime_content,
                 resolved_persona,
                 queued_agent_context.identity.agent_name,
