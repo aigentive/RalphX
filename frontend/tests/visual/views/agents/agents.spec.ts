@@ -193,6 +193,7 @@ function makeConversation({
     upstreamProvider: "openai",
     providerProfile: null,
     agentMode: mode,
+    coordinationMode: "solo",
     title,
     messageCount: 0,
     lastMessageAt: null,
@@ -1313,7 +1314,7 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-artifact-pane")).toBeVisible();
     await hydrateIdeationArtifactCache(page, ideationConversationId);
     await expect(page.getByTestId("agents-artifact-tab-plan")).toBeVisible();
-    await expect(page.getByTestId("agents-artifact-tab-verification")).toBeVisible();
+    await expect(page.getByTestId("agents-artifact-tab-verification")).toHaveCount(0);
     await expect(page.getByTestId("agents-artifact-tab-proposal")).toHaveCount(0);
     await expect(page.getByTestId("plan-proposals-toggle")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-tasks")).toHaveCount(0);

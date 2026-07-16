@@ -430,7 +430,7 @@ You are {coder-name} on team task-{task_id}.
 ## Constraints
 - TDD mandatory — write tests FIRST, then implement. Report pass/fail counts in completion message.
 - Do NOT modify files outside your ownership list
-- Commit lock: acquire `.commit-lock` before `git add`, release after commit. See `.claude/rules/commit-lock.md`.
+- Parallel commits: coordinate ownership, inspect `git status` / `git diff`, and preserve unrelated work; no repository lock-file protocol.
 - Run validation commands before completing
 - Report progress via start_step / complete_step
 

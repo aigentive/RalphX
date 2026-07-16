@@ -54,6 +54,7 @@ pub struct CodexCliCapabilities {
     pub supported_model_aliases: Vec<String>,
     pub supported_efforts: Vec<String>,
     pub model_supported_efforts: BTreeMap<String, Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
 }
 
 impl CodexCliCapabilities {
@@ -99,6 +100,12 @@ impl CodexCliCapabilities {
     pub fn supported_effort_labels(&self) -> Vec<String> {
         self.supported_efforts.clone()
     }
+
+    pub fn supports_ultra_for_model(&self, model: &str) -> bool {
+        self.ultra_supported_models
+            .iter()
+            .any(|supported| supported == model)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -106,6 +113,7 @@ pub struct CodexModelCatalogCapabilities {
     pub supported_model_aliases: Vec<String>,
     pub supported_efforts: Vec<String>,
     pub model_supported_efforts: BTreeMap<String, Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
 }
 
 impl CodexModelCatalogCapabilities {
@@ -113,6 +121,7 @@ impl CodexModelCatalogCapabilities {
         self.supported_model_aliases.is_empty()
             && self.supported_efforts.is_empty()
             && self.model_supported_efforts.is_empty()
+            && self.ultra_supported_models.is_empty()
     }
 }
 
@@ -126,6 +135,7 @@ pub struct ResolvedCodexCli {
 pub struct CodexExecCliConfig {
     pub model: Option<String>,
     pub reasoning_effort: Option<LogicalEffort>,
+    pub ultra_mode: bool,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub service_tier: Option<String>,
@@ -142,6 +152,7 @@ impl Default for CodexExecCliConfig {
         Self {
             model: None,
             reasoning_effort: None,
+            ultra_mode: false,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             service_tier: None,
@@ -627,6 +638,7 @@ pub fn parse_codex_cli_capabilities(
         supported_model_aliases: model_catalog_capabilities.supported_model_aliases,
         supported_efforts: model_catalog_capabilities.supported_efforts,
         model_supported_efforts: model_catalog_capabilities.model_supported_efforts,
+        ultra_supported_models: model_catalog_capabilities.ultra_supported_models,
     }
 }
 
@@ -673,6 +685,7 @@ pub fn parse_codex_model_catalog_capabilities(output: &str) -> CodexModelCatalog
     let mut supported_model_aliases = Vec::new();
     let mut supported_efforts = Vec::new();
     let mut model_supported_efforts = BTreeMap::new();
+    let mut ultra_supported_models = Vec::new();
 
     for model in models {
         if !codex_model_is_visible_list_entry(model) {
@@ -709,6 +722,10 @@ pub fn parse_codex_model_catalog_capabilities(output: &str) -> CodexModelCatalog
                 normalize_codex_reasoning_effort(effort)
             })
             .collect::<Vec<_>>();
+        if model_efforts.iter().any(|effort| effort == "ultra") {
+            ultra_supported_models.push(slug.to_string());
+            model_efforts.retain(|effort| effort != "ultra");
+        }
         sort_codex_reasoning_efforts(&mut model_efforts);
         supported_efforts.extend(model_efforts.iter().cloned());
         model_supported_efforts.insert(slug.to_string(), model_efforts);
@@ -717,11 +734,14 @@ pub fn parse_codex_model_catalog_capabilities(output: &str) -> CodexModelCatalog
     supported_model_aliases.sort();
     supported_model_aliases.dedup();
     sort_codex_reasoning_efforts(&mut supported_efforts);
+    ultra_supported_models.sort();
+    ultra_supported_models.dedup();
 
     CodexModelCatalogCapabilities {
         supported_model_aliases,
         supported_efforts,
         model_supported_efforts,
+        ultra_supported_models,
     }
 }
 
@@ -948,7 +968,7 @@ pub fn build_codex_exec_args(
         args.push(override_value);
     }
 
-    if let Some(reasoning_effort) = config.reasoning_effort {
+    if let Some(reasoning_effort) = effective_codex_reasoning_effort(config) {
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
@@ -1009,7 +1029,7 @@ pub fn build_codex_exec_resume_args(
         args.push(override_value);
     }
 
-    if let Some(reasoning_effort) = config.reasoning_effort {
+    if let Some(reasoning_effort) = effective_codex_reasoning_effort(config) {
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
@@ -1030,6 +1050,18 @@ pub fn build_codex_exec_resume_args(
     ));
 
     Ok(args)
+}
+
+fn effective_codex_reasoning_effort(config: &CodexExecCliConfig) -> Option<LogicalEffort> {
+    if config.ultra_mode {
+        return Some(LogicalEffort::Ultra);
+    }
+    config
+        .reasoning_effort
+        .map(|effort| match effort {
+            LogicalEffort::Ultra => LogicalEffort::Max,
+            ordinary => ordinary,
+        })
 }
 
 pub fn build_spawnable_codex_exec_command(

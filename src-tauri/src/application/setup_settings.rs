@@ -8,7 +8,8 @@ use crate::application::harness_runtime_registry::{
 use crate::application::ideation_effort_bootstrap::seed_ideation_effort_defaults;
 use crate::application::ideation_model_bootstrap::seed_ideation_model_settings;
 use crate::application::{
-    load_or_seed_agent_lane_settings_defaults, load_or_seed_execution_settings_defaults,
+    agent_capability_gate::AgentCapabilities, load_or_seed_agent_lane_settings_defaults,
+    load_or_seed_execution_settings_defaults,
 };
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
@@ -22,10 +23,20 @@ pub(crate) fn initialize_settings_defaults(
     init_execution_state: Arc<ExecutionState>,
 ) {
     let feature_flag_overrides_repo = Arc::clone(&app_state.ui_feature_flag_overrides_repo);
+    let agent_capability_gate = Arc::clone(&app_state.agent_capability_gate);
     tauri::async_runtime::block_on(async move {
         match feature_flag_overrides_repo.get().await {
-            Ok(overrides) => set_agent_personas_override(overrides.agent_personas),
-            Err(error) => warn!(%error, "Failed to load UI feature flag overrides"),
+            Ok(overrides) => {
+                set_agent_personas_override(overrides.agent_personas);
+                agent_capability_gate.replace(AgentCapabilities {
+                    team: overrides.agent_conversation_team,
+                    workflows: overrides.agent_conversation_workflows,
+                });
+            }
+            Err(error) => {
+                agent_capability_gate.replace(AgentCapabilities::default());
+                warn!(%error, "Failed to load UI feature flag overrides; Agent capabilities remain disabled");
+            }
         }
     });
 

@@ -5,10 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
+use crate::application::agent_capability_gate::AgentCapabilityGate;
 use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
 use crate::application::notification_service::{
@@ -55,19 +56,20 @@ use crate::domain::repositories::{
     AgentConversationIssueRepository, AgentConversationJiraIssueRepository,
     AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
-    AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    AutomationRepository, AutomationRunRepository, BranchUpdateRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
-    MemoryEventRepository, MethodologyRepository, NotificationRepository,
-    NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository, PersonaRepository,
-    PlanArtifactApprovalRepository, PlanBranchRepository, PlanSelectionStatsRepository,
-    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
-    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository,
+    AgentWorkflowRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
+    ArtifactFlowRepository, ArtifactRepository, AutomationRepository, AutomationRunRepository,
+    BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
+    NotificationRepository, NotificationSettingsRepository, OrphanWorktreeCleanupMarkerRepository,
+    PersonaRepository, PlanArtifactApprovalRepository, PlanBranchRepository,
+    PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
+    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     UiFeatureFlagOverridesRepository, ValidationRunRepository, WebhookRegistrationRepository,
@@ -119,8 +121,8 @@ use crate::infrastructure::sqlite::{
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
     SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
     SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
-    SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
-    SqliteArtifactFlowRepository, SqliteArtifactRepository,
+    SqliteAgentWorkflowRepository, SqliteApiKeyRepository, SqliteAppStateRepository,
+    SqliteArtifactBucketRepository, SqliteArtifactFlowRepository, SqliteArtifactRepository,
     SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
     SqliteAutomationRunRepository, SqliteBranchUpdateRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
@@ -211,6 +213,8 @@ pub struct AppState {
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
     /// Persisted UI feature flag overrides.
     pub ui_feature_flag_overrides_repo: Arc<dyn UiFeatureFlagOverridesRepository>,
+    /// Live authoritative gates for Agent conversation orchestration capabilities.
+    pub agent_capability_gate: Arc<AgentCapabilityGate>,
     /// Durable task validation run/result repository
     pub validation_run_repo: Arc<dyn ValidationRunRepository>,
     /// Provider-keyed Workspace Review runtime defaults repository
@@ -236,6 +240,8 @@ pub struct AppState {
     pub delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
     /// Lightweight agent task repository for todo/dependency tracking
     pub agent_task_repo: Arc<dyn AgentTaskRepository>,
+    /// Durable scripted Agent workflow state and current-run authority.
+    pub agent_workflow_repo: Arc<dyn AgentWorkflowRepository>,
     /// Durable Agent conversation issues surfaced in the Agents UI.
     pub agent_conversation_issue_repo: Arc<dyn AgentConversationIssueRepository>,
     /// Ideation effort settings repository (global and per-project effort overrides)
@@ -375,6 +381,12 @@ pub struct AppState {
     /// Shared per-session mutex map for serializing concurrent plan:delivered checks.
     /// ONE Arc, shared between both AppState instances (Tauri IPC + HTTP server) via lib.rs.
     pub session_merge_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Serializes Verify Plan admission per ideation session so concurrent
+    /// manual, automatic, and external requests cannot enqueue duplicate turns.
+    pub plan_verification_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// In-process admission marker spanning the brief interval before a queued
+    /// verification action becomes visible through durable queue/run storage.
+    pub plan_verification_admissions: Arc<dashmap::DashMap<String, String>>,
     /// Sessions where user has enabled auto-accept for verification. Ephemeral.
     pub auto_accept_sessions: Arc<Mutex<HashSet<String>>>,
     /// Startup Git/GitHub recovery gate. Set when startup defers Git-dependent
@@ -383,6 +395,27 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn agent_workflow_runner(
+        &self,
+    ) -> AppResult<crate::application::agent_workflow_runner::AgentWorkflowRunner> {
+        Ok(
+            crate::application::agent_workflow_runner::AgentWorkflowRunner::new(
+                Arc::clone(&self.agent_workflow_repo),
+                Arc::clone(&self.agent_capability_gate),
+                self.app_paths.workflow_runner_path()?,
+                self.app_paths.workflow_runtime_dir(),
+            ),
+        )
+    }
+
+    fn memory_agent_workflow_repo() -> Arc<dyn AgentWorkflowRepository> {
+        let conn = open_connection(&std::path::PathBuf::from(":memory:"))
+            .expect("Failed to open workflow test database");
+        run_migrations(&conn).expect("Failed to migrate workflow test database");
+        conn.execute("PRAGMA foreign_keys = OFF", [])
+            .expect("Failed to configure workflow test database");
+        Arc::new(SqliteAgentWorkflowRepository::new(conn))
+    }
     /// Returns this AppState's shared notification service when an AppHandle is available.
     /// A pre-AppHandle call returns a transient Noop-backed service and is never cached.
     pub fn notification_service(&self) -> Arc<NotificationService> {
@@ -801,6 +834,16 @@ impl AppState {
 
     pub fn build_chat_service(&self) -> AppChatService {
         self.build_chat_service_for_runtime(None, self.app_handle.clone())
+    }
+
+    /// Build chat service with the app-managed execution halt state when available.
+    pub fn build_chat_service_with_managed_execution_state(&self) -> AppChatService {
+        let execution_state = self
+            .app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<Arc<ExecutionState>>())
+            .map(|state| state.inner().clone());
+        self.build_chat_service_for_runtime(execution_state, self.app_handle.clone())
     }
 
     pub fn build_chat_service_for_runtime<R: Runtime>(
@@ -1294,6 +1337,7 @@ impl AppState {
             ui_feature_flag_overrides_repo: Arc::new(
                 SqliteUiFeatureFlagOverridesRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(
                 SqliteNotificationSettingsRepository::from_shared(Arc::clone(&shared_conn)),
             ),
@@ -1328,6 +1372,9 @@ impl AppState {
                 Arc::clone(&shared_conn),
             )),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            agent_workflow_repo: Arc::new(SqliteAgentWorkflowRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             agent_conversation_issue_repo: Arc::new(
@@ -1487,6 +1534,8 @@ impl AppState {
             )),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -1574,6 +1623,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1596,6 +1646,9 @@ impl AppState {
                 Arc::clone(&shared_conn),
             )),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            agent_workflow_repo: Arc::new(SqliteAgentWorkflowRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             agent_conversation_issue_repo: Arc::new(
@@ -1684,6 +1737,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -1746,6 +1801,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1768,6 +1824,9 @@ impl AppState {
                 Arc::clone(&shared_conn),
             )),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            agent_workflow_repo: Arc::new(SqliteAgentWorkflowRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             agent_conversation_issue_repo: Arc::new(
@@ -1856,6 +1915,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -1885,7 +1946,7 @@ impl AppState {
     /// Repositories backed by the shared connection:
     /// - `ideation_session_repo`, `task_proposal_repo`, `proposal_dependency_repo`
     /// - `execution_plan_repo`, `task_repo`, `task_step_repo`, `task_dependency_repo`
-    /// - `plan_branch_repo`, `project_repo`, `db`
+    /// - `plan_branch_repo`, `project_repo`, `active_plan_repo`, `db`
     #[doc(hidden)]
     pub fn new_sqlite_for_apply_test() -> Self {
         Self::enable_claude_test_mode();
@@ -1927,6 +1988,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -1949,6 +2011,9 @@ impl AppState {
                 Arc::clone(&shared_conn),
             )),
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            agent_workflow_repo: Arc::new(SqliteAgentWorkflowRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
             agent_conversation_issue_repo: Arc::new(
@@ -2019,7 +2084,9 @@ impl AppState {
             ))),
             plan_selection_stats_repo: Arc::new(MemoryPlanSelectionStatsRepository::new()),
             app_state_repo: Arc::new(MemoryAppStateRepository::new()),
-            active_plan_repo: Arc::new(MemoryActivePlanRepository::new()),
+            active_plan_repo: Arc::new(SqliteActivePlanRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             memory_entry_repo: Arc::new(InMemoryMemoryEntryRepository::new()),
             memory_event_repo: Arc::new(InMemoryMemoryEventRepository::new()),
             memory_archive_repo: Arc::new(SqliteMemoryArchiveRepository::new(
@@ -2049,6 +2116,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
@@ -2103,6 +2172,7 @@ impl AppState {
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
             ui_feature_flag_overrides_repo: Arc::new(MemoryUiFeatureFlagOverridesRepository::new()),
+            agent_capability_gate: Arc::new(AgentCapabilityGate::default()),
             notification_settings_repo: Arc::new(MemoryNotificationSettingsRepository::new()),
             window_focus_state: Arc::new(WindowFocusState::default()),
             notification_service_cache: Arc::new(OnceLock::new()),
@@ -2119,6 +2189,7 @@ impl AppState {
             plan_approval_repo: Arc::new(MemoryPlanArtifactApprovalRepository::new()),
             delegated_session_repo: Arc::new(MemoryDelegatedSessionRepository::new()),
             agent_task_repo: Arc::new(MemoryAgentTaskRepository::new()),
+            agent_workflow_repo: Self::memory_agent_workflow_repo(),
             agent_conversation_issue_repo: Arc::new(MemoryAgentConversationIssueRepository::new()),
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
@@ -2201,6 +2272,8 @@ impl AppState {
             webhook_registration_repo: Arc::new(MemoryWebhookRegistrationRepository::new()),
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_locks: Arc::new(dashmap::DashMap::new()),
+            plan_verification_admissions: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
             startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 

@@ -41,7 +41,7 @@ export const AUTOMATION_SETUP_TOOLS = [
                 },
                 plan_deep_verification: {
                     type: "boolean",
-                    description: "Enable deeper plan verification before an approved plan proceeds.",
+                    description: "Enable deeper plan verification before an approved plan proceeds. Required for the ideation task-graph bridge.",
                 },
                 goal_prompt: {
                     type: "string",
@@ -49,7 +49,7 @@ export const AUTOMATION_SETUP_TOOLS = [
                 },
                 first_run_prompt: {
                     type: "string",
-                    description: "Self-contained prompt for run 1 instructing the run agent to make a scoped PR and publish it. Required before finalize.",
+                    description: "Self-contained prompt for run 1 instructing the agent to produce the configured PR or verified task-graph deliverable. Required before finalize.",
                 },
                 provider_harness: {
                     type: "string",
@@ -65,7 +65,8 @@ export const AUTOMATION_SETUP_TOOLS = [
                 },
                 run_mode: {
                     type: "string",
-                    description: "Run mode for the automation. Use 'edit' for pr_merged automations.",
+                    enum: ["edit", "ideation"],
+                    description: "Run deliverable: 'edit' publishes a PR; 'ideation' turns a verified plan into proposals, task dependencies, and the local task pipeline.",
                 },
                 base_ref_kind: {
                     type: "string",
@@ -89,7 +90,8 @@ export const AUTOMATION_SETUP_TOOLS = [
                 },
                 completion_signal: {
                     type: "string",
-                    description: "Completion signal for the automation (e.g. 'pr_merged').",
+                    enum: ["pr_merged", "agent_completed", "ideation_finalized"],
+                    description: "Completion signal. Use 'pr_merged' for edit runs and 'ideation_finalized' for the ideation task-graph bridge.",
                 },
                 setup_analysis_summary: {
                     type: "string",
@@ -104,6 +106,17 @@ export const AUTOMATION_SETUP_TOOLS = [
                     description: "Link an existing Specification artifact (e.g. an ideation/handoff spec) as this automation's spec. The artifact must already exist. Prefer spec_content when authoring new spec markdown.",
                 },
             },
+            required: [],
+        },
+    },
+    {
+        name: "verify_automation_decomposition",
+        description: "Run the independent decomposition-quality verifier for the trusted auto-finalize automation bound to this setup conversation. " +
+            "A verified current decomposition is finalized automatically; a revise verdict leaves the draft editable and returns actionable findings. " +
+            "The backend resolves ownership from the caller conversation; do not pass an automation id.",
+        inputSchema: {
+            type: "object",
+            properties: {},
             required: [],
         },
     },
@@ -153,6 +166,8 @@ export async function callAutomationSetupTool(name, callTauri, args, runtimeCont
             return callTauri("get_automation", {}, { headers });
         case "update_automation":
             return callTauri("update_automation", updateAutomationPayload(args), { headers });
+        case "verify_automation_decomposition":
+            return callTauri("verify_automation_decomposition", {}, { headers });
         case "finalize_automation":
             return callTauri("finalize_automation", {}, { headers });
         default:

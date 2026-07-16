@@ -310,6 +310,22 @@ describe("useAgentsActiveComposerControls", () => {
     expect(result.current.updatingTeamConversationId).toBeNull();
   });
 
+  it("passes the selected Codex model when enabling Ultra", async () => {
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(controlsArgs()),
+    );
+
+    await act(async () => {
+      await result.current.handleActiveCapabilityChange("codex_native_ultra");
+    });
+
+    expect(updateCoordinationModeMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      coordinationMode: "codex_native_ultra",
+      modelOverride: "gpt-5.5",
+    });
+  });
+
   it("does not update Team mode when the requested state already matches", async () => {
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(

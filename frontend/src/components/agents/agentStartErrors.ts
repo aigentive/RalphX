@@ -1,9 +1,13 @@
 import type {
+  AutomationAuthoringMode,
+} from "@/api/automations";
+import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  CapabilityIntent,
   TeamIntent,
 } from "@/api/chat";
 import type {
@@ -24,8 +28,10 @@ export interface AgentStartConversationRetryInputSource {
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode | undefined;
   base: AgentConversationBaseSelection | null;
   codexFastMode?: boolean | null | undefined;
+  capabilityIntent?: CapabilityIntent | null | undefined;
   teamIntent?: TeamIntent | null | undefined;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -58,11 +64,17 @@ export function buildAgentStartConversationRetryInput(
     mode: input.mode,
     base: input.base,
   };
+  if (input.automationAuthoringMode !== undefined) {
+    retryInput.automationAuthoringMode = input.automationAuthoringMode;
+  }
   if (input.runtimeProviderContext !== undefined) {
     retryInput.runtimeProviderContext = input.runtimeProviderContext;
   }
   if (input.codexFastMode !== undefined) {
     retryInput.codexFastMode = input.codexFastMode;
+  }
+  if (input.capabilityIntent !== undefined) {
+    retryInput.capabilityIntent = input.capabilityIntent;
   }
   if (input.teamIntent !== undefined) {
     retryInput.teamIntent = input.teamIntent;

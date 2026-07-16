@@ -1,3 +1,5 @@
+> **Maintainer note:** This file optimizes for LLM context efficiency. Rules: (1) Tables > prose (2) One example max per concept (3) No redundant explanations (4) Use symbols: → = leads to, | = or, ❌/✅ = wrong/right (5) Before adding content, ask: "Can this be a single line?" If yes, make it one line.
+
 # frontend/src/CLAUDE.md — Frontend
 
 Quality standards: @../../.claude/rules/code-quality-standards.md
@@ -95,13 +97,8 @@ NO purple gradients | NO Inter font | Warm orange #ff6b35
 
 ## Code Quality
 
-### Multi-Stream Workflow
-Quality work is now split into dedicated streams. See `../../.claude/rules/stream-*.md`:
-- **features**: PRD tasks + P0 gap fixes
-- **refactor**: P1 large file splits (>500 LOC)
-- **polish**: P2/P3 cleanup, lint, type fixes
-
-**Targets:** `any` types, naming, error handling, dead code, repeated logic, lint
+### Quality Scope
+Keep work inside the requested feature/refactor/polish scope; file limits, migration rules, and quality targets live in `../../.claude/rules/code-quality-standards.md`.
 
 ### Zero Warnings Policy (NON-NEGOTIABLE)
 Fix ALL lint warnings and test failures before completing work — including pre-existing ones. ❌ "It's pre-existing" is not an excuse. Run `npm run lint` and `npm run typecheck` and fix everything.

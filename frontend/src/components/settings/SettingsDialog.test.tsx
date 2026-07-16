@@ -87,6 +87,12 @@ vi.mock("./PersonasSection", () => ({
   PersonasSection: () => <div data-testid="personas-section">Personas</div>,
 }));
 
+vi.mock("./CapabilitiesSection", () => ({
+  CapabilitiesSection: () => (
+    <div data-testid="capabilities-section">Capabilities</div>
+  ),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -190,6 +196,17 @@ describe("SettingsDialog", () => {
 
   it("keeps Personas available through the deferred settings-section loader", async () => {
     await expect(sectionModuleLoaders.personas()).resolves.toHaveProperty("PersonasSection");
+  });
+
+  it("registers and defers the Capabilities settings section", async () => {
+    expect(SETTINGS_SECTIONS).toContainEqual({
+      id: "capabilities",
+      groupId: "general",
+      label: "Capabilities",
+    });
+    await expect(sectionModuleLoaders.capabilities()).resolves.toHaveProperty(
+      "CapabilitiesSection",
+    );
   });
 
   describe("Section initialization via modalContext deep-link", () => {

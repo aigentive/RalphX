@@ -28,6 +28,7 @@ import { isPersonaUnavailableError } from "@/lib/personaErrors";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
   ComposerArtifactReference,
+  CapabilityIntent,
   ComposerIntegrationReference,
   ComposerProjectReference,
   SendAgentMessageOptions,
@@ -62,6 +63,7 @@ interface UseChatActionsProps {
       composerArtifactReferences?: ComposerArtifactReference[];
       composerProjectReferences?: ComposerProjectReference[];
       composerIntegrationReferences?: ComposerIntegrationReference[];
+      capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
     }) => Promise<SendAgentMessageResult>;
   };
@@ -141,6 +143,7 @@ export function useChatActions({
         projectReferences?: ComposerProjectReference[];
         integrationReferences?: ComposerIntegrationReference[];
         artifactReferences?: ComposerArtifactReference[];
+        capabilityIntent?: CapabilityIntent | null;
         teamIntent?: TeamIntent | null;
       },
     ) => {
@@ -192,8 +195,12 @@ export function useChatActions({
               composerOptions?.projectReferences?.length ||
               composerOptions?.integrationReferences?.length ||
               composerOptions?.artifactReferences?.length ||
+              composerOptions?.capabilityIntent ||
               composerOptions?.teamIntent
                 ? {
+                    ...(composerOptions?.capabilityIntent
+                      ? { capabilityIntent: composerOptions.capabilityIntent }
+                      : {}),
                     ...(composerOptions?.teamIntent
                       ? { teamIntent: composerOptions.teamIntent }
                       : {}),
@@ -254,6 +261,7 @@ export function useChatActions({
             composerArtifactReferences?: ComposerArtifactReference[];
             composerProjectReferences?: ComposerProjectReference[];
             composerIntegrationReferences?: ComposerIntegrationReference[];
+            capabilityIntent?: CapabilityIntent | null;
             teamIntent?: TeamIntent | null;
           } = { content };
           if (attachmentIds !== undefined) {
@@ -272,6 +280,9 @@ export function useChatActions({
           if (composerOptions?.artifactReferences?.length) {
             params.composerArtifactReferences =
               composerOptions.artifactReferences;
+          }
+          if (composerOptions?.capabilityIntent) {
+            params.capabilityIntent = composerOptions.capabilityIntent;
           }
           if (composerOptions?.teamIntent) {
             params.teamIntent = composerOptions.teamIntent;

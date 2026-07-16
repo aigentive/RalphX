@@ -567,7 +567,7 @@ vi.mock("./AgentComposerSurface", () => ({
     model,
     effort,
     mode,
-    team,
+    capability,
     showHelperText,
     isReadOnly,
     sendDisabledReason,
@@ -595,11 +595,17 @@ vi.mock("./AgentComposerSurface", () => ({
         disabledReason?: string;
       }>;
     };
-    team?: {
-      enabled: boolean;
+    capability?: {
+      value: string;
       disabled?: boolean;
       pending?: boolean;
-      onEnabledChange: (enabled: boolean) => void | Promise<unknown>;
+      testId?: string;
+      onValueChange: (value: string) => void | Promise<unknown>;
+      options: Array<{
+        id: string;
+        label: string;
+        disabled?: boolean;
+      }>;
     };
     showHelperText?: boolean;
     isReadOnly?: boolean;
@@ -651,16 +657,27 @@ vi.mock("./AgentComposerSurface", () => ({
           })}
         </div>
       )}
-      {team && (
-        <button
-          type="button"
-          data-testid="agents-conversation-team-control"
-          disabled={team.disabled || team.pending}
-          aria-pressed={team.enabled}
-          onClick={() => void team.onEnabledChange(!team.enabled)}
-        >
-          Team
-        </button>
+      {capability && (
+        <div>
+          <button
+            type="button"
+            data-testid={capability.testId ?? "agent-composer-capability"}
+            disabled={capability.disabled || capability.pending}
+          >
+            {capability.value}
+          </button>
+          {capability.options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              data-testid={`${capability.testId ?? "agent-composer-capability"}-${option.id}`}
+              disabled={option.disabled}
+              onClick={() => void capability.onValueChange(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
       )}
       {personaControl}
       <button
@@ -951,7 +968,7 @@ function renderPanel(
     },
     onActiveConversationModeChange: vi.fn(),
     onActiveConversationModeMenuOpen: vi.fn(),
-    onActiveTeamEnabledChange: vi.fn(),
+    onActiveCapabilityChange: vi.fn(),
     onActiveEffortChange: vi.fn(),
     onActiveModelChange: vi.fn(),
     onActiveProviderChange: vi.fn(),
@@ -2573,21 +2590,27 @@ describe("AgentsActiveConversationPanel", () => {
     expect(onActiveConversationModeChange).toHaveBeenCalledWith("edit");
   });
 
-  it("lets the workspace composer enable Team for the active conversation", async () => {
+  it("lets a disabled Team conversation switch back to Defaults", async () => {
     const user = userEvent.setup();
-    const onActiveTeamEnabledChange = vi.fn();
+    const onActiveCapabilityChange = vi.fn();
 
     renderPanel({
-      activeConversation: { ...projectConversation(), coordinationMode: "solo" },
-      onActiveTeamEnabledChange,
+      activeConversation: {
+        ...projectConversation(),
+        coordinationMode: "rx_native_team",
+      },
+      onActiveCapabilityChange,
     });
 
-    const teamSwitch = screen.getByTestId("agents-conversation-team-control");
-    expect(teamSwitch).toHaveTextContent("Team");
+    expect(
+      screen.getByTestId("agents-conversation-capability-blocked"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("agents-conversation-capability"));
+    await user.click(
+      screen.getByTestId("agents-conversation-capability-solo"),
+    );
 
-    await user.click(teamSwitch);
-
-    expect(onActiveTeamEnabledChange).toHaveBeenCalledWith(true);
+    expect(onActiveCapabilityChange).toHaveBeenCalledWith("solo");
   });
 
   it("keeps the mode picker enabled while the agent is waiting for input", async () => {
@@ -2788,12 +2811,9 @@ describe("AgentsActiveConversationPanel", () => {
     await user.click(actions.getByRole("button", { name: /Verify Plan/i }));
 
     await waitFor(() =>
-      expect(confirmVerificationMock).toHaveBeenCalledWith(
-        "planning-session-1",
-        ["risk"],
-      ),
+      expect(confirmVerificationMock).toHaveBeenCalledWith("planning-session-1"),
     );
-    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
+    expect(onSelectArtifact).not.toHaveBeenCalledWith("verification");
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
@@ -3555,12 +3575,9 @@ describe("AgentsActiveConversationPanel", () => {
     await user.click(within(row).getByRole("button", { name: /Verify Plan/i }));
 
     await waitFor(() =>
-      expect(confirmVerificationMock).toHaveBeenCalledWith(
-        "planning-session-1",
-        ["risk"],
-      ),
+      expect(confirmVerificationMock).toHaveBeenCalledWith("planning-session-1"),
     );
-    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
+    expect(onSelectArtifact).not.toHaveBeenCalledWith("verification");
   });
 
   it("requires confirmation before running the typed fork command", async () => {

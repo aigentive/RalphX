@@ -14,6 +14,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   models: () => import("./AgentModelsSection"),
   "global-execution": () => import("./sections/GlobalExecutionSection"),
   personas: () => import("./PersonasSection"),
+  capabilities: () => import("./CapabilitiesSection"),
   "workspace-review": () => import("./sections/WorkspaceReviewSection"),
   review: () => import("./sections/ReviewPolicySection"),
   autonomy: () => import("./sections/AutonomyPolicySection"),

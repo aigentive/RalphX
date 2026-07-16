@@ -135,7 +135,7 @@ describe("useAgentsWorkspaceModel", () => {
     });
   });
 
-  it("preserves selected Codex GPT-5.6 workspace runtime before alias-aware send checks", () => {
+  it("normalizes remembered Codex Ultra effort before alias-aware send checks", () => {
     const { result } = renderHook(
       () =>
         useAgentsWorkspaceModel({
@@ -161,7 +161,7 @@ describe("useAgentsWorkspaceModel", () => {
     expect(result.current.normalizedActiveRuntime).toEqual({
       provider: "codex",
       modelId: "gpt-5.6-terra",
-      effort: "ultra",
+      effort: "max",
     });
   });
 });

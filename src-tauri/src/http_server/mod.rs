@@ -204,23 +204,7 @@ pub async fn start_http_server(
         // Plan verification tools (ralphx-ideation + worker agents)
         .route(
             "/api/ideation/sessions/:id/verification",
-            post(post_verification_status),
-        )
-        .route(
-            "/api/ideation/sessions/:id/verification",
             get(get_plan_verification),
-        )
-        .route(
-            "/api/ideation/sessions/:id/verification/infra-failure",
-            post(mark_verification_infra_failure),
-        )
-        .route(
-            "/api/ideation/sessions/:id/revert-and-skip",
-            post(revert_and_skip),
-        )
-        .route(
-            "/api/ideation/sessions/:id/stop-verification",
-            post(stop_verification),
         )
         // Acceptance gate tools (user confirmation for require_accept_for_finalize)
         .route(
@@ -241,24 +225,11 @@ pub async fn start_http_server(
         )
         // Verification confirmation endpoints (UI-session gate)
         .route("/api/verification/confirm", post(confirm_verification))
-        .route("/api/verification/dismiss", post(dismiss_verification))
         .route(
-            "/api/verification/auto-accept",
-            post(set_auto_accept_verification),
+            "/api/plan-verification/complete",
+            post(complete_plan_verification_http),
         )
-        .route(
-            "/api/verification/specialists",
-            get(get_verification_specialists),
-        )
-        .route(
-            "/api/verification/confirmation-status/:session_id",
-            get(get_confirmation_status),
-        )
-        .route(
-            "/api/verification/pending-confirmations",
-            get(get_pending_verification_confirmations),
-        )
-        // Child session tools (ralphx-ideation + ralphx-ideation-team-lead + ralphx-plan-verifier agents)
+        // Child session tools (ralphx-ideation + ralphx-ideation-team-lead agents)
         .route(
             "/api/ideation/sessions/:id/child-status",
             get(get_child_session_status_handler),
@@ -274,6 +245,38 @@ pub async fn start_http_server(
         )
         .route("/api/coordination/delegate/wait", post(wait_delegate))
         .route("/api/coordination/delegate/cancel", post(cancel_delegate))
+        .route(
+            "/api/agent_workflows/scripts/create",
+            post(create_agent_workflow_script),
+        )
+        .route(
+            "/api/agent_workflows/scripts/approve",
+            post(approve_agent_workflow_script),
+        )
+        .route(
+            "/api/agent_workflows/runs/start",
+            post(start_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/get",
+            post(get_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/latest",
+            post(get_latest_agent_workflow_run_for_script),
+        )
+        .route(
+            "/api/agent_workflows/runs/pause",
+            post(pause_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/resume",
+            post(resume_agent_workflow_run),
+        )
+        .route(
+            "/api/agent_workflows/runs/cancel",
+            post(cancel_agent_workflow_run),
+        )
         // Native agent task tools (lightweight todo/dependency tracking)
         .route("/api/agent_tasks/create", post(create_agent_task))
         .route("/api/agent_tasks/get", post(get_agent_task))
@@ -289,6 +292,10 @@ pub async fn start_http_server(
         // Automation setup-agent tools; caller identity is header-derived.
         .route("/api/get_automation", post(get_automation))
         .route("/api/update_automation", post(update_automation))
+        .route(
+            "/api/verify_automation_decomposition",
+            post(verify_automation_decomposition),
+        )
         .route("/api/finalize_automation", post(finalize_automation))
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))
@@ -669,15 +676,7 @@ pub async fn start_http_server(
         .route("/api/team/plan/reject", post(reject_team_plan))
         .route("/api/team/spawn", post(request_teammate_spawn))
         .route("/api/team/artifact", post(create_team_artifact))
-        .route(
-            "/api/team/verification_finding",
-            post(publish_verification_finding),
-        )
         .route("/api/team/artifacts/:session_id", get(get_team_artifacts))
-        .route(
-            "/api/team/verification-findings/:session_id",
-            get(get_verification_findings),
-        )
         .route(
             "/api/team/session_state/:session_id",
             get(get_team_session_state),
@@ -692,6 +691,17 @@ pub async fn start_http_server(
                 .allow_methods(Any)
                 .allow_headers(Any),
         );
+
+    let recovery_state = state.clone();
+    tokio::spawn(async move {
+        match recover_agent_workflow_runs(&recovery_state).await {
+            Ok(count) if count > 0 => {
+                tracing::info!(count, "Recovered Scripted Agent workflow runs")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::error!(%error, "Workflow startup recovery failed closed"),
+        }
+    });
 
     let app = Router::new()
         .merge(internal_routes)

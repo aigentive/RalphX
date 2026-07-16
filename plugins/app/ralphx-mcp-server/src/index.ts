@@ -59,10 +59,10 @@ import {
 } from "./question-handler.js";
 import { handleRequestTeamPlan, RequestTeamPlanArgs } from "./team-plan-handler.js";
 import {
+  buildArtifactMutationTransportHeaders,
   hydrateRalphxRuntimeEnvFromCli,
   parseCliOptionFromArgs,
 } from "./runtime-context.js";
-import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import {
   callAgentWorkspaceTool,
@@ -197,32 +197,6 @@ const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
-
-function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
-  if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
-    return undefined;
-  }
-
-  return {
-    "X-RalphX-Caller-Session-Id": RALPHX_CONTEXT_ID,
-  };
-}
-
-const {
-  getPlanVerificationForTool,
-  reportVerificationRoundForTool,
-  completePlanVerificationForTool,
-  runVerificationEnrichment,
-  runVerificationRound,
-  resolveVerificationFindingSessionId,
-  resolveContextSessionId,
-} = createVerificationRuntime({
-  callTauri,
-  callTauriGet,
-  agentType: AGENT_TYPE,
-  contextType: RALPHX_CONTEXT_TYPE,
-  contextId: RALPHX_CONTEXT_ID,
-});
 
 /**
  * Validate that a tool call's task_id parameter matches the assigned task
@@ -653,46 +627,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const artifactMutationArgs = { ...((args as Record<string, unknown>) ?? {}) };
       delete artifactMutationArgs.caller_session_id;
       result = await callTauri(name, artifactMutationArgs, {
-        headers: buildArtifactMutationTransportHeaders(),
+        headers: buildArtifactMutationTransportHeaders(runtimeContext),
       });
     } else if (name === "get_plan_verification") {
-      result = await getPlanVerificationForTool(args as { session_id?: string });
-    } else if (name === "report_verification_round") {
-      result = await reportVerificationRoundForTool(args as {
-        session_id?: string;
-        round: number;
-        generation: number;
-      });
-    } else if (name === "run_verification_enrichment") {
-      result = await runVerificationEnrichment(args as {
-        session_id?: string;
-        selected_specialists?: string[];
-      });
-    } else if (name === "run_verification_round") {
-      result = await runVerificationRound(args as {
-        session_id?: string;
-        round: number;
-        selected_specialists?: string[];
-      });
+      const { session_id } = args as { session_id?: string };
+      const resolvedSessionId = session_id ||
+        (RALPHX_CONTEXT_TYPE === "ideation" ? RALPHX_CONTEXT_ID : undefined);
+      if (!resolvedSessionId) {
+        throw new Error("get_plan_verification requires session_id outside an ideation context.");
+      }
+      result = await callTauriGet(`ideation/sessions/${resolvedSessionId}/verification`);
     } else if (name === "complete_plan_verification") {
-      result = await completePlanVerificationForTool(args as {
-        session_id?: string;
-        status: string;
-        round?: number;
-        convergence_reason?: string;
-        generation: number;
+      result = await callTauri("plan-verification/complete", {}, {
+        headers: {
+          "x-ralphx-agent-run-id": RALPHX_AGENT_RUN_ID ?? "",
+          "x-ralphx-conversation-id": RALPHX_CONVERSATION_ID ?? "",
+        },
       });
-    } else if (name === "revert_and_skip") {
-      // POST /api/ideation/sessions/:id/revert-and-skip
-      const { session_id, plan_version_to_restore } = args as {
-        session_id: string;
-        plan_version_to_restore: string;
-      };
-      result = await callTauri(`ideation/sessions/${session_id}/revert-and-skip`, { plan_version_to_restore });
-    } else if (name === "stop_verification") {
-      // POST /api/ideation/sessions/:id/stop-verification
-      const { session_id } = args as { session_id: string };
-      result = await callTauri(`ideation/sessions/${session_id}/stop-verification`, {});
     } else if (name === "get_task_steps") {
       // GET /api/task_steps/:task_id
       const { task_id } = args as { task_id: string };
@@ -1020,6 +971,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // GET /api/parent_session_context/:session_id
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`parent_session_context/${session_id}`);
+    } else if (name === "create_agent_workflow_script") {
+      if (!RALPHX_CONVERSATION_ID || RALPHX_CONTEXT_TYPE !== "project" || !RALPHX_CONTEXT_ID) {
+        throw new Error("Agent Workflow authoring requires a project Agent conversation context");
+      }
+      result = await callTauri("agent_workflows/scripts/create", {
+        ...(args as Record<string, unknown>),
+        conversation_id: RALPHX_CONVERSATION_ID,
+        project_id: RALPHX_CONTEXT_ID,
+      });
+    } else if (name === "start_agent_workflow_run") {
+      result = await callTauri("agent_workflows/runs/start", {
+        ...(args as Record<string, unknown>),
+        caller_agent_name: AGENT_TYPE,
+        caller_agent_profile: RALPHX_AGENT_PROFILE,
+      });
+    } else if (["get_agent_workflow_run", "pause_agent_workflow_run", "resume_agent_workflow_run", "cancel_agent_workflow_run"].includes(name)) {
+      const action = name.split("_agent_workflow_run")[0];
+      result = await callTauri(`agent_workflows/runs/${action}`, {
+        ...(args as Record<string, unknown>),
+        ...(action === "resume"
+          ? {
+              caller_agent_name: AGENT_TYPE,
+              caller_agent_profile: RALPHX_AGENT_PROFILE,
+            }
+          : {}),
+      });
     } else if (name === "delegate_start") {
       const delegateArgs = args as Record<string, unknown>;
       const explicitParentConversationId =
@@ -1100,39 +1077,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content,
         artifact_type,
         related_artifact_id,
-      });
-    } else if (name === "publish_verification_finding") {
-      const {
-        session_id,
-        critic,
-        round,
-        status,
-        coverage,
-        summary,
-        gaps,
-        title_suffix,
-      } = args as {
-        session_id?: string;
-        critic: string;
-        round: number;
-        status: string;
-        coverage?: string;
-        summary: string;
-        gaps: unknown[];
-        title_suffix?: string;
-      };
-      result = await callTauri("team/verification_finding", {
-        session_id: await resolveVerificationFindingSessionId(
-          session_id,
-          "publish_verification_finding"
-        ),
-        critic,
-        round,
-        status,
-        coverage,
-        summary,
-        gaps,
-        title_suffix,
       });
     } else if (name === "get_team_artifacts") {
       // GET /api/team/artifacts/:session_id
@@ -1329,10 +1273,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error("RALPHX_PROJECT_ID is not set — cannot query pending confirmations");
       }
       result = await callTauriGet(`ideation/pending-confirmations?project_id=${encodeURIComponent(projectId)}`);
-    } else if (name === "get_verification_confirmation_status") {
-      // GET /api/verification/confirmation-status/{session_id}
-      const { session_id } = args as { session_id: string };
-      result = await callTauriGet(`verification/confirmation-status/${encodeURIComponent(session_id)}`);
     } else if (name === "delete_task_proposal") {
       // Alias for archive_task_proposal — no /api/delete_task_proposal route exists in backend
       const { proposal_id } = args as { proposal_id: string };

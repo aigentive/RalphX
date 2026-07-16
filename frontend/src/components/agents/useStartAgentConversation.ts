@@ -13,9 +13,11 @@ import {
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
+  type CapabilityIntent,
   type TeamIntent,
 } from "@/api/chat";
 import { automationsApi } from "@/api/automations";
+import type { AutomationAuthoringMode } from "@/api/automations";
 import { ticketingApi, type TicketRef } from "@/api/ticketing";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
@@ -146,10 +148,12 @@ export function useStartAgentConversation({
       runtime,
       runtimeProviderContext,
       mode,
+      automationAuthoringMode,
       base,
       files,
       codexFastMode,
       personaId,
+      capabilityIntent,
       teamIntent,
       composerArtifactReferences,
       composerIntegrationReferences,
@@ -160,10 +164,12 @@ export function useStartAgentConversation({
       runtime: AgentRuntimeSelection;
       runtimeProviderContext?: AgentRuntimeProviderContext | undefined;
       mode: AgentConversationWorkspaceMode;
+      automationAuthoringMode?: AutomationAuthoringMode | undefined;
       base: AgentConversationBaseSelection | null;
       files: File[];
       codexFastMode?: boolean | null;
       personaId?: string | null;
+      capabilityIntent?: CapabilityIntent | null;
       teamIntent?: TeamIntent | null;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -302,7 +308,7 @@ export function useStartAgentConversation({
         artifactReferences: composerArtifactReferences,
       });
       const optimisticCoordinationMode =
-        teamIntent?.coordinationMode ?? "solo";
+        capabilityIntent?.coordinationMode ?? teamIntent?.coordinationMode ?? "solo";
       const initialConversation: ChatConversation = {
         id: createOptimisticConversationId(),
         contextType: "project",
@@ -351,6 +357,9 @@ export function useStartAgentConversation({
             ? await automationsApi.createDraft({
                 projectId: targetProjectId,
                 name: automationDraftNameFromContent(content),
+                ...(automationAuthoringMode
+                  ? { authoringMode: automationAuthoringMode }
+                  : {}),
               })
             : null;
         const setupConversationId = automationDraft?.setupConversationId ?? null;
@@ -464,6 +473,7 @@ export function useStartAgentConversation({
             : {}),
           ...(personaId ? { personaId } : {}),
           mode,
+          ...(capabilityIntent ? { capabilityIntent } : {}),
           ...(teamIntent ? { teamIntent } : {}),
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
@@ -585,6 +595,7 @@ export function useStartAgentConversation({
               mode,
               base,
               codexFastMode,
+              capabilityIntent,
               teamIntent,
               composerArtifactReferences,
               composerIntegrationReferences,
@@ -681,6 +692,7 @@ function buildStartArtifactState(
     isOpen: integrationTab !== null,
     activeTab: integrationTab ?? "plan",
     taskMode: DEFAULT_AGENT_ARTIFACT_UI_STATE.taskMode,
+    hiddenTabs: [],
   };
 }
 

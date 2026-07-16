@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::domain::agents::AgentHarnessKind;
-use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationWorkspace, Artifact, ArtifactContent, ArtifactId, ArtifactType,
     ChatAttachment, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
-    ChatMessageId, DelegatedSessionId, GitMode, IdeationSessionId, MessageRole, ProjectId, TaskId,
+    ChatMessageId, CoordinationMode, DelegatedSessionId, GitMode, IdeationSessionId, MessageRole,
+    ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -246,6 +246,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     plugin_dir: &'a Path,
     context_type: ChatContextType,
     context_id: &'a str,
+    coordination_mode: CoordinationMode,
     message: &'a str,
     pub persona: Option<ResolvedPersona>,
     agent_name_override: Option<&'a str>,
@@ -480,6 +481,7 @@ impl ResolvedChatHarnessCli {
                     request.plugin_dir,
                     request.context_type,
                     request.context_id,
+                    request.coordination_mode,
                     request.message,
                     request.agent_name_override,
                     request.agent_profile,
@@ -540,6 +542,7 @@ impl ResolvedChatHarnessCli {
                         &capabilities,
                         request.context_type,
                         request.context_id,
+                        request.coordination_mode,
                         current_conversation_id,
                         None,
                         request.message,
@@ -625,6 +628,7 @@ impl ResolvedChatHarnessCli {
                             &capabilities,
                             request.context_type,
                             request.context_id,
+                            request.conversation.coordination_mode,
                             request.conversation_id.as_deref(),
                             request.agent_run_id,
                             request.user_message,
@@ -2145,10 +2149,29 @@ fn build_codex_cli_config(
     working_directory: &Path,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
     config_overrides: Vec<String>,
-) -> CodexExecCliConfig {
-    CodexExecCliConfig {
+    capabilities: &CodexCliCapabilities,
+    coordination_mode: CoordinationMode,
+) -> Result<CodexExecCliConfig, String> {
+    let ultra_mode = coordination_mode == CoordinationMode::CodexNativeUltra;
+    if ultra_mode && !capabilities.supports_ultra_for_model(&resolved_spawn_settings.model) {
+        return Err(format!(
+            "Codex Ultra is unavailable for model {} in the resolved Codex CLI",
+            resolved_spawn_settings.model
+        ));
+    }
+    let reasoning_effort = resolved_spawn_settings
+        .logical_effort
+        .map(|effort| match effort {
+            crate::domain::agents::LogicalEffort::Ultra => {
+                crate::domain::agents::LogicalEffort::Max
+            }
+            ordinary => ordinary,
+        });
+
+    Ok(CodexExecCliConfig {
         model: Some(resolved_spawn_settings.model.clone()),
-        reasoning_effort: resolved_spawn_settings.logical_effort,
+        reasoning_effort,
+        ultra_mode,
         approval_policy: resolved_spawn_settings.approval_policy.clone(),
         sandbox_mode: resolved_spawn_settings.sandbox_mode.clone(),
         service_tier: resolved_spawn_settings.service_tier.clone(),
@@ -2158,12 +2181,13 @@ fn build_codex_cli_config(
         skip_git_repo_check: false,
         json_output: true,
         search: false,
-    }
+    })
 }
 
 fn build_mcp_runtime_context(
     context_type: ChatContextType,
     context_id: &str,
+    coordination_mode: Option<CoordinationMode>,
     conversation_id: Option<String>,
     agent_run_id: Option<&str>,
     working_directory: &Path,
@@ -2185,6 +2209,7 @@ fn build_mcp_runtime_context(
         context_type: Some(context_type.to_string()),
         context_id: Some(context_id.to_string()),
         conversation_id,
+        coordination_mode: coordination_mode.map(|mode| mode.to_string()),
         agent_run_id: agent_run_id.map(str::to_string),
         task_id,
         project_id: project_id.map(str::to_string),
@@ -2193,6 +2218,17 @@ fn build_mcp_runtime_context(
         lead_session_id: lead_session_id.map(str::to_string),
         parent_conversation_id,
         task_state: task_runtime_state_for_context(context_type, entity_status).map(str::to_string),
+    }
+}
+
+const WORKFLOW_INTERNAL_SKILL_DIRECTIVE: &str =
+    "<!-- ralphx_internal_skill=ralphx-agent-workflow-orchestrator -->";
+
+fn capability_scoped_prompt(prompt: String, coordination_mode: CoordinationMode) -> String {
+    if coordination_mode == CoordinationMode::RxNativeWorkflow {
+        format!("{prompt}\n\n{WORKFLOW_INTERNAL_SKILL_DIRECTIVE}")
+    } else {
+        prompt
     }
 }
 
@@ -2464,9 +2500,11 @@ async fn build_command_from_resolved_settings(
         }
     };
 
+    let prompt = capability_scoped_prompt(prompt, conversation.coordination_mode);
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
+        Some(conversation.coordination_mode),
         Some(conversation.id.as_str()),
         None,
         working_directory,
@@ -2515,6 +2553,7 @@ async fn build_recovery_command_from_resolved_settings(
     persona_block: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
+    coordination_mode: CoordinationMode,
     message: &str,
     working_directory: &Path,
     entity_status: Option<&str>,
@@ -2552,15 +2591,19 @@ async fn build_recovery_command_from_resolved_settings(
         task_runtime_context.as_deref(),
     )
     .await?;
-    let prompt = format!(
-        "{}{}",
-        prompt,
-        attachment_context_override.unwrap_or_default()
+    let prompt = capability_scoped_prompt(
+        format!(
+            "{}{}",
+            prompt,
+            attachment_context_override.unwrap_or_default()
+        ),
+        coordination_mode,
     );
 
     let mcp_runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
+        Some(coordination_mode),
         None,
         None,
         working_directory,
@@ -2719,7 +2762,10 @@ pub async fn build_codex_command(
         persona_injected,
         persona_injection_skipped_reason,
     } = compose_codex_prompt_for_profile_with_outcome(
-        &format!("{}{}", initial_prompt, attachment_context),
+        &capability_scoped_prompt(
+            format!("{}{}", initial_prompt, attachment_context),
+            conversation.coordination_mode,
+        ),
         Some(plugin_dir),
         Some(agent_name),
         agent_profile,
@@ -2740,6 +2786,7 @@ pub async fn build_codex_command(
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
+        Some(conversation.coordination_mode),
         Some(conversation.id.as_str()),
         agent_run_id,
         working_directory,
@@ -2756,8 +2803,13 @@ pub async fn build_codex_command(
         is_external_mcp,
         Some(&runtime_context),
     )?;
-    let codex_config =
-        build_codex_cli_config(working_directory, resolved_spawn_settings, config_overrides);
+    let codex_config = build_codex_cli_config(
+        working_directory,
+        resolved_spawn_settings,
+        config_overrides,
+        capabilities,
+        conversation.coordination_mode,
+    )?;
     tracing::info!(
         context_type = %conversation.context_type,
         context_id = %conversation.context_id,
@@ -3305,13 +3357,17 @@ pub async fn build_interactive_command(
             .await?
         }
     };
-    let prompt = format!("{}{}", initial_prompt, attachment_context);
+    let prompt = capability_scoped_prompt(
+        format!("{}{}", initial_prompt, attachment_context),
+        conversation.coordination_mode,
+    );
     log_claude_launch_plan_phase(conversation, "build_initial_prompt", prompt_started);
 
     let mcp_context_started = Instant::now();
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
+        Some(conversation.coordination_mode),
         Some(conversation.id.as_str()),
         agent_run_id,
         working_directory,
@@ -3405,16 +3461,12 @@ pub async fn get_entity_status_for_resume(
                 None
             }
         }
-        // Ideation context: check purpose first (Verification sessions → ralphx-plan-verifier agent)
-        // then fall back to status for accepted/readonly routing
+        // Ideation context: route from the session status. Legacy verification children
+        // no longer select a dedicated agent.
         ChatContextType::Ideation => {
             let session_id = IdeationSessionId::from_string(context_id);
             if let Ok(Some(session)) = ideation_session_repo.get_by_id(&session_id).await {
-                if session.session_purpose == SessionPurpose::Verification {
-                    Some("verification".to_string())
-                } else {
-                    Some(session.status.to_string())
-                }
+                Some(session.status.to_string())
             } else {
                 None
             }
@@ -3445,6 +3497,7 @@ pub async fn build_resume_command(
     plugin_dir: &Path,
     context_type: ChatContextType,
     context_id: &str,
+    coordination_mode: CoordinationMode,
     message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
@@ -3502,6 +3555,7 @@ pub async fn build_resume_command(
         persona_block,
         context_type,
         context_id,
+        coordination_mode,
         message,
         working_directory,
         session_id,
@@ -3528,6 +3582,7 @@ async fn build_resume_command_from_resolved_settings(
     persona_block: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
+    coordination_mode: CoordinationMode,
     message: &str,
     working_directory: &Path,
     session_id: &str,
@@ -3554,15 +3609,19 @@ async fn build_resume_command_from_resolved_settings(
                 session_messages,
                 total_available,
             );
-            let resume_prompt = format!(
-                "{}{}",
-                resume_prompt,
-                attachment_context_override.unwrap_or_default()
+            let resume_prompt = capability_scoped_prompt(
+                format!(
+                    "{}{}",
+                    resume_prompt,
+                    attachment_context_override.unwrap_or_default()
+                ),
+                coordination_mode,
             );
 
             let mcp_runtime_context = build_mcp_runtime_context(
                 context_type,
                 context_id,
+                Some(coordination_mode),
                 None,
                 None,
                 working_directory,
@@ -3611,6 +3670,7 @@ async fn build_resume_command_from_resolved_settings(
                 persona_block,
                 context_type,
                 context_id,
+                coordination_mode,
                 message,
                 working_directory,
                 entity_status,
@@ -3636,6 +3696,7 @@ pub async fn build_codex_resume_command(
     capabilities: &CodexCliCapabilities,
     context_type: ChatContextType,
     context_id: &str,
+    coordination_mode: CoordinationMode,
     conversation_id: Option<&str>,
     agent_run_id: Option<&str>,
     message: &str,
@@ -3676,6 +3737,7 @@ pub async fn build_codex_resume_command(
     let runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
+        Some(coordination_mode),
         conversation_id.map(str::to_string),
         agent_run_id,
         working_directory,
@@ -3692,8 +3754,13 @@ pub async fn build_codex_resume_command(
         is_external_mcp,
         Some(&runtime_context),
     )?;
-    let codex_config =
-        build_codex_cli_config(working_directory, resolved_spawn_settings, config_overrides);
+    let codex_config = build_codex_cli_config(
+        working_directory,
+        resolved_spawn_settings,
+        config_overrides,
+        capabilities,
+        coordination_mode,
+    )?;
     let resume_mode = match provider_resume_mode_for_session(AgentHarnessKind::Codex, session_id) {
         ProviderResumeMode::Resume if !capabilities.supports_resume_subcommand => {
             ProviderResumeMode::Recovery
@@ -3709,10 +3776,13 @@ pub async fn build_codex_resume_command(
                 session_messages,
                 total_available,
             );
-            let resume_prompt = format!(
-                "{}{}",
-                resume_prompt,
-                attachment_context_override.unwrap_or_default()
+            let resume_prompt = capability_scoped_prompt(
+                format!(
+                    "{}{}",
+                    resume_prompt,
+                    attachment_context_override.unwrap_or_default()
+                ),
+                coordination_mode,
             );
             let CodexPromptComposition {
                 prompt,
@@ -3778,10 +3848,13 @@ pub async fn build_codex_resume_command(
                 additional_prompt_context,
             )
             .await?;
-            let recovery_prompt = format!(
-                "{}{}",
-                recovery_prompt,
-                attachment_context_override.unwrap_or_default()
+            let recovery_prompt = capability_scoped_prompt(
+                format!(
+                    "{}{}",
+                    recovery_prompt,
+                    attachment_context_override.unwrap_or_default()
+                ),
+                coordination_mode,
             );
 
             let CodexPromptComposition {
@@ -3830,6 +3903,7 @@ pub async fn build_resume_command_for_harness(
     plugin_dir: &Path,
     context_type: ChatContextType,
     context_id: &str,
+    coordination_mode: CoordinationMode,
     message: &str,
     persona: Option<ResolvedPersona>,
     agent_name_override: Option<&str>,
@@ -3862,6 +3936,7 @@ pub async fn build_resume_command_for_harness(
             plugin_dir,
             context_type,
             context_id,
+            coordination_mode,
             message,
             persona,
             agent_name_override,
@@ -4447,6 +4522,7 @@ exit 0
         let runtime_context = build_mcp_runtime_context(
             ChatContextType::Review,
             "task-runtime-mcp",
+            None,
             Some("conversation-runtime-mcp".to_string()),
             Some("run-runtime-mcp"),
             Path::new("/tmp/task-runtime-mcp"),
@@ -5596,6 +5672,7 @@ exit 0
                 &plugin_dir,
                 ChatContextType::Project,
                 project_id.as_str(),
+                CoordinationMode::Solo,
                 "continue with the selected file",
                 None,
                 None,
@@ -5700,6 +5777,7 @@ exit 0
                 &plugin_dir,
                 ChatContextType::Project,
                 project_id.as_str(),
+                CoordinationMode::Solo,
                 "continue the accepted plan",
                 None,
                 Some(agent_names::AGENT_ORCHESTRATOR_IDEATION),
@@ -5976,6 +6054,7 @@ exit 0
             &plugin_dir,
             ChatContextType::Project,
             conversation_id,
+            CoordinationMode::Solo,
             "continue from a queued Codex project message",
             None,
             Some(agent_names::AGENT_GENERAL_WORKER),
@@ -6046,6 +6125,7 @@ exit 0
             &plugin_dir,
             ChatContextType::Project,
             project_id.as_str(),
+            CoordinationMode::Solo,
             "continue from an old Codex CLI",
             None,
             Some(agent_names::AGENT_GENERAL_WORKER),

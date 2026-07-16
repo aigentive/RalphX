@@ -122,6 +122,7 @@ fn full_codex_capabilities() -> CodexCliCapabilities {
                 "xhigh".to_string(),
             ],
         )]),
+        ultra_supported_models: Vec::new(),
     }
 }
 
@@ -208,7 +209,6 @@ fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ]
     );
     assert_eq!(
@@ -219,7 +219,6 @@ fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ])
     );
     assert_eq!(
@@ -231,6 +230,10 @@ fn parse_codex_model_catalog_capabilities_reads_visible_aliases_and_efforts() {
         ])
     );
     assert!(!catalog.model_supported_efforts.contains_key("hidden-model"));
+    assert_eq!(
+        catalog.ultra_supported_models,
+        vec!["gpt-5.6-sol".to_string()]
+    );
 }
 
 fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
@@ -275,6 +278,25 @@ fn project_root() -> PathBuf {
 
 #[test]
 fn build_codex_exec_command_sets_agent_tool_path() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let seeded_path = dirs::home_dir()
+        .map(|home| {
+            std::env::join_paths([
+                home.join(".cargo").join("bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ])
+            .expect("seed test PATH")
+        })
+        .unwrap_or_else(|| OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"));
+    let _path = EnvGuard::set_os("PATH", seeded_path);
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
     let spawnable = build_spawnable_codex_exec_command(
         std::path::Path::new("/fake/codex"),
         "Prompt",
@@ -379,9 +401,9 @@ fi
             "high".to_string(),
             "xhigh".to_string(),
             "max".to_string(),
-            "ultra".to_string(),
         ]
     );
+    assert!(capabilities.supports_ultra_for_model("gpt-5.6-sol"));
 }
 
 #[test]
@@ -675,7 +697,6 @@ fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
         (LogicalEffort::High, "high"),
         (LogicalEffort::XHigh, "xhigh"),
         (LogicalEffort::Max, "max"),
-        (LogicalEffort::Ultra, "ultra"),
     ] {
         let args = build_codex_exec_args(
             &full_codex_capabilities(),
@@ -692,6 +713,34 @@ fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
             .any(|pair| pair[0] == "-c"
                 && pair[1] == format!("model_reasoning_effort=\"{expected}\"")));
     }
+}
+
+#[test]
+fn build_codex_exec_args_only_emits_ultra_for_the_ultra_capability() {
+    let legacy_ultra_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            reasoning_effort: Some(LogicalEffort::Ultra),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("legacy Ultra effort should normalize");
+    assert!(legacy_ultra_args
+        .windows(2)
+        .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"max\"" }));
+
+    let capability_args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            reasoning_effort: Some(LogicalEffort::Max),
+            ultra_mode: true,
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("Ultra capability should build");
+    assert!(capability_args
+        .windows(2)
+        .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"ultra\"" }));
 }
 
 #[test]
@@ -982,6 +1031,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         context_type: Some("ideation".to_string()),
         context_id: Some("session-123".to_string()),
         conversation_id: Some("conversation-current".to_string()),
+        coordination_mode: Some("rx_native_workflow".to_string()),
         task_id: None,
         task_state: Some("re_executing".to_string()),
         project_id: Some("project-456".to_string()),
@@ -1424,6 +1474,7 @@ harnesses:
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
         conversation_id: Some("conversation current".to_string()),
+        coordination_mode: None,
         task_id: None,
         task_state: Some("reviewing".to_string()),
         project_id: Some("project-123".to_string()),

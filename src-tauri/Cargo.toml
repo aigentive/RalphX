@@ -1,12 +1,12 @@
 [package]
 name = "ralphx"
-version = "0.68.0"
+version = "0.69.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
 
 [workspace]
-members = ["crates/ralphx-domain", "crates/ralphx-events"]
+members = ["crates/ralphx-domain", "crates/ralphx-events", "crates/ralphx-workflow-runner"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -37,6 +37,7 @@ name = "ralphx_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
+object = { version = "0.36", default-features = false, features = ["write"] }
 tauri-build = { version = "2.6.0", features = [] }
 
 [dependencies]

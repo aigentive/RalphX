@@ -24,18 +24,6 @@ fn test_effort_bucket_mapping_primary_agents() {
 }
 
 #[test]
-fn test_effort_bucket_mapping_verifier() {
-    assert_eq!(
-        effort_bucket_for_agent("ralphx-plan-verifier"),
-        Some(EffortBucket::Verifier)
-    );
-    assert_eq!(
-        effort_bucket_for_agent("ralphx:ralphx-plan-verifier"),
-        Some(EffortBucket::Verifier)
-    );
-}
-
-#[test]
 fn test_effort_bucket_mapping_primary_agents_fully_qualified() {
     assert_eq!(
         effort_bucket_for_agent("ralphx:ralphx-ideation"),
@@ -61,11 +49,6 @@ fn test_effort_bucket_mapping_legacy_aliases() {
             name
         );
     }
-
-    assert_eq!(
-        effort_bucket_for_agent("plan-verifier"),
-        Some(EffortBucket::Verifier)
-    );
 }
 
 #[test]
@@ -81,7 +64,10 @@ async fn test_resolve_effort_non_ideation_agent() {
     // Non-ideation agent bypasses DB; result comes from YAML. Just verify it
     // doesn't panic and returns a non-empty string.
     let result = resolve_ideation_effort("ralphx-execution-worker", None, &repo).await;
-    assert!(!result.is_empty(), "expected non-empty effort for ralphx-execution-worker");
+    assert!(
+        !result.is_empty(),
+        "expected non-empty effort for ralphx-execution-worker"
+    );
 }
 
 #[tokio::test]
@@ -90,8 +76,7 @@ async fn test_resolve_effort_project_override() {
     // Seed project row with high primary effort
     repo.upsert(Some("proj-abc"), "high", "low").await.unwrap();
 
-    let result =
-        resolve_ideation_effort("ralphx-ideation", Some("proj-abc"), &repo).await;
+    let result = resolve_ideation_effort("ralphx-ideation", Some("proj-abc"), &repo).await;
     assert_eq!(result, "high");
 }
 
@@ -132,10 +117,15 @@ async fn test_resolve_effort_inherit_falls_through_to_yaml() {
         .unwrap();
     repo.upsert(None, "inherit", "inherit").await.unwrap();
 
-    let result =
-        resolve_ideation_effort("ralphx-ideation", Some("proj-x"), &repo).await;
-    assert!(!result.is_empty(), "expected non-empty effort from YAML fallback");
-    assert_ne!(result, "inherit", "inherit should not be returned as the final value");
+    let result = resolve_ideation_effort("ralphx-ideation", Some("proj-x"), &repo).await;
+    assert!(
+        !result.is_empty(),
+        "expected non-empty effort from YAML fallback"
+    );
+    assert_ne!(
+        result, "inherit",
+        "inherit should not be returned as the final value"
+    );
 }
 
 #[tokio::test]
@@ -147,7 +137,6 @@ async fn test_resolve_effort_project_inherit_falls_to_global() {
         .unwrap();
     repo.upsert(None, "high", "inherit").await.unwrap();
 
-    let result =
-        resolve_ideation_effort("ralphx-ideation", Some("proj-y"), &repo).await;
+    let result = resolve_ideation_effort("ralphx-ideation", Some("proj-y"), &repo).await;
     assert_eq!(result, "high");
 }

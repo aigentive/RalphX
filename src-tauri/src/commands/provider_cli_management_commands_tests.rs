@@ -575,6 +575,7 @@ async fn provider_observations_report_missing_and_probe_errors() {
                     "xhigh".to_string(),
                 ],
                 model_supported_efforts: std::collections::BTreeMap::new(),
+                ultra_supported_models: Vec::new(),
             },
         },
         false,

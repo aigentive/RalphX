@@ -42,8 +42,7 @@ pub use verification_events::{
     build_verification_payload, build_verification_started_snapshot,
 };
 pub use verification_gate::{
-    check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,
-    EffectiveGatePolicy, ProposalOperation,
+    check_verification_gate, resolve_effective_gate_policy, EffectiveGatePolicy,
 };
 pub use verification_state::{
     build_blank_verification_snapshot, clear_verification_snapshot,

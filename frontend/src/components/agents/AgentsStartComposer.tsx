@@ -15,11 +15,14 @@ import type {
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
+  CapabilityIntent,
   TeamIntent,
 } from "@/api/chat";
+import type { AutomationAuthoringMode } from "@/api/automations";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import {
   PERSONA_UNAVAILABLE_PREFIX,
   isPersonaUnavailableError,
@@ -44,7 +47,10 @@ import {
   loadPullRequestBaseOptions,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
-import type { AgentModelRegistry } from "@/lib/agent-models";
+import {
+  agentModelSupportsCodexUltra,
+  type AgentModelRegistry,
+} from "@/lib/agent-models";
 import {
   CODEX_FAST_MODE_DESCRIPTION,
   codexFastModeAvailabilityForProvider,
@@ -97,10 +103,12 @@ interface AgentsStartComposerSubmitInput {
   runtime: AgentRuntimeSelection;
   runtimeProviderContext?: AgentRuntimeProviderContext;
   mode: AgentConversationWorkspaceMode;
+  automationAuthoringMode?: AutomationAuthoringMode;
   base: AgentConversationBaseSelection | null;
   files: File[];
   codexFastMode?: boolean | null;
   personaId?: string | null;
+  capabilityIntent?: CapabilityIntent | null;
   teamIntent?: TeamIntent | null;
   composerArtifactReferences?: ComposerArtifactReference[] | undefined;
   composerProjectReferences?: ComposerProjectReference[] | undefined;
@@ -225,7 +233,11 @@ export function AgentsStartComposer({
   const [modelId, setModelId] = useState(initialRuntime.modelId);
   const [effort, setEffort] = useState<AgentEffort>(initialRuntime.effort);
   const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
-  const [teamEnabled, setTeamEnabled] = useState(false);
+  const [capabilityMode, setCapabilityMode] = useState<
+    CapabilityIntent["coordinationMode"]
+  >("solo");
+  const [automationAuthoringMode, setAutomationAuthoringMode] =
+    useState<AutomationAuthoringMode | null>(null);
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
   const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
     BranchBaseOption[]
@@ -266,6 +278,7 @@ export function AgentsStartComposer({
   const userSelectedStartFromRef = useRef(false);
   const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const { data: featureFlags } = useFeatureFlags();
   const {
     settings: providerSettings,
@@ -378,6 +391,64 @@ export function AgentsStartComposer({
     provider === "codex" && codexFastModeAvailability.supported
       ? codexFastMode
       : false;
+  const codexUltraAvailable = agentModelSupportsCodexUltra(
+    provider,
+    modelId,
+    modelRegistry,
+    codexProviderSettings?.ultraSupportedModels,
+  );
+  const capabilityOptions = useMemo(() => {
+    const options = [
+      {
+        id: "solo",
+        label: "Defaults",
+        description: "Use the selected provider without extra orchestration.",
+      },
+    ];
+    if (featureFlags.agentConversationTeam) {
+      options.push({
+        id: "rx_native_team",
+        label: "Team",
+        description: "Coordinate RalphX-native delegated teammates.",
+      });
+    }
+    if (featureFlags.agentConversationWorkflows) {
+      options.push({
+        id: "rx_native_workflow",
+        label: "Workflow",
+        description: "Generate and run a durable reviewed orchestration script.",
+      });
+    }
+    if (codexUltraAvailable) {
+      options.push({
+        id: "codex_native_ultra",
+        label: "Ultra",
+        description: "Activate Codex provider-native subagents and maximum reasoning.",
+      });
+    }
+    return options;
+  }, [
+    codexUltraAvailable,
+    featureFlags.agentConversationTeam,
+    featureFlags.agentConversationWorkflows,
+  ]);
+
+  useEffect(() => {
+    const available = capabilityOptions.some(
+      (option) => option.id === capabilityMode,
+    );
+    if (!available) {
+      setCapabilityMode("solo");
+      if (capabilityMode !== "solo") {
+        setError(
+          plainStartComposerError(
+            "That capability is no longer available, so this draft was switched to Defaults.",
+          ),
+        );
+      }
+    }
+  }, [capabilityMode, capabilityOptions]);
+
   const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -387,6 +458,27 @@ export function AgentsStartComposer({
     setStartConversationFailure(null);
     setError(null);
   }, [setStartConversationFailure]);
+  const handleCapabilityChange = useCallback(
+    async (next: CapabilityIntent["coordinationMode"]) => {
+      if (next === capabilityMode) {
+        return;
+      }
+      if (next === "codex_native_ultra") {
+        const confirmed = await confirm({
+          title: "Enable Codex Ultra?",
+          description:
+            "Ultra activates provider-native subagents plus maximum reasoning and can dramatically increase total usage. Select it only after considering the cost.",
+          confirmText: "Enable Ultra",
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+      clearStartError();
+      setCapabilityMode(next);
+    },
+    [capabilityMode, clearStartError, confirm],
+  );
   const openPersonaSettings = useCallback(() => {
     openModal("settings", { section: "personas" });
   }, [openModal]);
@@ -406,6 +498,7 @@ export function AgentsStartComposer({
     setProjectId(draft.projectId);
     setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
     setMode(draft.mode);
+    setAutomationAuthoringMode(draft.automationAuthoringMode ?? null);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
@@ -428,6 +521,7 @@ export function AgentsStartComposer({
     setModelId(retryInput.runtime.modelId);
     setEffort(retryInput.runtime.effort);
     setMode(retryInput.mode);
+    setAutomationAuthoringMode(retryInput.automationAuthoringMode ?? null);
     if (retryInput.base) {
       setIsStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
     }
@@ -1053,19 +1147,22 @@ export function AgentsStartComposer({
           ),
         }
       : null;
-    const teamIntent = teamEnabled
-      ? ({ coordinationMode: "rx_native_team" } satisfies TeamIntent)
-      : null;
+    const capabilityIntent = {
+      coordinationMode: capabilityMode,
+    } satisfies CapabilityIntent;
     await submitStartInput({
       projectId,
       content: message.trim(),
       runtime: { provider, modelId, effort },
       mode,
+      ...(mode === "automation" && automationAuthoringMode
+        ? { automationAuthoringMode }
+        : {}),
       base,
       files: attachments.map((attachment) => attachment.file),
       codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
       ...(featureFlags.agentPersonas && personaId ? { personaId } : {}),
-      ...(teamIntent ? { teamIntent } : {}),
+      capabilityIntent,
       ...(options?.projectReferences?.length
         ? { composerProjectReferences: options.projectReferences }
         : {}),
@@ -1079,6 +1176,7 @@ export function AgentsStartComposer({
   };
 
   return (
+    <>
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden px-6 py-8 sm:px-8">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div
@@ -1227,19 +1325,25 @@ export function AgentsStartComposer({
               value: mode,
               onValueChange: (value) => {
                 clearStartError();
-                setMode(value as AgentConversationWorkspaceMode);
+                const nextMode = value as AgentConversationWorkspaceMode;
+                setMode(nextMode);
+                if (nextMode !== "automation") {
+                  setAutomationAuthoringMode(null);
+                }
               },
               options: AGENT_START_MODE_OPTIONS,
               testId: "agents-start-mode",
             }}
-            team={{
-              enabled: teamEnabled,
-              onEnabledChange: (enabled) => {
-                clearStartError();
-                setTeamEnabled(enabled);
-              },
-              testId: "agents-start-team",
-            }}
+            {...(capabilityOptions.length > 1
+              ? {
+                  capability: {
+                    value: capabilityMode,
+                    onValueChange: handleCapabilityChange,
+                    options: capabilityOptions,
+                    testId: "agents-start-capability",
+                  },
+                }
+              : {})}
             {...(featureFlags.agentPersonas
               ? {
                   personaControl: (
@@ -1447,6 +1551,8 @@ export function AgentsStartComposer({
         </div>
       </div>
     </div>
+    <ConfirmationDialog {...confirmationDialogProps} />
+    </>
   );
 }
 

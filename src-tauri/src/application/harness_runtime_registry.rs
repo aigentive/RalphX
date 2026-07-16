@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::{collections::HashMap, time::Instant};
 
-use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{
     plan_judge_model_for_provider, standard_harness_map, standard_harness_registry,
     AgentHarnessKind, AgentProviderSettings, DEFAULT_AGENT_HARNESS,
@@ -14,7 +13,7 @@ use crate::infrastructure::agents::claude::{
     probe_claude_cli_cached, reconciliation_config, register_mcp_server, resolve_plugin_dir,
     scheduler_config, ui_feature_flags_config, validate_external_mcp_config, verification_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
-    SpecialistEntry, UiFeatureFlagsConfig, VerificationConfig,
+    UiFeatureFlagsConfig,
 };
 use crate::infrastructure::agents::{
     find_codex_cli, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, ResolvedCodexCli,
@@ -36,6 +35,7 @@ pub(crate) struct HarnessRuntimeProbe {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub ultra_supported_models: Vec<String>,
     pub supports_fast_mode: bool,
     pub fast_mode_supported_models: Vec<String>,
     pub error: Option<String>,
@@ -127,6 +127,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                         cli_version: capabilities.version.clone(),
                         supported_model_aliases: Some(capabilities.supported_model_aliases.clone()),
                         supported_efforts: Some(capabilities.supported_effort_labels()),
+                        ultra_supported_models: Vec::new(),
                         supports_fast_mode: false,
                         fast_mode_supported_models: Vec::new(),
                         error: None,
@@ -141,6 +142,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(error),
@@ -156,6 +158,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some("Claude CLI not found".to_string()),
@@ -188,6 +191,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 non_empty_capability_values(capabilities.supported_model_aliases.clone());
             let supported_efforts =
                 non_empty_capability_values(capabilities.supported_effort_labels());
+            let ultra_supported_models = capabilities.ultra_supported_models.clone();
             HarnessRuntimeProbe {
                 binary_path,
                 binary_found: true,
@@ -197,6 +201,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: capabilities.version.clone(),
                 supported_model_aliases,
                 supported_efforts,
+                ultra_supported_models,
                 supports_fast_mode,
                 fast_mode_supported_models,
                 error,
@@ -212,6 +217,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some(error),
@@ -225,6 +231,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some(error),
@@ -489,6 +496,7 @@ pub(crate) fn seed_available_harness_probes_for_test_at(binary_path: &str) {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: None,
@@ -511,6 +519,7 @@ fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: Some(format!("No harness probe registered for {}", harness)),
@@ -575,6 +584,7 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                ultra_supported_models: Vec::new(),
                 supports_fast_mode: false,
                 fast_mode_supported_models: Vec::new(),
                 error: Some("Harness runtime probe panicked".to_string()),
@@ -816,36 +826,12 @@ pub(crate) fn default_external_session_similarity_threshold() -> f64 {
     default_external_mcp_config().external_session_similarity_threshold
 }
 
-pub(crate) fn default_verification_config() -> VerificationConfig {
-    verification_config().clone()
-}
-
-pub(crate) fn default_verification_auto_verify_enabled() -> bool {
-    verification_config().auto_verify
-}
-
 pub(crate) fn default_verification_max_rounds() -> u32 {
     verification_config().max_rounds
 }
 
-pub(crate) fn default_verification_specialists() -> Vec<SpecialistEntry> {
-    verification_config().specialists.clone()
-}
-
 pub(crate) fn default_ui_feature_flags() -> UiFeatureFlagsConfig {
     ui_feature_flags_config().clone()
-}
-
-pub(crate) fn default_verification_reconciliation_config() -> VerificationReconciliationConfig {
-    let verification = default_verification_config();
-    let external_mcp = default_external_mcp_config();
-    VerificationReconciliationConfig {
-        stale_after_secs: verification.reconciliation_stale_after_secs,
-        auto_verify_stale_secs: verification.auto_verify_stale_secs,
-        interval_secs: verification.reconciliation_interval_secs,
-        external_session_stale_secs: external_mcp.external_session_stale_secs,
-        external_session_startup_grace_secs: external_mcp.external_session_startup_grace_secs,
-    }
 }
 
 pub(crate) fn default_execution_settings_config() -> ExecutionDefaultsConfig {
@@ -1122,6 +1108,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                 non_empty_capability_values(capabilities.supported_model_aliases.clone());
             let supported_efforts =
                 non_empty_capability_values(capabilities.supported_effort_labels());
+            let ultra_supported_models = capabilities.ultra_supported_models.clone();
             (
                 HarnessRuntimeProbe {
                     binary_path: Some(resolved.path.to_string_lossy().into_owned()),
@@ -1132,6 +1119,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: capabilities.version.clone(),
                     supported_model_aliases,
                     supported_efforts,
+                    ultra_supported_models,
                     supports_fast_mode,
                     fast_mode_supported_models,
                     error,
@@ -1150,6 +1138,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(error),
@@ -1163,6 +1152,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: Some(error),
@@ -1364,6 +1354,7 @@ mod tests {
                 "xhigh".to_string(),
             ],
             model_supported_efforts: std::collections::BTreeMap::new(),
+            ultra_supported_models: Vec::new(),
         }
     }
 
@@ -1530,6 +1521,7 @@ mod tests {
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: None,
@@ -1591,6 +1583,7 @@ mod tests {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            ultra_supported_models: Vec::new(),
             supports_fast_mode: false,
             fast_mode_supported_models: Vec::new(),
             error: None,
@@ -1799,6 +1792,7 @@ esac
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    ultra_supported_models: Vec::new(),
                     supports_fast_mode: false,
                     fast_mode_supported_models: Vec::new(),
                     error: None,

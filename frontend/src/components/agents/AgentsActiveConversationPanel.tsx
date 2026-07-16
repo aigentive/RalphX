@@ -30,6 +30,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspaceMode,
+  CapabilityIntent,
   ComposerIntegrationReference,
   ForkAgentConversationResult,
 } from "@/api/chat";
@@ -72,6 +73,10 @@ import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import {
+  agentModelSupportsCodexUltra,
+} from "@/lib/agent-models";
 import {
   invalidateAutomationQueries,
   useAutomationDetail,
@@ -801,7 +806,9 @@ interface AgentsActiveConversationPanelProps {
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
-  onActiveTeamEnabledChange: (enabled: boolean) => void | Promise<unknown>;
+  onActiveCapabilityChange: (
+    mode: CapabilityIntent["coordinationMode"],
+  ) => void | Promise<unknown>;
   onActiveEffortChange: (
     effort: string,
     providerSupportedEfforts?: readonly string[] | null,
@@ -868,7 +875,7 @@ interface AgentsActiveConversationPanelProps {
   selectedTaskArtifactId: string | null;
   setTerminalChatDockElement: (element: HTMLDivElement | null) => void;
   switchingConversationModeId: string | null;
-  updatingTeamConversationId: string | null;
+  updatingCapabilityConversationId: string | null;
   terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
 }
@@ -889,7 +896,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
-  onActiveTeamEnabledChange,
+  onActiveCapabilityChange,
   onActiveEffortChange,
   onActiveModelChange,
   onActiveProviderChange,
@@ -919,7 +926,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
-  updatingTeamConversationId,
+  updatingCapabilityConversationId,
   terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
@@ -935,6 +942,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const runtimeControlConversationId =
     focusedWorkspaceReviewConversationId ?? selectedConversationId;
   const { registry: modelRegistry } = useAgentModels();
+  const { data: featureFlags } = useFeatureFlags();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
   const {
@@ -1023,6 +1031,94 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   });
   const codexProviderSettings = configuredProviders.find(
     (entry) => entry.provider === "codex",
+  );
+  const codexUltraAvailable = agentModelSupportsCodexUltra(
+    normalizedActiveRuntime.provider,
+    normalizedActiveRuntime.modelId,
+    modelRegistry,
+    codexProviderSettings?.ultraSupportedModels,
+  );
+  const activeCapabilityAvailable =
+    activeConversation.coordinationMode === "solo" ||
+    (activeConversation.coordinationMode === "rx_native_team" &&
+      featureFlags.agentConversationTeam) ||
+    (activeConversation.coordinationMode === "rx_native_workflow" &&
+      featureFlags.agentConversationWorkflows) ||
+    (activeConversation.coordinationMode === "codex_native_ultra" &&
+      codexUltraAvailable);
+  const capabilityBlockedReason = activeCapabilityAvailable
+    ? null
+    : activeConversation.coordinationMode === "codex_native_ultra"
+      ? "Codex Ultra is unavailable for the selected model or account. Switch to Defaults or choose a supported Codex runtime."
+      : "This conversation's capability is disabled. Enable it in Settings > Capabilities or switch to Defaults.";
+  const capabilityOptions = (() => {
+    const options: Array<{
+      id: string;
+      label: string;
+      description: string;
+      disabled?: boolean;
+    }> = [
+      {
+        id: "solo",
+        label: "Defaults",
+        description: "Use the selected provider without extra orchestration.",
+      },
+    ];
+    if (featureFlags.agentConversationTeam) {
+      options.push({
+        id: "rx_native_team",
+        label: "Team",
+        description: "Coordinate RalphX-native delegated teammates.",
+      });
+    }
+    if (featureFlags.agentConversationWorkflows) {
+      options.push({
+        id: "rx_native_workflow",
+        label: "Workflow",
+        description: "Generate and run a durable reviewed orchestration script.",
+      });
+    }
+    if (codexUltraAvailable) {
+      options.push({
+        id: "codex_native_ultra",
+        label: "Ultra",
+        description: "Activate Codex provider-native subagents and maximum reasoning.",
+      });
+    }
+    if (!options.some((option) => option.id === activeConversation.coordinationMode)) {
+      const labels: Record<string, string> = {
+        rx_native_team: "Team (disabled)",
+        rx_native_workflow: "Workflow (disabled)",
+        codex_native_ultra: "Ultra (unavailable)",
+      };
+      options.push({
+        id: activeConversation.coordinationMode,
+        label: labels[activeConversation.coordinationMode] ?? "Unavailable",
+        description: capabilityBlockedReason ?? "This capability is unavailable.",
+        disabled: true,
+      });
+    }
+    return options;
+  })();
+  const handleActiveCapabilitySelection = useCallback(
+    async (next: CapabilityIntent["coordinationMode"]) => {
+      if (next === activeConversation.coordinationMode) {
+        return;
+      }
+      if (next === "codex_native_ultra") {
+        const confirmed = await confirm({
+          title: "Enable Codex Ultra?",
+          description:
+            "Ultra activates provider-native subagents plus maximum reasoning and can dramatically increase total usage. Select it only after considering the cost.",
+          confirmText: "Enable Ultra",
+        });
+        if (!confirmed) {
+          return;
+        }
+      }
+      await onActiveCapabilityChange(next);
+    },
+    [activeConversation.coordinationMode, confirm, onActiveCapabilityChange],
   );
   const codexProviderFastMode =
     codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
@@ -1752,9 +1848,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const isPlanVerificationLoading =
     (planVerificationQuery.isLoading || planVerificationQuery.isFetching) &&
     !planVerificationQuery.data;
-  const isPlanVerificationSatisfied =
-    planVerificationState === "verified" ||
-    planVerificationState === "imported_verified";
+  const isPlanVerificationSatisfied = planVerificationState === "verified";
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
       planApprovalArtifact &&
@@ -1905,17 +1999,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     setIsStartingPlanVerification(true);
     try {
-      let disabledSpecialists: string[] = [];
-      try {
-        const specialists = await verificationApi.getSpecialists();
-        disabledSpecialists = specialists.specialists
-          .filter((specialist) => !specialist.enabled_by_default)
-          .map((specialist) => specialist.name);
-      } catch (err) {
-        console.warn("Failed to load verification specialists:", err);
-      }
-
-      await verificationApi.confirm(planApprovalSessionId, disabledSpecialists);
+      await verificationApi.confirm(planApprovalSessionId);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: verificationStatusKey(planApprovalSessionId),
@@ -1925,8 +2009,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         }),
         queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
       ]);
-      onSelectArtifact("verification");
-      toast.success("Plan verification started");
+      toast.success("Verify Plan queued in this conversation");
     } catch (err) {
       console.error("Failed to start plan verification:", err);
       toast.error(
@@ -1937,7 +2020,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
   }, [
     canVerifyComposerPlan,
-    onSelectArtifact,
     planApprovalSessionId,
     planVerificationInProgress,
     queryClient,
@@ -2567,6 +2649,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         modelId: workspaceSendRuntime.modelId,
                         logicalEffort: workspaceSendRuntime.effort,
                         codexFastMode: activeCodexFastModeOption,
+                        ...(options?.capabilityIntent
+                          ? { capabilityIntent: options.capabilityIntent }
+                          : {}),
                         ...(options?.teamIntent
                           ? { teamIntent: options.teamIntent }
                           : {}),
@@ -2690,6 +2775,31 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       testId="agents-automation-run-readonly-banner"
                     />
                   )}
+                  {capabilityBlockedReason && (
+                    <div
+                      className="mx-2 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-[0.75rem]"
+                      style={{
+                        backgroundColor: "var(--status-warning-muted)",
+                        borderColor: "var(--status-warning-border)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                        color: "var(--text-secondary)",
+                      }}
+                      data-testid="agents-conversation-capability-blocked"
+                    >
+                      <span>{capabilityBlockedReason}</span>
+                      <button
+                        type="button"
+                        className="font-medium"
+                        style={{ color: "var(--accent-primary)" }}
+                        onClick={() =>
+                          openModal("settings", { section: "capabilities" })
+                        }
+                      >
+                        Open Capabilities Settings
+                      </button>
+                    </div>
+                  )}
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"
                     actionTestId="agents-conversation-submit"
@@ -2722,6 +2832,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       }
                     }}
                     sendDisabledReason={
+                      capabilityBlockedReason ??
                       automationRunReadOnlyReason ??
                       (usesWorkspaceRuntimeControls
                         ? workspaceProviderStatusMessage
@@ -2734,22 +2845,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onFilesSelected={composerProps.onFilesSelected}
                     onRemoveAttachment={composerProps.onRemoveAttachment}
                     attachmentsUploading={composerProps.attachmentsUploading}
-                    {...(!isFocusedChildChat
+                    {...(!isFocusedChildChat && capabilityOptions.length > 1
                       ? {
-                          team: {
-                            enabled:
-                              activeConversation.coordinationMode ===
-                              "rx_native_team",
-                            onEnabledChange: onActiveTeamEnabledChange,
+                          capability: {
+                            value: activeConversation.coordinationMode,
+                            onValueChange: handleActiveCapabilitySelection,
+                            options: capabilityOptions,
                             disabled:
                               composerProps.isReadOnly ||
                               isForkingConversation ||
                               Boolean(automationRunReadOnlyReason) ||
                               composerProps.agentStatus !== "idle",
                             pending:
-                              updatingTeamConversationId ===
+                              updatingCapabilityConversationId ===
                               selectedConversationId,
-                            testId: "agents-conversation-team",
+                            testId: "agents-conversation-capability",
                           },
                         }
                       : {})}

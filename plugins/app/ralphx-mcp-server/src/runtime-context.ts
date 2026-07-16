@@ -9,13 +9,14 @@ type RuntimeContextKey =
   | "contextType"
   | "contextId"
   | "conversationId"
+  | "coordinationMode"
   | "parentConversationId"
   | "agentRunId"
   | "leadSessionId"
   | "tauriApiUrl"
   | "traceDir";
 
-type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
+export type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
 
 const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   key: RuntimeContextKey;
@@ -31,6 +32,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   { key: "contextType", argName: "context-type", envName: "RALPHX_CONTEXT_TYPE" },
   { key: "contextId", argName: "context-id", envName: "RALPHX_CONTEXT_ID" },
   { key: "conversationId", argName: "conversation-id", envName: "RALPHX_CONVERSATION_ID" },
+  { key: "coordinationMode", argName: "coordination-mode", envName: "RALPHX_COORDINATION_MODE" },
   {
     key: "parentConversationId",
     argName: "parent-conversation-id",
@@ -108,4 +110,18 @@ export function hydrateRalphxRuntimeEnvFromCli(
   }
 
   return context;
+}
+
+export function buildArtifactMutationTransportHeaders(
+  context: RuntimeContext
+): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  if (context.contextType === "ideation" && context.contextId) {
+    headers["X-RalphX-Caller-Session-Id"] = context.contextId;
+  }
+  if (context.agentRunId && context.conversationId) {
+    headers["x-ralphx-agent-run-id"] = context.agentRunId;
+    headers["x-ralphx-conversation-id"] = context.conversationId;
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }

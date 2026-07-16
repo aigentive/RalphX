@@ -75,6 +75,8 @@ export const COORDINATION_MODE_VALUES = [
   "solo",
   "legacy_claude_team",
   "rx_native_team",
+  "rx_native_workflow",
+  "codex_native_ultra",
 ] as const;
 export const CoordinationModeSchema = z.enum(COORDINATION_MODE_VALUES);
 export type CoordinationMode = z.infer<typeof CoordinationModeSchema>;
@@ -102,6 +104,7 @@ export const ChatConversationSchema = z.object({
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
   personaId: z.string().nullable().optional(),
+  builderDraftId: z.string().nullable().optional(),
   lastRunPersonaRunId: z.string().nullable().optional(),
   lastRunPersonaId: z.string().nullable().optional(),
   lastRunPersonaSlug: z.string().nullable().optional(),

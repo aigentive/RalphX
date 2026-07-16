@@ -27,8 +27,8 @@ use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNE
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, PersonaDirective, PersonaId,
-    ProjectId, TeamIntent,
+    ChatConversation, ChatConversationId, CoordinationMode, IdeationAnalysisBaseRefKind,
+    PersonaDirective, PersonaId, ProjectId, TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -106,6 +106,7 @@ pub struct StartAgentConversationInput {
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Optional Team request for the Agent conversation.
+    #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
 }
 
@@ -181,9 +182,30 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             harness_override,
         )
         .await?;
+        let requested_capability = input
+            .team_intent
+            .as_ref()
+            .map(|intent| intent.coordination_mode)
+            .unwrap_or_default();
+        let requested_harness = harness_override.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let codex_ultra_supported = (requested_capability == CoordinationMode::CodexNativeUltra)
+            .then(|| {
+                crate::application::agent_capability_validation::codex_ultra_support_for_model(
+                    requested_harness,
+                    input.model_override.as_deref(),
+                )
+            })
+            .flatten();
+        crate::application::agent_capability_validation::validate_agent_capability(
+            requested_capability,
+            requested_harness,
+            &self.deps.state.agent_capability_gate,
+            codex_ultra_supported,
+        )
+        .map_err(|error| error.to_string())?;
         crate::application::managed_team::validate_native_team_intent(
             input.team_intent.as_ref(),
-            harness_override.unwrap_or(DEFAULT_AGENT_HARNESS),
+            requested_harness,
         )
         .map_err(|error| error.to_string())?;
         log_start_agent_conversation_phase(

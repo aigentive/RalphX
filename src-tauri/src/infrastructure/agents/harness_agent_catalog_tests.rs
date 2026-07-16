@@ -67,7 +67,6 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-chat-project",
     "ralphx-ideation",
     "ralphx-ideation-readonly",
-    "ralphx-plan-verifier",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-worker",
@@ -89,23 +88,7 @@ const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[
 ];
 const CLAUDE_ONLY_SHARED_PROMPT_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
 
-const CROSS_HARNESS_VERIFICATION_AGENTS: &[(&str, &str, &str)] = &[
-    (
-        "ralphx-plan-verifier",
-        "plan_verifier",
-        "ralphx-plan-verifier",
-    ),
-    (
-        "ralphx-plan-critic-completeness",
-        "plan_critic_completeness",
-        "ralphx-plan-critic-completeness",
-    ),
-    (
-        "ralphx-plan-critic-implementation-feasibility",
-        "plan_critic_implementation_feasibility",
-        "ralphx-plan-critic-implementation-feasibility",
-    ),
-];
+const CROSS_HARNESS_VERIFICATION_AGENTS: &[(&str, &str, &str)] = &[];
 
 const CROSS_HARNESS_IDEATION_DELEGATE_AGENTS: &[(&str, &str, &str)] = &[
     (
@@ -122,36 +105,6 @@ const CROSS_HARNESS_IDEATION_DELEGATE_AGENTS: &[(&str, &str, &str)] = &[
         "ralphx-ideation-specialist-infra",
         "ideation_specialist_infra",
         "ralphx-ideation-specialist-infra",
-    ),
-    (
-        "ralphx-ideation-specialist-ux",
-        "ideation_specialist_ux",
-        "ralphx-ideation-specialist-ux",
-    ),
-    (
-        "ralphx-ideation-specialist-code-quality",
-        "ideation_specialist_code_quality",
-        "ralphx-ideation-specialist-code-quality",
-    ),
-    (
-        "ralphx-ideation-specialist-prompt-quality",
-        "ideation_specialist_prompt_quality",
-        "ralphx-ideation-specialist-prompt-quality",
-    ),
-    (
-        "ralphx-ideation-specialist-intent",
-        "ideation_specialist_intent",
-        "ralphx-ideation-specialist-intent",
-    ),
-    (
-        "ralphx-ideation-specialist-state-machine",
-        "ideation_specialist_state_machine",
-        "ralphx-ideation-specialist-state-machine",
-    ),
-    (
-        "ralphx-ideation-specialist-pipeline-safety",
-        "ideation_specialist_pipeline_safety",
-        "ralphx-ideation-specialist-pipeline-safety",
     ),
     (
         "ralphx-ideation-advocate",
@@ -196,6 +149,11 @@ const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
         "ralphx-automation-plan-judge",
         "automation-plan-judge",
         "ralphx-automation-plan-judge",
+    ),
+    (
+        "ralphx-automation-decomposition-verifier",
+        "automation-decomposition-verifier",
+        "ralphx-automation-decomposition-verifier",
     ),
     ("ralphx-review-history", "review_history", "review-history"),
     (
@@ -285,6 +243,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-plan-complexity",
     "ralphx-automation-judge",
     "ralphx-automation-plan-judge",
+    "ralphx-automation-decomposition-verifier",
     "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
@@ -292,19 +251,10 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
     "ralphx-project-analyzer",
-    "ralphx-plan-verifier",
-    "ralphx-plan-critic-completeness",
-    "ralphx-plan-critic-implementation-feasibility",
     "ralphx-qa-prep",
     "ralphx-ideation-specialist-backend",
     "ralphx-ideation-specialist-frontend",
     "ralphx-ideation-specialist-infra",
-    "ralphx-ideation-specialist-ux",
-    "ralphx-ideation-specialist-code-quality",
-    "ralphx-ideation-specialist-prompt-quality",
-    "ralphx-ideation-specialist-intent",
-    "ralphx-ideation-specialist-state-machine",
-    "ralphx-ideation-specialist-pipeline-safety",
     "ralphx-ideation-advocate",
     "ralphx-ideation-critic",
 ];
@@ -313,21 +263,13 @@ const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
     "ralphx-automation-judge",
     "ralphx-automation-plan-judge",
+    "ralphx-automation-decomposition-verifier",
     "ralphx-automation-setup",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
-    "ralphx-plan-verifier",
-    "ralphx-plan-critic-completeness",
-    "ralphx-plan-critic-implementation-feasibility",
     "ralphx-qa-prep",
     "ralphx-ideation-specialist-backend",
     "ralphx-ideation-specialist-frontend",
-    "ralphx-ideation-specialist-intent",
-    "ralphx-ideation-specialist-pipeline-safety",
-    "ralphx-ideation-specialist-prompt-quality",
-    "ralphx-ideation-specialist-state-machine",
-    "ralphx-ideation-specialist-ux",
-    "ralphx-ideation-specialist-code-quality",
     "ralphx-ideation-advocate",
     "ralphx-ideation-critic",
 ];
@@ -345,15 +287,6 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
         "ralphx-ideation-readonly",
         &["Write", "Edit", "NotebookEdit", "Task(ralphx:*)"],
     ),
-    ("ralphx-plan-verifier", &["Write", "Edit", "NotebookEdit"]),
-    (
-        "ralphx-plan-critic-completeness",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-plan-critic-implementation-feasibility",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
     ("ralphx-pr-reviewer", &["Write", "Edit", "NotebookEdit"]),
     (
         "ralphx-workspace-reviewer",
@@ -370,30 +303,6 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
     ),
     (
         "ralphx-ideation-specialist-frontend",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-ideation-specialist-intent",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-ideation-specialist-pipeline-safety",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-ideation-specialist-prompt-quality",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-ideation-specialist-state-machine",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-ideation-specialist-ux",
-        &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-ideation-specialist-code-quality",
         &["Write", "Edit", "NotebookEdit", "Bash"],
     ),
     (
@@ -420,6 +329,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-automation-setup",
     "ralphx-automation-judge",
     "ralphx-automation-plan-judge",
+    "ralphx-automation-decomposition-verifier",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -437,21 +347,12 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-ideation",
     "ralphx-ideation-readonly",
     "ralphx-ideation-team-lead",
-    "ralphx-plan-verifier",
-    "ralphx-plan-critic-completeness",
-    "ralphx-plan-critic-implementation-feasibility",
     "ralphx-qa-executor",
     "ralphx-qa-prep",
     "ralphx-research-deep-researcher",
     "ralphx-ideation-specialist-backend",
-    "ralphx-ideation-specialist-code-quality",
     "ralphx-ideation-specialist-frontend",
     "ralphx-ideation-specialist-infra",
-    "ralphx-ideation-specialist-intent",
-    "ralphx-ideation-specialist-pipeline-safety",
-    "ralphx-ideation-specialist-prompt-quality",
-    "ralphx-ideation-specialist-state-machine",
-    "ralphx-ideation-specialist-ux",
     "ralphx-ideation-advocate",
     "ralphx-ideation-critic",
 ];
@@ -479,6 +380,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-workspace-reviewer", "sonnet"),
     ("ralphx-automation-setup", "sonnet"),
     ("ralphx-automation-judge", "haiku"),
+    ("ralphx-automation-decomposition-verifier", "haiku"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -495,21 +397,12 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-ideation", "opus"),
     ("ralphx-ideation-readonly", "opus"),
     ("ralphx-ideation-team-lead", "opus"),
-    ("ralphx-plan-verifier", "opus"),
-    ("ralphx-plan-critic-completeness", "opus"),
-    ("ralphx-plan-critic-implementation-feasibility", "opus"),
     ("ralphx-qa-prep", "sonnet"),
     ("ralphx-qa-executor", "sonnet"),
     ("ralphx-research-deep-researcher", "opus"),
     ("ralphx-ideation-specialist-backend", "opus"),
     ("ralphx-ideation-specialist-frontend", "opus"),
     ("ralphx-ideation-specialist-infra", "opus"),
-    ("ralphx-ideation-specialist-ux", "opus"),
-    ("ralphx-ideation-specialist-code-quality", "opus"),
-    ("ralphx-ideation-specialist-prompt-quality", "opus"),
-    ("ralphx-ideation-specialist-intent", "opus"),
-    ("ralphx-ideation-specialist-state-machine", "opus"),
-    ("ralphx-ideation-specialist-pipeline-safety", "opus"),
     ("ralphx-ideation-advocate", "opus"),
     ("ralphx-ideation-critic", "opus"),
     ("ralphx-memory-maintainer", "sonnet"),
@@ -603,18 +496,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         false,
     ),
     (
-        "ralphx-plan-critic-completeness",
-        "critic_tools",
-        &[],
-        false,
-    ),
-    (
-        "ralphx-plan-critic-implementation-feasibility",
-        "critic_tools",
-        &[],
-        false,
-    ),
-    (
         "ralphx-research-deep-researcher",
         "base_tools",
         &["Write", "Task"],
@@ -645,37 +526,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         false,
     ),
     ("ralphx-ideation-specialist-infra", "base_tools", &[], false),
-    ("ralphx-ideation-specialist-ux", "base_tools", &[], false),
-    (
-        "ralphx-ideation-specialist-code-quality",
-        "base_tools",
-        &[],
-        false,
-    ),
-    (
-        "ralphx-ideation-specialist-prompt-quality",
-        "base_tools",
-        &[],
-        false,
-    ),
-    (
-        "ralphx-ideation-specialist-intent",
-        "base_tools",
-        &[],
-        false,
-    ),
-    (
-        "ralphx-ideation-specialist-state-machine",
-        "base_tools",
-        &[],
-        false,
-    ),
-    (
-        "ralphx-ideation-specialist-pipeline-safety",
-        "base_tools",
-        &[],
-        false,
-    ),
     ("ralphx-ideation-advocate", "base_tools", &[], false),
     ("ralphx-ideation-critic", "base_tools", &[], false),
 ];
@@ -703,13 +553,6 @@ fn lexical_project_root_with_parent_segments_loads_canonical_prompts() {
 #[test]
 fn codex_runtime_features_load_from_harness_metadata() {
     let root = project_root();
-
-    let verifier = load_canonical_codex_metadata(&root, "ralphx-plan-verifier");
-    assert_eq!(
-        verifier.runtime_features.get("shell_tool"),
-        Some(&false),
-        "verifier should disable Codex shell_tool declaratively"
-    );
 
     let backend_specialist =
         load_canonical_codex_metadata(&root, "ralphx-ideation-specialist-backend");
@@ -1120,7 +963,7 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "edit_plan_artifact",
         "get_session_plan",
         "get_plan_verification",
-        "stop_verification",
+        "complete_plan_verification",
         "delegate_start",
         "delegate_wait",
         "delegate_cancel",
@@ -1478,59 +1321,6 @@ fn canonical_mcp_tools_match_runtime_yaml_for_current_owned_agents() {
 }
 
 #[test]
-fn plan_verifier_canonical_grant_includes_all_verifier_helpers() {
-    let root = project_root();
-    let definition = load_canonical_agent_definition(&root, "ralphx-plan-verifier")
-        .expect("expected canonical definition for ralphx-plan-verifier");
-    let runtime_config = get_agent_config("ralphx-plan-verifier")
-        .expect("expected runtime config for ralphx-plan-verifier");
-
-    // Every verifier-owned helper the MCP verification runtime and tool-recovery
-    // path expect the verifier to be able to call. `report_verification_round`
-    // was previously missing here, so the MCP server filtered it out of the
-    // verifier surface and the verifier hit "No such tool available" at runtime,
-    // leaving the parent plan unverified with zero rounds recorded.
-    for required_tool in [
-        "get_parent_session_context",
-        "get_plan_verification",
-        "get_session_plan",
-        "run_verification_enrichment",
-        "run_verification_round",
-        "report_verification_round",
-        "complete_plan_verification",
-        "update_plan_artifact",
-        "edit_plan_artifact",
-    ] {
-        assert!(
-            definition
-                .capabilities
-                .mcp_tools
-                .iter()
-                .any(|tool| tool == required_tool),
-            "ralphx-plan-verifier canonical capabilities.mcp_tools must include {required_tool}"
-        );
-        assert!(
-            runtime_config
-                .allowed_mcp_tools
-                .iter()
-                .any(|tool| tool == required_tool),
-            "ralphx-plan-verifier runtime --allowed-tools surface must include {required_tool}"
-        );
-    }
-
-    // No verifier self-nudges: the verifier must never be able to message itself,
-    // its delegates, or the parent session to keep the loop alive.
-    assert!(
-        !definition
-            .capabilities
-            .mcp_tools
-            .iter()
-            .any(|tool| tool == "send_ideation_session_message"),
-        "ralphx-plan-verifier must not be granted send_ideation_session_message (no-self-nudge rule)"
-    );
-}
-
-#[test]
 fn chat_and_edit_agents_expose_plan_mode_proposal_contract() {
     let root = project_root();
 
@@ -1744,6 +1534,10 @@ fn automation_judge_surface_is_output_only_and_zero_tool() {
             "judge prompt should declare item status updates"
         );
         assert!(
+            prompt.contains("\"goalItemsProposal\""),
+            "judge prompt should declare structural goal-item proposals"
+        );
+        assert!(
             prompt.contains("\"nextBaseBranch\""),
             "judge prompt should declare next base selection"
         );
@@ -1755,6 +1549,35 @@ fn automation_judge_surface_is_output_only_and_zero_tool() {
             !prompt.contains("MCP Tools Available"),
             "judge prompt must not describe an unavailable MCP surface"
         );
+    }
+}
+
+#[test]
+fn automation_decomposition_verifier_surface_is_output_only_and_zero_tool() {
+    let root = project_root();
+    let agent_name = "ralphx-automation-decomposition-verifier";
+    let definition = load_canonical_agent_definition(&root, agent_name)
+        .expect("expected canonical automation decomposition verifier definition");
+    let claude_prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Claude)
+        .expect("expected decomposition verifier Claude prompt");
+    let codex_prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
+        .expect("expected decomposition verifier Codex prompt");
+    let codex_metadata = load_canonical_codex_metadata(&root, agent_name);
+    let runtime_config =
+        get_agent_config(agent_name).expect("expected runtime config for decomposition verifier");
+
+    assert_eq!(definition.capabilities.mcp_tools, Vec::<String>::new());
+    assert_eq!(runtime_config.allowed_mcp_tools, Vec::<String>::new());
+    assert!(runtime_config.mcp_only);
+    assert_eq!(
+        codex_metadata.runtime_features.get("shell_tool"),
+        Some(&false)
+    );
+    for prompt in [&claude_prompt, &codex_prompt] {
+        assert!(prompt.contains("Return exactly one JSON object"));
+        assert!(prompt.contains("automatic plan approval"));
+        assert!(!prompt.contains("mcp__ralphx__"));
+        assert!(!prompt.contains("MCP Tools Available"));
     }
 }
 
@@ -2147,7 +1970,6 @@ fn legacy_agent_aliases_resolve_into_canonical_catalog_entries() {
     let root = project_root();
     let cases = [
         ("orchestrator-ideation", "ralphx-ideation"),
-        ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
         ("pr-describer", "ralphx-utility-pr-describer"),
@@ -2269,45 +2091,6 @@ fn codex_ideation_pilot_prompts_declare_codex_native_delegation_contract() {
 }
 
 #[test]
-fn codex_plan_verifier_prompt_treats_actionable_needs_revision_as_non_terminal() {
-    let root = project_root();
-    let prompt =
-        load_harness_agent_prompt(&root, "ralphx-plan-verifier", AgentPromptHarness::Codex)
-            .expect("missing codex prompt for ralphx-plan-verifier");
-
-    assert!(
-        prompt.contains(
-            "actionable `needs_revision` is non-terminal until you have a terminal `convergence_reason`"
-        ),
-        "codex verifier prompt must keep actionable needs_revision non-terminal"
-    );
-    assert!(
-        prompt.contains(
-            "if terminal cleanup rejects actionable `needs_revision` because `convergence_reason` is missing"
-        ),
-        "codex verifier prompt must continue the loop when terminal cleanup rejects actionable needs_revision"
-    );
-}
-
-#[test]
-fn codex_ideation_prompt_prioritizes_explicit_reverify_requests() {
-    let root = project_root();
-    let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Codex)
-        .expect("missing codex prompt for ralphx-ideation");
-
-    assert!(
-        prompt.contains("If the user explicitly asks to re-run or start a fresh verification round"),
-        "codex ideation prompt must prioritize explicit rerun requests over stale terminal verification results"
-    );
-    assert!(
-        prompt.contains(
-            "start the fresh verification child instead of summarizing blockers and reopening choices"
-        ),
-        "codex ideation prompt must not reopen planning choices when the user already requested a rerun"
-    );
-}
-
-#[test]
 fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
     let root = project_root();
     let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Codex)
@@ -2321,6 +2104,40 @@ fn codex_ideation_prompt_keeps_provider_resume_silent_by_default() {
         prompt.contains("Do not narrate routine refreshes to the user unless the check changes the answer"),
         "codex ideation prompt must avoid user-facing recovery chatter on ordinary resumed follow-ups"
     );
+}
+
+#[test]
+fn ideation_prompts_preserve_model_native_verification_without_legacy_topology() {
+    let root = project_root();
+    for harness in [AgentPromptHarness::Claude, AgentPromptHarness::Codex] {
+        let prompt = load_harness_agent_prompt(&root, "ralphx-ideation", harness)
+            .unwrap_or_else(|| panic!("missing {harness:?} prompt for ralphx-ideation"));
+        assert!(prompt.contains("backend-started Verify Plan"));
+        assert!(prompt.contains("complete_plan_verification"));
+        for retired in [
+            "ralphx-plan-verifier",
+            "create_child_session(purpose: \"verification\")",
+            "stop_verification",
+            "revert_and_skip",
+            "max_rounds",
+        ] {
+            assert!(
+                !prompt.contains(retired),
+                "{harness:?} ideation prompt still contains retired verification contract {retired}"
+            );
+        }
+    }
+
+    let team_prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-ideation-team-lead",
+        AgentPromptHarness::Claude,
+    )
+    .expect("missing Claude prompt for ralphx-ideation-team-lead");
+    assert!(team_prompt.contains("backend-started Verify Plan"));
+    assert!(team_prompt.contains("complete_plan_verification"));
+    assert!(!team_prompt.contains("ralphx-plan-verifier"));
+    assert!(!team_prompt.contains("stop_verification"));
 }
 
 #[test]

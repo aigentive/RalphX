@@ -835,10 +835,13 @@ export function useAgentsViewController({
     ],
   );
   const {
+    hideArtifactTab,
     openArtifactTab,
     scheduleArtifactPanePreload,
+    seedArtifactTab,
     setArtifactPaneVisibility,
     setArtifactTaskMode,
+    showArtifactTab,
     toggleArtifactPaneVisibility,
   } = useAgentArtifactController({
     hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
@@ -896,7 +899,18 @@ export function useAgentsViewController({
       useAgentArtifactUiStore.getState().artifactByConversationId[
         selectedConversationId
       ] ?? null;
-    if (!optimisticArtifactState || optimisticArtifactState.activeTab === seededTab) {
+    const seededTabIsHidden = Boolean(
+      optimisticArtifactState?.hiddenTabs?.includes(seededTab) ||
+        useAgentSessionStore.getState().artifactByConversationId[
+          selectedConversationId
+        ]?.hiddenTabs?.includes(seededTab),
+    );
+    if (seededTabIsHidden) {
+      openArtifactTab(selectedConversationId, seededTab);
+    } else if (
+      !optimisticArtifactState ||
+      optimisticArtifactState.activeTab === seededTab
+    ) {
       seedAgentArtifactTab(
         selectedConversationId,
         seededTab,
@@ -918,6 +932,7 @@ export function useAgentsViewController({
     externalAutomationRunFocusRequest,
     handleFocusAutomationRun,
     hasAutoOpenArtifactsWithReview,
+    openArtifactTab,
     selectedConversationId,
   ]);
   useEffect(() => {
@@ -931,13 +946,13 @@ export function useAgentsViewController({
     ) {
       return;
     }
-    openArtifactTab(selectedConversationId, "automation");
+    seedArtifactTab(selectedConversationId, "automation");
   }, [
     activeConversation?.agentMode,
     activeConversation?.automationId,
     chatFocus.type,
     externalAutomationRunFocusRequest,
-    openArtifactTab,
+    seedArtifactTab,
     selectedConversationId,
   ]);
   useEffect(() => {
@@ -974,23 +989,23 @@ export function useAgentsViewController({
     findConversationById,
     invalidateProjectConversations,
   });
-  const openJiraTabForConversation = useCallback(
+  const seedJiraTabForConversation = useCallback(
     (conversationId: string) => {
-      openArtifactTab(conversationId, "jira");
+      seedArtifactTab(conversationId, "jira");
     },
-    [openArtifactTab],
+    [seedArtifactTab],
   );
-  const openLinearTabForConversation = useCallback(
+  const seedLinearTabForConversation = useCallback(
     (conversationId: string) => {
-      openArtifactTab(conversationId, "linear");
+      seedArtifactTab(conversationId, "linear");
     },
-    [openArtifactTab],
+    [seedArtifactTab],
   );
-  const openGranolaTabForConversation = useCallback(
+  const seedGranolaTabForConversation = useCallback(
     (conversationId: string) => {
-      openArtifactTab(conversationId, "granola");
+      seedArtifactTab(conversationId, "granola");
     },
-    [openArtifactTab],
+    [seedArtifactTab],
   );
   useEffect(() => {
     const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
@@ -1151,13 +1166,14 @@ export function useAgentsViewController({
     setOptimisticSelectedConversationId,
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
-    onJiraLinked: openJiraTabForConversation,
-    onLinearLinked: openLinearTabForConversation,
-    onGranolaLinked: openGranolaTabForConversation,
+    onJiraLinked: seedJiraTabForConversation,
+    onLinearLinked: seedLinearTabForConversation,
+    onGranolaLinked: seedGranolaTabForConversation,
   });
 
   const {
     handleArchiveConversation,
+    handleBulkArchiveConversations,
     handleArchiveProject,
     handleAutoRenameConversation,
     handleForkConversation,
@@ -1329,19 +1345,19 @@ export function useAgentsViewController({
       handleAgentUserMessageAutoTitle(event);
       invalidateAgentUserMessageJira(event);
       if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
-        openJiraTabForConversation(event.result.conversationId);
+        seedJiraTabForConversation(event.result.conversationId);
       } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
-        openLinearTabForConversation(event.result.conversationId);
+        seedLinearTabForConversation(event.result.conversationId);
       } else if (hasGranolaIntegrationReference(event.composerIntegrationReferences)) {
-        openGranolaTabForConversation(event.result.conversationId);
+        seedGranolaTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
-      openJiraTabForConversation,
-      openGranolaTabForConversation,
-      openLinearTabForConversation,
+      seedJiraTabForConversation,
+      seedGranolaTabForConversation,
+      seedLinearTabForConversation,
     ],
   );
   const handleStartRuntimePreferenceChange = useCallback(
@@ -1367,14 +1383,14 @@ export function useAgentsViewController({
   const {
     activeProjectOptions,
     defaultRuntime,
+    handleActiveCapabilityChange,
     handleActiveConversationModeChange,
     handleActiveConversationModeMenuOpen,
-    handleActiveTeamEnabledChange,
     handleActiveEffortChange,
     handleActiveModelChange,
     handleActiveProviderChange,
     switchingConversationModeId,
-    updatingTeamConversationId,
+    updatingCapabilityConversationId,
   } = useAgentsActiveComposerControls({
     activeConversation,
     activeProjectId,
@@ -1410,6 +1426,7 @@ export function useAgentsViewController({
     onAutoRenameConversation: handleAutoRenameConversation,
     onRenameConversation: handleRenameConversation,
     onArchiveConversation: handleArchiveConversation,
+    onBulkArchiveConversations: handleBulkArchiveConversations,
     onRestoreConversation: handleRestoreConversation,
     showArchived,
     onShowArchivedChange: setShowArchived,
@@ -1437,7 +1454,7 @@ export function useAgentsViewController({
       normalizedActiveRuntime,
       onActiveConversationModeChange: handleActiveConversationModeChange,
       onActiveConversationModeMenuOpen: handleActiveConversationModeMenuOpen,
-      onActiveTeamEnabledChange: handleActiveTeamEnabledChange,
+      onActiveCapabilityChange: handleActiveCapabilityChange,
       onActiveEffortChange: handleActiveEffortChange,
       onActiveModelChange: handleActiveModelChange,
       onActiveProviderChange: handleActiveProviderChange,
@@ -1473,7 +1490,7 @@ export function useAgentsViewController({
       selectedTaskArtifactId,
       setTerminalChatDockElement,
       switchingConversationModeId,
-      updatingTeamConversationId,
+      updatingCapabilityConversationId,
       terminalArchivedReason,
       terminalUnavailableReason,
     },
@@ -1496,6 +1513,7 @@ export function useAgentsViewController({
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
       hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
+      hideArtifactTab,
       isArtifactResizing,
       openArtifactTab,
       automationRunFocusTarget,
@@ -1505,6 +1523,7 @@ export function useAgentsViewController({
       selectedConversationId,
       setArtifactPaneVisibility,
       setArtifactTaskMode,
+      showArtifactTab,
       setTerminalPanelDockElement,
       taskArtifactFocusRequest,
       terminalArchivedReason,

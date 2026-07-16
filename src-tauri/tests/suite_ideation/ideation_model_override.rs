@@ -15,19 +15,18 @@ use std::sync::Arc;
 
 use ralphx_lib::application::chat_service::{build_command, build_resume_command};
 use ralphx_lib::domain::entities::{
-    ChatContextType, ChatConversation, IdeationSessionBuilder, IdeationSessionId, ProjectId,
-    SessionPurpose,
+    ChatContextType, ChatConversation, CoordinationMode, IdeationSessionBuilder, IdeationSessionId,
+    ProjectId, SessionPurpose,
 };
-use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::repositories::IdeationModelSettingsRepository;
+use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::infrastructure::agents::claude::{
     build_base_cli_command, build_base_cli_command_for_test,
     model_resolver::{resolve_ideation_model, resolve_verifier_subagent_model_with_source},
 };
 use ralphx_lib::infrastructure::memory::{
-    MemoryArtifactRepository, MemoryChatAttachmentRepository,
-    MemoryDelegatedSessionRepository, MemoryIdeationModelSettingsRepository,
-    MemoryIdeationSessionRepository, MemoryTaskRepository,
+    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryDelegatedSessionRepository,
+    MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository, MemoryTaskRepository,
 };
 
 // Helper to collect OsStr args from tokio::process::Command as Strings
@@ -198,14 +197,17 @@ async fn test_verifier_vs_non_verifier_subagent_independence() {
         .unwrap();
 
     // ralphx-plan-verifier agent model (from Verifier bucket) → sonnet
-    let verifier_model = resolve_ideation_model("ralphx-plan-verifier", Some("proj-1"), &repo).await;
+    let verifier_model =
+        resolve_ideation_model("ralphx-plan-verifier", Some("proj-1"), &repo).await;
     assert_eq!(verifier_model.model, "sonnet");
     assert_eq!(verifier_model.source, "user");
 
     // ralphx-plan-verifier subagent cap (from verifier_subagent_model field) → haiku, not sonnet
     let project_row = repo.get_for_project("proj-1").await.unwrap().unwrap();
-    let (cap_model, cap_source) =
-        resolve_verifier_subagent_model_with_source(Some(&project_row.verifier_subagent_model), None);
+    let (cap_model, cap_source) = resolve_verifier_subagent_model_with_source(
+        Some(&project_row.verifier_subagent_model),
+        None,
+    );
     assert_eq!(cap_model, "haiku");
     assert_eq!(cap_source, "user");
     // Independence assertion: subagent cap ≠ verifier agent model when configured separately
@@ -215,8 +217,7 @@ async fn test_verifier_vs_non_verifier_subagent_independence() {
     );
 
     // ralphx-ideation agent model (from Primary bucket) → sonnet
-    let orchestrator_model =
-        resolve_ideation_model("ralphx-ideation", Some("proj-1"), &repo).await;
+    let orchestrator_model = resolve_ideation_model("ralphx-ideation", Some("proj-1"), &repo).await;
     assert_eq!(orchestrator_model.model, "sonnet");
     assert_eq!(orchestrator_model.source, "user");
     // orchestrator subagent cap = its own agent model (sonnet)
@@ -384,7 +385,11 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
     )
     .await;
 
-    assert!(build_result.is_ok(), "build_command failed: {:?}", build_result.err());
+    assert!(
+        build_result.is_ok(),
+        "build_command failed: {:?}",
+        build_result.err()
+    );
     let build_envs = build_result.unwrap().get_envs_for_test();
     let build_subagent = build_envs
         .iter()
@@ -420,6 +425,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         Path::new("/fake/plugin"),
         ChatContextType::Ideation,
         session_id.as_str(),
+        CoordinationMode::Solo,
         "verify plan",
         None,
         None,
@@ -446,7 +452,11 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
     )
     .await;
 
-    assert!(resume_result.is_ok(), "build_resume_command failed: {:?}", resume_result.err());
+    assert!(
+        resume_result.is_ok(),
+        "build_resume_command failed: {:?}",
+        resume_result.err()
+    );
     let resume_envs = resume_result.unwrap().get_envs_for_test();
     let resume_subagent = resume_envs
         .iter()
@@ -492,10 +502,10 @@ async fn test_partial_upsert_preserves_ideation_subagent_cap() {
     let preserved_ideation_subagent = existing.ideation_subagent_model.to_string();
     repo.upsert_for_project(
         "proj-1",
-        "haiku",                           // updated primary_model
+        "haiku", // updated primary_model
         &existing.verifier_model.to_string(),
         &existing.verifier_subagent_model.to_string(),
-        &preserved_ideation_subagent,      // preserved — not reset to default
+        &preserved_ideation_subagent, // preserved — not reset to default
     )
     .await
     .unwrap();

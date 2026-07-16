@@ -71,7 +71,8 @@ use crate::domain::entities::{
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, CoordinationMode,
-    IdeationSessionId, InternalStatus, MessageRole, PersonaDirective, ProjectId, TaskId,
+    IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, PersonaId,
+    PersonaStatus, ProjectId, TaskId,
     TeamIntent, TeamMessageTarget,
 };
 use crate::domain::repositories::{
@@ -170,6 +171,9 @@ pub use chat_service_types::{
     ChatServiceError, SendCallerContext, SendResult, TeamArtifactCreatedPayload,
     TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload,
     TeamTeammateIdlePayload, TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
+};
+pub(crate) use chat_service_types::{
+    decode_pending_initial_prompt, encode_pending_initial_prompt,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -848,6 +852,47 @@ fn plan_mode_runtime_message(
     )
 }
 
+fn persona_builder_runtime_message(
+    message: String,
+    conversation: Option<&ChatConversation>,
+    draft: Option<&Persona>,
+) -> String {
+    let Some(conversation) = conversation.filter(|conversation| {
+        conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+    }) else {
+        return message;
+    };
+    let Some(draft) = draft.filter(|draft| {
+        draft.status == PersonaStatus::Draft
+            && conversation.builder_draft_id.as_deref() == Some(draft.id.as_str())
+    }) else {
+        return message;
+    };
+    let source_persona = draft
+        .source_persona_id
+        .as_ref()
+        .map(|id| format!("<source_persona_id>{id}</source_persona_id>\n"))
+        .unwrap_or_default();
+
+    format!(
+        "<persona_builder_context>\n\
+         <agent_conversation_id>{}</agent_conversation_id>\n\
+         <builder_draft_id>{}</builder_draft_id>\n\
+         {}\
+         <draft_version>{}</draft_version>\n\
+         <draft_content_hash>{}</draft_content_hash>\n\
+         <contract>This conversation owns exactly this draft. Read it with get_persona_draft and persist revisions with save_persona_draft. The conversation binding is authoritative; do not create or edit another draft.</contract>\n\
+         </persona_builder_context>\n\
+         <user_request>{}</user_request>",
+        conversation.id.as_str(),
+        draft.id,
+        source_persona,
+        draft.version,
+        draft.content_hash,
+        message
+    )
+}
+
 fn edit_mode_plan_handoff_runtime_message(
     message: String,
     workspace: Option<&AgentConversationWorkspace>,
@@ -1466,6 +1511,39 @@ impl<R: Runtime> AppChatService<R> {
                         conversation_id,
                     )
                 })
+    }
+
+    async fn ensure_persona_builder_has_live_context(
+        &self,
+        conversation: &ChatConversation,
+    ) -> Result<(), ChatServiceError> {
+        if !is_persona_builder_conversation(conversation.agent_mode) {
+            return Ok(());
+        }
+        let has_live_context = if let Some(draft_id) = conversation.builder_draft_id.as_deref() {
+            let persona_repo = self.persona_repo.as_ref().ok_or_else(|| {
+                ChatServiceError::RepositoryError(
+                    "Persona repository unavailable for bound PersonaBuilder draft".to_string(),
+                )
+            })?;
+            persona_repo
+                .get_by_id(&PersonaId::from(draft_id))
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                .is_some_and(|draft| draft.status == PersonaStatus::Draft)
+        } else {
+            self.has_live_persona_builder_ingest_session(
+                conversation.agent_mode,
+                &conversation.id.as_str(),
+            )
+        };
+        if persona_builder_requires_live_draft_session(conversation.agent_mode, has_live_context) {
+            return Err(ChatServiceError::PersonaUnavailable(
+                "[Persona unavailable: PersonaBuilder requires ingested context or a live bound draft]"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     #[doc(hidden)]
@@ -3805,7 +3883,41 @@ impl<R: Runtime> AppChatService<R> {
         artifact_references: &[ComposerArtifactReference],
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
-    ) -> String {
+    ) -> Result<String, ChatServiceError> {
+        let builder_conversation = if let Some(conversation_id) = conversation_id_override {
+            self.conversation_repo
+                .get_by_id(conversation_id)
+                .await
+                .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        } else {
+            None
+        };
+        let builder_draft_id = builder_conversation
+            .as_ref()
+            .filter(|conversation| {
+                conversation.agent_mode == Some(AgentConversationWorkspaceMode::PersonaBuilder)
+            })
+            .and_then(|conversation| conversation.builder_draft_id.as_deref());
+        let builder_draft = if let Some(draft_id) = builder_draft_id {
+            let persona_repo = self.persona_repo.as_ref().ok_or_else(|| {
+                ChatServiceError::RepositoryError(
+                    "PersonaBuilder draft repository is unavailable".to_string(),
+                )
+            })?;
+            Some(
+                persona_repo
+                    .get_by_id(&PersonaId::from(draft_id))
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                    .ok_or_else(|| {
+                        ChatServiceError::PersonaUnavailable(format!(
+                            "[Persona unavailable: bound PersonaBuilder draft {draft_id} was not found]"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let agent_workspace = self
             .load_agent_conversation_workspace(context_type, context_id, conversation_id_override)
             .await
@@ -3897,13 +4009,18 @@ impl<R: Runtime> AppChatService<R> {
                 artifact_references,
             );
 
+        let with_persona_builder = persona_builder_runtime_message(
+            with_artifact_references,
+            builder_conversation.as_ref(),
+            builder_draft.as_ref(),
+        );
         let with_plan_mode =
-            plan_mode_runtime_message(with_artifact_references, agent_workspace.as_ref());
-        edit_mode_plan_handoff_runtime_message(
+            plan_mode_runtime_message(with_persona_builder, agent_workspace.as_ref());
+        Ok(edit_mode_plan_handoff_runtime_message(
             with_plan_mode,
             agent_workspace.as_ref(),
             edit_plan_handoff_artifact.as_ref(),
-        )
+        ))
     }
 
     async fn load_edit_mode_plan_handoff_artifact(
@@ -3958,16 +4075,12 @@ impl<R: Runtime> AppChatService<R> {
                     None
                 }
             }
-            // Ideation context: check purpose first (Verification sessions → ralphx-plan-verifier agent)
-            // then fall back to status for accepted/readonly routing
+            // Ideation context: route from the session status. Legacy verification children
+            // no longer select a dedicated agent.
             ChatContextType::Ideation => {
                 let session_id = IdeationSessionId::from_string(context_id);
                 if let Ok(Some(session)) = self.ideation_session_repo.get_by_id(&session_id).await {
-                    if session.session_purpose == SessionPurpose::Verification {
-                        Some("verification".to_string())
-                    } else {
-                        Some(session.status.to_string())
-                    }
+                    Some(session.status.to_string())
                 } else {
                     None
                 }
@@ -4151,7 +4264,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 if !paused_ideation_has_live_agent {
                     match self
                         .ideation_session_repo
-                        .set_pending_initial_prompt_if_unset(context_id, message.to_string())
+                        .set_pending_initial_prompt_if_unset(
+                            context_id,
+                            encode_pending_initial_prompt(message, options.metadata.as_deref()),
+                        )
                         .await
                     {
                         Ok(true) => {
@@ -4315,18 +4431,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         Some(&conversation.id),
                     )
                     .await?;
-                if persona_builder_requires_live_draft_session(
-                    conversation.agent_mode,
-                    self.has_live_persona_builder_ingest_session(
-                        conversation.agent_mode,
-                        &conversation.id.as_str(),
-                    ),
-                ) {
-                    return Err(ChatServiceError::PersonaUnavailable(
-                        "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                            .to_string(),
-                    ));
-                }
+                self.ensure_persona_builder_has_live_context(conversation)
+                    .await?;
                 self.resolve_persona_for_send(
                     conversation,
                     &options,
@@ -4523,7 +4629,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                 )
-                .await;
+                .await?;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
                 context_id,
@@ -4782,19 +4888,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             agent_conversation_mode,
         );
         let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
-        if self.persona_feature_enabled()
-            && persona_builder_requires_live_draft_session(
-                conversation.agent_mode,
-                self.has_live_persona_builder_ingest_session(
-                    conversation.agent_mode,
-                    &conversation.id.as_str(),
-                ),
-            )
-        {
-            return Err(ChatServiceError::PersonaUnavailable(
-                "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                    .to_string(),
-            ));
+        if self.persona_feature_enabled() {
+            self.ensure_persona_builder_has_live_context(&conversation)
+                .await?;
         }
         let resolved_persona = self
             .resolve_persona_for_send(
@@ -4853,6 +4949,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         //     If an agent is already registered for this context, queue the message.
         //     Create the AgentRun early so its ID can be stored in the slot for ownership tracking.
         let mut agent_run = AgentRun::new(conversation.id);
+        agent_run.apply_action_metadata_json(options.metadata.as_deref());
         let agent_run_id = agent_run.id.as_str().to_string();
         let run_chain_id = agent_run.run_chain_id.clone();
 
@@ -5172,7 +5269,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                                 .ideation_session_repo
                                 .set_pending_initial_prompt_if_unset(
                                     context_id,
-                                    message.to_string(),
+                                    encode_pending_initial_prompt(
+                                        message,
+                                        options.metadata.as_deref(),
+                                    ),
                                 )
                                 .await
                             {
@@ -5969,7 +6069,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Some(&conversation_id),
                 Some(&working_directory),
             )
-            .await;
+            .await?;
         let (selected_cli_path, child, interactive_process_registry, interactive_process_token) =
             match self
                 .spawn_process_for_harness(
@@ -6207,18 +6307,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             Some(&conversation.id),
                         )
                         .await?;
-                    if persona_builder_requires_live_draft_session(
-                        conversation.agent_mode,
-                        self.has_live_persona_builder_ingest_session(
-                            conversation.agent_mode,
-                            &conversation.id.as_str(),
-                        ),
-                    ) {
-                        return Err(ChatServiceError::PersonaUnavailable(
-                            "[Persona unavailable: PersonaBuilder requires a live draft ingest session]"
-                                .to_string(),
-                        ));
-                    }
+                    self.ensure_persona_builder_has_live_context(conversation)
+                        .await?;
                     self.resolve_persona_for_send(
                         conversation,
                         &SendMessageOptions::default(),

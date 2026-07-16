@@ -57,9 +57,6 @@ const ProposalWidget = lazyWidget(() =>
 const IdeationWidget = lazyWidget(() =>
   import("./IdeationWidget").then((module) => ({ default: module.IdeationWidget }))
 );
-const VerificationWidget = lazyWidget(() =>
-  import("./VerificationWidget").then((module) => ({ default: module.VerificationWidget }))
-);
 const ChildSessionWidget = lazyWidget(() =>
   import("./ChildSessionWidget").then((module) => ({ default: module.ChildSessionWidget }))
 );
@@ -121,6 +118,11 @@ const SearchMemoriesWidget = lazyWidget(() =>
 );
 const TeamPlanWidget = lazyWidget(() =>
   import("./McpContextWidgets").then((module) => ({ default: module.TeamPlanWidget }))
+);
+const AgentWorkflowWidget = lazyWidget(() =>
+  import("./AgentWorkflowWidget").then((module) => ({
+    default: module.AgentWorkflowWidget,
+  }))
 );
 
 /**
@@ -196,15 +198,6 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   "mcp__ralphx__send_ideation_session_message": IdeationWidget,
   "mcp__ralphx__finalize_proposals": IdeationWidget,
   "mcp__ralphx__cross_project_guide": IdeationWidget,
-  // Verification tools → VerificationWidget
-  "mcp__ralphx__run_verification_enrichment": VerificationWidget,
-  "mcp__ralphx__run_verification_round": VerificationWidget,
-  "mcp__ralphx__report_verification_round": VerificationWidget,
-  "mcp__ralphx__complete_plan_verification": VerificationWidget,
-  "mcp__ralphx__get_plan_verification": VerificationWidget,
-  "mcp__ralphx__get_child_session_status": VerificationWidget,
-  "mcp__ralphx__get_verification_confirmation_status": VerificationWidget,
-  "mcp__ralphx__get_pending_confirmations": VerificationWidget,
   // Child session creation → ChildSessionWidget
   "mcp__ralphx__create_child_session": ChildSessionWidget,
   "mcp__ralphx__start_ideation_session": ChildSessionWidget,
@@ -253,6 +246,19 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   "mcp__ralphx__search_memories": SearchMemoriesWidget,
   // MCP team plan tool → McpContextWidgets (WidgetCard with teammate list)
   "mcp__ralphx__request_team_plan": TeamPlanWidget,
+  // Scripted Agent Workflow approval, progress, and lifecycle controls.
+  create_agent_workflow_script: AgentWorkflowWidget,
+  start_agent_workflow_run: AgentWorkflowWidget,
+  get_agent_workflow_run: AgentWorkflowWidget,
+  pause_agent_workflow_run: AgentWorkflowWidget,
+  resume_agent_workflow_run: AgentWorkflowWidget,
+  cancel_agent_workflow_run: AgentWorkflowWidget,
+  "mcp__ralphx__create_agent_workflow_script": AgentWorkflowWidget,
+  "mcp__ralphx__start_agent_workflow_run": AgentWorkflowWidget,
+  "mcp__ralphx__get_agent_workflow_run": AgentWorkflowWidget,
+  "mcp__ralphx__pause_agent_workflow_run": AgentWorkflowWidget,
+  "mcp__ralphx__resume_agent_workflow_run": AgentWorkflowWidget,
+  "mcp__ralphx__cancel_agent_workflow_run": AgentWorkflowWidget,
 };
 
 /**

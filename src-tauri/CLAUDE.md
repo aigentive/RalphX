@@ -18,9 +18,9 @@ src-tauri/src/
 │  └─ agents/          # AgenticClient trait
 ├─ application/
 │  ├─ app_state.rs     # DI container
-│  ├─ *_service.rs     # Business logic
-│  └─ http_server.rs   # Axum :3847 for MCP
+│  └─ *_service.rs     # Business logic
 ├─ commands/           # Thin Tauri IPC wrappers
+├─ http_server/        # Axum :3847 handlers/routes for MCP adapters
 └─ infrastructure/
    ├─ sqlite/          # Repo implementations
    └─ memory/          # Test repos
@@ -89,7 +89,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Follow-up blocker dedupe | Autonomous blocker follow-ups dedupe by first-class `blocker_fingerprint`; never rely on `spawn_reason` wording alone. See `.claude/rules/followup-blocker-dedupe.md` |
 | Rustfmt module roots | Never run `rustfmt` on `mod.rs` or other module-root files for a surgical change; rustfmt can recurse into child modules and create unrelated diffs |
 | ExecutionState Propagation | `Arc<ExecutionState>` → `TaskTransitionService::new()` + `AgenticClientSpawner::with_execution_state()` |
-| Agent MCP Tool Allowlist | MCP/tool changes are multi-layer: keep agent frontmatter, `config/ralphx.yaml`, and `plugins/app/ralphx-mcp-server/src/tools.ts` aligned; see `.claude/rules/agent-mcp-tools.md` |
+| Agent MCP Tool Allowlist | MCP/tool changes are multi-layer: keep canonical `agents/<agent>/agent.yaml`, prompt contracts, runtime authorization, and registered handlers aligned; see `.claude/rules/agent-mcp-tools.md` |
 | Git Modes & Merge | Two modes (Local/Worktree), two-level branches (plan→task) — see task-git-branching.md |
 | PreMergeCleanup | Kill agents + kill_worktree_processes BEFORE git worktree ops (TOCTOU race prevention) |
 | MergeDeadline | `attempt_programmatic_merge` wraps cleanup + strategy in bounded deadline (`attempt_merge_deadline_secs`) |
@@ -132,7 +132,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Rust std API stability | Avoid unstable std APIs in production code (e.g., `is_multiple_of`) — use stable equivalents (e.g., `%`). See `.claude/rules/rust-stable-apis.md` |
 
 ## Code Quality
-Multi-stream workflow: `.claude/rules/stream-*.md` (features/refactor/polish). File limits + migration rules: `.claude/rules/code-quality-standards.md`.
+Keep work inside the requested feature/refactor/polish scope. File limits + migration rules: `.claude/rules/code-quality-standards.md`.
 **500 lines max** (refactor@400). Zero warnings policy — see root CLAUDE.md #8. Public API → doc `/// # Errors` section.
 
 ## Database

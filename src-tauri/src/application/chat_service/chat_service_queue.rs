@@ -31,8 +31,9 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    ChatContextType, ChatConversationId, ChatMessageId, CoordinationMode, IdeationSessionId,
-    InternalStatus, MessageRole, PersonaDirective, ProjectId, SessionPurpose, TaskId, TeamIntent,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, CoordinationMode,
+    IdeationSessionId, InternalStatus, MessageRole, Persona, PersonaDirective, ProjectId,
+    SessionPurpose, TaskId, TeamIntent,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentProviderSettingsRepository, AgentRunRepository,
@@ -469,6 +470,7 @@ fn build_queued_agent_run(
     provider_session_id: &str,
     run_chain_id: Option<&str>,
     parent_run_id: Option<&str>,
+    metadata: Option<&str>,
 ) -> AgentRun {
     let mut run = match (run_chain_id, parent_run_id) {
         (Some(chain_id), Some(parent_id)) => {
@@ -478,6 +480,7 @@ fn build_queued_agent_run(
     };
     run.harness = Some(harness);
     run.provider_session_id = Some(provider_session_id.to_string());
+    run.apply_action_metadata_json(metadata);
     run
 }
 
@@ -492,6 +495,9 @@ struct QueuedProjectAgentContext {
     identity: QueuedAgentIdentity,
     workspace: Option<AgentConversationWorkspace>,
     effective_mode: Option<AgentConversationWorkspaceMode>,
+    conversation: Option<ChatConversation>,
+    builder_draft: Option<Persona>,
+    builder_context_error: Option<String>,
 }
 
 fn queued_agent_identity_for_mode(
@@ -520,20 +526,52 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
     };
 
     let app_state = handle.state::<AppState>();
-    let conversation_mode = match app_state
+    let mut builder_context_error = None;
+    let conversation = match app_state
         .chat_conversation_repo
         .get_by_id(conversation_id)
         .await
     {
-        Ok(conversation) => conversation.and_then(|conversation| conversation.agent_mode),
+        Ok(conversation) => conversation,
         Err(error) => {
             tracing::warn!(
                 error = %error,
                 %conversation_id,
                 "[QUEUE] Failed to resolve queued conversation mode"
             );
+            builder_context_error = Some(format!(
+                "PersonaBuilder conversation lookup failed: {error}"
+            ));
             None
         }
+    };
+    let conversation_mode = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.agent_mode);
+    let builder_draft = if let Some(draft_id) = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.builder_draft_id.as_deref())
+    {
+        match app_state
+            .persona_repo
+            .get_by_id(&crate::domain::entities::PersonaId::from(draft_id))
+            .await
+        {
+            Ok(Some(draft)) => Some(draft),
+            Ok(None) => {
+                builder_context_error = Some(format!(
+                    "Bound PersonaBuilder draft {draft_id} was not found"
+                ));
+                None
+            }
+            Err(error) => {
+                builder_context_error =
+                    Some(format!("PersonaBuilder draft lookup failed: {error}"));
+                None
+            }
+        }
+    } else {
+        None
     };
     let workspace = match app_state
         .agent_conversation_workspace_repo
@@ -556,6 +594,9 @@ async fn resolve_queued_project_agent_context<R: Runtime + 'static>(
         identity: queued_agent_identity_for_mode(mode.clone()),
         workspace,
         effective_mode: mode,
+        conversation,
+        builder_draft,
+        builder_context_error,
     }
 }
 
@@ -974,6 +1015,29 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 &conversation_id,
             )
             .await;
+            if let Some(error) = queued_agent_context.builder_context_error.as_ref() {
+                tracing::warn!(
+                    error,
+                    %context_type,
+                    context_id,
+                    "queue resume blocked because PersonaBuilder context could not be loaded"
+                );
+                if let Some(ref handle) = app_handle {
+                    let _ = handle.emit(
+                        "agent:error",
+                        AgentErrorPayload {
+                            conversation_id: Some(conversation_id.as_str().to_string()),
+                            context_type: context_type.to_string(),
+                            context_id: context_id.to_string(),
+                            agent_run_id: None,
+                            error: error.clone(),
+                            stderr: None,
+                        },
+                    );
+                }
+                total_processed += 1;
+                continue;
+            }
 
             if queued_message_requires_fresh_provider_session(&queued_msg, harness) {
                 let Some(ref handle) = app_handle else {
@@ -1086,6 +1150,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 session_id,
                 run_chain_id,
                 parent_run_id,
+                queued_msg.metadata_override.as_deref(),
             );
             let queued_run_id = queued_run.id.as_str().to_string();
             if let Err(error) = agent_run_repo.create(queued_run).await {
@@ -1494,6 +1559,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 runtime_content,
                 queued_agent_context.workspace.as_ref(),
             );
+            let runtime_content = super::persona_builder_runtime_message(
+                runtime_content,
+                queued_agent_context.conversation.as_ref(),
+                queued_agent_context.builder_draft.as_ref(),
+            );
             let filesystem_read_roots = if let Some(project_repo) = project_repo {
                 let conversation_id_for_roots = conversation_id.as_str();
                 chat_service_context::resolve_mcp_filesystem_read_roots(
@@ -1517,6 +1587,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 plugin_dir,
                 context_type,
                 context_id,
+                conversation_coordination_mode.unwrap_or(CoordinationMode::Solo),
                 &runtime_content,
                 resolved_persona,
                 queued_agent_context.identity.agent_name,

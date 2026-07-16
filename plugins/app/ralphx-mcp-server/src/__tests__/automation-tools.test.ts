@@ -30,6 +30,7 @@ describe("automation setup MCP tools", () => {
   it("recognizes only automation setup tool names", () => {
     expect(isAutomationSetupToolName("get_automation")).toBe(true);
     expect(isAutomationSetupToolName("update_automation")).toBe(true);
+    expect(isAutomationSetupToolName("verify_automation_decomposition")).toBe(true);
     expect(isAutomationSetupToolName("finalize_automation")).toBe(true);
     expect(isAutomationSetupToolName("list_projects")).toBe(false);
   });
@@ -149,6 +150,27 @@ describe("automation setup MCP tools", () => {
 
     expect(calls[0]).toEqual({
       path: "finalize_automation",
+      body: {},
+      options: {
+        headers: {
+          "X-RalphX-Caller-Session-Id": "conversation-1",
+        },
+      },
+    });
+  });
+
+  it("forwards decomposition verification with caller-bound identity only", async () => {
+    const { callTauri, calls } = capturePost();
+
+    await callAutomationSetupTool(
+      "verify_automation_decomposition",
+      callTauri,
+      { automation_id: "must-not-forward" },
+      { conversationId: "conversation-1" }
+    );
+
+    expect(calls[0]).toEqual({
+      path: "verify_automation_decomposition",
       body: {},
       options: {
         headers: {

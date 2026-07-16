@@ -8,4 +8,10 @@ pub trait UiFeatureFlagOverridesRepository: Send + Sync {
     async fn get(&self) -> AppResult<UiFeatureFlagOverrides>;
 
     async fn set_agent_personas(&self, value: Option<bool>) -> AppResult<()>;
+
+    async fn update_agent_capabilities(
+        &self,
+        team: Option<bool>,
+        workflows: Option<bool>,
+    ) -> AppResult<UiFeatureFlagOverrides>;
 }

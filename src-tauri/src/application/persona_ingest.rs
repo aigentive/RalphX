@@ -8,14 +8,16 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
 
+pub use super::persona_ingest_batch::ingest_picked_roots;
+
 pub const MAX_INGEST_FILE_BYTES: u64 = 256 * 1024;
 pub const MAX_INGEST_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_INGEST_FILES: u64 = 500;
 pub const MAX_INGEST_DEPTH: usize = 12;
 
 const PERSONA_INGEST_DIR: &str = "persona_ingest";
-const CONTENT_FILE_NAME: &str = "content";
-const MANIFEST_FILE_NAME: &str = "manifest.json";
+pub(super) const CONTENT_FILE_NAME: &str = "content";
+pub(super) const MANIFEST_FILE_NAME: &str = "manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,11 +98,12 @@ pub fn persona_builder_ingest_session_is_live(
 /// Returns an error when `relative_path` is empty, rooted, or traverses parents.
 pub fn build_persona_ingest_file_path(
     destination_root: &Path,
+    canonical_root: &Path,
     relative_path: &Path,
 ) -> AppResult<PathBuf> {
     let relative_display = relative_display_path(relative_path)?;
     Ok(destination_root
-        .join(hashed_component("file", &relative_display))
+        .join(hashed_file_component(canonical_root, &relative_display))
         .join(CONTENT_FILE_NAME))
 }
 
@@ -127,41 +130,56 @@ pub fn ingest_picked_root(
     let mut manifest = PersonaIngestManifest::default();
     let mut usage = IngestUsage::default();
 
+    ingest_validated_picked_root(
+        picked_root,
+        &canonical_root,
+        &root_metadata,
+        &canonical_destination_root,
+        &mut usage,
+        &mut manifest,
+    )?;
+
+    persist_manifest(&canonical_destination_root, &manifest)?;
+    Ok(manifest)
+}
+
+pub(super) fn ingest_validated_picked_root(
+    picked_root: &Path,
+    canonical_root: &Path,
+    root_metadata: &fs::Metadata,
+    canonical_destination_root: &Path,
+    usage: &mut IngestUsage,
+    manifest: &mut PersonaIngestManifest,
+) -> AppResult<()> {
     if root_metadata.is_file() {
         let file_name = picked_root
             .file_name()
             .ok_or_else(|| AppError::Validation("Picked file must have a file name".to_string()))?;
         let relative_path = safe_relative_join(Path::new(""), Path::new(file_name))?;
         ingest_file(
-            &canonical_root,
-            &canonical_root,
+            canonical_root,
+            canonical_root,
             &relative_path,
             0,
-            &canonical_destination_root,
-            &mut usage,
-            &mut manifest,
+            canonical_destination_root,
+            usage,
+            manifest,
         )?;
     } else if root_metadata.is_dir() {
-        ingest_directory_tree(
-            &canonical_root,
-            &canonical_destination_root,
-            &mut usage,
-            &mut manifest,
-        )?;
+        ingest_directory_tree(canonical_root, canonical_destination_root, usage, manifest)?;
     } else {
         return Err(AppError::Validation(
             "Picked path must be a regular file or directory".to_string(),
         ));
     }
 
-    persist_manifest(&canonical_destination_root, &manifest)?;
-    Ok(manifest)
+    Ok(())
 }
 
 #[derive(Default)]
-struct IngestUsage {
-    files: u64,
-    bytes: u64,
+pub(super) struct IngestUsage {
+    pub(super) files: u64,
+    pub(super) bytes: u64,
 }
 
 fn ingest_directory_tree(
@@ -177,9 +195,11 @@ fn ingest_directory_tree(
         // codeql[rust/path-injection]
         let entries = fs::read_dir(&directory)
             .map_err(|error| filesystem_error("read a picked directory", error))?;
+        let mut entries = entries
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| filesystem_error("read a picked directory entry", error))?;
+        entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
-            let entry =
-                entry.map_err(|error| filesystem_error("read a picked directory entry", error))?;
             let file_name = entry.file_name();
             let relative_path = safe_relative_join(&relative_directory, Path::new(&file_name))?;
             let display_path = relative_display_path(&relative_path)?;
@@ -243,10 +263,10 @@ fn ingest_file(
             .push(skipped_entry(display_path, "maximum ingest depth exceeded"));
         return Ok(());
     }
-    if !is_allowed_text_path(relative_path) {
+    if is_denied_binary_path(relative_path) {
         manifest
             .skipped
-            .push(skipped_entry(display_path, "unsupported file type"));
+            .push(skipped_entry(display_path, "binary file type"));
         return Ok(());
     }
     // codeql[rust/path-injection]
@@ -265,20 +285,6 @@ fn ingest_file(
         ));
         return Ok(());
     }
-    if usage.files >= MAX_INGEST_FILES {
-        manifest.skipped.push(skipped_entry(
-            display_path,
-            "file count exceeds ingest limit",
-        ));
-        return Ok(());
-    }
-    if usage.bytes.saturating_add(metadata.len()) > MAX_INGEST_TOTAL_BYTES {
-        manifest
-            .skipped
-            .push(skipped_entry(display_path, "total byte limit exceeded"));
-        return Ok(());
-    }
-
     // codeql[rust/path-injection]
     let canonical_file = source_path
         .canonicalize()
@@ -299,7 +305,35 @@ fn ingest_file(
             .push(skipped_entry(display_path, "file changed before ingest"));
         return Ok(());
     }
-    if usage.bytes.saturating_add(canonical_metadata.len()) > MAX_INGEST_TOTAL_BYTES {
+    let destination =
+        build_persona_ingest_file_path(destination_root, canonical_root, relative_path)?;
+    let safe_destination = prepare_destination_file(destination_root, &destination)?;
+    // codeql[rust/path-injection]
+    let existing_metadata = match fs::symlink_metadata(&safe_destination) {
+        Ok(metadata) if metadata.is_file() => Some(metadata),
+        Ok(_) => {
+            return Err(AppError::Validation(
+                "App-owned ingest destination must be a regular file".to_string(),
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(filesystem_error(
+                "inspect an app-owned ingest destination",
+                error,
+            ))
+        }
+    };
+    if existing_metadata.is_none() && usage.files >= MAX_INGEST_FILES {
+        manifest.skipped.push(skipped_entry(
+            display_path,
+            "file count exceeds ingest limit",
+        ));
+        return Ok(());
+    }
+    let existing_bytes = existing_metadata.as_ref().map_or(0, fs::Metadata::len);
+    let retained_bytes = usage.bytes.saturating_sub(existing_bytes);
+    if retained_bytes.saturating_add(canonical_metadata.len()) > MAX_INGEST_TOTAL_BYTES {
         manifest
             .skipped
             .push(skipped_entry(display_path, "total byte limit exceeded"));
@@ -319,21 +353,29 @@ fn ingest_file(
         return Ok(());
     }
 
-    let destination = build_persona_ingest_file_path(destination_root, relative_path)?;
-    let safe_destination = prepare_destination_file(destination_root, &destination)?;
+    let was_updated = if existing_metadata.is_some() {
+        // codeql[rust/path-injection]
+        fs::read(&safe_destination)
+            .map_err(|error| filesystem_error("read an app-owned ingest copy", error))?
+            != contents
+    } else {
+        false
+    };
     // codeql[rust/path-injection]
     fs::write(&safe_destination, &contents)
         .map_err(|error| filesystem_error("write an app-owned ingest copy", error))?;
-    usage.files += 1;
-    usage.bytes += contents.len() as u64;
+    if existing_metadata.is_none() {
+        usage.files += 1;
+    }
+    usage.bytes = retained_bytes.saturating_add(contents.len() as u64);
     manifest.copied.push(PersonaIngestEntry {
         path: display_path,
-        reason: None,
+        reason: was_updated.then(|| "updated".to_string()),
     });
     Ok(())
 }
 
-fn ensure_destination_root(destination_root: &Path) -> AppResult<PathBuf> {
+pub(super) fn ensure_destination_root(destination_root: &Path) -> AppResult<PathBuf> {
     // codeql[rust/path-injection]
     fs::create_dir_all(destination_root)
         .map_err(|error| filesystem_error("create the app-owned ingest root", error))?;
@@ -449,7 +491,7 @@ fn validate_single_component(path: &Path) -> AppResult<()> {
     }
 }
 
-fn require_under_root(path: &Path, root: &Path, label: &str) -> AppResult<()> {
+pub(super) fn require_under_root(path: &Path, root: &Path, label: &str) -> AppResult<()> {
     if path.starts_with(root) {
         Ok(())
     } else {
@@ -459,15 +501,72 @@ fn require_under_root(path: &Path, root: &Path, label: &str) -> AppResult<()> {
     }
 }
 
-fn is_allowed_text_path(path: &Path) -> bool {
+fn is_denied_binary_path(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+    {
+        return true;
+    }
+
     matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some(extension) if matches!(extension.to_ascii_lowercase().as_str(),
-            "txt" | "md" | "mdx" | "rst" | "adoc" | "json" | "yaml" | "yml" | "toml"
-            | "ini" | "cfg" | "conf" | "log" | "rs" | "ts" | "tsx" | "js" | "jsx"
-            | "py" | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp"
-            | "cs" | "rb" | "php" | "html" | "css" | "scss" | "sql" | "sh" | "bash"
-            | "zsh" | "fish" | "xml" | "csv"
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "7z" | "a"
+                | "app"
+                | "avi"
+                | "bin"
+                | "bmp"
+                | "bz2"
+                | "class"
+                | "db"
+                | "dll"
+                | "dmg"
+                | "doc"
+                | "docx"
+                | "dylib"
+                | "exe"
+                | "flac"
+                | "gif"
+                | "gz"
+                | "ico"
+                | "jar"
+                | "jpeg"
+                | "jpg"
+                | "mkv"
+                | "mov"
+                | "mp3"
+                | "mp4"
+                | "o"
+                | "obj"
+                | "otf"
+                | "pdf"
+                | "pkg"
+                | "png"
+                | "ppt"
+                | "pptx"
+                | "pyc"
+                | "rar"
+                | "so"
+                | "sqlite"
+                | "sqlite3"
+                | "tar"
+                | "tif"
+                | "tiff"
+                | "ttf"
+                | "wasm"
+                | "wav"
+                | "webp"
+                | "woff"
+                | "woff2"
+                | "xls"
+                | "xlsx"
+                | "xz"
+                | "zip"
         )
     )
 }
@@ -495,6 +594,19 @@ fn hashed_component(prefix: &str, value: &str) -> String {
     format!("{prefix}-{encoded}")
 }
 
-fn filesystem_error(action: &str, error: std::io::Error) -> AppError {
+fn hashed_file_component(canonical_root: &Path, relative_display: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(canonical_root.as_os_str().as_encoded_bytes());
+    digest.update([0]);
+    digest.update(relative_display.as_bytes());
+    let digest = digest.finalize();
+    let encoded = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("file-{encoded}")
+}
+
+pub(super) fn filesystem_error(action: &str, error: std::io::Error) -> AppError {
     AppError::Infrastructure(format!("Failed to {action}: {error}"))
 }
