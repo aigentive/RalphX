@@ -166,9 +166,11 @@ pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod throttled_emitter;
+pub mod ticket_attachment_service;
 pub mod ticket_canonical_branch;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
+pub(crate) mod ticketing_identity;
 pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
@@ -296,6 +298,10 @@ pub use team_state_tracker::TeamStateTracker;
 pub use throttled_emitter::ThrottledEmitter;
 pub use ticketing_cache_invalidator::{
     TicketingCacheInvalidatedEvent, TicketingCacheInvalidator, TICKETING_CACHE_INVALIDATED_EVENT,
+};
+pub use ticket_attachment_service::{
+    TicketAttachmentList, TicketAttachmentMetadata, TicketAttachmentService,
+    TicketAttachmentSource, TicketAttachmentSourceKind,
 };
 pub use ticketing_service::{
     TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketSetLabelsRequest,

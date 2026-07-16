@@ -16,27 +16,14 @@ use crate::domain::integrations::{
     ProviderTicketOperationUpsert,
 };
 
+pub use super::ticketing_identity::TicketingTicketIdentity;
+pub(crate) use super::ticketing_identity::{
+    normalize_ticket_identity, required_trimmed, TicketIdentity, LINK_PROVIDER_CLICKUP,
+    LINK_PROVIDER_JIRA, PROVIDER_CLICKUP, PROVIDER_JIRA, PROVIDER_LINEAR,
+};
 use super::ExternalIssueLinkService;
 
 pub const TICKETING_OPERATION_EVENT: &str = "ticketing:operation_updated";
-
-const PROVIDER_JIRA: &str = "jira";
-const PROVIDER_LINEAR: &str = "linear";
-const PROVIDER_CLICKUP: &str = "clickup";
-const LINK_PROVIDER_JIRA: &str = "atlassian";
-const LINK_PROVIDER_CLICKUP: &str = "clickup";
-const KIND_JIRA: &str = "jira";
-const KIND_LINEAR: &str = "issue";
-const KIND_CLICKUP: &str = "task";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TicketingTicketIdentity {
-    pub provider: String,
-    pub id: String,
-    pub key: Option<String>,
-    pub local_project_id: Option<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,15 +137,6 @@ impl<R: Runtime> TicketingEventSink for TauriTicketingEventSink<R> {
     fn emit_ticketing_operation_event(&self, event: TicketingOperationEvent) {
         let _ = self.app_handle.emit(TICKETING_OPERATION_EVENT, event);
     }
-}
-
-#[derive(Debug)]
-struct TicketIdentity {
-    provider: String,
-    external_kind: String,
-    external_id: String,
-    external_key: Option<String>,
-    local_project_id: Option<String>,
 }
 
 struct BegunOperation {
@@ -856,45 +834,6 @@ impl TicketingService {
     }
 }
 
-fn normalize_ticket_identity(ticket: &TicketingTicketIdentity) -> Result<TicketIdentity, String> {
-    let provider = ticket.provider.trim();
-    let provider = match provider {
-        PROVIDER_JIRA | PROVIDER_LINEAR | PROVIDER_CLICKUP => provider.to_string(),
-        other => return Err(format!("Unknown ticketing provider: {other}")),
-    };
-    let raw_id = required_trimmed(&ticket.id, "Ticket id is required")?;
-    let key = ticket
-        .key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    // Only Jira keys its external object by the human-readable issue key; Linear
-    // and ClickUp address objects by their opaque id.
-    let external_id = if provider == PROVIDER_JIRA {
-        key.clone().unwrap_or_else(|| raw_id.to_string())
-    } else {
-        raw_id.to_string()
-    };
-    let external_kind = match provider.as_str() {
-        PROVIDER_JIRA => KIND_JIRA,
-        PROVIDER_CLICKUP => KIND_CLICKUP,
-        _ => KIND_LINEAR,
-    };
-    Ok(TicketIdentity {
-        external_kind: external_kind.to_string(),
-        provider,
-        external_id,
-        external_key: key,
-        local_project_id: ticket
-            .local_project_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-    })
-}
-
 fn ticket_operation_matches_request(
     operation: &ProviderTicketOperation,
     identity: &TicketIdentity,
@@ -906,15 +845,6 @@ fn ticket_operation_matches_request(
         && operation.external_key == identity.external_key
         && operation.local_project_id == identity.local_project_id
         && operation.operation == requested_operation
-}
-
-fn required_trimmed<'a>(value: &'a str, message: &str) -> Result<&'a str, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        Err(message.to_string())
-    } else {
-        Ok(trimmed)
-    }
 }
 
 fn client_operation_id_or_derive(
