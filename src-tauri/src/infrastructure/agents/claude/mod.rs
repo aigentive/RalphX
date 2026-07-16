@@ -25,7 +25,8 @@ pub use agent_config::team_config::{
 pub use agent_config::{
     agent_configs, agent_harness_defaults_config, agent_personas_enabled, automations_config,
     claude_runtime_config,
-    config_path, defer_merge_enabled, execution_defaults_config, external_mcp_config,
+    composer_folder_references_enabled, config_path, defer_merge_enabled,
+    execution_defaults_config, external_mcp_config,
     external_mcp_config_path, file_logging_enabled, get_agent_config, get_agent_config_for_profile,
     get_allowed_tools, get_allowed_tools_for_profile, get_effective_settings,
     get_effective_settings_profile, get_preapproved_tools, get_preapproved_tools_for_profile,
@@ -38,7 +39,8 @@ pub use agent_config::{
     StreamTimeoutsConfig, SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
 };
 pub use agent_config::live_flags::{
-    reset_agent_personas_override_for_test, set_agent_personas_override,
+    reset_agent_personas_override_for_test, reset_composer_folder_references_override_for_test,
+    set_agent_personas_override, set_composer_folder_references_override,
 };
 pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;

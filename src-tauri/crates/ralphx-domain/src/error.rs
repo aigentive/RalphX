@@ -81,6 +81,31 @@ pub enum AppError {
         "PERSONA_DRAFT_CONFLICT: expected content hash `{expected}` but current hash is `{actual}`"
     )]
     PersonaDraftConflict { expected: String, actual: String },
+
+    #[error(
+        "CONVERSATION_FOLDER_REFERENCE_LIMIT: conversation `{conversation_id}` already has the maximum of {limit} live folder references; remove one before adding another"
+    )]
+    ConversationFolderReferenceLimit {
+        conversation_id: String,
+        limit: usize,
+    },
+
+    #[error(
+        "CONVERSATION_FOLDER_REFERENCE_DUPLICATE: conversation `{conversation_id}` already references `{folder_path}`"
+    )]
+    ConversationFolderReferenceDuplicate {
+        conversation_id: String,
+        folder_path: String,
+    },
+
+    #[error("CONVERSATION_FOLDER_REFERENCE_UNSUPPORTED_CONTEXT: folder references require a Project conversation")]
+    ConversationFolderReferenceUnsupportedContext,
+
+    #[error("CONVERSATION_FOLDER_REFERENCE_UNSUPPORTED_MODE: folder references are unavailable in persona_builder mode")]
+    ConversationFolderReferenceUnsupportedMode,
+
+    #[error("CONVERSATION_FOLDER_REFERENCE_APP_DATA_UNAVAILABLE: RalphX application data could not be canonicalized: {detail}")]
+    ConversationFolderReferenceAppDataUnavailable { detail: String },
 }
 
 impl From<AgentError> for AppError {

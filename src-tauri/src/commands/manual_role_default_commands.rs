@@ -280,7 +280,12 @@ pub async fn reset_agent_conversation_role_default_for_state(
         codex_ultra_supported,
     )
     .map_err(|error| error.to_string())?;
-    validate_persona(state, value.persona_id.as_ref()).await?;
+    validate_persona(
+        state,
+        value.persona_id.as_ref(),
+        Some(&conversation.context_id),
+    )
+    .await?;
 
     let persona_id = value.persona_id.as_ref().map(PersonaId::as_str);
     let persona_changed = conversation.persona_id.as_deref() != persona_id;
@@ -342,7 +347,12 @@ pub async fn update_manual_role_default_for_state(
     let role = parse_role(&input.role)?;
     let value = parse_input(input.value)?;
     validate_manual_role_default_update(role, &value, &state.agent_capability_gate)?;
-    validate_persona(state, value.persona_id.as_ref()).await?;
+    validate_persona(
+        state,
+        value.persona_id.as_ref(),
+        input.project_id.as_deref(),
+    )
+    .await?;
 
     let row = match input.project_id {
         Some(project_id) => {
@@ -449,16 +459,21 @@ async fn configured_rows(
     Ok(rows.into_iter().map(|row| (row.role, row)).collect())
 }
 
-async fn validate_persona(state: &AppState, persona_id: Option<&PersonaId>) -> Result<(), String> {
+async fn validate_persona(
+    state: &AppState,
+    persona_id: Option<&PersonaId>,
+    project_id: Option<&str>,
+) -> Result<(), String> {
     let Some(persona_id) = persona_id else {
         return Ok(());
     };
+    let project_id = project_id.map(|value| ProjectId::from_string(value.to_string()));
     PersonaService::new(
         state.db.clone(),
         state.persona_repo.clone(),
         state.chat_conversation_repo.clone(),
     )
-    .ensure_bindable(agent_personas_enabled(), persona_id)
+    .ensure_bindable_to_scope(agent_personas_enabled(), persona_id, project_id.as_ref())
     .await
     .map(|_| ())
     .map_err(|error| error.to_string())

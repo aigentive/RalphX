@@ -475,6 +475,7 @@ mod v20260715183000_automation_ideation_signal;
 mod v20260715183000_automation_ideation_signal_tests;
 mod v20260715194617_scripted_agent_workflows;
 mod v20260716170840_persona_project_scope;
+mod v20260716204027_conversation_folder_references;
 #[cfg(test)]
 mod v20260715194617_scripted_agent_workflows_tests;
 mod v20260716154318_manual_role_defaults;
@@ -500,6 +501,8 @@ mod v20260718182035_add_tasks_enabled_setting;
 mod v20260718182035_add_tasks_enabled_setting_tests;
 #[cfg(test)]
 mod v20260716170840_persona_project_scope_tests;
+#[cfg(test)]
+mod v20260716204027_conversation_folder_references_tests;
 #[cfg(test)]
 pub(super) fn migrate_scripted_agent_workflows_for_test(conn: &Connection) -> AppResult<()> {
     v20260715194617_scripted_agent_workflows::migrate(conn)
@@ -1613,6 +1616,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260716202015,
         name: "workspace_review_bypass_and_bound_agent",
         migrate: v20260716202015_workspace_review_bypass_and_bound_agent::migrate,
+    },
+    Migration {
+        version: 20260716204027,
+        name: "conversation_folder_references",
+        migrate: v20260716204027_conversation_folder_references::migrate,
     },
     Migration {
         version: 20260716210000,

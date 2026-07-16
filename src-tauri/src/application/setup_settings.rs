@@ -15,6 +15,7 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::infrastructure::agents::claude::{
     apply_claude_provider_permission_settings, set_agent_personas_override,
+    set_composer_folder_references_override,
 };
 use crate::AppState;
 
@@ -28,6 +29,7 @@ pub(crate) fn initialize_settings_defaults(
         match feature_flag_overrides_repo.get().await {
             Ok(overrides) => {
                 set_agent_personas_override(overrides.agent_personas);
+                set_composer_folder_references_override(overrides.composer_folder_references);
                 agent_capability_gate.replace(AgentCapabilities {
                     team: overrides.agent_conversation_team,
                     workflows: overrides.agent_conversation_workflows,

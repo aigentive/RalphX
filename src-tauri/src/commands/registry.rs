@@ -433,6 +433,9 @@ macro_rules! register_tauri_commands {
             commands::chat_attachment_commands::list_conversation_attachments,
             commands::chat_attachment_commands::list_message_attachments,
             commands::chat_attachment_commands::delete_chat_attachment,
+            commands::conversation_folder_reference_commands::add_conversation_folder_reference,
+            commands::conversation_folder_reference_commands::remove_conversation_folder_reference,
+            commands::conversation_folder_reference_commands::list_conversation_folder_references,
             // Activity event commands (pagination, filtering)
             commands::activity_commands::list_task_activity_events,
             commands::activity_commands::list_session_activity_events,

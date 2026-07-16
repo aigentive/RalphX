@@ -272,9 +272,25 @@ impl PersonaService {
         id: &PersonaId,
         project_id: &ProjectId,
     ) -> AppResult<Persona> {
+        self.ensure_bindable_to_scope(feature_enabled, id, Some(project_id))
+            .await
+    }
+
+    pub async fn ensure_bindable_to_scope(
+        &self,
+        feature_enabled: bool,
+        id: &PersonaId,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<Persona> {
         ensure_enabled(feature_enabled)?;
         let persona = self.persona_repo.get_by_id(id).await?;
-        match persona.filter(|persona| persona.is_bindable_to_project(project_id)) {
+        match persona.filter(|persona| {
+            persona.status == PersonaStatus::Active
+                && match project_id {
+                    Some(project_id) => persona.is_bindable_to_project(project_id),
+                    None => persona.project_id.is_none(),
+                }
+        }) {
             Some(persona) => Ok(persona),
             None => Err(AppError::PersonaUnavailable(format!(
                 "{PERSONA_UNAVAILABLE_PREFIX} persona {id} is not active]"

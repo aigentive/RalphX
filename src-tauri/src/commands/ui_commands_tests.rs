@@ -19,6 +19,10 @@ impl UiFeatureFlagOverridesRepository for FailingCapabilityOverridesRepository {
         Ok(())
     }
 
+    async fn set_composer_folder_references(&self, _value: Option<bool>) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_agent_capabilities(
         &self,
         _team: Option<bool>,
@@ -36,6 +40,10 @@ fn get_ui_feature_flags_includes_agent_personas() {
     let json = serde_json::to_value(response).expect("feature flags response should serialize");
 
     assert_eq!(json.get("agentPersonas"), Some(&serde_json::json!(false)));
+    assert_eq!(
+        json.get("composerFolderReferences"),
+        Some(&serde_json::json!(false))
+    );
     assert_eq!(
         json.get("agentConversationTeam"),
         Some(&serde_json::json!(false))
@@ -131,6 +139,7 @@ async fn updating_capabilities_persists_then_updates_the_live_gate() {
     let response = update_ui_feature_flags_for_state(
         UpdateUiFeatureFlagsInput {
             agent_personas: None,
+            composer_folder_references: None,
             agent_conversation_team: Some(true),
             agent_conversation_workflows: Some(false),
             agent_conversation_autopilot: Some(true),
@@ -164,6 +173,7 @@ async fn failed_capability_write_leaves_the_live_gate_unchanged() {
     let error = update_ui_feature_flags_for_state(
         UpdateUiFeatureFlagsInput {
             agent_personas: None,
+            composer_folder_references: None,
             agent_conversation_team: Some(true),
             agent_conversation_workflows: None,
             agent_conversation_autopilot: None,

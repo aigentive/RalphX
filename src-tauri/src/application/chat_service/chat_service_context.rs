@@ -48,6 +48,24 @@ use crate::application::persona_ingest::{
 };
 use crate::application::persona_prompt::ResolvedPersona;
 
+pub const FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE: &str = "folder_reference_context_unavailable";
+pub const FOLDER_REFS_SKIPPED_PROMPT_UNAVAILABLE: &str = "folder_reference_prompt_unavailable";
+pub const FOLDER_REFS_SKIPPED_NON_PROJECT: &str = "folder_reference_non_project_context";
+pub const FOLDER_REFS_SKIPPED_PERSONA_BUILDER: &str = "folder_reference_persona_builder_mode";
+
+pub fn folder_references_skip_reason(
+    context_type: ChatContextType,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
+) -> Option<&'static str> {
+    if context_type != ChatContextType::Project {
+        Some(FOLDER_REFS_SKIPPED_NON_PROJECT)
+    } else if super::is_persona_builder_conversation(effective_mode) {
+        Some(FOLDER_REFS_SKIPPED_PERSONA_BUILDER)
+    } else {
+        None
+    }
+}
+
 /// Maximum number of recent messages to inject into the bootstrap prompt.
 pub const SESSION_HISTORY_LIMIT: usize = 50;
 
@@ -274,6 +292,7 @@ struct BuildHarnessCommandRequest<'a> {
     conversation: &'a ChatConversation,
     user_message: &'a str,
     pub persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&'a str>,
     working_directory: &'a Path,
     entity_status: Option<&'a str>,
     project_id: Option<&'a str>,
@@ -301,6 +320,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     effective_mode: Option<AgentConversationWorkspaceMode>,
     message: &'a str,
     pub persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&'a str>,
     agent_name_override: Option<&'a str>,
     agent_profile: Option<&'a str>,
     working_directory: &'a Path,
@@ -332,6 +352,7 @@ struct BuildHarnessLaunchRequest<'a> {
     conversation: &'a ChatConversation,
     user_message: &'a str,
     pub persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&'a str>,
     agent_name_override: Option<&'a str>,
     agent_profile: Option<&'a str>,
     context_type: ChatContextType,
@@ -356,6 +377,26 @@ struct BuildHarnessLaunchRequest<'a> {
     enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
+}
+
+fn finalize_folder_refs_overlay(
+    spawnable: SpawnableCommand,
+    persona_requested: bool,
+    folder_refs_requested: bool,
+    conversation_id: &str,
+) -> SpawnableCommand {
+    if folder_refs_requested && !spawnable.persona_injected() {
+        tracing::warn!(
+            conversation_id,
+            reason = FOLDER_REFS_SKIPPED_PROMPT_UNAVAILABLE,
+            "folder_refs_skipped"
+        );
+    }
+    if persona_requested {
+        spawnable
+    } else {
+        spawnable.with_persona_injection_outcome(false, None)
+    }
 }
 
 #[derive(Debug)]
@@ -459,6 +500,17 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessCommandRequest<'_>,
     ) -> Result<ProviderSpawnableCommand, String> {
+        let persona_requested = request.persona.is_some();
+        let folder_refs_requested = request.folder_refs_block.is_some();
+        let conversation_id = request.conversation.id.as_str();
+        let overlay_block =
+            crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay_block(
+                request
+                    .persona
+                    .as_ref()
+                    .map(|persona| persona.block.as_str()),
+                request.folder_refs_block,
+            );
         match self {
             Self::Claude { cli_path } => Ok(ProviderSpawnableCommand {
                 spawnable: build_command(
@@ -466,10 +518,7 @@ impl ResolvedChatHarnessCli {
                     request.plugin_dir,
                     request.conversation,
                     request.user_message,
-                    request
-                        .persona
-                        .as_ref()
-                        .map(|persona| persona.block.as_str()),
+                    overlay_block.as_deref(),
                     request.working_directory,
                     request.entity_status,
                     request.project_id,
@@ -486,7 +535,15 @@ impl ResolvedChatHarnessCli {
                     request.model_override,
                     request.attachment_context_override,
                 )
-                .await?,
+                .await
+                .map(|spawnable| {
+                    finalize_folder_refs_overlay(
+                        spawnable,
+                        persona_requested,
+                        folder_refs_requested,
+                        &conversation_id,
+                    )
+                })?,
             }),
             Self::Codex {
                 cli_path,
@@ -512,10 +569,7 @@ impl ResolvedChatHarnessCli {
                         request.user_message,
                         request.conversation.bound_agent_name.as_deref(),
                         None,
-                        request
-                            .persona
-                            .as_ref()
-                            .map(|persona| persona.block.as_str()),
+                        overlay_block.as_deref(),
                         None,
                         request.working_directory,
                         request.entity_status,
@@ -531,7 +585,15 @@ impl ResolvedChatHarnessCli {
                         None,
                         request.attachment_context_override,
                     )
-                    .await?,
+                    .await
+                    .map(|spawnable| {
+                        finalize_folder_refs_overlay(
+                            spawnable,
+                            persona_requested,
+                            folder_refs_requested,
+                            &conversation_id,
+                        )
+                    })?,
                 })
             }
         }
@@ -541,6 +603,17 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessResumeCommandRequest<'_>,
     ) -> Result<ProviderSpawnableCommand, String> {
+        let persona_requested = request.persona.is_some();
+        let folder_refs_requested = request.folder_refs_block.is_some();
+        let conversation_id = request.conversation_id;
+        let overlay_block =
+            crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay_block(
+                request
+                    .persona
+                    .as_ref()
+                    .map(|persona| persona.block.as_str()),
+                request.folder_refs_block,
+            );
         match self {
             Self::Claude { cli_path } => {
                 let continuation_effort = request
@@ -565,10 +638,7 @@ impl ResolvedChatHarnessCli {
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
-                        request
-                            .persona
-                            .as_ref()
-                            .map(|persona| persona.block.as_str()),
+                        overlay_block.as_deref(),
                         request.working_directory,
                         request.session_id,
                         request.project_id,
@@ -589,7 +659,15 @@ impl ResolvedChatHarnessCli {
                         model_override,
                         request.attachment_context_override,
                     )
-                    .await?,
+                    .await
+                    .map(|spawnable| {
+                        finalize_folder_refs_overlay(
+                            spawnable,
+                            persona_requested,
+                            folder_refs_requested,
+                            conversation_id,
+                        )
+                    })?,
                 })
             }
             Self::Codex {
@@ -657,10 +735,7 @@ impl ResolvedChatHarnessCli {
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
-                        request
-                            .persona
-                            .as_ref()
-                            .map(|persona| persona.block.as_str()),
+                        overlay_block.as_deref(),
                         request.working_directory,
                         request.session_id,
                         request.project_id,
@@ -678,7 +753,15 @@ impl ResolvedChatHarnessCli {
                         None,
                         request.attachment_context_override,
                     )
-                    .await?,
+                    .await
+                    .map(|spawnable| {
+                        finalize_folder_refs_overlay(
+                            spawnable,
+                            persona_requested,
+                            folder_refs_requested,
+                            conversation_id,
+                        )
+                    })?,
                 })
             }
         }
@@ -688,6 +771,14 @@ impl ResolvedChatHarnessCli {
         self,
         request: BuildHarnessLaunchRequest<'_>,
     ) -> Result<ResolvedChatHarnessLaunch, String> {
+        let overlay_block =
+            crate::infrastructure::agents::persona_overlay::render_ordered_prompt_overlay_block(
+                request
+                    .persona
+                    .as_ref()
+                    .map(|persona| persona.block.as_str()),
+                request.folder_refs_block,
+            );
         match self {
             Self::Claude { cli_path } => {
                 let spawnable = build_interactive_command(
@@ -697,10 +788,7 @@ impl ResolvedChatHarnessCli {
                     request.user_message,
                     request.agent_name_override,
                     request.agent_profile,
-                    request
-                        .persona
-                        .as_ref()
-                        .map(|persona| persona.block.as_str()),
+                    overlay_block.as_deref(),
                     request.agent_run_id,
                     request.working_directory,
                     request.entity_status,
@@ -719,6 +807,13 @@ impl ResolvedChatHarnessCli {
                     request.attachment_context_override,
                 )
                 .await?;
+
+                let spawnable = finalize_folder_refs_overlay(
+                    spawnable,
+                    request.persona.is_some(),
+                    request.folder_refs_block.is_some(),
+                    request.conversation_id,
+                );
 
                 Ok(ResolvedChatHarnessLaunch::Interactive {
                     cli_path,
@@ -744,10 +839,7 @@ impl ResolvedChatHarnessCli {
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
-                            request
-                                .persona
-                                .as_ref()
-                                .map(|persona| persona.block.as_str()),
+                            overlay_block.as_deref(),
                             request.working_directory,
                             session_id,
                             request.project_id,
@@ -776,10 +868,7 @@ impl ResolvedChatHarnessCli {
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
-                            request
-                                .persona
-                                .as_ref()
-                                .map(|persona| persona.block.as_str()),
+                            overlay_block.as_deref(),
                             request.agent_run_id,
                             request.working_directory,
                             request.entity_status,
@@ -798,6 +887,13 @@ impl ResolvedChatHarnessCli {
                         .await?
                     }
                 };
+
+                let spawnable = finalize_folder_refs_overlay(
+                    spawnable,
+                    request.persona.is_some(),
+                    request.folder_refs_block.is_some(),
+                    request.conversation_id,
+                );
 
                 Ok(ResolvedChatHarnessLaunch::Background {
                     cli_path,
@@ -1844,6 +1940,55 @@ pub async fn resolve_mcp_filesystem_read_roots(
     }
 
     vec![project_path]
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resolve_mcp_filesystem_read_roots_with_folder_references(
+    context_type: ChatContextType,
+    project_id: Option<&str>,
+    project_repo: Arc<dyn ProjectRepository>,
+    working_directory: &Path,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
+    conversation_id: Option<&str>,
+    app_data_dir: &Path,
+    folder_reference_repo: Arc<
+        dyn crate::domain::repositories::ConversationFolderReferenceRepository,
+    >,
+    folder_references_enabled: bool,
+) -> crate::error::AppResult<Vec<PathBuf>> {
+    let mut roots = resolve_mcp_filesystem_read_roots(
+        project_id,
+        project_repo,
+        working_directory,
+        effective_mode,
+        conversation_id,
+        Some(app_data_dir),
+    )
+    .await;
+    if !folder_references_enabled
+        || context_type != ChatContextType::Project
+        || super::is_persona_builder_conversation(effective_mode)
+    {
+        return Ok(roots);
+    }
+    let Some(conversation_id) = conversation_id else {
+        return Ok(roots);
+    };
+    let service = crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+        folder_reference_repo,
+        app_data_dir.to_path_buf(),
+        crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
+    );
+    let references = service
+        .list_live_validated(&ChatConversationId::from_string(conversation_id))
+        .await?
+        .references;
+    roots.extend(
+        references
+            .into_iter()
+            .map(|reference| PathBuf::from(reference.folder_path)),
+    );
+    Ok(roots)
 }
 
 /// Resolve the project's working directory from a context
@@ -3079,6 +3224,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
     conversation: &ChatConversation,
     user_message: &str,
     persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&str>,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
     context_type: ChatContextType,
@@ -3110,6 +3256,7 @@ pub(crate) async fn build_launch_plan_for_harness_with_persona(
         conversation,
         user_message,
         persona,
+        folder_refs_block,
         agent_name_override,
         agent_profile,
         context_type,
@@ -3177,6 +3324,7 @@ pub(crate) async fn build_launch_plan_for_harness_for_test(
         plugin_dir,
         conversation,
         user_message,
+        None,
         None,
         agent_name_override,
         agent_profile,
@@ -3248,6 +3396,7 @@ pub async fn build_launch_plan_for_harness_with_persona_for_test(
         conversation,
         user_message,
         persona,
+        None,
         agent_name_override,
         agent_profile,
         context_type,
@@ -3284,6 +3433,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
     conversation: &ChatConversation,
     user_message: &str,
     persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&str>,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
     context_type: ChatContextType,
@@ -3323,6 +3473,7 @@ async fn build_launch_plan_for_harness_with_spawn_guard(
             conversation,
             user_message,
             persona,
+            folder_refs_block,
             agent_name_override,
             agent_profile,
             context_type,
@@ -3385,6 +3536,63 @@ pub async fn build_command_for_harness(
             conversation,
             user_message,
             persona,
+            folder_refs_block: None,
+            working_directory,
+            entity_status,
+            project_id,
+            filesystem_read_roots,
+            team_mode,
+            chat_attachment_repo,
+            artifact_repo,
+            agent_lane_settings_repo,
+            ideation_effort_settings_repo,
+            ideation_model_settings_repo,
+            session_messages,
+            total_available,
+            effort_override,
+            model_override,
+            is_external_mcp,
+            attachment_context_override,
+        },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn build_command_for_harness_with_folder_refs(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&str>,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    is_external_mcp: bool,
+    attachment_context_override: Option<&str>,
+) -> Result<ProviderSpawnableCommand, String> {
+    let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
+    build_noninteractive_command_from_resolved_cli(
+        resolved_cli,
+        BuildHarnessCommandRequest {
+            plugin_dir,
+            conversation,
+            user_message,
+            persona,
+            folder_refs_block,
             working_directory,
             entity_status,
             project_id,
@@ -4122,6 +4330,83 @@ pub async fn build_resume_command_for_harness(
         effective_mode,
         message,
         persona,
+        None,
+        agent_name_override,
+        agent_profile,
+        working_directory,
+        session_id,
+        project_id,
+        filesystem_read_roots,
+        parent_conversation_id,
+        team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        agent_lane_settings_repo,
+        ideation_effort_settings_repo,
+        ideation_model_settings_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        effort_override,
+        model_override,
+        None,
+        None,
+        is_external_mcp,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn build_resume_command_for_harness_with_folder_refs(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    context_type: ChatContextType,
+    context_id: &str,
+    coordination_mode: CoordinationMode,
+    conversation_id: &str,
+    effective_mode: Option<AgentConversationWorkspaceMode>,
+    message: &str,
+    persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&str>,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    working_directory: &Path,
+    session_id: &str,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    parent_conversation_id: Option<String>,
+    team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
+    ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    is_external_mcp: bool,
+    attachment_context_override: Option<&str>,
+) -> Result<ProviderSpawnableCommand, String> {
+    build_resume_command_for_harness_with_continuation(
+        harness,
+        cli_path,
+        plugin_dir,
+        context_type,
+        context_id,
+        coordination_mode,
+        conversation_id,
+        effective_mode,
+        message,
+        persona,
+        folder_refs_block,
         agent_name_override,
         agent_profile,
         working_directory,
@@ -4162,6 +4447,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
     effective_mode: Option<AgentConversationWorkspaceMode>,
     message: &str,
     persona: Option<ResolvedPersona>,
+    folder_refs_block: Option<&str>,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
     working_directory: &Path,
@@ -4199,6 +4485,7 @@ pub(super) async fn build_resume_command_for_harness_with_continuation(
             effective_mode,
             message,
             persona,
+            folder_refs_block,
             agent_name_override,
             agent_profile,
             working_directory,

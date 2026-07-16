@@ -87,12 +87,12 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     BranchUpdateRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PersonaRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
-    ReviewRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
-    TaskRepository, TaskStepRepository, ValidationRunRepository,
+    ChatMessageRepository, ChatTimelineRepository, ConversationFolderReferenceRepository,
+    DelegatedSessionRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PersonaRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository, ValidationRunRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -1435,6 +1435,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     chat_message_repo: Arc<dyn ChatMessageRepository>,
     chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    conversation_folder_reference_repo: Option<Arc<dyn ConversationFolderReferenceRepository>>,
+    folder_reference_app_data_dir: Option<PathBuf>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
     persona_repo: Option<Arc<dyn PersonaRepository>>,
@@ -1525,6 +1527,47 @@ struct ResolvedProviderLaunchSettings {
 pub type ClaudeChatService<R = tauri::Wry> = AppChatService<R>;
 
 impl<R: Runtime> AppChatService<R> {
+    async fn render_folder_refs_prompt_block(
+        &self,
+        conversation: &ChatConversation,
+    ) -> Result<Option<String>, ChatServiceError> {
+        let conversation_id = &conversation.id;
+        if !crate::infrastructure::agents::claude::composer_folder_references_enabled() {
+            return Ok(None);
+        }
+        let skipped_reason = chat_service_context::folder_references_skip_reason(
+            conversation.context_type,
+            conversation.agent_mode,
+        );
+        if let Some(reason) = skipped_reason {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                reason,
+                "folder_refs_skipped"
+            );
+            return Ok(None);
+        }
+        let (Some(repository), Some(app_data_dir)) = (
+            self.conversation_folder_reference_repo.as_ref(),
+            self.folder_reference_app_data_dir.as_ref(),
+        ) else {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
+                "folder_refs_skipped"
+            );
+            return Ok(None);
+        };
+        crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+            Arc::clone(repository),
+            app_data_dir.clone(),
+            crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
+        )
+        .render_prompt_block(conversation_id)
+        .await
+        .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
+    }
+
     pub fn new(
         chat_message_repo: Arc<dyn ChatMessageRepository>,
         chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
@@ -1550,6 +1593,8 @@ impl<R: Runtime> AppChatService<R> {
             chat_message_repo,
             chat_timeline_repo: None,
             chat_attachment_repo,
+            conversation_folder_reference_repo: None,
+            folder_reference_app_data_dir: None,
             artifact_repo,
             conversation_repo,
             persona_repo: None,
@@ -1616,6 +1661,16 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
         self.chat_timeline_repo = Some(repo);
+        self
+    }
+
+    pub fn with_conversation_folder_reference_context(
+        mut self,
+        repo: Arc<dyn ConversationFolderReferenceRepository>,
+        app_data_dir: PathBuf,
+    ) -> Self {
+        self.conversation_folder_reference_repo = Some(repo);
+        self.folder_reference_app_data_dir = Some(app_data_dir);
         self
     }
 
@@ -3923,15 +3978,37 @@ impl<R: Runtime> AppChatService<R> {
                     .map(|state| state.app_paths.app_data_dir().to_path_buf())
             });
         let conversation_id_for_roots = conversation.id.as_str();
-        let filesystem_read_roots = chat_service_context::resolve_mcp_filesystem_read_roots(
-            project_id,
-            Arc::clone(&self.project_repo),
-            working_directory,
-            conversation.agent_mode,
-            Some(&conversation_id_for_roots),
-            persona_ingest_app_data_dir.as_deref(),
-        )
-        .await;
+        let filesystem_read_roots = if let (Some(app_data_dir), Some(folder_reference_repo)) = (
+            self.folder_reference_app_data_dir.as_deref(),
+            self.conversation_folder_reference_repo.as_ref(),
+        ) {
+            chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
+                context_type,
+                project_id,
+                Arc::clone(&self.project_repo),
+                working_directory,
+                conversation.agent_mode,
+                Some(&conversation_id_for_roots),
+                app_data_dir,
+                Arc::clone(folder_reference_repo),
+                crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+            )
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        } else {
+            chat_service_context::resolve_mcp_filesystem_read_roots(
+                project_id,
+                Arc::clone(&self.project_repo),
+                working_directory,
+                conversation.agent_mode,
+                Some(&conversation_id_for_roots),
+                persona_ingest_app_data_dir.as_deref(),
+            )
+            .await
+        };
+        let folder_refs_block = self
+            .render_folder_refs_prompt_block(conversation)
+            .await?;
         let native_persona_injection_skipped_reason =
             crate::infrastructure::agents::claude::persona_injection_skipped_reason(
                 crate::infrastructure::agents::claude::native_agent_flag_enabled(),
@@ -3946,6 +4023,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             message,
             persona,
+            folder_refs_block.as_deref(),
             agent_name_override,
             agent_profile,
             context_type,

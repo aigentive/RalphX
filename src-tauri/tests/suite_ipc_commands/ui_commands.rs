@@ -32,6 +32,7 @@ async fn persona_flag_override_update_persists_and_updates_effective_response() 
     let response = update_ui_feature_flags(
         UpdateUiFeatureFlagsInput {
             agent_personas: Some(true),
+            composer_folder_references: None,
             agent_conversation_team: None,
             agent_conversation_workflows: None,
             agent_conversation_autopilot: None,

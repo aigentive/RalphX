@@ -20,6 +20,7 @@ pub mod automation;
 mod automation_tests;
 pub mod chat_attachment;
 pub mod chat_conversation;
+pub mod conversation_folder_reference;
 pub mod chat_timeline;
 pub mod branch_update;
 #[cfg(test)]
@@ -131,6 +132,9 @@ pub use automation::{
     AutomationRunStatus, AutomationStatus,
 };
 pub use chat_attachment::{ChatAttachment, ChatAttachmentId};
+pub use conversation_folder_reference::{
+    ConversationFolderReference, ConversationFolderReferenceId,
+};
 pub use chat_conversation::{
     legacy_claude_session_alias, normalize_provider_session_compatibility,
     AttributionBackfillStatus, ChatContextType, ChatConversation, ChatConversationId,

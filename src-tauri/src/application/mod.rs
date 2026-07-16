@@ -65,6 +65,9 @@ mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
+pub mod conversation_folder_reference_service;
+#[cfg(test)]
+mod conversation_folder_reference_service_tests;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;
 pub mod chat_service;

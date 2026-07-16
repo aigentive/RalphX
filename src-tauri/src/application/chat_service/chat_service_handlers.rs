@@ -8,7 +8,7 @@
 //   agent run failure recording, message finalization, and fallback task transitions
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -354,6 +354,62 @@ impl RecoveryRetryAppRepos {
             delegated_session_repo: Some(Arc::clone(&app_state.delegated_session_repo)),
         }
     }
+}
+
+async fn recovery_retry_folder_refs_context<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    conversation: &ChatConversation,
+    context_type: ChatContextType,
+    project_id: Option<&str>,
+    working_directory: &Path,
+    enabled: bool,
+) -> Result<(Option<String>, Vec<PathBuf>), String> {
+    if !enabled {
+        return Ok((None, Vec::new()));
+    }
+    let Some(handle) = app_handle else {
+        tracing::warn!(
+            conversation_id = conversation.id.as_str(),
+            reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
+            "folder_refs_skipped"
+        );
+        return Ok((None, Vec::new()));
+    };
+    let app_state = handle.state::<AppState>();
+    if let Some(reason) =
+        chat_service_context::folder_references_skip_reason(context_type, conversation.agent_mode)
+    {
+        tracing::warn!(
+            conversation_id = conversation.id.as_str(),
+            reason,
+            "folder_refs_skipped"
+        );
+        return Ok((None, Vec::new()));
+    }
+    let service = crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+        Arc::clone(&app_state.conversation_folder_reference_repo),
+        app_state.app_paths.app_data_dir().to_path_buf(),
+        crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
+    );
+    let folder_refs_block = service
+        .render_prompt_block(&conversation.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let conversation_id = conversation.id.as_str();
+    let roots = chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
+        context_type,
+        project_id,
+        Arc::clone(&app_state.project_repo),
+        working_directory,
+        conversation.agent_mode,
+        Some(&conversation_id),
+        app_state.app_paths.app_data_dir(),
+        Arc::clone(&app_state.conversation_folder_reference_repo),
+        enabled,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok((folder_refs_block, roots))
 }
 
 async fn resolve_recovery_retry_persona<R: Runtime>(
@@ -2624,6 +2680,15 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .as_ref()
                             .ok()
                             .and_then(|persona| persona.clone());
+                        let retry_folder_refs = recovery_retry_folder_refs_context(
+                            app_handle,
+                            conv,
+                            context_type,
+                            resolved_project_id.as_deref(),
+                            working_directory,
+                            crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+                        )
+                        .await;
 
                         let retry_agent_name =
                             super::chat_service_helpers::resolve_agent_with_team_mode(
@@ -2639,9 +2704,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             None,
                         )
                         .await;
-                        let retry_provider_spawnable = match (retry_persona, external_readiness) {
-                            (Ok(persona), Ok(())) => {
-                                chat_service_context::build_resume_command_for_harness(
+                        let retry_provider_spawnable =
+                            match (retry_persona, retry_folder_refs, external_readiness) {
+                            (Ok(persona), Ok((folder_refs_block, filesystem_read_roots)), Ok(())) => {
+                                chat_service_context::build_resume_command_for_harness_with_folder_refs(
                                     recovery_harness,
                                     cli_path,
                                     plugin_dir,
@@ -2652,12 +2718,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     conv.agent_mode,
                                     msg,
                                     persona,
+                                    folder_refs_block.as_deref(),
                                     None,
                                     None,
                                     working_directory,
                                     &new_session_id,
                                     resolved_project_id.as_deref(),
-                                    &[],
+                                    &filesystem_read_roots,
                                     if context_type == ChatContextType::Project {
                                         Some(conversation_id.as_str())
                                     } else {
@@ -2686,8 +2753,11 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 )
                                 .await
                             }
-                            (Err(error), _) => Err(format!("Persona unavailable: {error}")),
-                            (_, Err(error)) => Err(format!(
+                            (Err(error), _, _) => Err(format!("Persona unavailable: {error}")),
+                            (_, Err(error), _) => {
+                                Err(format!("Folder references unavailable: {error}"))
+                            }
+                            (_, _, Err(error)) => Err(format!(
                                 "External MCP transport is not ready for recovery retry: {error}"
                             )),
                         };

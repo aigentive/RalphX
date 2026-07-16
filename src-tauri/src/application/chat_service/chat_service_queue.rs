@@ -1851,11 +1851,51 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 queued_agent_context.conversation.as_ref(),
                 queued_agent_context.builder_draft.as_ref(),
             );
-            let filesystem_read_roots = if let Some(project_repo) = project_repo {
+            let filesystem_read_roots = if let (Some(project_repo), Some(handle)) =
+                (project_repo.as_ref(), app_handle.as_ref())
+            {
+                let conversation_id_for_roots = conversation_id.as_str();
+                let state = handle.state::<AppState>();
+                match chat_service_context::resolve_mcp_filesystem_read_roots_with_folder_references(
+                    context_type,
+                    project_id,
+                    Arc::clone(project_repo),
+                    working_directory,
+                    queued_agent_context.effective_mode,
+                    Some(&conversation_id_for_roots),
+                    state.app_paths.app_data_dir(),
+                    Arc::clone(&state.conversation_folder_reference_repo),
+                    crate::infrastructure::agents::claude::composer_folder_references_enabled(),
+                )
+                .await
+                {
+                    Ok(roots) => roots,
+                    Err(error) => {
+                        let error_string = error.to_string();
+                        tracing::warn!(
+                            conversation_id = conversation_id.as_str(),
+                            error = %error_string,
+                            "queue resume folder reference root validation blocked spawn"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                }
+            } else if let Some(project_repo) = project_repo.as_ref() {
                 let conversation_id_for_roots = conversation_id.as_str();
                 chat_service_context::resolve_mcp_filesystem_read_roots(
                     project_id,
-                    project_repo,
+                    Arc::clone(project_repo),
                     working_directory,
                     queued_agent_context.effective_mode,
                     Some(&conversation_id_for_roots),
@@ -1864,6 +1904,61 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 .await
             } else {
                 Vec::new()
+            };
+            let folder_refs_enabled =
+                crate::infrastructure::agents::claude::composer_folder_references_enabled();
+            let folder_refs_skip_reason = chat_service_context::folder_references_skip_reason(
+                context_type,
+                queued_agent_context.effective_mode,
+            );
+            let folder_refs_block = if !folder_refs_enabled {
+                None
+            } else if let Some(reason) = folder_refs_skip_reason {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    reason,
+                    "folder_refs_skipped"
+                );
+                None
+            } else if let Some(handle) = app_handle.as_ref() {
+                let state = handle.state::<AppState>();
+                match crate::application::conversation_folder_reference_service::ConversationFolderReferenceService::new(
+                    Arc::clone(&state.conversation_folder_reference_repo),
+                    state.app_paths.app_data_dir().to_path_buf(),
+                    crate::infrastructure::agents::claude::limits_config().max_live_folder_references,
+                )
+                .render_prompt_block(&conversation_id)
+                .await
+                {
+                    Ok(block) => block,
+                    Err(error) => {
+                        let error_string = error.to_string();
+                        tracing::warn!(
+                            conversation_id = conversation_id.as_str(),
+                            error = %error_string,
+                            "queue resume folder reference validation blocked spawn"
+                        );
+                        fail_queued_agent_run(
+                            agent_run_repo,
+                            running_agent_registry,
+                            &queue_registry_key,
+                            &queued_run_id,
+                            &error_string,
+                        )
+                        .await;
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    reason = chat_service_context::FOLDER_REFS_SKIPPED_CONTEXT_UNAVAILABLE,
+                    "folder_refs_skipped"
+                );
+                None
             };
             let persona_for_attribution = resolved_persona.clone();
             let queued_effort_override = queued_msg
@@ -1911,6 +2006,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     queued_agent_context.effective_mode,
                     &runtime_content,
                     resolved_persona,
+                    folder_refs_block.as_deref(),
                     queued_agent_context.identity.agent_name.as_deref(),
                     queued_agent_context.identity.agent_profile,
                     working_directory,
