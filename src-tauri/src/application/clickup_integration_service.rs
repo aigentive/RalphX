@@ -906,7 +906,7 @@ impl ClickUpIntegrationService {
         self.client.set_task_tags(&auth, task_id, tags).await
     }
 
-    async fn enabled_auth_context(&self) -> Result<ClickUpAuthContext, String> {
+    pub(crate) async fn enabled_auth_context(&self) -> Result<ClickUpAuthContext, String> {
         let settings = self.get_settings().await?;
         if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
             return Err("ClickUp integration is not enabled".to_string());

@@ -199,6 +199,49 @@ function pipelineStatusFromPublicationEvent(
   return event.step === "published" ? "pushed" : event.step;
 }
 
+function workspaceReviewAutoMergeGuardSummary(
+  reviewContext: AgentWorkspaceReviewContext | null | undefined,
+): { label: string; detail: string; status: "active" | "error" | "pending" } | null {
+  const monitor = reviewContext?.monitor;
+  switch (monitor?.autoMergeGuardStatus) {
+    case "pausing":
+      return {
+        label: "Auto-merge pausing",
+        detail: "GitHub auto-merge is being paused before Workspace Review starts.",
+        status: "pending",
+      };
+    case "paused_for_review":
+      return {
+        label: "Auto-merge paused",
+        detail: "GitHub auto-merge is paused while Workspace Review is active.",
+        status: "active",
+      };
+    case "awaiting_publish":
+      return {
+        label: "Auto-merge awaiting publish",
+        detail:
+          "GitHub auto-merge will resume after these reviewed changes are published.",
+        status: "active",
+      };
+    case "restoring":
+      return {
+        label: "Auto-merge restoring",
+        detail: "GitHub auto-merge is being restored after Workspace Review.",
+        status: "pending",
+      };
+    case "restore_failed":
+      return {
+        label: "Auto-merge restore failed",
+        detail:
+          monitor.autoMergeGuardLastError ??
+          "GitHub auto-merge is still paused and restoration will retry.",
+        status: "error",
+      };
+    default:
+      return null;
+  }
+}
+
 export function AgentPublishPanel({
   workspace,
   conversationTitle,
@@ -692,6 +735,8 @@ export function AgentPublishPanel({
   const workspaceReviewRequired =
     reviewSettingsQuery.data?.require_workspace_review ?? true;
   const reviewGateStatus = reviewContext?.monitor.reviewGateStatus ?? null;
+  const autoMergeGuardSummary =
+    workspaceReviewAutoMergeGuardSummary(reviewContext);
   const reviewBlocksPublish =
     workspaceReviewRequired &&
     (reviewGateStatus === "required" ||
@@ -772,6 +817,7 @@ export function AgentPublishPanel({
   const canConfigureAutoPublish = canConfigurePrSupervision;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
+    if (autoMergeGuardSummary) return autoMergeGuardSummary.label;
     if (isAutoPublishSaving) return "Saving Auto Publish";
     if (isPrSupervisionSaving) return "Saving PR supervision";
     if (!hasPublishedPr && autoPublishEnabled) return "Auto Publish armed";
@@ -783,6 +829,18 @@ export function AgentPublishPanel({
     if (prAutofixEnabled || prAutoMergeDesired) return "Monitoring PR";
     return null;
   })();
+  const AutoMergeGuardIcon =
+    autoMergeGuardSummary?.status === "pending" ? Loader2 : AlertTriangle;
+  const autoMergeGuardColor =
+    autoMergeGuardSummary?.status === "error"
+      ? "var(--status-error)"
+      : autoMergeGuardSummary?.status === "pending"
+        ? "var(--accent-primary)"
+        : "var(--status-warning)";
+  const autoMergeGuardBorderColor =
+    autoMergeGuardSummary?.status === "error"
+      ? "var(--status-error-border)"
+      : "var(--status-warning-border)";
   const updatePrSupervisionPreferences = (next: {
     autoFixEnabled: boolean;
     autoMergeDesired: boolean;
@@ -1293,6 +1351,28 @@ export function AgentPublishPanel({
                 style={{ color: "var(--status-warning)" }}
               />
               <span>{prConflictSummary}</span>
+            </div>
+          )}
+          {shouldShowPublishNotices && autoMergeGuardSummary && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor: autoMergeGuardBorderColor,
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-publish-review-auto-merge-guard"
+            >
+              <AutoMergeGuardIcon
+                aria-hidden="true"
+                className={`mt-0.5 h-3.5 w-3.5 shrink-0${
+                  autoMergeGuardSummary.status === "pending" ? " animate-spin" : ""
+                }`}
+                style={{ color: autoMergeGuardColor }}
+              />
+              <span>{autoMergeGuardSummary.detail}</span>
             </div>
           )}
           {shouldShowPublishNotices && isBranchUpdateNeeded && (

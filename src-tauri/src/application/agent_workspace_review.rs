@@ -1911,6 +1911,11 @@ pub async fn complete_agent_workspace_review_run(
             route_workspace_review_blocking_fixer(state, workspace, &monitor, target.as_ref())
                 .await?;
     }
+    if monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed {
+        monitor = crate::application::agent_workspace_review_auto_merge::
+            handle_passing_workspace_review_auto_merge_guard(state, workspace, &monitor)
+                .await?;
+    }
     let scope = target_scope_label(target.as_ref());
     let fingerprint = target_fingerprint_label(target.as_ref());
     info!(
@@ -2666,7 +2671,7 @@ fn clear_review_fixer_linkage(monitor: &mut AgentWorkspaceReviewMonitor) {
     monitor.review_fixer_conversation_id = None;
 }
 
-fn apply_current_target_to_monitor(
+pub(crate) fn apply_current_target_to_monitor(
     monitor: &mut AgentWorkspaceReviewMonitor,
     target: Option<&AgentWorkspaceReviewTarget>,
 ) {
@@ -3199,16 +3204,21 @@ async fn resolve_selected_source_target(
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| default_base.clone());
-        let head = if let Some(fetched) =
-            GitService::fetch_pull_request_head_for_review(&repo_path, pr.number).await?
-        {
-            fetched
+        let fetched_head =
+            GitService::fetch_pull_request_head_for_review(&repo_path, pr.number).await?;
+        let head = if let Some(fetched) = fetched_head.as_ref() {
+            fetched.clone()
         } else if !pr.head_ref_name.trim().is_empty() {
             pr.head_ref_name.clone()
         } else {
             workspace.base_ref.clone()
         };
-        (base, head, Some(pr.number), pr.head_ref_oid.clone())
+        let explicit_head_sha = if fetched_head.is_some() {
+            None
+        } else {
+            pr.head_ref_oid.clone()
+        };
+        (base, head, Some(pr.number), explicit_head_sha)
     } else if let Some(pr_number) = published_pr_number {
         let Some(head) =
             resolve_published_pull_request_head_ref(&repo_path, workspace, pr_number).await?

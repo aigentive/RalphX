@@ -32,6 +32,9 @@ mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
+pub mod agent_workspace_review_auto_merge;
+#[cfg(test)]
+mod agent_workspace_review_auto_merge_tests;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
 #[cfg(test)]
@@ -168,6 +171,12 @@ pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod throttled_emitter;
+pub mod ticket_attachment;
+pub mod ticket_attachment_runtime_store;
+#[cfg(test)]
+mod ticket_attachment_runtime_store_tests;
+#[cfg(test)]
+mod ticket_attachment_tests;
 pub mod ticket_canonical_branch;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;

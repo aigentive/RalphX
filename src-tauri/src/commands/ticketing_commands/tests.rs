@@ -3777,6 +3777,7 @@ fn ticket_start_input(
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            composer_selection_snapshot: None,
             team_intent: None,
         },
         ticket_ref,
@@ -3955,6 +3956,7 @@ async fn start_agent_conversation_with_ticket_default_base_preserves_base_and_us
             include_transcript: None,
         }],
         composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
         team_intent: None,
     })
     .await
@@ -4041,6 +4043,7 @@ async fn clickup_ticket_start_reuses_unique_existing_branch_without_isolation() 
             include_transcript: None,
         }],
         composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
         team_intent: None,
     })
     .await
@@ -4098,6 +4101,7 @@ async fn start_agent_conversation_persists_team_intent_for_new_project_conversat
         composer_project_references: Vec::new(),
         composer_integration_references: Vec::new(),
         composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
         team_intent: Some(TeamIntent::rx_native(None)),
     })
     .await
@@ -4165,6 +4169,7 @@ async fn start_agent_conversation_updates_seeded_project_team_coordination_mode(
         composer_project_references: Vec::new(),
         composer_integration_references: Vec::new(),
         composer_artifact_references: Vec::new(),
+        composer_selection_snapshot: None,
         team_intent: Some(TeamIntent::rx_native(None)),
     })
     .await
