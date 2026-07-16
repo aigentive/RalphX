@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use crate::application::{AppState, NotificationContextResolver, PermissionState, QuestionState};
 use crate::application::services::pr_auto_merge_status::AUTO_MERGE_ENABLE_WARNING_CODE;
+use crate::application::{AppState, NotificationContextResolver, PermissionState, QuestionState};
 use crate::domain::entities::{
-    AgentWorkspacePrReviewMonitorStatus, AttentionItem, AutomationRunStatus, AutomationStatus,
-    ChatContextType, InternalStatus, NotificationCategory, NotificationTarget,
-    NotificationTargetKind, ProjectId,
+    AgentConversationWorkspaceStatus, AgentWorkspacePrReviewMonitorStatus, AttentionItem,
+    AutomationRunStatus, AutomationStatus, ChatContextType, ChatConversationId, InternalStatus,
+    NotificationCategory, NotificationTarget, NotificationTargetKind, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
@@ -86,6 +86,8 @@ impl AttentionService {
         self.collect_pr_review_monitors(project_filter.as_ref(), &mut items)
             .await?;
 
+        items = self.filter_archived_conversation_targets(items).await?;
+
         items.sort_by(|left, right| {
             attention_group(left.category)
                 .cmp(&attention_group(right.category))
@@ -93,6 +95,50 @@ impl AttentionService {
                 .then_with(|| left.id.cmp(&right.id))
         });
         Ok(items)
+    }
+
+    async fn filter_archived_conversation_targets(
+        &self,
+        items: Vec<AttentionItem>,
+    ) -> AppResult<Vec<AttentionItem>> {
+        let mut visible = Vec::with_capacity(items.len());
+        for item in items {
+            if !self.target_conversation_is_archived(&item.target).await? {
+                visible.push(item);
+            }
+        }
+        Ok(visible)
+    }
+
+    async fn target_conversation_is_archived(
+        &self,
+        target: &NotificationTarget,
+    ) -> AppResult<bool> {
+        for conversation_id in [
+            target.conversation_id.as_deref(),
+            target.setup_conversation_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+            if self
+                .chat_conversation_repo
+                .get_by_id(&conversation_id)
+                .await?
+                .is_some_and(|conversation| conversation.archived_at.is_some())
+                || self
+                    .agent_workspace_repo
+                    .get_by_conversation_id(&conversation_id)
+                    .await?
+                    .is_some_and(|workspace| {
+                        workspace.status == AgentConversationWorkspaceStatus::Archived
+                    })
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn collect_tasks(
