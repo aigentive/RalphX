@@ -76,10 +76,6 @@ export function useNotificationReadActions(projectId?: string) {
     markRowsRead(queryClient, projectId, [id]);
   }, [projectId, queryClient]);
 
-  const markReadBatch = useCallback((ids: readonly string[]) => {
-    markRowsRead(queryClient, projectId, ids);
-  }, [projectId, queryClient]);
-
   const markAllRead = useCallback(async () => {
     const queryKey = notificationKeys.history(projectId);
     const unreadCountQueryKey = notificationKeys.unreadCount(projectId);
@@ -113,5 +109,5 @@ export function useNotificationReadActions(projectId?: string) {
     }
   }, [projectId, queryClient]);
 
-  return { markRead, markReadBatch, markAllRead };
+  return { markRead, markAllRead };
 }

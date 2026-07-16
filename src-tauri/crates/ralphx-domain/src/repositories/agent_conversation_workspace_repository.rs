@@ -6,8 +6,9 @@ use crate::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewAutoMergeGuard,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -387,6 +388,32 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     }
 
     async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    /// Atomically changes the guard only when the expected guard still owns the monitor.
+    async fn compare_and_set_workspace_review_auto_merge_guard(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: Option<AgentWorkspaceReviewAutoMergeGuard>,
+        _next: Option<AgentWorkspaceReviewAutoMergeGuard>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    /// Atomically records a confirmed restoration only while the captured guard still owns the
+    /// monitor and the user still wants GitHub auto-merge enabled.
+    async fn complete_workspace_review_auto_merge_restore(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _expected: AgentWorkspaceReviewAutoMergeGuard,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn list_active_workspace_review_auto_merge_guards(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
         Ok(Vec::new())

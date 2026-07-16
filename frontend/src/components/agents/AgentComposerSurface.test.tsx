@@ -218,6 +218,128 @@ describe("AgentComposerSurface", () => {
     });
   });
 
+  it("shows the staged line selection and clears it from the composer", () => {
+    const onClearSelectionSnapshot = vi.fn();
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "artifact-version-2",
+        sourceTitle: "Implementation Plan",
+        artifactVersion: 2,
+        startLine: 10,
+        endLine: 11,
+        content: "first\nsecond",
+      },
+      onClearSelectionSnapshot,
+    });
+
+    expect(screen.getByText("Selection: Implementation Plan · L10–11")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear selected artifact lines" }),
+    );
+
+    expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a Granola fallback label for a note selection without a title", () => {
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "note",
+        sourceKind: "granola",
+        sourceId: "not_1234567890ABCD",
+        provider: "granola",
+        startLine: 3,
+        endLine: 3,
+        content: "Decision",
+      },
+    });
+
+    expect(screen.getByText("Selection: Granola · L3")).toBeTruthy();
+  });
+
+  it("sends the frozen selection and clears it only after backend acceptance", async () => {
+    let acceptSend: (() => void) | undefined;
+    const onSend = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          acceptSend = resolve;
+        }),
+    );
+    const onClearSelectionSnapshot = vi.fn();
+    const selectionSnapshot = {
+      sourceType: "ticket" as const,
+      sourceKind: "jira" as const,
+      sourceId: "10042",
+      sourceKey: "RX-42",
+      provider: "atlassian" as const,
+      startLine: 4,
+      endLine: 5,
+      content: "saved first\nsaved second",
+    };
+    renderComposer({ selectionSnapshot, onClearSelectionSnapshot, onSend });
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Review this" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Review this", { selectionSnapshot });
+    expect(onClearSelectionSnapshot).not.toHaveBeenCalled();
+
+    acceptSend?.();
+    await waitFor(() => expect(onClearSelectionSnapshot).toHaveBeenCalledTimes(1));
+  });
+
+  it("retains the frozen selection when sending fails", async () => {
+    const onClearSelectionSnapshot = vi.fn();
+    renderComposer({
+      selectionSnapshot: {
+        sourceType: "ticket",
+        sourceKind: "linear",
+        sourceId: "issue-1",
+        sourceKey: "ENG-1",
+        provider: "linear",
+        startLine: 2,
+        endLine: 2,
+        content: "selected",
+      },
+      onClearSelectionSnapshot,
+      onSend: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Review this" },
+    });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onClearSelectionSnapshot).not.toHaveBeenCalled());
+    expect(screen.getByText("Selection: ENG-1 · L2")).toBeTruthy();
+  });
+
+  it("retains a controlled composer's frozen selection without leaking a rejected send", async () => {
+    const onClearSelectionSnapshot = vi.fn();
+    renderComposer({
+      value: "Review this",
+      onChange: vi.fn(),
+      selectionSnapshot: {
+        sourceType: "artifact",
+        sourceKind: "plan",
+        sourceId: "plan-1",
+        startLine: 3,
+        endLine: 3,
+        content: "selected",
+      },
+      onClearSelectionSnapshot,
+      onSend: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    await waitFor(() => expect(onClearSelectionSnapshot).not.toHaveBeenCalled());
+    expect(screen.getByText("Selection: Plan · L3")).toBeTruthy();
+  });
+
   it("hides the runtime pill when no model is available to show or select", () => {
     renderComposer({
       model: {

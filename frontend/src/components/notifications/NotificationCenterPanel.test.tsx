@@ -177,7 +177,7 @@ describe("NotificationCenterPanel first-paint behavior", () => {
       animationFrameCallbacks.delete(id);
     });
     vi.mocked(useAttentionItems).mockReturnValue({ data: [item], isLoading: false, isError: false, refetch: vi.fn() } as ReturnType<typeof useAttentionItems>);
-    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markReadBatch: vi.fn(), markAllRead });
+    vi.mocked(useNotificationReadActions).mockReturnValue({ markRead: vi.fn(), markAllRead });
     vi.mocked(useTasksAwaitingReview).mockReturnValue(awaitingReviewTasks());
     vi.mocked(api.tasks.get).mockRejectedValue(new Error("Task not found"));
     vi.mocked(automationsApi.resume).mockReset();

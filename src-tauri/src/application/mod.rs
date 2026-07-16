@@ -32,6 +32,9 @@ mod agent_workspace_review_base_tests;
 pub mod agent_workspace_review;
 #[cfg(test)]
 mod agent_workspace_review_mode_guard_tests;
+pub mod agent_workspace_review_auto_merge;
+#[cfg(test)]
+mod agent_workspace_review_auto_merge_tests;
 pub(crate) mod agent_workspace_review_publish_handoff;
 pub mod app_paths;
 #[cfg(test)]
@@ -40,6 +43,7 @@ pub mod app_setup;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+mod jira_agile_types;
 pub mod attention_service;
 pub mod automation;
 pub mod chat_attachment_service;
@@ -168,6 +172,12 @@ pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod throttled_emitter;
+pub mod ticket_attachment;
+pub mod ticket_attachment_runtime_store;
+#[cfg(test)]
+mod ticket_attachment_runtime_store_tests;
+#[cfg(test)]
+mod ticket_attachment_tests;
 pub mod ticket_canonical_branch;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
@@ -204,6 +214,9 @@ pub use atlassian_integration_service::{
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
     AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
     JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
+};
+pub use jira_agile_types::{
+    JiraBoardColumn, JiraBoardConfiguration, JiraBoardSummary, JiraSprintSummary,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
@@ -269,6 +282,7 @@ pub use plan_ranking::{
 pub use priority_service::PriorityService;
 pub(crate) use provider_onboarding_gate::{
     ensure_provider_spawn_enabled, resolve_enabled_default_provider,
+    resolve_enabled_provider_or_default,
 };
 pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};

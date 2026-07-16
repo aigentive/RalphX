@@ -143,6 +143,57 @@ impl FromStr for AgentWorkspaceReviewMonitorStatus {
     }
 }
 
+/// Durable GitHub auto-merge state owned by an authoritative workspace Review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewAutoMergeGuardStatus {
+    Pausing,
+    PausedForReview,
+    AwaitingPublish,
+    Restoring,
+    RestoreFailed,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewAutoMergeGuardStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pausing => write!(f, "pausing"),
+            Self::PausedForReview => write!(f, "paused_for_review"),
+            Self::AwaitingPublish => write!(f, "awaiting_publish"),
+            Self::Restoring => write!(f, "restoring"),
+            Self::RestoreFailed => write!(f, "restore_failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewAutoMergeGuardStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pausing" => Ok(Self::Pausing),
+            "paused_for_review" => Ok(Self::PausedForReview),
+            "awaiting_publish" => Ok(Self::AwaitingPublish),
+            "restoring" => Ok(Self::Restoring),
+            "restore_failed" => Ok(Self::RestoreFailed),
+            _ => Err(format!(
+                "unknown workspace review auto-merge guard status: '{value}'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceReviewAutoMergeGuard {
+    pub status: AgentWorkspaceReviewAutoMergeGuardStatus,
+    pub pr_number: i64,
+    pub merge_method: String,
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub diff_fingerprint: String,
+    pub head_sha: Option<String>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkspaceReviewOutcome {
@@ -491,6 +542,7 @@ pub struct AgentWorkspaceReviewMonitor {
     pub review_fixer_status: Option<String>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
+    pub auto_merge_guard: Option<AgentWorkspaceReviewAutoMergeGuard>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -530,6 +582,7 @@ impl AgentWorkspaceReviewMonitor {
             review_fixer_status: None,
             last_run_id: None,
             last_error: None,
+            auto_merge_guard: None,
             created_at: now,
             updated_at: now,
         }

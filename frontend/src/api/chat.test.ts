@@ -16,6 +16,7 @@ import {
   setAgentWorkspacePrReviewAutoApprove,
   setAgentWorkspacePrReviewMonitoring,
   getAgentWorkspaceReviewContext,
+  getAgentWorkspaceReviewStartPreview,
   startAgentWorkspaceReview,
   startAgentWorkspaceReviewFixer,
   listAgentConversationIssues,
@@ -2830,6 +2831,16 @@ describe("chat api", () => {
         composerArtifactReferences: [
           { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "artifact-version-2",
+          sourceTitle: "Implementation Plan",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 11,
+          content: "first\nsecond",
+        },
       },
     );
 
@@ -2845,6 +2856,16 @@ describe("chat api", () => {
         composerArtifactReferences: [
           { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
+        composerSelectionSnapshot: {
+          sourceType: "artifact",
+          sourceKind: "plan",
+          sourceId: "artifact-version-2",
+          sourceTitle: "Implementation Plan",
+          artifactVersion: 2,
+          startLine: 10,
+          endLine: 11,
+          content: "first\nsecond",
+        },
       },
     });
   });
@@ -2856,6 +2877,16 @@ describe("chat api", () => {
         content: "queued",
         created_at: "2026-01-24T10:00:00Z",
         is_editing: false,
+        composer_selection_snapshot: {
+          sourceType: "ticket",
+          sourceKind: "clickup",
+          sourceId: "task-1",
+          sourceKey: "CU-1",
+          provider: "clickup",
+          startLine: 3,
+          endLine: 3,
+          content: "selected line",
+        },
         attachment_ids: ["att-1"],
       },
     ]);
@@ -2864,6 +2895,7 @@ describe("chat api", () => {
 
     expect(list).toHaveLength(1);
     expect(list[0].attachmentIds).toEqual(["att-1"]);
+    expect(list[0].composerSelectionSnapshot?.sourceKey).toBe("CU-1");
   });
 
   it("deletes queued message", async () => {
@@ -3109,6 +3141,9 @@ describe("chat api", () => {
     );
     expect(chatApi.getAgentWorkspaceReviewContext).toBe(
       getAgentWorkspaceReviewContext,
+    );
+    expect(chatApi.getAgentWorkspaceReviewStartPreview).toBe(
+      getAgentWorkspaceReviewStartPreview,
     );
     expect(chatApi.startAgentWorkspaceReview).toBe(startAgentWorkspaceReview);
     expect(chatApi.startAgentWorkspaceReviewFixer).toBe(
@@ -3488,6 +3523,68 @@ describe("getConversationActiveState", () => {
     expect(result.target?.scope).toBe("selected_source");
     expect(result.target?.sourcePullRequestNumber).toBe(42);
     expect(result.monitor.status).toBe("reviewing");
+  });
+
+  it("preserves workspace review HTTP conflicts for a receipt refresh", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: () =>
+        Promise.resolve({
+          error: "workspace Review target or GitHub auto-merge state changed",
+        }),
+    });
+
+    await expect(startAgentWorkspaceReview("conversation-1")).rejects.toEqual(
+      expect.objectContaining({
+        name: "AgentWorkspaceHttpError",
+        status: 409,
+      }),
+    );
+  });
+
+  it("fetches the target-bound workspace review start preview", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          target: rawWorkspaceReviewTarget(),
+          will_disable_auto_merge: true,
+          pr_number: 42,
+          merge_method: "squash",
+          restore_after_publish: true,
+          confirmation: {
+            target_scope: "workspace_delta",
+            diff_fingerprint: "fingerprint-1",
+            head_sha: "head-sha-1",
+            pr_number: 42,
+            will_disable_auto_merge: true,
+            merge_method: "squash",
+            restore_after_publish: true,
+          },
+        }),
+    });
+
+    const result = await getAgentWorkspaceReviewStartPreview("conversation/1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/workspace-review-start-preview",
+      ),
+      undefined,
+    );
+    expect(result.confirmation).toEqual({
+      targetScope: "workspace_delta",
+      diffFingerprint: "fingerprint-1",
+      headSha: "head-sha-1",
+      prNumber: 42,
+      willDisableAutoMerge: true,
+      mergeMethod: "squash",
+      restoreAfterPublish: true,
+    });
+    expect(result.restoreAfterPublish).toBe(true);
   });
 
   it("starts the workspace review fixer through the encoded REST endpoint", async () => {

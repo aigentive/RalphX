@@ -32,6 +32,7 @@ use crate::domain::entities::{
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
+    ComposerSelectionSnapshot,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::agent_personas_enabled;
@@ -105,6 +106,8 @@ pub struct StartAgentConversationInput {
     /// Structured artifact references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Immutable whole-line artifact or ticket excerpt selected for the first turn.
+    pub composer_selection_snapshot: Option<ComposerSelectionSnapshot>,
     /// Optional Team request for the Agent conversation.
     #[serde(alias = "capabilityIntent")]
     pub team_intent: Option<TeamIntent>,
@@ -825,6 +828,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     composer_project_references: input.composer_project_references.clone(),
                     composer_integration_references: input.composer_integration_references.clone(),
                     composer_artifact_references,
+                    composer_selection_snapshot: input.composer_selection_snapshot.clone(),
                     team_intent: input.team_intent.clone(),
                     ..Default::default()
                 },
