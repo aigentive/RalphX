@@ -229,7 +229,10 @@ pub use team::{
     TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
     TeammateSnapshot,
 };
-pub use ticket_canonical_branch::TicketCanonicalBranch;
+pub use ticket_canonical_branch::{
+    TicketCanonicalBranch, TicketCanonicalBranchCycle, TicketCanonicalBranchCycleState,
+    TicketCanonicalBranchPolicyKind, TicketGitConventionSnapshot,
+};
 pub use types::{
     ApiKeyId, ChatMessageId, ExecutionPlanId, IdeationSessionId, ProjectId, ReviewIssueId,
     SessionLinkId, TaskId, TaskProposalId, TaskQAId, TaskStepId,
