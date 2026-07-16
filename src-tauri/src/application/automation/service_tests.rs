@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -309,12 +310,52 @@ impl AutomationDecompositionVerifierInvoker for StaticDecompositionVerifierInvok
     }
 }
 
+struct SequenceDecompositionVerifierInvoker {
+    raw_outputs: Mutex<VecDeque<String>>,
+    retry_flags: Mutex<Vec<bool>>,
+}
+
+#[async_trait]
+impl AutomationDecompositionVerifierInvoker for SequenceDecompositionVerifierInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationDecompositionVerifierInvocation,
+    ) -> crate::error::AppResult<AutomationDecompositionVerifierInvocationOutput> {
+        self.retry_flags.lock().unwrap().push(input.retry_reminder);
+        let raw_output = self
+            .raw_outputs
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("test verifier output");
+        Ok(AutomationDecompositionVerifierInvocationOutput {
+            raw_output,
+            model_id: Some("verifier-model".to_string()),
+        })
+    }
+}
+
 fn approved_decomposition_output() -> String {
     json!({
         "decision": "approve",
         "reason": "The phases cover the complete spec in dependency-safe order.",
         "confidence": "high",
         "findings": []
+    })
+    .to_string()
+}
+
+fn revision_decomposition_output() -> String {
+    json!({
+        "decision": "revise",
+        "reason": "The plan needs a clearer frontend follow-up phase.",
+        "confidence": "medium",
+        "findings": [{
+            "severity": "medium",
+            "category": "phase_boundaries",
+            "description": "The frontend work is not split into its own phase.",
+            "goalItemIds": ["phase-2"]
+        }]
     })
     .to_string()
 }
@@ -4388,6 +4429,85 @@ async fn trusted_decomposition_verification_activates_only_after_current_approva
         state.verification_status,
         AutomationDecompositionVerificationStatus::Verified
     );
+}
+
+#[tokio::test]
+async fn trusted_decomposition_verification_retries_invalid_output_then_persists_revision() {
+    let (service, automation_repo, _run_repo, _artifact_repo) =
+        service_with_emitter_and_artifacts(Arc::new(NoopAutomationEventEmitter));
+    let draft = service
+        .create_draft(CreateAutomationDraftInput {
+            id: None,
+            project_id: ProjectId::from_string("project-1".to_string()),
+            name: Some("Trusted revision".to_string()),
+            setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            authoring_mode: Some(AutomationAuthoringMode::TrustedAutoFinalize),
+        })
+        .await
+        .unwrap();
+    service
+        .update_config(UpdateAutomationConfigInput {
+            id: draft.id.clone(),
+            goal_prompt: Some("Ship the trusted pipeline after decomposition review.".to_string()),
+            first_run_prompt: Some(
+                "Implement the backend phase with focused tests and publish the PR.".to_string(),
+            ),
+            goal_items_json: Some(
+                json!([
+                    { "id": "phase-1", "title": "Backend", "status": "pending" },
+                    { "id": "phase-2", "title": "Frontend", "status": "pending" }
+                ])
+                .to_string(),
+            ),
+            spec_content: Some(
+                "# Trusted revision\n\nBackend and frontend work must remain separate.".to_string(),
+            ),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap();
+    service
+        .update_settings(UpdateAutomationSettingsInput {
+            id: draft.id.clone(),
+            name: None,
+            max_runs: None,
+            max_consecutive_failures: None,
+            plan_approval_mode: Some(AutomationPlanApprovalMode::Automatic),
+            pr_merge_mode: Some(AutomationPrMergeMode::Automatic),
+            plan_deep_verification: None,
+        })
+        .await
+        .unwrap();
+    let invoker = Arc::new(SequenceDecompositionVerifierInvoker {
+        raw_outputs: Mutex::new(VecDeque::from([
+            "not-json".to_string(),
+            revision_decomposition_output(),
+        ])),
+        retry_flags: Mutex::new(Vec::new()),
+    });
+    let verifier =
+        AutomationDecompositionVerifier::new(service, invoker.clone(), Duration::from_secs(30));
+
+    let outcome = verifier.verify_and_finalize(&draft.id).await.unwrap();
+
+    assert_eq!(outcome.automation.status, AutomationStatus::Draft);
+    assert_eq!(
+        *invoker.retry_flags.lock().unwrap(),
+        vec![false, true],
+        "invalid verifier output should trigger exactly one retry"
+    );
+    let stored = automation_repo.get_by_id(&draft.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, AutomationStatus::Draft);
+    let state = parse_authoring_state(stored.authoring_state_json.as_deref()).unwrap();
+    assert_eq!(
+        state.verification_status,
+        AutomationDecompositionVerificationStatus::NeedsRevision
+    );
+    assert!(state.verified_at.is_none());
+    assert!(state.verdict_json.unwrap().contains("phase_boundaries"));
 }
 
 #[tokio::test]

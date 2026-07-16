@@ -64,7 +64,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
-    IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
+    ChatConversationRepository, IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
     PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::{PrHealth, PrMergeableState, PrStatus, PrSyncState};
@@ -1131,6 +1131,7 @@ struct ParkedPlanGateScenario {
     run_repo: Arc<MemoryAutomationRunRepository>,
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<MemoryAgentRunRepository>,
+    conversation_repo: Arc<MemoryChatConversationRepository>,
     session_repo: Arc<MemoryIdeationSessionRepository>,
     approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
     artifact_repo: Arc<MemoryArtifactRepository>,
@@ -1152,6 +1153,7 @@ impl ParkedPlanGateScenario {
         ));
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+        let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
         let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
         let artifact_repo = Arc::new(MemoryArtifactRepository::new());
@@ -1181,6 +1183,7 @@ impl ParkedPlanGateScenario {
             run_repo,
             workspace_repo,
             agent_run_repo,
+            conversation_repo,
             session_repo,
             approval_repo,
             artifact_repo,
@@ -1198,6 +1201,7 @@ impl ParkedPlanGateScenario {
         ));
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
         let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+        let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
         let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
         let artifact_repo = Arc::new(MemoryArtifactRepository::new());
@@ -1228,6 +1232,7 @@ impl ParkedPlanGateScenario {
             run_repo,
             workspace_repo,
             agent_run_repo,
+            conversation_repo,
             session_repo,
             approval_repo,
             artifact_repo,
@@ -1246,6 +1251,37 @@ impl ParkedPlanGateScenario {
             ))
             .await
             .unwrap();
+    }
+
+    async fn seed_ideation_conversation(&self) -> ChatConversationId {
+        let conversation = ChatConversation::new_ideation(self.session_id.clone());
+        let conversation_id = conversation.id.clone();
+        self.conversation_repo.create(conversation).await.unwrap();
+        conversation_id
+    }
+
+    async fn seed_current_ideation_agent_run(&self, status: AgentRunStatus) {
+        let conversation_id = self.seed_ideation_conversation().await;
+        self.agent_run_repo
+            .create(agent_run_with_status(conversation_id, status))
+            .await
+            .unwrap();
+    }
+
+    async fn make_current_run_started_at(&self, started_at: chrono::DateTime<Utc>) {
+        let mut run = self
+            .run_repo
+            .latest_for_automation(&self.automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        run.started_at = Some(started_at);
+        run.agent_phase_started_at = Some(started_at);
+        self.run_repo
+            .delete_for_automation(&self.automation_id)
+            .await
+            .unwrap();
+        self.run_repo.create_run(run).await.unwrap();
     }
 
     fn approve(&self, artifact_id: &str, artifact_version: u32) {
@@ -1433,7 +1469,16 @@ impl ParkedPlanGateScenario {
         plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
         config: AutomationSchedulerConfig,
     ) -> AutomationScheduler {
+        let automation_repo: Arc<dyn AutomationRepository> = self.automation_repo.clone();
+        let run_repo: Arc<dyn AutomationRunRepository> = self.run_repo.clone();
+        let agent_run_repo: Arc<dyn AgentRunRepository> = self.agent_run_repo.clone();
+        let conversation_repo: Arc<dyn crate::domain::repositories::ChatConversationRepository> =
+            self.conversation_repo.clone();
+        let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+            self.workspace_repo.clone();
         let session_repo: Arc<dyn IdeationSessionRepository> = self.session_repo.clone();
+        let plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository> =
+            self.approval_repo.clone();
         let resumer: Arc<dyn AutomationRunResumer> = self.resumer.clone();
         let artifact_repo: Arc<dyn ArtifactRepository> = self.artifact_repo.clone();
         let plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter> =
@@ -1441,20 +1486,27 @@ impl ParkedPlanGateScenario {
                 approval_repo: Arc::clone(&self.approval_repo),
                 artifact_repo: Arc::clone(&artifact_repo),
             });
-        scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
-            Arc::clone(&self.automation_repo),
-            Arc::clone(&self.run_repo),
-            Arc::clone(&self.workspace_repo),
-            self.agent_run_repo.clone(),
+        AutomationScheduler::new(
+            automation_repo,
+            run_repo,
+            agent_run_repo,
+            conversation_repo,
+            workspace_repo,
             session_repo,
-            self.approval_repo.clone(),
+            plan_approval_repo,
             plan_approval_writer,
+            Arc::new(RecordingStarter),
             resumer,
             Arc::new(RecordingSignalChecker::default()),
+            Arc::new(NoopAutomationIntegrationPrPublisher),
             Arc::new(RecordingJudgeInvoker::default()),
             plan_judge_invoker,
             plan_verification_starter,
+            Arc::new(NoopAutomationMergedRunFinalizer),
+            Arc::new(NoopAutomationEventEmitter),
             artifact_repo,
+            notification_service(),
+            Arc::new(AutomationSchedulerRegistry::default()),
             config,
         )
     }
@@ -4748,6 +4800,337 @@ async fn automation_scheduler_completes_ideation_bridge_only_after_session_is_ac
         .unwrap();
     assert_eq!(automation.status, AutomationStatus::Completed);
     assert_eq!(run.status, AutomationRunStatus::Completed);
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_workspace_is_lost() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .workspace_repo
+        .delete(&scenario.conversation_id)
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_missing_session")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_without_linked_session() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    let mut workspace = scenario
+        .workspace_repo
+        .get_by_conversation_id(&scenario.conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.linked_ideation_session_id = None;
+    scenario
+        .workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_missing_session")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_session_is_missing() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .session_repo
+        .delete(&scenario.session_id)
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_missing_session")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_session_stops_before_acceptance() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .session_repo
+        .update_status(
+            &scenario.session_id,
+            crate::domain::entities::IdeationSessionStatus::Archived,
+        )
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_not_finalized")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_after_timeout() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler_with_plan_judge_verification_and_config(
+        Arc::new(RecordingPlanJudgeInvoker::default()),
+        Arc::new(NoopAutomationPlanVerificationStarter),
+        AutomationSchedulerConfig {
+            max_run_duration: Duration::from_secs(60),
+            ..AutomationSchedulerConfig::default()
+        },
+    );
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .make_current_run_started_at(Utc::now() - chrono::Duration::minutes(2))
+        .await;
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(run.error_code.as_deref(), Some("timeout"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_child_agent_failed() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .seed_current_ideation_agent_run(AgentRunStatus::Failed)
+        .await;
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_agent_failed")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_child_agent_cancelled() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .seed_current_ideation_agent_run(AgentRunStatus::Cancelled)
+        .await;
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_agent_failed")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_child_agent_completed_early() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .seed_current_ideation_agent_run(AgentRunStatus::Completed)
+        .await;
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_not_finalized")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_waits_for_pending_ideation_bridge_prompt_without_redelivery() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .session_repo
+        .set_pending_initial_prompt(
+            scenario.session_id.as_str(),
+            Some("queued bridge prompt".to_string()),
+        )
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::Running);
+    assert_eq!(scenario.resumer.ideation_prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_redelivers_running_ideation_bridge_when_child_agent_is_absent() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::Running);
+    let prompts = scenario.resumer.ideation_prompts();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[1].0, scenario.session_id);
+    assert!(prompts[1].1.contains("<auto-propose>"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_fails_running_ideation_bridge_when_approval_is_lost() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.configure_ideation_bridge(true).await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+    scheduler.tick_once().await.unwrap();
+    scenario
+        .approval_repo
+        .delete_by_session(&scenario.session_id)
+        .await
+        .unwrap();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 1);
+    let run = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(
+        run.error_code.as_deref(),
+        Some("ideation_bridge_approval_missing")
+    );
 }
 
 #[tokio::test]
