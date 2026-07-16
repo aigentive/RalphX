@@ -9,10 +9,11 @@ use super::integration_reference_expansion::{
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianIntegrationService,
     AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
-    AtlassianResourceKind, AtlassianResourceSummary, EmptyAtlassianApiClient, EmptyLinearApiClient,
-    GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaIntegrationService,
-    GranolaNoteDetail, GranolaTranscriptEntry, LinearApiClient, LinearAuthContext,
-    LinearIntegrationService, LinearIssueContent, LinearIssueSummary,
+    AtlassianResourceKind, AtlassianResourceSummary, ClickUpApiClient, ClickUpAuthContext,
+    ClickUpIntegrationService, ClickUpTaskContent, ClickUpWorkspace, EmptyAtlassianApiClient,
+    EmptyLinearApiClient, GranolaApiClient, GranolaApiError, GranolaAuthContext,
+    GranolaIntegrationService, GranolaNoteDetail, GranolaTranscriptEntry, LinearApiClient,
+    LinearAuthContext, LinearIntegrationService, LinearIssueContent, LinearIssueSummary,
 };
 use crate::domain::integrations::{
     AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
@@ -20,8 +21,9 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 use crate::infrastructure::memory::{
-    MemoryAtlassianIntegrationSettingsRepository, MemoryGranolaIntegrationSettingsRepository,
-    MemoryLinearIntegrationSettingsRepository, MemorySecretStore,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryGranolaIntegrationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
+    MemorySecretStore,
 };
 
 const ATLASSIAN_TOKEN_REF: &str = "integrations/atlassian/default/api-token";
@@ -39,6 +41,49 @@ struct LargeAtlassianClient {
 
 struct LargeLinearClient {
     body_len: usize,
+}
+
+#[derive(Default)]
+struct TestClickUpClient;
+
+#[async_trait]
+impl ClickUpApiClient for TestClickUpClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch_task(
+        &self,
+        _auth: &ClickUpAuthContext,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        Ok(ClickUpTaskContent {
+            id: task_id.to_string(),
+            custom_id: Some("CU-42".to_string()),
+            name: "Hydrate ClickUp conversations".to_string(),
+            url: Some("https://app.clickup.com/t/8689abc".to_string()),
+            description: "The agent must receive this task description.".to_string(),
+            status_name: Some("In Progress".to_string()),
+            status_type: Some("custom".to_string()),
+            status_category: Some("in_progress".to_string()),
+            creator: Some("Alex".to_string()),
+            assignees: vec!["Sam".to_string()],
+            watchers: Vec::new(),
+            tags: vec!["backend".to_string(), "clickup".to_string()],
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            updated_at: Some("2026-07-15T12:00:00Z".to_string()),
+            space_id: Some("space-1".to_string()),
+            list_name: Some("Bugs".to_string()),
+        })
+    }
 }
 
 #[async_trait]
@@ -284,6 +329,36 @@ async fn enabled_linear_service_with_client(
     Arc::new(service)
 }
 
+async fn enabled_clickup_service() -> Arc<ClickUpIntegrationService> {
+    let settings = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let service = ClickUpIntegrationService::new(
+        settings.clone(),
+        secrets.clone(),
+        Arc::new(TestClickUpClient),
+    );
+    service
+        .save_settings(
+            Some("clickup-token".to_string()),
+            Some("workspace-1".to_string()),
+        )
+        .await
+        .expect("save ClickUp settings");
+    service
+        .validate_and_enable()
+        .await
+        .expect("validate ClickUp settings");
+    Arc::new(service)
+}
+
+fn disabled_clickup_service() -> Arc<ClickUpIntegrationService> {
+    Arc::new(ClickUpIntegrationService::new(
+        Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
+        Arc::new(MemorySecretStore::new()),
+        Arc::new(TestClickUpClient),
+    ))
+}
+
 async fn enabled_granola_service() -> Arc<GranolaIntegrationService> {
     enabled_granola_service_with_client(Arc::new(TestGranolaClient)).await
 }
@@ -364,6 +439,7 @@ async fn dispatcher_leaves_atlassian_and_linear_references_unexpanded_when_servi
         None,
         None,
         None,
+        None,
     )
     .await;
 
@@ -385,6 +461,7 @@ async fn dispatcher_threads_existing_providers_and_granola_without_duplicate_bas
         ],
         Some(enabled_atlassian_service().await),
         Some(enabled_linear_service().await),
+        None,
         Some(enabled_granola_service().await),
     )
     .await;
@@ -418,6 +495,7 @@ async fn dispatcher_keeps_mixed_provider_prompt_within_shared_total_budget() {
         ],
         Some(enabled_atlassian_service().await),
         Some(enabled_linear_service().await),
+        None,
         Some(
             enabled_granola_service_with_client(Arc::new(LargeGranolaClient {
                 summary_len: 256 * 1024,
@@ -468,6 +546,7 @@ async fn dispatcher_caps_large_upstream_provider_output_to_shared_total_budget()
             }))
             .await,
         ),
+        None,
         Some(
             enabled_granola_service_with_client(Arc::new(LargeGranolaClient {
                 summary_len: 80 * 1024,
@@ -505,6 +584,7 @@ async fn dispatcher_passes_clickup_through_and_skips_only_unknown_providers() {
         None,
         None,
         None,
+        None,
     )
     .await;
 
@@ -518,10 +598,64 @@ async fn dispatcher_passes_clickup_through_and_skips_only_unknown_providers() {
 }
 
 #[tokio::test]
+async fn dispatcher_expands_clickup_task_context_for_agent_runtime() {
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &[reference("clickup", "clickup", "8689abc")],
+        None,
+        None,
+        Some(enabled_clickup_service().await),
+        None,
+    )
+    .await;
+
+    assert!(expansion.skipped_references.is_empty());
+    assert!(expansion
+        .rewritten_prompt
+        .contains("expanded user-selected ClickUp references"));
+    assert!(expansion
+        .rewritten_prompt
+        .contains("Hydrate ClickUp conversations"));
+    assert!(expansion
+        .rewritten_prompt
+        .contains("The agent must receive this task description."));
+    assert!(expansion.rewritten_prompt.contains("CU-42"));
+    assert!(expansion.rewritten_prompt.contains("In Progress"));
+}
+
+#[tokio::test]
+async fn dispatcher_preserves_clickup_title_and_url_when_hydration_fails() {
+    let mut clickup_reference = reference("clickup", "clickup", "8689abc");
+    clickup_reference.key = Some("CU-42".to_string());
+    clickup_reference.title = Some("ClickUp fallback title".to_string());
+    clickup_reference.url = Some("https://app.clickup.com/t/8689abc".to_string());
+
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &[clickup_reference],
+        None,
+        None,
+        Some(disabled_clickup_service()),
+        None,
+    )
+    .await;
+
+    assert!(expansion
+        .rewritten_prompt
+        .contains("ClickUp fallback title"));
+    assert!(expansion
+        .rewritten_prompt
+        .contains("https://app.clickup.com/t/8689abc"));
+    assert!(expansion.rewritten_prompt.contains("CU-42"));
+    assert!(expansion.rewritten_prompt.contains("hydration_error"));
+}
+
+#[tokio::test]
 async fn dispatcher_reports_granola_provider_unavailable_without_failing_prompt() {
     let expansion = expand_integration_references_for_prompt(
         "Base prompt",
         &[reference("granola", "note", "not_1234567890ABCD")],
+        None,
         None,
         None,
         None,

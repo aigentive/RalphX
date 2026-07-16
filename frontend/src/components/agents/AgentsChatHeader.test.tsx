@@ -176,6 +176,37 @@ describe("AgentsChatHeader", () => {
     expect(onSelectArtifact).toHaveBeenCalledWith("jira");
   });
 
+  it("opens the linked ClickUp ticket in the ClickUp artifact tab", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "clickup", id: "8689abc", key: "CU-42" },
+        projectId: "project-2",
+        title: "Fix ClickUp tickets",
+        url: "https://app.clickup.com/t/8689abc",
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-clickup", projectId: "project-2" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open ticket CU-42" }));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("clickup");
+  });
+
   it("does not render the linked ticket button when no ticket is linked", () => {
     vi.mocked(useConversationTicket).mockReturnValue({
       data: null,

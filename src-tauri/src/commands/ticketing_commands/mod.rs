@@ -893,6 +893,44 @@ pub async fn get_conversation_ticket(
 }
 
 #[tauri::command]
+pub async fn link_ticket_to_conversation(
+    input: LinkTicketToConversationInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let provider = input.ticket_ref.provider.clone();
+    validate_provider(&provider)?;
+    let conversation_id = input
+        .conversation_id
+        .parse::<ChatConversationId>()
+        .map_err(|_| "Invalid conversationId".to_string())?;
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Conversation not found: {conversation_id}"))?;
+    if conversation.context_type != ChatContextType::Project
+        || conversation.context_id != input.project_id
+    {
+        return Err("Conversation does not belong to the selected project".to_string());
+    }
+
+    let project_id = ProjectId::from_string(input.project_id);
+    let mut reference = ticket_ref_to_composer_reference(&provider, &input.ticket_ref);
+    reference.title = input.title;
+    reference.url = input.url;
+    persist_ticket_conversation_link(
+        state.inner(),
+        &provider,
+        &conversation_id,
+        &project_id,
+        &reference,
+        "manual_binding",
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
     mut input: StartRalphxWorkFromTicketInput,
     state: State<'_, AppState>,
@@ -2761,6 +2799,25 @@ async fn link_started_ticket_to_conversation(
     project_id: &ProjectId,
     reference: &ComposerIntegrationReference,
 ) -> Result<(), String> {
+    persist_ticket_conversation_link(
+        state,
+        provider,
+        conversation_id,
+        project_id,
+        reference,
+        "ticket_start",
+    )
+    .await
+}
+
+async fn persist_ticket_conversation_link(
+    state: &AppState,
+    provider: &str,
+    conversation_id: &ChatConversationId,
+    project_id: &ProjectId,
+    reference: &ComposerIntegrationReference,
+    source: &str,
+) -> Result<(), String> {
     match provider {
         PROVIDER_JIRA => {
             let reference = jira_reference_from_composer_reference(reference)
@@ -2830,7 +2887,7 @@ async fn link_started_ticket_to_conversation(
                 local_state: Some("active".to_string()),
                 metadata_json: Some(
                     serde_json::json!({
-                        "source": "ticket_start",
+                        "source": source,
                         "title": reference.title,
                         "validated_at": Utc::now().to_rfc3339(),
                     })

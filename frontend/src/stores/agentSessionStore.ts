@@ -34,6 +34,7 @@ export type AgentArtifactTab =
   | "pr"
   | "jira"
   | "linear"
+  | "clickup"
   | "granola"
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";

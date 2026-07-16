@@ -41,6 +41,12 @@ import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
+vi.mock("./AgentsClickUpTicketPanel", () => ({
+  AgentsClickUpTicketPanel: () => (
+    <div data-testid="agents-clickup-ticket-panel">ClickUp ticket details</div>
+  ),
+}));
+
 const deferredHydrationTimeout = { timeout: 3_000 };
 const initialPlanStoreActions = {
   loadActivePlan: usePlanStore.getState().loadActivePlan,
@@ -1596,6 +1602,13 @@ describe("AgentsArtifactPane", () => {
       startConversationDraft: null,
     });
     useChatStore.getState().setActiveConversation("project:project-1", null);
+  });
+
+  it("keeps a linked ClickUp tab visible and lazy-loads its ticket panel", async () => {
+    renderControlledPane("clickup");
+
+    expect(screen.getByTestId("agents-artifact-tab-clickup")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-clickup-ticket-panel")).toBeInTheDocument();
   });
 
   it("hides the Issues tab when a project conversation has no open issues", async () => {

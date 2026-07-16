@@ -410,6 +410,14 @@ export interface StartWorkFromTicketInput extends StartAgentConversationInput {
   ticketRef: TicketRef;
 }
 
+export interface LinkTicketToConversationInput {
+  conversationId: string;
+  projectId: string;
+  ticketRef: TicketRef;
+  title?: string | undefined;
+  url?: string | undefined;
+}
+
 export interface RefreshTicketsInput {
   provider: TicketingProvider;
   containerId?: string | undefined;
@@ -591,6 +599,14 @@ export const ticketingApi = {
       "get_conversation_ticket",
       { conversationId },
       ConversationTicketSchema.nullable(),
+    );
+  },
+
+  async linkTicketToConversation(input: LinkTicketToConversationInput): Promise<void> {
+    await typedInvoke(
+      "link_ticket_to_conversation",
+      { input },
+      TauriVoidSchema,
     );
   },
 

@@ -4278,6 +4278,51 @@ async fn get_ticket_associations_returns_linked_agent_conversations() {
 }
 
 #[tokio::test]
+async fn manual_clickup_binding_persists_provider_neutral_conversation_link() {
+    let state = AppState::new_test();
+    let project_id = seed_ticketing_project(&state, "manual-clickup-binding").await;
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project_id.clone()))
+        .await
+        .expect("conversation should be created");
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    link_ticket_to_conversation(
+        LinkTicketToConversationInput {
+            conversation_id: conversation.id.as_str(),
+            project_id: project_id.as_str().to_string(),
+            ticket_ref: TicketRefInput {
+                provider: PROVIDER_CLICKUP.to_string(),
+                id: "8689abc".to_string(),
+                key: Some("CU-42".to_string()),
+            },
+            title: Some("ClickUp context bug".to_string()),
+            url: Some("https://app.clickup.com/t/8689abc".to_string()),
+        },
+        app.state(),
+    )
+    .await
+    .expect("manual ClickUp binding should persist");
+
+    let reverse = get_conversation_ticket(conversation.id.as_str(), app.state())
+        .await
+        .expect("conversation ticket should load")
+        .expect("ClickUp ticket should be linked");
+    assert_eq!(reverse.ticket_ref.provider, PROVIDER_CLICKUP);
+    assert_eq!(reverse.ticket_ref.id, "8689abc");
+    assert_eq!(reverse.ticket_ref.key.as_deref(), Some("CU-42"));
+    assert_eq!(reverse.title.as_deref(), Some("ClickUp context bug"));
+    assert_eq!(
+        reverse.url.as_deref(),
+        Some("https://app.clickup.com/t/8689abc")
+    );
+}
+
+#[tokio::test]
 async fn clickup_links_are_visible_from_ticket_and_conversation_reverse_lookups() {
     let state = AppState::new_test();
     let project_id = seed_ticketing_project(&state, "ticket-associations-clickup").await;

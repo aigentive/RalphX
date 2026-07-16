@@ -5,19 +5,20 @@ import { ArrowDown, ArrowUp, ListOrdered, RefreshCw, RotateCcw } from "lucide-re
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
 import type { ComposerIntegrationReference } from "@/api/chat";
-import type {
-  ListTicketFilterOptionsInput,
-  ListTicketsInput,
-  TicketDeepLink,
-  TicketFiltersInput,
-  TicketRef,
-  TicketingColumn,
-  TicketingContainer,
-  TicketingProvider,
-  TicketingStatusCatalogEntry,
-  TicketingStatusCatalogScopeInput,
-  TicketSummary,
-  TicketTransitionOption,
+import {
+  ticketingApi,
+  type ListTicketFilterOptionsInput,
+  type ListTicketsInput,
+  type TicketDeepLink,
+  type TicketFiltersInput,
+  type TicketRef,
+  type TicketingColumn,
+  type TicketingContainer,
+  type TicketingProvider,
+  type TicketingStatusCatalogEntry,
+  type TicketingStatusCatalogScopeInput,
+  type TicketSummary,
+  type TicketTransitionOption,
 } from "@/api/ticketing";
 import type { Project } from "@/types/project";
 import {
@@ -1078,7 +1079,7 @@ export function TicketingDashboardView({
           ...(selectedTicket.url !== undefined && { issueUrl: selectedTicket.url }),
           refresh: true,
         });
-      } else {
+      } else if (ticketRef.provider === "linear") {
         await linearApi.assignAgentConversationLinearIssue({
           conversationId,
           projectId,
@@ -1087,6 +1088,14 @@ export function TicketingDashboardView({
           ...(selectedTicket.title !== undefined && { title: selectedTicket.title }),
           ...(selectedTicket.url !== undefined && { issueUrl: selectedTicket.url }),
           refresh: true,
+        });
+      } else {
+        await ticketingApi.linkTicketToConversation({
+          conversationId,
+          projectId,
+          ticketRef,
+          ...(selectedTicket.title !== undefined && { title: selectedTicket.title }),
+          ...(selectedTicket.url != null && { url: selectedTicket.url }),
         });
       }
       return conversationId;
@@ -1229,10 +1238,6 @@ export function TicketingDashboardView({
     : mergeProviderAndTicketColumns(columns, [...effectiveTicketColumns, ...transitionColumns]);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
-  // ClickUp links are created by ticket-origin starts and Git/PR reconciliation.
-  // Keep manual binding hidden until this mutation routes to the provider-neutral
-  // external-link command instead of the Linear-specific fallback below.
-  const supportsConversationBinding = activeProvider !== "clickup";
   const statusMessage = selectedProvider?.errorMessage ?? selectedProvider?.permissionMessage ?? undefined;
   const statusNotices: TicketingStatusNotice[] = [
     ...(selectedProvider?.staleAt
@@ -1732,9 +1737,9 @@ export function TicketingDashboardView({
         seenUntil={seenBaseline}
         isStartWorkPending={false}
         startWorkError={null}
-        showConversationBinding={supportsConversationBinding}
+        showConversationBinding
         bindableConversations={bindableConversations}
-        onBindConversation={selectedTicket && supportsConversationBinding ? handleBindConversation : undefined}
+        onBindConversation={selectedTicket ? handleBindConversation : undefined}
         isBindPending={bindConversation.isPending}
         bindError={bindError}
         onNavigate={onNavigateToAssociation}

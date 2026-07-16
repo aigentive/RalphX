@@ -87,6 +87,7 @@ import {
 } from "@/hooks/useVerificationStatus";
 import { useAutomationDetail } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import type { Artifact } from "@/types/artifact";
 import type {
   IdeationSession,
@@ -312,6 +313,11 @@ const LazyAgentsLinearIssuePanel = lazy(() =>
     default: module.AgentsLinearIssuePanel,
   })),
 );
+const LazyAgentsClickUpTicketPanel = lazy(() =>
+  import("@/components/agents/AgentsClickUpTicketPanel").then((module) => ({
+    default: module.AgentsClickUpTicketPanel,
+  })),
+);
 const LazyAgentsGranolaNotePanel = lazy(() =>
   import("@/components/agents/AgentsGranolaNotePanel").then((module) => ({
     default: module.AgentsGranolaNotePanel,
@@ -374,6 +380,12 @@ const LINEAR_TAB = {
   icon: Ticket,
 };
 
+const CLICKUP_TAB = {
+  id: "clickup" as const,
+  label: "ClickUp",
+  icon: Ticket,
+};
+
 const GRANOLA_TAB = {
   id: "granola" as const,
   label: "Granola",
@@ -411,6 +423,7 @@ function baseTabDefinition(id: AgentArtifactTab): Omit<
     PUBLISH_TAB,
     JIRA_TAB,
     LINEAR_TAB,
+    CLICKUP_TAB,
     GRANOLA_TAB,
     PR_TAB,
   ].find((candidate) => candidate.id === id);
@@ -631,6 +644,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     linearSettingsQuery.data?.enabled &&
     linearSettingsQuery.data?.issueSearchAvailable,
   );
+  const conversationTicketQuery = useConversationTicket(
+    conversation?.id ?? workspace?.conversationId ?? null,
+  );
+  const showClickUpTab =
+    activeTab === "clickup" ||
+    conversationTicketQuery.data?.ticketRef.provider === "clickup";
   const granolaSettingsQuery = useQuery({
     queryKey: ["granola", "settings"],
     queryFn: () => granolaApi.getSettings(),
@@ -1054,6 +1073,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             ...(showPullRequestTab ? [visibleTab(PR_TAB)] : []),
             ...(showJiraTab ? [visibleTab(JIRA_TAB)] : []),
             ...(showLinearTab ? [visibleTab(LINEAR_TAB)] : []),
+            ...(showClickUpTab ? [visibleTab(CLICKUP_TAB)] : []),
             ...(showGranolaTab ? [visibleTab(GRANOLA_TAB)] : []),
             ...(availableArtifactTabIds.includes("review")
               ? [visibleTab(REVIEW_TAB)]
@@ -1066,6 +1086,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       automationRunTabPolicy.tabs,
       isAutomationRunConversation,
       showGranolaTab,
+      showClickUpTab,
       showJiraTab,
       showLinearTab,
       showPublishTab,
@@ -1085,8 +1106,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             ? "jira"
             : showLinearTab
               ? "linear"
-              : showGranolaTab
-                ? "granola"
+              : showClickUpTab
+                ? "clickup"
+                : showGranolaTab
+                  ? "granola"
                 : visibleTabs.some((tab) => tab.id === "plan")
                   ? "plan"
                   : visibleTabs.some((tab) => tab.id === "issues")
@@ -1896,6 +1919,17 @@ function ArtifactContent({
     return (
       <Suspense fallback={<EmptyArtifactState title="Loading Linear..." />}>
         <LazyAgentsLinearIssuePanel
+          conversationId={conversationId}
+          projectId={projectId}
+        />
+      </Suspense>
+    );
+  }
+
+  if (activeTab === "clickup") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading ClickUp..." />}>
+        <LazyAgentsClickUpTicketPanel
           conversationId={conversationId}
           projectId={projectId}
         />

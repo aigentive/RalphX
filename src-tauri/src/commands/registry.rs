@@ -506,6 +506,7 @@ macro_rules! register_tauri_commands {
             commands::ticketing_commands::list_ticket_transitions,
             commands::ticketing_commands::get_ticket_associations,
             commands::ticketing_commands::get_conversation_ticket,
+            commands::ticketing_commands::link_ticket_to_conversation,
             commands::ticketing_commands::start_ralphx_work_from_ticket,
             commands::ticketing_commands::refresh_tickets,
             commands::ticketing_commands::transition_ticket_status,

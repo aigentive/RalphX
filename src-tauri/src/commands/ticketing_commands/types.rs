@@ -131,6 +131,16 @@ pub struct ConversationTicketResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LinkTicketToConversationInput {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub ticket_ref: TicketRefInput,
+    pub title: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartRalphxWorkFromTicketInput {
     #[serde(flatten)]
     pub start: StartAgentConversationInput,
