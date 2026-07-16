@@ -744,9 +744,15 @@ async fn apply_proposals_core_inner(
             .await?;
 
     if let Some(workspace) = linked_agent_workspace.as_ref() {
-        if workspace.mode != AgentConversationWorkspaceMode::Ideation {
+        let owns_supervised_pipeline = workspace.mode == AgentConversationWorkspaceMode::Tasks
+            && workspace.task_pipeline_session_id.as_ref() == Some(&session_id);
+        if !matches!(
+            workspace.mode,
+            AgentConversationWorkspaceMode::Ideation | AgentConversationWorkspaceMode::Autopilot
+        ) && !owns_supervised_pipeline
+        {
             return Err(AppError::Validation(
-                "Linked agent conversation workspace is not in ideation mode".to_string(),
+                "Linked agent conversation workspace does not own this task pipeline".to_string(),
             ));
         }
         resolve_valid_agent_conversation_workspace_path(&project, workspace).await?;
@@ -1088,9 +1094,18 @@ pub async fn apply_proposals_to_kanban(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<ApplyProposalsResultResponse, String> {
+    apply_proposals_to_kanban_for_state(input, &state, &app).await
+}
+
+#[doc(hidden)]
+pub async fn apply_proposals_to_kanban_for_state(
+    input: ApplyProposalsInput,
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle,
+) -> Result<ApplyProposalsResultResponse, String> {
     use crate::commands::emit_queue_changed;
 
-    let result = apply_proposals_core(&state, input)
+    let result = apply_proposals_core(state.inner(), input)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1117,7 +1132,7 @@ pub async fn apply_proposals_to_kanban(
         }
 
         // Stop and archive any running verification child agents (best-effort).
-        stop_verification_children(&result.session_id, &state)
+        stop_verification_children(&result.session_id, state.inner())
             .await
             .ok();
     }
@@ -1130,7 +1145,7 @@ pub async fn apply_proposals_to_kanban(
         let proposals_context = result.proposal_titles.join("; ");
         let session_id_str = result.session_id.clone();
         if let Err(error) = spawn_session_namer_agent(
-            &state,
+            state.inner(),
             SessionNamerTarget::accepted_session(session_id_str, proposals_context),
         )
         .await
@@ -1142,11 +1157,11 @@ pub async fn apply_proposals_to_kanban(
     // Emit queue_changed if any tasks were set to Ready status
     if result.any_ready_tasks {
         let project_id = ProjectId::from_string(result.project_id.clone());
-        emit_queue_changed(&state, &project_id, &app).await;
+        emit_queue_changed(state, &project_id, app).await;
 
         let execution_state = app.state::<Arc<ExecutionState>>();
         spawn_ready_task_scheduler_if_needed(
-            &state,
+            state.inner(),
             Arc::clone(&*execution_state),
             Some(app.clone()),
             true,

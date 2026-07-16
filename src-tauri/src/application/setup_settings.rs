@@ -31,6 +31,7 @@ pub(crate) fn initialize_settings_defaults(
                 agent_capability_gate.replace(AgentCapabilities {
                     team: overrides.agent_conversation_team,
                     workflows: overrides.agent_conversation_workflows,
+                    autopilot: overrides.agent_conversation_autopilot,
                 });
             }
             Err(error) => {

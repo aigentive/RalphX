@@ -21,6 +21,7 @@ pub const SHORT_PERSONA_EXTRACTOR: &str = "ralphx-persona-extractor";
 pub const SHORT_PLAN_COMPLEXITY_ASSESSOR: &str = "ralphx-utility-plan-complexity";
 pub const SHORT_CHAT_TASK: &str = "ralphx-chat-task";
 pub const SHORT_CHAT_PROJECT: &str = "ralphx-chat-project";
+pub const SHORT_TASK_MANAGER: &str = "ralphx-task-manager";
 pub const SHORT_REVIEW_CHAT: &str = "ralphx-review-chat";
 pub const SHORT_REVIEW_HISTORY: &str = "ralphx-review-history";
 pub const SHORT_WORKER: &str = "ralphx-execution-worker";
@@ -80,6 +81,9 @@ pub const AGENT_CHAT_TASK: &str = "ralphx:ralphx-chat-task";
 
 /// Project-scoped chat (ChatContextType::Project)
 pub const AGENT_CHAT_PROJECT: &str = "ralphx:ralphx-chat-project";
+
+/// Pipeline-scoped supervisor for Tasks mode
+pub const AGENT_TASK_MANAGER: &str = "ralphx:ralphx-task-manager";
 
 /// General read-only project explorer for project-scoped agent conversations
 pub const AGENT_GENERAL_EXPLORER: &str = "ralphx:ralphx-general-explorer";

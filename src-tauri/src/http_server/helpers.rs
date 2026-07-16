@@ -13,10 +13,10 @@ use crate::commands::ideation_commands::{
     TaskProposalResponse,
 };
 use crate::domain::entities::{
-    AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType,
-    AutomationRunStatus, AutomationStatus, Complexity, IdeationSession, IdeationSessionId,
-    IdeationSessionStatus, InternalStatus, Priority, ProposalCategory, ScopeDriftStatus,
-    TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
+    AcceptanceStatus, AgentConversationWorkspaceMode, Artifact, ArtifactContent, ArtifactSummary,
+    ArtifactType, AutomationRunStatus, AutomationStatus, Complexity, IdeationSession,
+    IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority, ProposalCategory,
+    ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId, ValidationCacheData,
     ValidationCacheMetadata, ValidationCommandCategory, ValidationRunStatus, VerificationStatus,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
@@ -842,7 +842,7 @@ pub async fn archive_proposal_impl(
 pub async fn finalize_proposals_impl(
     state: &AppState,
     session_id: &str,
-    _is_external: bool,
+    is_external: bool,
 ) -> AppResult<crate::http_server::types::FinalizeProposalsResponse> {
     // Fetch session and validate it is Active
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
@@ -851,6 +851,22 @@ pub async fn finalize_proposals_impl(
         .get_by_id(&session_id_typed)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
+
+    if !is_external {
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_linked_ideation_session_id(&session_id_typed)
+            .await?;
+        if workspace.is_some_and(|workspace| {
+            workspace.mode == AgentConversationWorkspaceMode::Tasks
+                && workspace.task_pipeline_session_id.as_ref() == Some(&session_id_typed)
+        }) {
+            return Err(AppError::Validation(
+                "This supervised task pipeline is waiting for the user to choose Start Tasks"
+                    .to_string(),
+            ));
+        }
+    }
 
     if session.status != IdeationSessionStatus::Active {
         return Err(AppError::Validation(format!(

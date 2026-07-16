@@ -187,6 +187,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   teamMode: false,
   atlassianOauth: false,
   ticketingDashboard: false,
+  agentConversationAutopilot: false,
 };
 
 // ============================================================================

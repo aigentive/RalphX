@@ -35,7 +35,7 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
             .run(|conn| {
                 let result = conn.query_row(
                     "SELECT agent_personas, agent_conversation_team,
-                            agent_conversation_workflows
+                            agent_conversation_workflows, agent_conversation_autopilot
                      FROM ui_feature_flag_overrides WHERE id = 1",
                     [],
                     |row| {
@@ -44,6 +44,7 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
                             agent_personas: value.map(|value| value != 0),
                             agent_conversation_team: row.get::<_, i64>(1)? != 0,
                             agent_conversation_workflows: row.get::<_, i64>(2)? != 0,
+                            agent_conversation_autopilot: row.get::<_, i64>(3)? != 0,
                         })
                     },
                 );
@@ -79,29 +80,32 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
         &self,
         team: Option<bool>,
         workflows: Option<bool>,
+        autopilot: Option<bool>,
     ) -> AppResult<UiFeatureFlagOverrides> {
         self.db
             .run_transaction(move |tx| {
                 tx.execute(
                     "INSERT OR IGNORE INTO ui_feature_flag_overrides (
                         id, agent_personas, agent_conversation_team,
-                        agent_conversation_workflows
-                     ) VALUES (1, NULL, 0, 0)",
+                        agent_conversation_workflows, agent_conversation_autopilot
+                     ) VALUES (1, NULL, 0, 0, 0)",
                     [],
                 )?;
                 tx.execute(
                     "UPDATE ui_feature_flag_overrides
                      SET agent_conversation_team = COALESCE(?1, agent_conversation_team),
-                         agent_conversation_workflows = COALESCE(?2, agent_conversation_workflows)
+                         agent_conversation_workflows = COALESCE(?2, agent_conversation_workflows),
+                         agent_conversation_autopilot = COALESCE(?3, agent_conversation_autopilot)
                      WHERE id = 1",
                     rusqlite::params![
                         team.map(|value| if value { 1 } else { 0 }),
                         workflows.map(|value| if value { 1 } else { 0 }),
+                        autopilot.map(|value| if value { 1 } else { 0 }),
                     ],
                 )?;
                 tx.query_row(
                     "SELECT agent_personas, agent_conversation_team,
-                            agent_conversation_workflows
+                            agent_conversation_workflows, agent_conversation_autopilot
                      FROM ui_feature_flag_overrides WHERE id = 1",
                     [],
                     |row| {
@@ -110,6 +114,7 @@ impl UiFeatureFlagOverridesRepository for SqliteUiFeatureFlagOverridesRepository
                             agent_personas,
                             agent_conversation_team: row.get::<_, i64>(1)? != 0,
                             agent_conversation_workflows: row.get::<_, i64>(2)? != 0,
+                            agent_conversation_autopilot: row.get::<_, i64>(3)? != 0,
                         })
                     },
                 )
