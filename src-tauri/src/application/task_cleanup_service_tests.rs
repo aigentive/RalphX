@@ -317,7 +317,7 @@ async fn replacement_cleanup_preserves_explicitly_preserved_branch() {
         None,
     );
     service
-        .preflight_tasks_for_replacement(&[task.clone()], Some(&preserved_branch))
+        .preflight_tasks_for_replacement(std::slice::from_ref(&task), Some(&preserved_branch))
         .await
         .expect("preserved branch should pass strict preflight");
     let report = service
