@@ -340,3 +340,190 @@ async fn recovery_failure_terminalizes_only_the_expected_unclaimed_state() {
     assert_eq!(failed.error.as_deref(), Some("missing script"));
     assert!(failed.completed_at.is_some());
 }
+
+#[tokio::test]
+async fn current_attempt_persists_phase_invocation_and_ordered_logs() {
+    let repository = repository();
+    let script = repository.save_script(script()).await.unwrap();
+    repository
+        .approve_script(&script.id, &script.script_hash, &script.permission_hash)
+        .await
+        .unwrap();
+    let run = repository.create_run(run(&script)).await.unwrap();
+    assert!(repository
+        .claim_run(&run.id, 0, "runner", Utc::now() + Duration::seconds(30))
+        .await
+        .unwrap());
+
+    let phase_id = AgentWorkflowPhaseId::new();
+    assert!(repository
+        .upsert_phase(
+            AgentWorkflowPhase {
+                id: phase_id.clone(),
+                run_id: run.id.clone(),
+                key: "review".into(),
+                name: "Review".into(),
+                ordinal: 0,
+                status: AgentWorkflowStepStatus::Running,
+                started_at: Some(Utc::now()),
+                completed_at: None,
+                error: None,
+            },
+            1,
+            "runner",
+        )
+        .await
+        .unwrap());
+
+    let now = Utc::now();
+    let invocation = repository
+        .begin_invocation(AgentWorkflowInvocation {
+            id: AgentWorkflowInvocationId::new(),
+            run_id: run.id.clone(),
+            phase_id: Some(phase_id),
+            logical_key: "review:0".into(),
+            agent_name: "ralphx-general-explorer".into(),
+            prompt_hash: sha256_hex(b"review changed files"),
+            schema_hash: Some(sha256_hex(b"result-schema")),
+            status: AgentWorkflowStepStatus::Running,
+            delegated_session_id: None,
+            child_conversation_id: None,
+            result_json: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(!repository
+        .settle_invocation(
+            invocation.id.as_str(),
+            1,
+            "stale-runner",
+            AgentWorkflowStepStatus::Completed,
+            None,
+            None,
+            Some(r#"{"accepted":false}"#.into()),
+            None,
+        )
+        .await
+        .unwrap());
+    assert!(repository
+        .settle_invocation(
+            invocation.id.as_str(),
+            1,
+            "runner",
+            AgentWorkflowStepStatus::Completed,
+            None,
+            None,
+            Some(r#"{"accepted":true}"#.into()),
+            None,
+        )
+        .await
+        .unwrap());
+
+    assert!(repository
+        .append_log(&run.id, 1, "stale-runner", "info", "must not persist")
+        .await
+        .unwrap()
+        .is_none());
+    let first = repository
+        .append_log(&run.id, 1, "runner", "info", "started")
+        .await
+        .unwrap()
+        .unwrap();
+    let second = repository
+        .append_log(&run.id, 1, "runner", "warn", "needs attention")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((first.sequence, second.sequence), (0, 1));
+    assert!(repository
+        .append_log(&run.id, 1, "runner", "fatal", "invalid")
+        .await
+        .is_err());
+
+    let progress = repository.get_progress(&run.id).await.unwrap();
+    assert_eq!(progress.phases.len(), 1);
+    assert_eq!(progress.phases[0].key, "review");
+    assert_eq!(progress.phases[0].status, AgentWorkflowStepStatus::Running);
+    assert_eq!(progress.invocations.len(), 1);
+    assert_eq!(
+        progress.invocations[0].status,
+        AgentWorkflowStepStatus::Completed
+    );
+    assert_eq!(
+        progress.invocations[0].result_json.as_deref(),
+        Some(r#"{"accepted":true}"#)
+    );
+    assert_eq!(
+        progress
+            .logs
+            .iter()
+            .map(|entry| (entry.sequence, entry.level.as_str(), entry.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "info", "started"), (1, "warn", "needs attention")]
+    );
+}
+
+#[tokio::test]
+async fn launch_id_reuse_with_changed_inputs_fails_without_consuming_new_approval() {
+    let repository = repository();
+    let script = repository.save_script(script()).await.unwrap();
+    repository
+        .approve_script(&script.id, &script.script_hash, &script.permission_hash)
+        .await
+        .unwrap();
+    let created = repository.create_run(run(&script)).await.unwrap();
+    let mut conflicting = created.clone();
+    conflicting.args_json = r#"{"different":true}"#.into();
+
+    let error = repository.create_run(conflicting).await.unwrap_err();
+
+    assert!(
+        matches!(error, crate::error::AppError::Conflict(message) if message.contains("different inputs"))
+    );
+    assert_eq!(
+        repository
+            .get_run(&created.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .args_json,
+        "{}"
+    );
+}
+
+#[tokio::test]
+async fn recoverable_listing_excludes_live_lease_and_includes_expired_lease() {
+    let repository = repository();
+    let script = repository.save_script(script()).await.unwrap();
+    repository
+        .approve_script(&script.id, &script.script_hash, &script.permission_hash)
+        .await
+        .unwrap();
+    let run = repository.create_run(run(&script)).await.unwrap();
+    assert!(repository
+        .claim_run(&run.id, 0, "runner", Utc::now() + Duration::seconds(30))
+        .await
+        .unwrap());
+
+    assert!(repository
+        .list_recoverable(Utc::now())
+        .await
+        .unwrap()
+        .iter()
+        .all(|candidate| candidate.id != run.id));
+    assert!(repository
+        .heartbeat(&run.id, 1, "runner", Utc::now() - Duration::seconds(1),)
+        .await
+        .unwrap());
+    assert!(repository
+        .list_recoverable(Utc::now())
+        .await
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate.id == run.id));
+}

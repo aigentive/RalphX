@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 
 use crate::application::agent_capability_gate::AgentCapabilityGate;
 use crate::domain::entities::agent_workflow_protocol::{
@@ -37,6 +37,16 @@ pub(super) trait WorkflowChildTermination {
 }
 
 #[async_trait]
+pub(super) trait WorkflowChildSession: WorkflowChildTermination {
+    type Stdin: AsyncWrite + Unpin + Send;
+    type Stdout: AsyncRead + Unpin + Send;
+
+    fn take_stdin(&mut self) -> Option<Self::Stdin>;
+    fn take_stdout(&mut self) -> Option<Self::Stdout>;
+    async fn wait_success(&mut self) -> AppResult<bool>;
+}
+
+#[async_trait]
 impl WorkflowChildTermination for tokio::process::Child {
     async fn kill_child(&mut self) {
         let _ = self.kill().await;
@@ -47,11 +57,33 @@ impl WorkflowChildTermination for tokio::process::Child {
     }
 }
 
+#[async_trait]
+impl WorkflowChildSession for tokio::process::Child {
+    type Stdin = ChildStdin;
+    type Stdout = ChildStdout;
+
+    fn take_stdin(&mut self) -> Option<Self::Stdin> {
+        self.stdin.take()
+    }
+
+    fn take_stdout(&mut self) -> Option<Self::Stdout> {
+        self.stdout.take()
+    }
+
+    async fn wait_success(&mut self) -> AppResult<bool> {
+        self.wait()
+            .await
+            .map(|status| status.success())
+            .map_err(|error| AppError::Infrastructure(error.to_string()))
+    }
+}
+
 pub(super) async fn kill_and_reap_after_drive_error(child: &mut impl WorkflowChildTermination) {
     child.kill_child().await;
     child.reap_child().await;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentWorkflowRunAuthority {
     pub run_id: String,
     pub attempt: u32,
@@ -163,19 +195,17 @@ impl AgentWorkflowRunner {
 
     async fn drive(
         &self,
-        child: &mut Child,
+        child: &mut impl WorkflowChildSession,
         run: &AgentWorkflowRun,
         authority: &AgentWorkflowRunAuthority,
         script: &AgentWorkflowScript,
         host: Arc<dyn AgentWorkflowHost>,
     ) -> AppResult<()> {
         let mut stdin = child
-            .stdin
-            .take()
+            .take_stdin()
             .ok_or_else(|| AppError::Infrastructure("Workflow runner stdin unavailable".into()))?;
         let mut stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| AppError::Infrastructure("Workflow runner stdout unavailable".into()))?;
         let lineage = AgentWorkflowFrame {
             version: AGENT_WORKFLOW_PROTOCOL_VERSION,
@@ -225,7 +255,7 @@ impl AgentWorkflowRunner {
                         ));
                     }
                     if current.cancel_requested {
-                        let _ = child.kill().await;
+                        child.kill_child().await;
                         require_transition(
                             self.repository
                                 .transition_run(
@@ -246,7 +276,7 @@ impl AgentWorkflowRunner {
                         if !current.pause_requested {
                             self.repository.request_pause(&run.id).await?;
                         }
-                        let _ = child.kill().await;
+                        child.kill_child().await;
                         require_transition(
                             self.repository
                                 .transition_run(
@@ -280,7 +310,7 @@ impl AgentWorkflowRunner {
                             AppError::NotFound(format!("Workflow run {}", run.id))
                         })?;
                     if after_call.cancel_requested {
-                        let _ = child.kill().await;
+                        child.kill_child().await;
                         if !self
                             .repository
                             .transition_run(
@@ -304,7 +334,7 @@ impl AgentWorkflowRunner {
                         if !after_call.pause_requested {
                             self.repository.request_pause(&run.id).await?;
                         }
-                        let _ = child.kill().await;
+                        child.kill_child().await;
                         if !self
                             .repository
                             .transition_run(
@@ -350,11 +380,7 @@ impl AgentWorkflowRunner {
                         self.repository.get_run(&run.id).await?.ok_or_else(|| {
                             AppError::NotFound(format!("Workflow run {}", run.id))
                         })?;
-                    let status = child
-                        .wait()
-                        .await
-                        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
-                    require_successful_exit(status.success())?;
+                    require_successful_exit(child.wait_success().await?)?;
                     if current.cancel_requested {
                         require_transition(
                             self.repository
